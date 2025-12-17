@@ -82,13 +82,13 @@ jobs:
         run: npm install -g @vscode/vsce
 
       - name: Package extension
-        run: vsce package --out copilot-agent.vsix
+        run: vsce package --out lingyun.vsix
 
       - name: Upload VSIX artifact
         uses: actions/upload-artifact@v4
         with:
-          name: copilot-agent-vsix
-          path: copilot-agent.vsix
+          name: lingyun-vsix
+          path: lingyun.vsix
           retention-days: 30
 
   release:
@@ -119,6 +119,9 @@ jobs:
 
       - name: Package extension
         run: vsce package
+
+      - name: Publish to VS Code Marketplace
+        run: vsce publish -p ${{ secrets.VSCE_PAT }}
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
