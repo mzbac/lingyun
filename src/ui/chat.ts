@@ -144,7 +144,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           try {
             const args = JSON.parse(tc.function.arguments || '{}');
             path = args.path;
-          } catch {}
+          } catch {
+            // Ignore parse errors
+          }
 
           const toolMsg: ChatMessage = {
             id: crypto.randomUUID(),
@@ -265,7 +267,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     try {
       const args = JSON.parse(tc.function.arguments || '{}');
       path = args.path;
-    } catch {}
+    } catch {
+      // Ignore parse errors
+    }
 
     const toolMsg: ChatMessage = {
       id: crypto.randomUUID(),

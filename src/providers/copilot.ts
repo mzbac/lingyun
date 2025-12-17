@@ -250,6 +250,7 @@ export class CopilotProvider implements LLMProvider {
               }
             }
           } catch {
+            // Ignore JSON parse errors for incomplete chunks
           }
         }
       }

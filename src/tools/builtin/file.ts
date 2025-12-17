@@ -177,6 +177,7 @@ const writeFileHandler: ToolHandler = async (args) => {
     try {
       await vscode.workspace.fs.createDirectory(parentDir);
     } catch {
+      // Directory may already exist, ignore
     }
 
     await vscode.workspace.fs.writeFile(uri, Buffer.from(content));
@@ -315,6 +316,7 @@ const searchHandler: ToolHandler = async (args, context) => {
           regex.lastIndex = 0;
         }
       } catch {
+        // Skip files that can't be read
       }
     }
 
