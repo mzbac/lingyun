@@ -2,8 +2,9 @@
   "name": "lingyun",
   "displayName": "LingYun",
   "description": "Plugin-based agentic AI framework for VSCode powered by GitHub Copilot",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "mzbac",
+  "icon": "images/icon.png",
   "license": "MIT",
   "repository": {
     "type": "git",
