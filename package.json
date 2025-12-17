@@ -1,0 +1,191 @@
+{
+  "name": "lingyun",
+  "displayName": "LingYun",
+  "description": "Plugin-based agentic AI framework for VSCode powered by GitHub Copilot",
+  "version": "1.0.0",
+  "publisher": "mzbac",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mzbac/lingyun"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Machine Learning",
+    "Other"
+  ],
+  "keywords": [
+    "lingyun",
+    "ai",
+    "agent",
+    "tools",
+    "automation"
+  ],
+  "activationEvents": [
+    "onView:lingyun.chatView",
+    "onCommand:lingyun.start",
+    "onCommand:lingyun.abort",
+    "onCommand:lingyun.clear",
+    "onCommand:lingyun.showLogs",
+    "onCommand:lingyun.listTools",
+    "onCommand:lingyun.createToolsConfig",
+    "onCommand:lingyun.runTool"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "lingyun.start",
+        "title": "LingYun: Start Task",
+        "icon": "$(play)"
+      },
+      {
+        "command": "lingyun.abort",
+        "title": "LingYun: Abort"
+      },
+      {
+        "command": "lingyun.clear",
+        "title": "LingYun: Clear History"
+      },
+      {
+        "command": "lingyun.showLogs",
+        "title": "LingYun: Show Logs"
+      },
+      {
+        "command": "lingyun.listTools",
+        "title": "LingYun: List Tools",
+        "icon": "$(list-unordered)"
+      },
+      {
+        "command": "lingyun.createToolsConfig",
+        "title": "LingYun: Create Workspace Tools Config"
+      },
+      {
+        "command": "lingyun.runTool",
+        "title": "LingYun: Run Tool Manually"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "lingyun",
+          "title": "LingYun",
+          "icon": "$(hubot)"
+        }
+      ]
+    },
+    "views": {
+      "lingyun": [
+        {
+          "type": "webview",
+          "id": "lingyun.chatView",
+          "name": "Chat"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "lingyun.listTools",
+          "when": "view == lingyun.chatView",
+          "group": "navigation"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "lingyun.start",
+        "key": "ctrl+shift+.",
+        "mac": "cmd+shift+."
+      }
+    ],
+    "configuration": {
+      "title": "LingYun",
+      "properties": {
+        "lingyun.useMockLLM": {
+          "type": "boolean",
+          "default": false,
+          "description": "Use mock LLM provider for testing (no GitHub auth required)"
+        },
+        "lingyun.model": {
+          "type": "string",
+          "default": "gpt-4o",
+          "enum": [
+            "gpt-4o",
+            "gpt-4.1"
+          ],
+          "description": "AI model to use (more models may be available via VSCode LM API)"
+        },
+        "lingyun.maxIterations": {
+          "type": "number",
+          "default": 20,
+          "description": "Maximum tool calling iterations per task"
+        },
+        "lingyun.autoApprove": {
+          "type": "boolean",
+          "default": false,
+          "description": "Auto-approve all tool calls (not recommended)"
+        },
+        "lingyun.toolFilter": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Only use tools matching these patterns (e.g., 'file.*', 'workspace.deploy')"
+        },
+        "lingyun.env": {
+          "type": "object",
+          "default": {},
+          "description": "Environment variables for workspace tools. Use ${env:VAR} in tool configs to reference these.",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "jsonValidation": [
+      {
+        "fileMatch": ".vscode/agent-tools.json",
+        "url": "./schemas/agent-tools.schema.json"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts",
+    "test": "npm run compile && node ./dist/test/runTest.js",
+    "test:unit": "npm run compile && mocha ./dist/test/suite/*.test.js",
+    "test:manual": "npm run compile && node scripts/test-manual.js",
+    "verify": "node scripts/verify.js",
+    "package": "vsce package",
+    "publish": "vsce publish"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.2",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^20.11.16",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^8.50.0",
+    "@typescript-eslint/parser": "^8.50.0",
+    "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "^2.22.0",
+    "eslint": "^9.39.2",
+    "glob": "^13.0.0",
+    "mocha": "^11.7.5",
+    "typescript": "^5.3.3",
+    "typescript-eslint": "^8.50.0"
+  },
+  "extensionDependencies": [],
+  "capabilities": {
+    "virtualWorkspaces": true,
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "Shell commands are disabled in untrusted workspaces"
+    }
+  }
+}
