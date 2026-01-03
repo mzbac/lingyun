@@ -134,11 +134,11 @@ export class CopilotProvider implements LLMProvider {
       throw new Error(`Copilot API error: ${response.status} ${text}`);
     }
 
-    if (stream) {
-      return this.handleStream(response, options.onToken!);
-    } else {
-      return this.handleResponse(response);
+    if (stream && options.onToken) {
+      return this.handleStream(response, options.onToken);
     }
+
+    return this.handleResponse(response);
   }
 
   private async handleResponse(response: Response): Promise<Message> {

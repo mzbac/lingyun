@@ -6,7 +6,7 @@ import * as assert from 'assert';
 import * as vscode from 'vscode';
 import { AgentLoop } from '../../core/agent';
 import { ToolRegistry } from '../../core/registry';
-import type { LLMProvider, Message, ToolDefinition, ToolCall } from '../../core/types';
+import type { LLMProvider, Message } from '../../core/types';
 
 suite('AgentLoop', () => {
   let mockLLM: MockLLMProvider;
@@ -316,8 +316,8 @@ suite('AgentLoop', () => {
     try {
       await agent.run('Loop forever');
       assert.fail('Should have thrown');
-    } catch (e: any) {
-      assert.ok(e.message.includes('aborted'));
+    } catch (e: unknown) {
+      assert.ok(e instanceof Error && e.message.includes('aborted'));
     }
   });
 
@@ -437,9 +437,9 @@ function createMockExtensionContext(): vscode.ExtensionContext {
     logPath: '/mock/log',
     logUri: vscode.Uri.file('/mock/log'),
     extensionMode: vscode.ExtensionMode.Test,
-    extension: {} as any,
-    environmentVariableCollection: {} as any,
-    secrets: {} as any,
-    languageModelAccessInformation: {} as any,
+    extension: {} as unknown as vscode.Extension<unknown>,
+    environmentVariableCollection: {} as unknown as vscode.EnvironmentVariableCollection,
+    secrets: {} as unknown as vscode.SecretStorage,
+    languageModelAccessInformation: {} as unknown as vscode.LanguageModelAccessInformation,
   };
 }
