@@ -414,6 +414,22 @@ class MockLLMProvider implements LLMProvider {
 // ===========================================================================
 
 function createMockExtensionContext(): vscode.ExtensionContext {
+  const envVarCollection: vscode.GlobalEnvironmentVariableCollection = {
+    persistent: true,
+    description: undefined,
+    replace: () => {},
+    append: () => {},
+    prepend: () => {},
+    get: () => undefined,
+    forEach: () => {},
+    delete: () => {},
+    clear: () => {},
+    getScoped: () => envVarCollection,
+    [Symbol.iterator]: function* () {
+      // no-op iterator for tests
+    },
+  };
+
   return {
     subscriptions: [],
     workspaceState: {
@@ -438,7 +454,7 @@ function createMockExtensionContext(): vscode.ExtensionContext {
     logUri: vscode.Uri.file('/mock/log'),
     extensionMode: vscode.ExtensionMode.Test,
     extension: {} as unknown as vscode.Extension<unknown>,
-    environmentVariableCollection: {} as unknown as vscode.EnvironmentVariableCollection,
+    environmentVariableCollection: envVarCollection,
     secrets: {} as unknown as vscode.SecretStorage,
     languageModelAccessInformation: {} as unknown as vscode.LanguageModelAccessInformation,
   };
