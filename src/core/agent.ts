@@ -96,13 +96,45 @@ export class AgentLoop {
     const maxIterations = this.config.maxIterations || 20;
     let iterations = 0;
     let lastResponse = '';
+    let planned = false;
+    let readyToAnswer = false;
 
-    while (iterations < maxIterations && !this.aborted) {
+    while (iterations < maxIterations && !this.aborted && !readyToAnswer) {
       iterations++;
       callbacks?.onThinking?.();
 
       const tools = await toolRegistry.getTools();
       const filteredTools = this.filterTools(tools);
+
+      if (!planned) {
+        const planningPrompt: Message = {
+          role: 'assistant',
+          content:
+            'Planning turn: Draft a short, numbered plan to solve the user request using the available tools. Focus on the minimal steps needed. Always include READY_TO_ANSWER: no.',
+        };
+
+        this.history.push(planningPrompt);
+
+        const planningResponse = await this.llm.chat(this.history, {
+          model: this.config.model,
+          temperature: this.config.temperature,
+          tools: filteredTools,
+          onToken: callbacks?.onToken,
+        });
+
+        this.history.push(planningResponse);
+        lastResponse = planningResponse.content;
+        planned = true;
+        readyToAnswer = this.isReadyToAnswer(planningResponse);
+        this.trimHistoryIfNeeded();
+
+        if (readyToAnswer) {
+          callbacks?.onComplete?.(lastResponse);
+          return lastResponse;
+        }
+
+        continue;
+      }
 
       const response = await this.llm.chat(this.history, {
         model: this.config.model,
@@ -114,19 +146,59 @@ export class AgentLoop {
       this.history.push(response);
       lastResponse = response.content;
 
-      if (!response.tool_calls || response.tool_calls.length === 0) {
-        callbacks?.onComplete?.(lastResponse);
-        return lastResponse;
+      if (response.tool_calls && response.tool_calls.length > 0) {
+        const toolResults = await this.executeToolCalls(
+          response.tool_calls,
+          filteredTools,
+          callbacks
+        );
+
+        for (const result of toolResults) {
+          this.history.push(result);
+        }
       }
 
-      const toolResults = await this.executeToolCalls(
-        response.tool_calls,
-        filteredTools,
-        callbacks
-      );
+      this.trimHistoryIfNeeded();
 
-      for (const result of toolResults) {
-        this.history.push(result);
+      const reflectionPrompt: Message = {
+        role: 'assistant',
+        content:
+          'Reflection turn: Verify the latest tool results, call out any gaps, and decide if more tools are needed. If ready to answer, state READY_TO_ANSWER: yes and provide the final answer. Otherwise, set READY_TO_ANSWER: no and outline the next tool actions.',
+      };
+
+      this.history.push(reflectionPrompt);
+
+      callbacks?.onThinking?.();
+
+      const reflectionResponse = await this.llm.chat(this.history, {
+        model: this.config.model,
+        temperature: this.config.temperature,
+        tools: filteredTools,
+        onToken: callbacks?.onToken,
+      });
+
+      this.history.push(reflectionResponse);
+      lastResponse = reflectionResponse.content;
+      readyToAnswer = this.isReadyToAnswer(reflectionResponse);
+
+      if (reflectionResponse.tool_calls && reflectionResponse.tool_calls.length > 0) {
+        const reflectionResults = await this.executeToolCalls(
+          reflectionResponse.tool_calls,
+          filteredTools,
+          callbacks
+        );
+
+        for (const result of reflectionResults) {
+          this.history.push(result);
+        }
+
+        this.trimHistoryIfNeeded();
+        continue;
+      }
+
+      if (readyToAnswer) {
+        callbacks?.onComplete?.(lastResponse);
+        return lastResponse;
       }
 
       this.trimHistoryIfNeeded();
@@ -315,6 +387,11 @@ export class AgentLoop {
         break;
       }
     }
+  }
+
+  private isReadyToAnswer(message: Message): boolean {
+    const content = message.content || '';
+    return /ready\s*to\s*answer:\s*yes/i.test(content);
   }
 
   abort(): void {
