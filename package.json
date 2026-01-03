@@ -29,6 +29,7 @@
     "onCommand:lingyun.start",
     "onCommand:lingyun.abort",
     "onCommand:lingyun.clear",
+    "onCommand:lingyun.clearMemory",
     "onCommand:lingyun.showLogs",
     "onCommand:lingyun.listTools",
     "onCommand:lingyun.createToolsConfig",
@@ -49,6 +50,10 @@
       {
         "command": "lingyun.clear",
         "title": "LingYun: Clear History"
+      },
+      {
+        "command": "lingyun.clearMemory",
+        "title": "LingYun: Clear Workspace Memory"
       },
       {
         "command": "lingyun.showLogs",
@@ -128,6 +133,16 @@
           "type": "boolean",
           "default": false,
           "description": "Auto-approve all tool calls (not recommended)"
+        },
+        "lingyun.memory.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable lightweight workspace memory summaries between tasks"
+        },
+        "lingyun.memory.autoClearOnStart": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically clear saved memory before starting a new task"
         },
         "lingyun.toolFilter": {
           "type": "array",

@@ -91,6 +91,8 @@ export async function activate(
     model: getConfig('model') || MODELS.GPT_4O,
     maxIterations: getConfig('maxIterations') || 20,
     autoApprove: getConfig('autoApprove') || false,
+    memoryEnabled: getConfig('memory.enabled') ?? true,
+    autoClearMemory: getConfig('memory.autoClearOnStart') || false,
   });
 
   for (const d of registerFileTools()) {
@@ -121,6 +123,9 @@ export async function activate(
   );
   extensionState.addDisposable(
     vscode.commands.registerCommand('lingyun.clear', cmdClear)
+  );
+  extensionState.addDisposable(
+    vscode.commands.registerCommand('lingyun.clearMemory', cmdClearMemory)
   );
   extensionState.addDisposable(
     vscode.commands.registerCommand('lingyun.showLogs', cmdShowLogs)
@@ -154,6 +159,8 @@ export async function activate(
           model: getConfig('model') || MODELS.GPT_4O,
           maxIterations: getConfig('maxIterations') || 20,
           autoApprove: getConfig('autoApprove') || false,
+          memoryEnabled: getConfig('memory.enabled') ?? true,
+          autoClearMemory: getConfig('memory.autoClearOnStart') || false,
         });
         log('Configuration updated');
       }
@@ -251,10 +258,16 @@ function cmdAbort(): void {
   }
 }
 
-function cmdClear(): void {
-  extensionState?.agent?.clear();
+async function cmdClear(): Promise<void> {
+  await extensionState?.agent?.clear();
   log('Conversation cleared');
   vscode.window.showInformationMessage('Conversation cleared');
+}
+
+async function cmdClearMemory(): Promise<void> {
+  await extensionState?.agent?.clearMemory();
+  log('Workspace memory cleared');
+  vscode.window.showInformationMessage('LingYun memory cleared');
 }
 
 function cmdShowLogs(): void {

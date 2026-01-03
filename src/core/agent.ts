@@ -14,6 +14,8 @@ import { toolRegistry } from '../core/registry';
 const SUMMARIZE_THRESHOLD = 20000;
 const MAX_TOOL_RESULT_LENGTH = 40000;
 const MAX_HISTORY_TOKENS = 50000;
+const MEMORY_STORAGE_KEY = 'lingyun.workspaceMemory';
+const MEMORY_TARGET_LENGTH = 1200;
 
 const DEFAULT_SYSTEM_PROMPT = `You are a helpful AI assistant integrated into VSCode.
 
@@ -43,6 +45,8 @@ export class AgentLoop {
   private aborted = false;
   private _running = false;
   private activeCancellations: vscode.CancellationTokenSource[] = [];
+  private memorySummary?: string;
+  private memoryLoaded = false;
 
   constructor(
     private llm: LLMProvider,
@@ -63,8 +67,19 @@ export class AgentLoop {
     this.aborted = false;
     this.history = [];
 
+    await this.ensureMemoryLoaded();
+    if (this.isMemoryEnabled() && this.config.autoClearMemory) {
+      await this.clearMemory();
+    }
+
+    const memory = this.isMemoryEnabled() ? this.memorySummary : undefined;
+
     const systemPrompt = this.config.systemPrompt || getSystemPrompt();
-    this.history.push({ role: 'system', content: systemPrompt });
+    const systemWithMemory = memory
+      ? `${systemPrompt}\n\n## Workspace Memory\n${memory}`
+      : systemPrompt;
+
+    this.history.push({ role: 'system', content: systemWithMemory });
     this.history.push({ role: 'user', content: task });
 
     try {
@@ -129,7 +144,7 @@ export class AgentLoop {
         this.history.push(result);
       }
 
-      this.trimHistoryIfNeeded();
+      await this.trimHistoryIfNeeded();
     }
 
     if (this.aborted) {
@@ -294,6 +309,88 @@ export class AgentLoop {
     return content;
   }
 
+  private isMemoryEnabled(): boolean {
+    const configEnabled = this.config.memoryEnabled;
+    const settingEnabled = vscode.workspace.getConfiguration('lingyun').get<boolean>('memory.enabled', true);
+    return configEnabled ?? settingEnabled ?? true;
+  }
+
+  private getMemoryStorageKey(): string {
+    const workspaceId = vscode.workspace.workspaceFolders?.[0]?.uri.toString() || 'global';
+    return `${MEMORY_STORAGE_KEY}:${workspaceId}`;
+  }
+
+  private async ensureMemoryLoaded(): Promise<void> {
+    if (this.memoryLoaded) return;
+
+    const stored = this.context.workspaceState.get<string>(this.getMemoryStorageKey());
+    this.memorySummary = stored || undefined;
+    this.memoryLoaded = true;
+  }
+
+  private async saveMemory(summary?: string): Promise<void> {
+    await this.context.workspaceState.update(this.getMemoryStorageKey(), summary);
+    this.memoryLoaded = true;
+  }
+
+  private async captureMemorySnapshot(messages: Message[], reason: 'trim' | 'clear'): Promise<void> {
+    if (!this.isMemoryEnabled() || messages.length === 0) return;
+
+    await this.ensureMemoryLoaded();
+
+    const combinedContent = messages
+      .map(msg => `[${msg.role}] ${msg.content}`)
+      .join('\n\n')
+      .slice(0, MAX_TOOL_RESULT_LENGTH);
+
+    try {
+      const summary = await this.llm.chat([
+        {
+          role: 'system',
+          content:
+            'You create short memory notes about a conversation for an autonomous coding agent. Keep it concise, factual, and actionable.',
+        },
+        {
+          role: 'user',
+          content: `Reason for summary: ${reason}.\n\nSummarize the following context so future tasks know what changed, key decisions, file paths, and unresolved questions. Limit to ${MEMORY_TARGET_LENGTH} characters.\n\n${combinedContent}`,
+        },
+      ], { model: this.config.model });
+
+      const merged = await this.mergeMemorySummaries(summary.content.trim());
+      this.memorySummary = merged;
+      await this.saveMemory(merged);
+    } catch (error) {
+      console.error('Failed to create memory summary', error);
+    }
+  }
+
+  private async mergeMemorySummaries(newSummary: string): Promise<string> {
+    if (!this.memorySummary) {
+      return newSummary;
+    }
+
+    const combined = `${this.memorySummary}\n\n${newSummary}`;
+    if (combined.length <= MEMORY_TARGET_LENGTH) {
+      return combined;
+    }
+
+    try {
+      const merged = await this.llm.chat([
+        {
+          role: 'system',
+          content:
+            `Merge two short memory notes into one concise summary under ${MEMORY_TARGET_LENGTH} characters. Preserve key details, file names, and follow-ups.`,
+        },
+        { role: 'user', content: `Existing memory:\n${this.memorySummary}\n\nNew memory:\n${newSummary}` },
+      ], { model: this.config.model });
+
+      return merged.content.trim();
+    } catch (error) {
+      console.error('Failed to merge memory summaries', error);
+      return combined.slice(0, MEMORY_TARGET_LENGTH);
+    }
+  }
+
   private estimateTokens(text: string): number {
     return Math.ceil(text.length / 4);
   }
@@ -304,16 +401,34 @@ export class AgentLoop {
     }, 0);
   }
 
-  private trimHistoryIfNeeded(): void {
+  private async trimHistoryIfNeeded(): Promise<void> {
+    if (!this.isMemoryEnabled()) {
+      while (this.getHistoryTokenCount() > MAX_HISTORY_TOKENS && this.history.length > 3) {
+        const indexToRemove = this.history.findIndex((msg, i) => i > 0 && msg.role !== 'system');
+        if (indexToRemove > 0) {
+          this.history.splice(indexToRemove, 1);
+        } else {
+          break;
+        }
+      }
+      return;
+    }
+
+    const removed: Message[] = [];
     while (this.getHistoryTokenCount() > MAX_HISTORY_TOKENS && this.history.length > 3) {
-      const indexToRemove = this.history.findIndex((msg, i) =>
-        i > 0 && msg.role !== 'system'
-      );
+      const indexToRemove = this.history.findIndex((msg, i) => i > 0 && msg.role !== 'system');
       if (indexToRemove > 0) {
-        this.history.splice(indexToRemove, 1);
+        const [msg] = this.history.splice(indexToRemove, 1);
+        if (msg) {
+          removed.push(msg);
+        }
       } else {
         break;
       }
+    }
+
+    if (removed.length > 0) {
+      await this.captureMemorySnapshot(removed, 'trim');
     }
   }
 
@@ -325,12 +440,26 @@ export class AgentLoop {
     this.disposeAllCancellations();
   }
 
-  clear(): void {
+  async clear(): Promise<void> {
+    if (this.history.length > 0) {
+      await this.captureMemorySnapshot(this.history.filter(msg => msg.role !== 'system'), 'clear');
+    }
     this.history = [];
+  }
+
+  async clearMemory(): Promise<void> {
+    this.memorySummary = undefined;
+    await this.saveMemory();
   }
 
   getHistory(): Message[] {
     return [...this.history];
+  }
+
+  async getMemorySummary(): Promise<string | undefined> {
+    await this.ensureMemoryLoaded();
+    if (!this.isMemoryEnabled()) return undefined;
+    return this.memorySummary;
   }
 
   updateConfig(config: Partial<AgentConfig>): void {

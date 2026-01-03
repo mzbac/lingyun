@@ -34,6 +34,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private availableModels: ModelInfo[] = [];
   private autoApprovedTools: Set<string>;
   private pendingApprovals: Map<string, { resolve: (approved: boolean) => void; toolName: string }> = new Map();
+  private memorySummary?: string;
+  private memoryEnabled = true;
 
   constructor(
     private context: vscode.ExtensionContext,
@@ -74,16 +76,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           break;
         case 'clear':
           this.messages = [];
-          this.agent.clear();
+          await this.agent.clear();
           this.postMessage({ type: 'cleared' });
+          await this.sendMemoryState();
           break;
         case 'ready':
           await this.loadModels();
+          await this.sendMemoryState();
           this.postMessage({
             type: 'init',
             messages: this.messages,
             currentModel: this.currentModel,
             availableModels: this.availableModels,
+            memory: { enabled: this.memoryEnabled, summary: this.memorySummary },
           });
           break;
         case 'changeModel':
@@ -103,6 +108,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           await this.context.globalState.update('autoApprovedTools', [...this.autoApprovedTools]);
           this.handleApprovalResponse(data.approvalId, true);
           break;
+        case 'clearMemory':
+          await this.agent.clearMemory();
+          this.memorySummary = undefined;
+          await this.sendMemoryState();
+          this.postMessage({ type: 'memoryCleared' });
+          break;
       }
     });
   }
@@ -112,6 +123,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     this.isProcessing = true;
     this.postMessage({ type: 'processing', value: true });
+
+    await this.sendMemoryState();
 
     const userMsg: ChatMessage = {
       id: crypto.randomUUID(),
@@ -133,6 +146,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     try {
       const isNew = this.agent.getHistory().length === 0;
+      if (isNew && this.memoryEnabled && this.memorySummary) {
+        this.postMessage({ type: 'memoryUsed', summary: this.memorySummary });
+      }
 
       await this.agent[isNew ? 'run' : 'continue'](content, {
         onToken: (token) => {
@@ -213,6 +229,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           this.postMessage({ type: 'message', message: errorMsg });
         },
       });
+      await this.sendMemoryState();
     } catch (error) {
       const errorMsg: ChatMessage = {
         id: crypto.randomUUID(),
@@ -240,6 +257,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         ];
       }
     }
+  }
+
+  private async sendMemoryState(): Promise<void> {
+    this.memoryEnabled = vscode.workspace.getConfiguration('lingyun').get<boolean>('memory.enabled', true) ?? true;
+    this.memorySummary = this.memoryEnabled ? await this.agent.getMemorySummary() : undefined;
+
+    this.postMessage({
+      type: 'memoryState',
+      summary: this.memorySummary,
+      enabled: this.memoryEnabled,
+    });
   }
 
   private handleApprovalResponse(approvalId: string, approved: boolean): void {
@@ -332,6 +360,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       cursor: pointer;
     }
     .model-select:focus { outline: 1px solid var(--vscode-focusBorder); }
+    .memory-banner {
+      margin: 12px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      border: 1px solid var(--vscode-widget-border);
+      background: var(--vscode-editor-background);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .memory-banner.active { border-color: var(--vscode-focusBorder); }
+    .memory-banner.hidden { display: none; }
+    .memory-title { font-weight: bold; margin-bottom: 4px; }
+    .memory-summary { font-size: 0.9em; opacity: 0.85; }
+    .memory-actions { margin-left: auto; display: flex; gap: 6px; align-items: center; }
+    .memory-disabled { opacity: 0.7; font-style: italic; }
     .messages {
       flex: 1;
       overflow-y: auto;
@@ -447,6 +491,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       cursor: pointer;
       font-size: inherit;
     }
+    button.small {
+      padding: 6px 10px;
+      font-size: 0.9em;
+    }
     button:hover { background: var(--vscode-button-hoverBackground); }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
     button.secondary { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); }
@@ -460,6 +508,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     <select id="modelSelect" class="model-select">
       <option value="">Loading...</option>
     </select>
+  </div>
+  <div class="memory-banner hidden" id="memoryBanner">
+    <div>
+      <div class="memory-title" id="memoryTitle">Workspace memory</div>
+      <div class="memory-summary" id="memorySummary"></div>
+    </div>
+    <div class="memory-actions">
+      <button id="clearMemory" class="secondary small">Clear memory</button>
+    </div>
   </div>
   <div class="messages" id="messages">
     <div class="empty" id="empty">
@@ -480,12 +537,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const sendBtn = document.getElementById('send');
     const clearBtn = document.getElementById('clear');
     const modelSelect = document.getElementById('modelSelect');
+    const memoryBanner = document.getElementById('memoryBanner');
+    const memorySummaryEl = document.getElementById('memorySummary');
+    const memoryTitle = document.getElementById('memoryTitle');
+    const clearMemoryBtn = document.getElementById('clearMemory');
 
     let isProcessing = false;
     let currentModel = '';
     const messageEls = new Map();
     let lastToolMsg = null;
     const BATCH_TOOL_TYPES = ['file.read', 'file.list'];
+    let memoryEnabled = true;
+    let memoryText = '';
 
     const toolIcons = {
       'file.read': '📝', 'file.write': '±', 'file.list': '📁',
@@ -515,6 +578,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     sendBtn.addEventListener('click', () => isProcessing ? vscode.postMessage({ type: 'abort' }) : send());
     clearBtn.addEventListener('click', () => vscode.postMessage({ type: 'clear' }));
+    clearMemoryBtn.addEventListener('click', () => vscode.postMessage({ type: 'clearMemory' }));
 
     function send() {
       const text = input.value.trim();
@@ -541,6 +605,39 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return '.../' + parts.slice(-2).join('/');
       }
       return path;
+    }
+
+    function updateMemoryBanner(state) {
+      memoryEnabled = state?.enabled ?? true;
+      memoryText = state?.summary || '';
+      memoryBanner.classList.remove('active');
+
+      if (!memoryEnabled) {
+        memoryBanner.classList.remove('hidden');
+        memoryTitle.textContent = 'Workspace memory disabled';
+        memorySummaryEl.textContent = 'Enable it in settings to persist context between runs.';
+        clearMemoryBtn.disabled = true;
+        return;
+      }
+
+      clearMemoryBtn.disabled = false;
+
+      if (memoryText) {
+        memoryBanner.classList.remove('hidden');
+        memoryTitle.textContent = 'Workspace memory loaded';
+        memorySummaryEl.textContent = truncateText(memoryText, 400);
+      } else {
+        memoryBanner.classList.add('hidden');
+        memorySummaryEl.textContent = '';
+      }
+    }
+
+    function showMemoryUsed(summary) {
+      if (!memoryEnabled) return;
+      updateMemoryBanner({ enabled: memoryEnabled, summary: summary || memoryText });
+      if (memoryBanner.classList.contains('hidden')) return;
+      memoryBanner.classList.add('active');
+      memoryTitle.textContent = 'Memory applied to this task';
     }
 
     function renderDiffLines(diff, maxLines) {
@@ -765,6 +862,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           if (data.availableModels && data.availableModels.length > 0) {
             updateModelSelect(data.availableModels, data.currentModel);
           }
+          if (data.memory) {
+            updateMemoryBanner(data.memory);
+          }
           break;
         case 'message':
           addMessage(data.message);
@@ -785,6 +885,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           break;
         case 'processing':
           setProcessing(data.value);
+          break;
+        case 'memoryState':
+          updateMemoryBanner(data);
+          break;
+        case 'memoryUsed':
+          showMemoryUsed(data.summary);
+          break;
+        case 'memoryCleared':
+          updateMemoryBanner({ enabled: memoryEnabled, summary: '' });
           break;
         case 'cleared':
           messages.innerHTML = '';

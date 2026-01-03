@@ -101,6 +101,8 @@ export interface AgentConfig {
   temperature?: number;
   toolFilter?: string[];
   autoApprove?: boolean;
+  memoryEnabled?: boolean;
+  autoClearMemory?: boolean;
 }
 
 export interface AgentCallbacks {
