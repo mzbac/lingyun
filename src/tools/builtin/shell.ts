@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as cp from 'child_process';
 import { toolRegistry } from '../../core/registry';
-import type { ToolDefinition, ToolHandler, ToolContext } from '../../core/types';
+import type { ToolDefinition, ToolHandler } from '../../core/types';
 import { requireString, optionalString } from '../../core/validation';
 
 const SAFE_COMMANDS = new Set([
@@ -229,10 +229,8 @@ const whichHandler: ToolHandler = async (args) => {
   return new Promise((resolve) => {
     const proc = cp.spawn(which, [command], { stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
-    let stderr = '';
 
     proc.stdout.on('data', (data) => { stdout += data; });
-    proc.stderr.on('data', (data) => { stderr += data; });
 
     proc.on('close', (code) => {
       if (code !== 0) {

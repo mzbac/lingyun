@@ -221,12 +221,13 @@ export class AgentLoop {
   }
 
   private filterTools(tools: ToolDefinition[]): ToolDefinition[] {
-    if (!this.config.toolFilter || this.config.toolFilter.length === 0) {
+    const filter = this.config.toolFilter;
+    if (!filter || filter.length === 0) {
       return tools;
     }
 
     return tools.filter(tool => {
-      return this.config.toolFilter!.some(pattern => {
+      return filter.some(pattern => {
         if (pattern.includes('*')) {
           const regex = new RegExp('^' + pattern.replace(/\*/g, '.*') + '$');
           return regex.test(tool.id);

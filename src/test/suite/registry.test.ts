@@ -4,7 +4,8 @@
 
 import * as assert from 'assert';
 import { ToolRegistry } from '../../core/registry';
-import type { ToolProvider, ToolDefinition, ToolContext, ToolResult } from '../../core/types';
+import type { ToolProvider, ToolDefinition, ToolContext } from '../../core/types';
+import type * as vscode from 'vscode';
 
 suite('ToolRegistry', () => {
   let registry: ToolRegistry;
@@ -310,7 +311,7 @@ function createMockContext(): ToolContext {
   return {
     workspaceFolder: undefined,
     activeEditor: undefined,
-    extensionContext: {} as any,
+    extensionContext: {} as unknown as vscode.ExtensionContext,
     cancellationToken: {
       isCancellationRequested: false,
       onCancellationRequested: () => ({ dispose: () => {} }),

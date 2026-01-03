@@ -133,7 +133,8 @@ suite('Workspace Tools Config', () => {
     
     // Verify tool references variable
     const tool = config.tools[0];
-    assert.ok((tool.execution as any).url.includes('${API_URL}'));
+    const execution = tool.execution as { url: string };
+    assert.ok(execution.url.includes('${API_URL}'));
   });
 
   test('should support all execution types', () => {
