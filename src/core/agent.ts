@@ -391,7 +391,7 @@ export class AgentLoop {
 
   private isReadyToAnswer(message: Message): boolean {
     const content = message.content || '';
-    return /ready\s*to\s*answer:\s*yes/i.test(content);
+    return /ready[_\s]*to[_\s]*answer\s*:\s*yes/i.test(content);
   }
 
   abort(): void {
