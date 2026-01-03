@@ -327,7 +327,7 @@ suite('AgentLoop', () => {
 
     assert.ok(agent.getHistory().length > 0);
 
-    agent.clear();
+    await agent.clear();
 
     assert.strictEqual(agent.getHistory().length, 0);
   });
