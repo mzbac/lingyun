@@ -327,31 +327,6 @@ async function checkTypeExports() {
   }
 }
 
-async function checkMockLLMProvider() {
-  // Test the mock LLM provider for end-to-end testing
-  log('   Testing mock LLM provider...');
-  
-  if (!fileExists('dist/providers/mock.js')) {
-    addCheck('Mock LLM provider', 'skipped', { reason: 'mock.js not found' });
-    return;
-  }
-
-  const content = fs.readFileSync(path.join(ROOT, 'dist/providers/mock.js'), 'utf-8');
-  
-  const required = ['MockLLMProvider', 'detectToolCall', 'createToolCall'];
-  const missing = required.filter(r => !content.includes(r));
-
-  if (missing.length === 0) {
-    addCheck('Mock LLM provider', 'passed', { 
-      note: 'Enables testing without GitHub Copilot auth' 
-    });
-  } else {
-    addCheck('Mock LLM provider', 'failed', {
-      error: `Missing: ${missing.join(', ')}`,
-    });
-  }
-}
-
 // =============================================================================
 // Main
 // =============================================================================
@@ -370,7 +345,6 @@ async function main() {
   await checkToolDefinitions();
   await checkSchemaValid();
   await checkTypeExports();
-  await checkMockLLMProvider();
   await checkPackaging();
 
   log('\n' + '='.repeat(50));

@@ -12,7 +12,6 @@ import type {
 } from './core/types';
 
 import { CopilotProvider, MODELS } from './providers/copilot';
-import { MockLLMProvider } from './providers/mock';
 import { WorkspaceToolProvider, createSampleToolsConfig } from './providers/workspace';
 import type { LLMProvider } from './core/types';
 
@@ -78,14 +77,8 @@ export async function activate(
   extensionState.outputChannel = vscode.window.createOutputChannel('LingYun');
   log('Activating LingYun...');
 
-  const useMockLLM = getConfig<boolean>('useMockLLM') || false;
-  if (useMockLLM) {
-    log('Using Mock LLM provider (for testing)');
-    extensionState.llmProvider = new MockLLMProvider();
-  } else {
-    log('Using GitHub Copilot provider');
-    extensionState.llmProvider = new CopilotProvider();
-  }
+  log('Using GitHub Copilot provider');
+  extensionState.llmProvider = new CopilotProvider();
 
   extensionState.agent = createAgent(extensionState.llmProvider, context, {
     model: getConfig('model') || MODELS.GPT_4O,
