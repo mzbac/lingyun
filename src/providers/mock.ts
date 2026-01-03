@@ -119,7 +119,7 @@ To test tool calling, try:
 - "Run command 'ls -la'"
 
 Note: This is a mock provider for testing without GitHub Copilot authentication.
-Set copilotAgent.useMockLLM = false to use real Copilot.`;
+`;
   }
 
   private async streamResponse(

@@ -318,7 +318,6 @@ export async function activate(context: vscode.ExtensionContext) {
 
 ```json
 {
-  "lingyun.useMockLLM": false,
   "lingyun.model": "gpt-4o",
   "lingyun.maxIterations": 20,
   "lingyun.autoApprove": false,

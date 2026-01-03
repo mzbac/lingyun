@@ -227,28 +227,11 @@ api.registerTool({
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `lingyun.useMockLLM` | `false` | Use mock LLM for testing (no auth needed) |
 | `lingyun.model` | `gpt-4o` | AI model |
 | `lingyun.maxIterations` | `20` | Max tool calls per task |
 | `lingyun.autoApprove` | `false` | Skip approval dialogs |
 | `lingyun.toolFilter` | `[]` | Only use matching tools |
 | `lingyun.env` | `{}` | Environment variables for `${env:VAR}` in tools |
-
-## Testing Without GitHub Copilot
-
-Enable mock mode for testing without authentication:
-
-```json
-// .vscode/settings.json
-{
-  "lingyun.useMockLLM": true
-}
-```
-
-The mock provider:
-- Simulates tool calls based on keywords
-- No network calls or authentication required
-- Great for CI/CD and development testing
 
 ## Commands
 

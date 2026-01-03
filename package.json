@@ -105,11 +105,6 @@
     "configuration": {
       "title": "LingYun",
       "properties": {
-        "lingyun.useMockLLM": {
-          "type": "boolean",
-          "default": false,
-          "description": "Use mock LLM provider for testing (no GitHub auth required)"
-        },
         "lingyun.model": {
           "type": "string",
           "default": "gpt-4o",
