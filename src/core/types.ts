@@ -217,5 +217,10 @@ export interface LLMProvider {
   readonly id: string;
   readonly name: string;
   getModel(modelId: string): Promise<unknown>;
+  /**
+   * Optional hook invoked after a provider request fails (non-retryable).
+   * Providers can use this to clear cached clients/tokens so the next request can recover.
+   */
+  onRequestError?(error: unknown, context: { modelId: string; mode: 'plan' | 'build' }): void;
   dispose?(): void;
 }

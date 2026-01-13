@@ -29,9 +29,22 @@ export class CopilotProvider implements LLMProvider {
   private cachedModels: ModelInfo[] | null = null;
 
   private cachedProviderToken: string | null = null;
+  private cachedProviderEditorVersion: string | null = null;
+  private cachedProviderPluginVersion: string | null = null;
   private provider:
     | ReturnType<typeof createOpenAICompatible>
     | null = null;
+
+  private getEditorVersionHeader(): string {
+    const version = typeof vscode.version === 'string' && vscode.version.trim() ? vscode.version.trim() : '0.0.0';
+    return `vscode/${version}`;
+  }
+
+  private getPluginVersionHeader(): string {
+    const ext = vscode.extensions.getExtension('mzbac.lingyun');
+    const version = typeof ext?.packageJSON?.version === 'string' && ext.packageJSON.version.trim() ? ext.packageJSON.version.trim() : '0.0.0';
+    return `lingyun/${version}`;
+  }
 
   private async getGitHubToken(): Promise<string> {
     const session = await vscode.authentication.getSession('github', ['user:email'], {
@@ -74,20 +87,47 @@ export class CopilotProvider implements LLMProvider {
 
   private async ensureProvider(): Promise<void> {
     const token = await this.getCopilotToken();
-    if (this.provider && this.cachedProviderToken === token) return;
+    const editorVersion = this.getEditorVersionHeader();
+    const pluginVersion = this.getPluginVersionHeader();
+    if (
+      this.provider &&
+      this.cachedProviderToken === token &&
+      this.cachedProviderEditorVersion === editorVersion &&
+      this.cachedProviderPluginVersion === pluginVersion
+    ) {
+      return;
+    }
 
     this.cachedProviderToken = token;
+    this.cachedProviderEditorVersion = editorVersion;
+    this.cachedProviderPluginVersion = pluginVersion;
     this.provider = createOpenAICompatible({
       name: 'copilot',
       baseURL: COPILOT_BASE_URL,
       apiKey: token,
       headers: {
-        'Editor-Version': 'vscode/1.85.0',
-        'Editor-Plugin-Version': 'lingyun/1.0.1',
+        'Editor-Version': editorVersion,
+        'Editor-Plugin-Version': pluginVersion,
         'Openai-Organization': 'github-copilot',
         'Copilot-Integration-Id': 'vscode-chat',
       },
+      includeUsage: true,
     });
+  }
+
+  onRequestError(error: unknown): void {
+    // Ensure the next request uses a fresh client instance and re-evaluated headers.
+    this.provider = null;
+    this.cachedProviderToken = null;
+    this.cachedProviderEditorVersion = null;
+    this.cachedProviderPluginVersion = null;
+
+    // If the token was rejected, force-refresh it on the next call.
+    const message = error instanceof Error ? error.message : String(error);
+    if (/\b401\b/i.test(message) || /\b403\b/i.test(message) || /unauthori[sz]ed|forbidden|invalid token|expired/i.test(message)) {
+      this.copilotToken = null;
+      this.tokenExpiry = 0;
+    }
   }
 
   async getModel(modelId: string): Promise<unknown> {
@@ -136,5 +176,7 @@ export class CopilotProvider implements LLMProvider {
     this.cachedModels = null;
     this.provider = null;
     this.cachedProviderToken = null;
+    this.cachedProviderEditorVersion = null;
+    this.cachedProviderPluginVersion = null;
   }
 }

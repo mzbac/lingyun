@@ -756,11 +756,11 @@ export class AgentLoop {
             streamFinishReason = await stream.finishReason;
             streamUsage = await stream.usage;
             break; // success
-          } catch (e) {
-            const retryable = getRetryableLlmError(e);
-            const canRetry =
-              !!retryable &&
-              retryAttempt < maxRetries &&
+	          } catch (e) {
+	            const retryable = getRetryableLlmError(e);
+	            const canRetry =
+	              !!retryable &&
+	              retryAttempt < maxRetries &&
               !sawToolCall &&
               !attemptText.trim() &&
               !abortController.signal.aborted &&
@@ -791,16 +791,30 @@ export class AgentLoop {
               );
             }
 
-            if (retryable) {
-              const wrapped = new Error(retryable.message);
-              (wrapped as any).cause = e;
-              throw wrapped;
-            }
-            throw e;
-          }
-        }
-      } finally {
-        this.activeAbortController = undefined;
+	            if (retryable) {
+	              const wrapped = new Error(retryable.message);
+	              (wrapped as any).cause = e;
+	              if (!abortController.signal.aborted && !this.aborted) {
+	                try {
+	                  this.llm.onRequestError?.(e, { modelId, mode: this.getMode() });
+	                } catch {
+	                  // ignore
+	                }
+	              }
+	              throw wrapped;
+	            }
+	            if (!abortController.signal.aborted && !this.aborted) {
+	              try {
+	                this.llm.onRequestError?.(e, { modelId, mode: this.getMode() });
+	              } catch {
+	                // ignore
+	              }
+	            }
+	            throw e;
+	          }
+	        }
+	      } finally {
+	        this.activeAbortController = undefined;
       }
 
       const tokens = extractUsageTokens(streamUsage);
