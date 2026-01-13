@@ -168,15 +168,15 @@ export const bashHandler: ToolHandler = async (args, context) => {
       kill();
     });
 
-    const cleanup = () => {
-      if (timeoutId) clearTimeout(timeoutId);
-      if (exitFallback) clearTimeout(exitFallback);
-      cancelListener.dispose();
-      if (!runInBackground) {
-        try { proc.stdout?.removeListener('data', append); } catch {}
-        try { proc.stderr?.removeListener('data', append); } catch {}
-      }
-    };
+      const cleanup = () => {
+        if (timeoutId) clearTimeout(timeoutId);
+        if (exitFallback) clearTimeout(exitFallback);
+        cancelListener.dispose();
+        if (!runInBackground) {
+          proc.stdout?.removeListener('data', append);
+          proc.stderr?.removeListener('data', append);
+        }
+      };
 
     const finalize = (code: number) => {
       if (settled) return;
@@ -231,8 +231,8 @@ export const bashHandler: ToolHandler = async (args, context) => {
       // If "close" doesn't arrive shortly, force-finish.
       exitFallback = setTimeout(() => {
         if (settled) return;
-        try { proc.stdout?.destroy(); } catch {}
-        try { proc.stderr?.destroy(); } catch {}
+        proc.stdout?.destroy();
+        proc.stderr?.destroy();
         finalize(exitCode ?? 0);
       }, 150);
     });

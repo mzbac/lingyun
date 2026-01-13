@@ -100,7 +100,7 @@ export const editHandler: ToolHandler = async (args, context) => {
           return {
             success: false,
             error:
-              `Refusing to overwrite an existing file with edit(oldString=\"\"): ${absPath}\n\n` +
+              `Refusing to overwrite an existing file with edit(oldString=""): ${absPath}\n\n` +
               `Use an anchored edit with a non-empty oldString copied exactly from Read output. ` +
               `If you intentionally want to replace the entire file, set overwrite=true.`,
             metadata: {

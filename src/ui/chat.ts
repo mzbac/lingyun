@@ -12,6 +12,8 @@ type LLMProviderWithModels = LLMProvider & {
   clearModelCache?: () => void;
 };
 
+// Intentionally uses declaration merging + runtime prototype patching (see the `require()` block at the end).
+// eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging
 export class ChatViewProvider {
   public static readonly viewType = 'lingyun.chatView';
 
@@ -99,6 +101,7 @@ export class ChatViewProvider {
 }
 
 // Method signatures (type-only) – implementations are attached at runtime in the method modules.
+// eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging
 export interface ChatViewProvider extends vscode.WebviewViewProvider {
   onAutoApproveEnabled(): void;
 
@@ -206,21 +209,14 @@ export interface ChatViewProvider extends vscode.WebviewViewProvider {
 
 // NOTE: TS has no partial classes. We attach method bodies in focused modules and `require()`
 // them after the class is defined (CommonJS), keeping `src/ui/chat.ts` small.
-// eslint-disable-next-line @typescript-eslint/no-var-requires
+/* eslint-disable @typescript-eslint/no-require-imports */
 require('./chat/methods.sessions');
-// eslint-disable-next-line @typescript-eslint/no-var-requires
 require('./chat/methods.inputHistory');
-// eslint-disable-next-line @typescript-eslint/no-var-requires
 require('./chat/methods.revert');
-// eslint-disable-next-line @typescript-eslint/no-var-requires
 require('./chat/methods.webview');
-// eslint-disable-next-line @typescript-eslint/no-var-requires
 require('./chat/methods.runner.input');
-// eslint-disable-next-line @typescript-eslint/no-var-requires
 require('./chat/methods.runner.callbacks');
-// eslint-disable-next-line @typescript-eslint/no-var-requires
 require('./chat/methods.runner.plan');
-// eslint-disable-next-line @typescript-eslint/no-var-requires
 require('./chat/methods.models');
-// eslint-disable-next-line @typescript-eslint/no-var-requires
 require('./chat/methods.approvals');
+/* eslint-enable @typescript-eslint/no-require-imports */

@@ -24,15 +24,16 @@ async function waitForDiagnostics(uri: vscode.Uri, options?: LspTouchOptions): P
   return await new Promise((resolve) => {
     let settled = false;
     let debounceTimer: NodeJS.Timeout | undefined;
-    let timeoutTimer: NodeJS.Timeout | undefined;
+    const disposables: vscode.Disposable[] = [];
 
     const finish = () => {
       if (settled) return;
       settled = true;
       if (debounceTimer) clearTimeout(debounceTimer);
-      if (timeoutTimer) clearTimeout(timeoutTimer);
-      onChange.dispose();
-      cancelListener?.dispose();
+      clearTimeout(timeoutTimer);
+      for (const d of disposables) {
+        d.dispose();
+      }
       resolve(vscode.languages.getDiagnostics(uri));
     };
 
@@ -47,10 +48,18 @@ async function waitForDiagnostics(uri: vscode.Uri, options?: LspTouchOptions): P
         scheduleFinish();
       }
     });
+    disposables.push(onChange);
 
-    const cancelListener = token ? token.onCancellationRequested(() => finish()) : undefined;
+    const timeoutTimer = setTimeout(finish, timeoutMs);
 
-    timeoutTimer = setTimeout(finish, timeoutMs);
+    if (token) {
+      const cancelListener = token.onCancellationRequested(() => finish());
+      if (settled) {
+        cancelListener.dispose();
+      } else {
+        disposables.push(cancelListener);
+      }
+    }
 
     // If diagnostics never change for this URI, resolve after a short debounce with whatever VS Code currently has.
     scheduleFinish();
@@ -134,4 +143,3 @@ export class VsCodeLspAdapter implements LspAdapter {
     return this.outgoingCallsForItem(items[0]);
   }
 }
-

@@ -51,6 +51,12 @@ export class LingyunDiffContentProvider implements vscode.TextDocumentContentPro
 function sanitizeFileName(fileName: string): string {
   const raw = typeof fileName === 'string' ? fileName.trim() : '';
   const base = raw.replace(/\\/g, '/').split('/').pop() || 'file';
-  return base.replace(/[<>:"|?*\u0000-\u001F]/g, '_');
-}
 
+  // Normalize to a filename-safe subset without relying on control-character regex ranges.
+  const withoutReserved = base.replace(/[<>:"|?*]/g, '_');
+  let out = '';
+  for (const ch of withoutReserved) {
+    out += ch.charCodeAt(0) < 0x20 ? '_' : ch;
+  }
+  return out;
+}

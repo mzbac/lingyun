@@ -135,30 +135,22 @@ async function importPluginModule(spec: string, workspaceRoot?: string): Promise
 
   // NOTE: This file is compiled to CommonJS. TypeScript downlevels dynamic `import()`
   // to `require()`, which cannot load `file://...` specifiers. Use a runtime dynamic
-  // import for ESM-only plugins, but prefer `require()` for CJS plugins.
+  // import so plugins can be loaded from file URLs and ESM/CJS modules.
   // eslint-disable-next-line @typescript-eslint/no-implied-eval
   const dynamicImport = new Function('specifier', 'return import(specifier)') as (specifier: string) => Promise<any>;
 
   const isFileUrl = trimmed.startsWith('file://');
   const looksPath = isFileUrl || trimmed.startsWith('.') || trimmed.startsWith('/') || trimmed.includes(path.sep);
   if (looksPath) {
-    const resolvedPath = isFileUrl ? fileURLToPath(trimmed) : path.resolve(workspaceRoot || process.cwd(), trimmed);
-    const fileUrl = pathToFileURL(resolvedPath).href;
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      return require(resolvedPath);
-    } catch {
-      return dynamicImport(fileUrl);
-    }
+    const resolvedPath = isFileUrl
+      ? fileURLToPath(trimmed)
+      : path.resolve(workspaceRoot || process.cwd(), trimmed);
+    const fileUrl = isFileUrl ? trimmed : pathToFileURL(resolvedPath).href;
+    return dynamicImport(fileUrl);
   }
 
   // Fallback: treat as a module specifier resolvable by Node.
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    return require(trimmed);
-  } catch {
-    return dynamicImport(trimmed);
-  }
+  return dynamicImport(trimmed);
 }
 
 function extractHooksFromModule(
