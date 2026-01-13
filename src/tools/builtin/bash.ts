@@ -71,12 +71,12 @@ export const bashTool: ToolDefinition = {
   id: 'bash',
   name: 'Run Command',
   description:
-    'Execute a shell command. Use for git/npm/dev tools. Avoid using shell for file operations (reading, searching, editing, writing) — prefer the dedicated tools: read/list/glob/grep/edit/write. Use "workdir" instead of "cd". Output is captured and truncated if large.',
+    'Execute a shell command. Use for git/npm/dev tools. For long-running commands (dev servers, watchers), pass { background: true } to detach or { timeout: <ms> } to bound execution. Avoid using shell for file operations (reading, searching, editing, writing) — prefer the dedicated tools: read/list/glob/grep/edit/write. Use "workdir" instead of "cd". Output is captured and truncated if large.',
   parameters: {
     type: 'object',
     properties: {
       command: { type: 'string', description: 'The command to execute' },
-      timeout: { type: 'number', description: 'Optional timeout in milliseconds' },
+      timeout: { type: 'number', description: 'Optional timeout in milliseconds (useful to bound long-running commands and capture startup output)' },
       workdir: { type: 'string', description: 'Working directory (absolute or workspace-relative). Prefer this over "cd".' },
       background: {
         type: 'boolean',
