@@ -1,0 +1,135 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "LingYun Tools Configuration",
+  "description": "Define custom tools for LingYun",
+  "type": "object",
+  "required": ["version", "tools"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "enum": ["1.0"],
+      "description": "Schema version"
+    },
+    "variables": {
+      "type": "object",
+      "additionalProperties": { "type": "string" },
+      "description": "Variables that can be used in tool definitions with ${varName}"
+    },
+    "tools": {
+      "type": "array",
+      "description": "List of tool definitions",
+      "items": {
+        "type": "object",
+        "required": ["id", "name", "description", "parameters", "execution"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "description": "Unique identifier (lowercase, underscores allowed)"
+          },
+          "name": {
+            "type": "string",
+            "description": "Human-readable name"
+          },
+          "description": {
+            "type": "string",
+            "description": "Description for the AI (be specific about when to use)"
+          },
+          "parameters": {
+            "type": "object",
+            "required": ["type", "properties"],
+            "properties": {
+              "type": { "const": "object" },
+              "properties": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": ["string", "number", "boolean", "array", "object"]
+                    },
+                    "description": { "type": "string" },
+                    "enum": { "type": "array" },
+                    "default": {}
+                  }
+                }
+              },
+              "required": {
+                "type": "array",
+                "items": { "type": "string" }
+              }
+            }
+          },
+          "execution": {
+            "oneOf": [
+              {
+                "type": "object",
+                "required": ["type", "script"],
+                "properties": {
+                  "type": { "const": "shell" },
+                  "script": {
+                    "type": "string",
+                    "description": "Shell command to execute. Use $argName for parameters."
+                  },
+                  "cwd": {
+                    "type": "string",
+                    "description": "Working directory (default: workspace root)"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "required": ["type", "url"],
+                "properties": {
+                  "type": { "const": "http" },
+                  "url": {
+                    "type": "string",
+                    "description": "URL to call. Use $argName for parameters."
+                  },
+                  "method": {
+                    "type": "string",
+                    "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+                    "default": "GET"
+                  },
+                  "headers": {
+                    "type": "object",
+                    "additionalProperties": { "type": "string" }
+                  },
+                  "body": {
+                    "type": "string",
+                    "description": "Request body template"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "required": ["type", "command"],
+                "properties": {
+                  "type": { "const": "command" },
+                  "command": {
+                    "type": "string",
+                    "description": "VSCode command ID"
+                  },
+                  "args": {
+                    "type": "array",
+                    "description": "Command arguments. Use $argName to pass tool parameters."
+                  }
+                }
+              }
+            ]
+          },
+          "requiresApproval": {
+            "type": "boolean",
+            "default": true,
+            "description": "Whether user must approve before execution"
+          },
+          "category": {
+            "type": "string",
+            "description": "Category for grouping (e.g., 'deploy', 'test', 'api')"
+          }
+        }
+      }
+    }
+  }
+}

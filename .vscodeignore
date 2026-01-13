@@ -1,0 +1,29 @@
+# Exclude editor/dev-only files from the VS Code extension package (.vsix)
+.vscode/**
+
+# Source (compiled output lives in dist/)
+src/**
+sdk/**
+
+# Docs and scripts
+docs/**
+scripts/**
+
+# Local scratch/state
+mem/**
+temp/**
+
+# Common junk
+**/.DS_Store
+**/*.log
+**/*.tsbuildinfo
+**/*.map
+
+# Prune dependency sources/tests (avoid packaging non-runtime fixtures)
+node_modules/**/src/**/*.ts
+node_modules/**/src/**/*.tsx
+node_modules/**/__tests__/**
+node_modules/**/test/**
+node_modules/**/tests/**
+node_modules/**/*.test.*
+node_modules/**/*.spec.*
