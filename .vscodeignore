@@ -1,5 +1,8 @@
 # Exclude editor/dev-only files from the VS Code extension package (.vsix)
 .vscode/**
+.github/**
+.vscode-test/**
+.claude/**
 
 # Source (compiled output lives in dist/)
 src/**
@@ -8,6 +11,13 @@ sdk/**
 # Docs and scripts
 docs/**
 scripts/**
+
+# Tests (compiled output)
+dist/test/**
+
+# Type declarations (not needed at runtime)
+dist/**/*.d.ts
+dist/**/*.d.ts.map
 
 # Local scratch/state
 mem/**
@@ -19,11 +29,5 @@ temp/**
 **/*.tsbuildinfo
 **/*.map
 
-# Prune dependency sources/tests (avoid packaging non-runtime fixtures)
-node_modules/**/src/**/*.ts
-node_modules/**/src/**/*.tsx
-node_modules/**/__tests__/**
-node_modules/**/test/**
-node_modules/**/tests/**
-node_modules/**/*.test.*
-node_modules/**/*.spec.*
+# Dependencies are bundled into dist/extension.js
+node_modules/**
