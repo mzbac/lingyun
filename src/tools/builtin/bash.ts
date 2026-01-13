@@ -4,11 +4,68 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 
 import type { ToolDefinition, ToolHandler } from '../../core/types';
-import { requireString, optionalNumber, optionalString, evaluateShellCommand } from '../../core/validation';
+import { requireString, optionalBoolean, optionalNumber, optionalString, evaluateShellCommand } from '../../core/validation';
 import { findExternalPathReferencesInShellCommand, isPathInsideWorkspace } from '../../core/shellPaths';
 import { getWorkspaceRootUri, resolveToolPath } from './workspace';
 
 const MAX_BASH_OUTPUT = 50000;
+const KILL_GRACE_MS = 1500;
+
+function normalizeCommandForHeuristics(command: string): string {
+  const collapsed = command.trim().toLowerCase().replace(/\s+/g, ' ');
+  // Drop leading env assignments: `FOO=bar BAR=baz <cmd>`
+  return collapsed.replace(/^(?:[a-z_][a-z0-9_]*=\S+\s+)+/gi, '');
+}
+
+function looksLikeLongRunningServerCommand(command: string): boolean {
+  const normalized = normalizeCommandForHeuristics(command);
+
+  // Keep this conservative: only match common long-running dev servers.
+  const patterns: readonly RegExp[] = [
+    /\bnpx\s+serve\b/,
+    /\bnpx\s+http-server\b/,
+    /\bhttp-server\b/,
+    /\bpython(?:3)?\s+-m\s+http\.server\b/,
+    /\bpython(?:3)?\s+-m\s+simplehttpserver\b/,
+    /\bflask\s+run\b/,
+    /\buvicorn\b/,
+    /\bdjango-admin\s+runserver\b/,
+    /\bmanage\.py\s+runserver\b/,
+    /\bnpm\s+run\s+(dev|start|serve)\b/,
+    /\bpnpm\s+(dev|start)\b/,
+    /\byarn\s+(dev|start)\b/,
+    /\bbun\s+(dev|start)\b/,
+    /\bvite\b/,
+    /\bnext\s+dev\b/,
+    /\breact-scripts\s+start\b/,
+  ];
+
+  return patterns.some((re) => re.test(normalized));
+}
+
+function killProcessTree(pid: number, signal: NodeJS.Signals): void {
+  if (!Number.isFinite(pid) || pid <= 0) return;
+
+  if (process.platform === 'win32') {
+    try {
+      cp.execFile('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true }, () => {});
+    } catch {
+      // ignore
+    }
+    return;
+  }
+
+  try {
+    // Prefer killing the whole process group so child processes are terminated too.
+    process.kill(-pid, signal);
+  } catch {
+    try {
+      process.kill(pid, signal);
+    } catch {
+      // ignore
+    }
+  }
+}
 
 export const bashTool: ToolDefinition = {
   id: 'bash',
@@ -21,6 +78,11 @@ export const bashTool: ToolDefinition = {
       command: { type: 'string', description: 'The command to execute' },
       timeout: { type: 'number', description: 'Optional timeout in milliseconds' },
       workdir: { type: 'string', description: 'Working directory (absolute or workspace-relative). Prefer this over "cd".' },
+      background: {
+        type: 'boolean',
+        description:
+          'Run the command in the background (detached) and return immediately. Use this for long-running dev servers (e.g. `npx serve .`, `python -m http.server`).',
+      },
       description: { type: 'string', description: 'Short description of what the command does (optional)' },
     },
     required: ['command'],
@@ -104,20 +166,77 @@ export const bashHandler: ToolHandler = async (args, context) => {
   const timeoutRaw = optionalNumber(args, 'timeout');
   const timeout = timeoutRaw !== undefined && Number.isFinite(timeoutRaw) && timeoutRaw > 0 ? Math.floor(timeoutRaw) : 0;
 
-  return new Promise((resolve) => {
-    const trimmedCommand = command.trim();
-    const runInBackground = /&\s*$/.test(trimmedCommand);
+  const backgroundArg = optionalBoolean(args, 'background') ?? false;
 
-    // Background commands (ending with "&") can keep stdout/stderr pipes open forever,
-    // causing Node's "close" event to never fire. For these, detach stdio so the tool
-    // can return promptly and the agent/UI doesn't hang.
-    const proc = cp.spawn(command, {
+  const trimmedCommand = command.trimEnd();
+  const ampersandBackground = trimmedCommand.endsWith('&') && !trimmedCommand.endsWith('&&');
+  const commandToRun = ampersandBackground ? trimmedCommand.replace(/&\s*$/, '').trimEnd() : command;
+  const runInBackground = backgroundArg || ampersandBackground;
+
+  if (looksLikeLongRunningServerCommand(commandToRun) && !runInBackground && timeout === 0) {
+    return {
+      success: false,
+      error:
+        'This command looks like it will start a long-running server and block the agent. ' +
+        'Re-run with { background: true } to detach it, or provide { timeout: <ms> } to capture startup output and exit.',
+      metadata: {
+        errorType: 'bash_requires_background_or_timeout',
+        suggestedArgs: { background: true, timeout: 5000 },
+      },
+    };
+  }
+
+  return new Promise((resolve) => {
+    // Background commands can keep stdout/stderr pipes open forever, causing Node's "close" event
+    // to never fire. For these, detach stdio and return immediately so the agent/UI doesn't hang.
+    const proc = cp.spawn(commandToRun, {
       cwd,
       shell: true,
       env: process.env,
       detached: process.platform !== 'win32',
       stdio: runInBackground ? ['ignore', 'ignore', 'ignore'] : ['ignore', 'pipe', 'pipe'],
     });
+
+    if (runInBackground) {
+      // Let the extension host continue without keeping the child process handle alive.
+      try {
+        proc.unref();
+      } catch {
+        // ignore
+      }
+
+      let settled = false;
+      const finish = (result: { success: boolean; data?: string; error?: string; metadata?: Record<string, unknown> }) => {
+        if (settled) return;
+        settled = true;
+        resolve(result);
+      };
+
+      proc.once('error', (err) => {
+        finish({ success: false, error: err.message, metadata: { background: true } });
+      });
+
+      proc.once('spawn', () => {
+        const pid = typeof proc.pid === 'number' ? proc.pid : undefined;
+        const stopHint =
+          typeof pid === 'number'
+            ? process.platform === 'win32'
+              ? `taskkill /pid ${pid} /T /F`
+              : `kill -TERM -${pid}`
+            : undefined;
+
+        finish({
+          success: true,
+          data:
+            typeof pid === 'number'
+              ? `Command started in background (pid ${pid}).${stopHint ? ` To stop: ${stopHint}` : ''}`
+              : 'Command started in background.',
+          metadata: { background: true, pid, stopHint },
+        });
+      });
+
+      return;
+    }
 
     let output = '';
     let truncated = false;
@@ -127,6 +246,7 @@ export const bashHandler: ToolHandler = async (args, context) => {
     let exitCode: number | null = null;
     let exitSignal: NodeJS.Signals | null = null;
     let exitFallback: NodeJS.Timeout | undefined;
+    let killFallback: NodeJS.Timeout | undefined;
 
     const append = (data: Buffer) => {
       if (truncated) return;
@@ -142,16 +262,20 @@ export const bashHandler: ToolHandler = async (args, context) => {
       proc.stderr?.on('data', append);
     }
 
-    const kill = () => {
-      try {
-        // Kill the whole process group where possible so child processes are terminated too.
-        if (process.platform !== 'win32' && typeof proc.pid === 'number') {
-          process.kill(-proc.pid, 'SIGTERM');
-        } else {
+    const requestKill = () => {
+      if (typeof proc.pid === 'number') {
+        const pid = proc.pid;
+        killProcessTree(pid, 'SIGTERM');
+        killFallback = setTimeout(() => {
+          if (settled) return;
+          killProcessTree(pid, 'SIGKILL');
+        }, KILL_GRACE_MS);
+      } else {
+        try {
           proc.kill('SIGTERM');
+        } catch {
+          // ignore
         }
-      } catch {
-        // ignore
       }
     };
 
@@ -159,24 +283,25 @@ export const bashHandler: ToolHandler = async (args, context) => {
       timeout > 0
         ? setTimeout(() => {
             timedOut = true;
-            kill();
+            requestKill();
           }, timeout)
         : undefined;
 
     const cancelListener = context.cancellationToken.onCancellationRequested(() => {
       canceled = true;
-      kill();
+      requestKill();
     });
 
-      const cleanup = () => {
-        if (timeoutId) clearTimeout(timeoutId);
-        if (exitFallback) clearTimeout(exitFallback);
-        cancelListener.dispose();
-        if (!runInBackground) {
-          proc.stdout?.removeListener('data', append);
-          proc.stderr?.removeListener('data', append);
-        }
-      };
+    const cleanup = () => {
+      if (timeoutId) clearTimeout(timeoutId);
+      if (exitFallback) clearTimeout(exitFallback);
+      if (killFallback) clearTimeout(killFallback);
+      cancelListener.dispose();
+      if (!runInBackground) {
+        proc.stdout?.removeListener('data', append);
+        proc.stderr?.removeListener('data', append);
+      }
+    };
 
     const finalize = (code: number) => {
       if (settled) return;
@@ -206,11 +331,6 @@ export const bashHandler: ToolHandler = async (args, context) => {
       if (code !== 0) {
         const errText = output.trim() || `Command failed with exit code ${code}`;
         resolve({ success: false, error: errText, data: output, metadata: { truncated, background: runInBackground } });
-        return;
-      }
-
-      if (runInBackground) {
-        resolve({ success: true, data: 'Command started in background', metadata: { background: true } });
         return;
       }
 
