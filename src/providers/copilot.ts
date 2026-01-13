@@ -115,7 +115,7 @@ export class CopilotProvider implements LLMProvider {
     });
   }
 
-  onRequestError(error: unknown): void {
+  onRequestError(error: unknown, _context?: { modelId: string; mode: 'plan' | 'build' }): void {
     // Ensure the next request uses a fresh client instance and re-evaluated headers.
     this.provider = null;
     this.cachedProviderToken = null;
