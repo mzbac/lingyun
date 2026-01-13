@@ -57,7 +57,6 @@ jobs:
 
       - name: Run ESLint
         run: npm run lint --if-present
-        continue-on-error: true  # Allow lint to fail until ESLint is configured
 
   package:
     runs-on: ubuntu-latest
