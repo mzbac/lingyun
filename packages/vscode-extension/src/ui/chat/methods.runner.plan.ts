@@ -2,6 +2,20 @@ import * as vscode from 'vscode';
 import type { ChatMessage } from './types';
 import { ChatViewProvider } from '../chat';
 
+const ASSUMPTIONS_HEADING = '## Assumptions (auto)';
+const ASSUMPTIONS_NOTE =
+  `${ASSUMPTIONS_HEADING}\n` +
+  '- Proceed without further clarification; make reasonable assumptions for unanswered questions.\n' +
+  '- If multiple valid options exist, choose the simplest/lowest-risk default.\n' +
+  '- Continue in Build mode; do not block waiting for user input.\n';
+
+function appendAssumptionsToPlan(plan: string): string {
+  const text = (plan || '').trimEnd();
+  if (!text) return ASSUMPTIONS_NOTE.trimEnd();
+  if (text.includes(ASSUMPTIONS_HEADING)) return text;
+  return `${text}\n\n${ASSUMPTIONS_NOTE.trimEnd()}`;
+}
+
 Object.assign(ChatViewProvider.prototype, {
   async executePendingPlan(this: ChatViewProvider, planMessageId?: string): Promise<void> {
     if (this.isProcessing || !this.pendingPlan || !this.view) {
@@ -38,13 +52,6 @@ Object.assign(ChatViewProvider.prototype, {
       planMsg.plan = { status: 'draft' };
     }
 
-    if (planMsg.plan.status === 'needs_input') {
-      void vscode.window.showInformationMessage(
-        'This plan needs clarification. Answer the questions (send a message) or click Revise to update the plan.'
-      );
-      return;
-    }
-
     const switchedToBuild = this.mode === 'plan';
     if (this.mode === 'plan') {
       this.mode = 'build';
@@ -71,6 +78,20 @@ Object.assign(ChatViewProvider.prototype, {
     }
 
     try {
+      if (previousStatus === 'needs_input') {
+        const state = this.agent.exportState();
+        const basePlan =
+          typeof state.pendingPlan === 'string' && state.pendingPlan.trim()
+            ? state.pendingPlan
+            : planMsg.content;
+        if (basePlan && basePlan.trim()) {
+          state.pendingPlan = appendAssumptionsToPlan(basePlan);
+          this.agent.importState(state);
+          this.agent.updateConfig({ model: this.currentModel, mode: this.mode });
+          this.agent.setMode(this.mode);
+        }
+      }
+
       await this.agent.execute(this.createAgentCallbacks());
       planMsg.plan.status = 'done';
       this.postMessage({ type: 'updateMessage', message: planMsg });
