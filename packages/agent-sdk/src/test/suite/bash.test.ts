@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 
-import { getBuiltinTools, type ToolContext } from '@lingyun/agent-sdk';
+import { getBuiltinTools, type ToolContext } from '@kooka/agent-sdk';
 
 function isPidAlive(pid: number): boolean {
   try {

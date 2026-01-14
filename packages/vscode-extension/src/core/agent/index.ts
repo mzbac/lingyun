@@ -43,7 +43,7 @@ import {
   setDynamicToolError,
   setDynamicToolOutput,
   upsertDynamicToolCall,
-} from '@lingyun/core';
+} from '@kooka/core';
 import { isRecord } from '../utils/guards';
 import { FileHandleRegistry, type FileHandlesState } from './fileHandles';
 import { toToolCall } from './toolCall';

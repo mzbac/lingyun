@@ -12,7 +12,7 @@ import {
   refreshBackgroundJob,
   registerBackgroundJob,
   removeBackgroundJob,
-} from '@lingyun/core';
+} from '@kooka/core';
 
 import type { ToolContext, ToolResult } from '../types';
 

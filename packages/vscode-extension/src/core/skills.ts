@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { expandHome, isSubPath } from '@lingyun/core';
+import { expandHome, isSubPath } from '@kooka/core';
 
 export type SkillInfo = {
   name: string;

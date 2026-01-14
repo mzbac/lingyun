@@ -2,7 +2,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 
 import type { ToolDefinition, ToolHandler } from '../../types.js';
-import { optionalBoolean, requireString } from '@lingyun/core';
+import { optionalBoolean, requireString } from '@kooka/core';
 import { resolveToolPath } from './workspace.js';
 
 export const writeTool: ToolDefinition = {

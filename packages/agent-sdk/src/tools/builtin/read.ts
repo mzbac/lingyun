@@ -2,7 +2,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 
 import type { ToolDefinition, ToolHandler } from '../../types.js';
-import { optionalNumber, requireString } from '@lingyun/core';
+import { optionalNumber, requireString } from '@kooka/core';
 import { BINARY_EXTENSIONS, containsBinaryData, resolveToolPath } from './workspace.js';
 
 const DEFAULT_READ_LIMIT = 2000;

@@ -3,7 +3,7 @@ import * as path from 'path';
 import { glob } from 'glob';
 
 import type { ToolDefinition, ToolHandler } from '../../types.js';
-import { optionalString, requireString } from '@lingyun/core';
+import { optionalString, requireString } from '@kooka/core';
 import { getWorkspaceRoot, resolveToolPath } from './workspace.js';
 
 export const globTool: ToolDefinition = {

@@ -7,7 +7,7 @@ import {
   findExternalPathReferencesInShellCommand,
   isPathInsideWorkspace,
   type PermissionAction,
-} from '@lingyun/core';
+} from '@kooka/core';
 
 import type { ToolRegistry } from '../registry';
 import type { AgentCallbacks, AgentConfig, ToolContext, ToolDefinition, ToolResult } from '../types';

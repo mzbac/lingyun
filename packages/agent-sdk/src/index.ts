@@ -15,7 +15,7 @@ export type {
   LLMProvider,
 } from './types.js';
 
-export type { AgentHistoryMessage, CompactionConfig, ModelLimit } from '@lingyun/core';
+export type { AgentHistoryMessage, CompactionConfig, ModelLimit } from '@kooka/core';
 
 export { OpenAICompatibleProvider, type OpenAICompatibleProviderOptions } from './llm/openaiCompatible.js';
 export { ToolRegistry } from './tools/registry.js';
@@ -26,7 +26,7 @@ export type { SkillInfo, SkillIndex } from './skills.js';
 export { getSkillIndex, loadSkillFile } from './skills.js';
 
 import type { AgentConfig, LLMProvider } from './types.js';
-import type { CompactionConfig, ModelLimit } from '@lingyun/core';
+import type { CompactionConfig, ModelLimit } from '@kooka/core';
 import { OpenAICompatibleProvider, type OpenAICompatibleProviderOptions } from './llm/openaiCompatible.js';
 import { ToolRegistry } from './tools/registry.js';
 import { registerBuiltinTools, type BuiltinToolsOptions } from './tools/builtin/index.js';

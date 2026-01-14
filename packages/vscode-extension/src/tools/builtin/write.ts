@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 import type { ToolDefinition, ToolHandler } from '../../core/types';
 import { getLspAdapter } from '../../core/lsp';
 import { formatDiagnosticsBlock } from '../../core/lsp/diagnostics';
-import { requireString } from '@lingyun/core';
+import { requireString } from '@kooka/core';
 import { resolveToolPath, toPosixPath } from './workspace';
 import { assertFileWasRead, recordFileRead, withFileLock } from './fileTime';
 

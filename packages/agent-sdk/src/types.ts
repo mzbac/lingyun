@@ -1,4 +1,4 @@
-import type { AgentHistoryMessage } from '@lingyun/core';
+import type { AgentHistoryMessage } from '@kooka/core';
 
 export interface ToolParameterSchema {
   type: 'string' | 'number' | 'boolean' | 'array' | 'object';

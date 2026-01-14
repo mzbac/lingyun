@@ -3,7 +3,7 @@ import type { Dirent } from 'fs';
 import * as path from 'path';
 
 import type { ToolDefinition, ToolHandler } from '../../types.js';
-import { optionalString } from '@lingyun/core';
+import { optionalString } from '@kooka/core';
 import { getWorkspaceRoot, resolveToolPath, toPosixPath } from './workspace.js';
 
 export const listTool: ToolDefinition = {

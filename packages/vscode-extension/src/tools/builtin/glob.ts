@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 
 import type { ToolDefinition, ToolHandler } from '../../core/types';
-import { requireString, optionalString } from '@lingyun/core';
+import { requireString, optionalString } from '@kooka/core';
 import { getWorkspaceRootUri, resolveWorkspacePath } from './workspace';
 
 export const globTool: ToolDefinition = {

@@ -1,6 +1,6 @@
 import { convertToModelMessages, extractReasoningMiddleware, streamText, wrapLanguageModel } from 'ai';
 import type { LLMProvider } from './types';
-import { createUserHistoryMessage } from '@lingyun/core';
+import { createUserHistoryMessage } from '@kooka/core';
 
 const TITLE_SYSTEM_PROMPT = `You are a title generator. You output ONLY a thread title. Nothing else.
 

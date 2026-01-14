@@ -18,7 +18,7 @@ import type {
 import { AgentLoop } from '../../core/agent';
 import { ToolRegistry } from '../../core/registry';
 import type { LLMProvider } from '../../core/types';
-import { getMessageText } from '@lingyun/core';
+import { getMessageText } from '@kooka/core';
 import { COMPACTED_TOOL_PLACEHOLDER, createHistoryForModel } from '../../core/compaction';
 import { PluginManager } from '../../core/hooks/pluginManager';
 

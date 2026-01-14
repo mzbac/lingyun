@@ -56,18 +56,18 @@ jobs:
           fi
 
       - name: Run agent-sdk tests
-        run: pnpm --filter @lingyun/agent-sdk test
+        run: pnpm --filter @kooka/agent-sdk test
 
       - name: Pack (dry run)
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
         run: |
-          pnpm --filter @lingyun/core pack
-          pnpm --filter @lingyun/agent-sdk pack
+          pnpm --filter @kooka/core pack
+          pnpm --filter @kooka/agent-sdk pack
 
       - name: Publish to npm
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.dry_run != true }}
         run: |
-          pnpm --filter @lingyun/core publish --no-git-checks
-          pnpm --filter @lingyun/agent-sdk publish --no-git-checks
+          pnpm --filter @kooka/core publish --no-git-checks
+          pnpm --filter @kooka/agent-sdk publish --no-git-checks
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

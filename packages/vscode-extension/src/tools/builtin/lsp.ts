@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 
 import type { ToolDefinition, ToolHandler, ToolContext } from '../../core/types';
 import { getLspAdapter } from '../../core/lsp';
-import { optionalNumber, optionalString, requireString } from '@lingyun/core';
+import { optionalNumber, optionalString, requireString } from '@kooka/core';
 import { getWorkspaceRootUri, resolveWorkspacePath, toPosixPath } from './workspace';
 
 type LspOperation =

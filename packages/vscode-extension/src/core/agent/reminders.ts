@@ -1,4 +1,4 @@
-import type { AgentHistoryMessage } from '@lingyun/core';
+import type { AgentHistoryMessage } from '@kooka/core';
 import { BUILD_SWITCH_PROMPT, PLAN_PROMPT } from './prompts';
 
 export function insertModeReminders(history: AgentHistoryMessage[], mode: 'build' | 'plan'): AgentHistoryMessage[] {

@@ -1,5 +1,5 @@
 import * as path from 'path';
-import { normalizeFsPath } from '@lingyun/core';
+import { normalizeFsPath } from '@kooka/core';
 import type { ToolContext } from '../../types.js';
 
 export const BINARY_EXTENSIONS = new Set([

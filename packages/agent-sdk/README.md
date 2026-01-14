@@ -12,16 +12,16 @@ This SDK is intentionally **not** optimized for max parallelism. It follows Ling
 ## Install
 
 ```bash
-npm i @lingyun/agent-sdk
+npm i @kooka/agent-sdk
 ```
 
-This package depends on `@lingyun/core` (it will be installed automatically).
+This package depends on `@kooka/core` (it will be installed automatically).
 
 ## Build (from source)
 
 ```bash
 pnpm install
-pnpm --filter @lingyun/agent-sdk build
+pnpm --filter @kooka/agent-sdk build
 ```
 
 ### As a dependency (local path)
@@ -31,7 +31,7 @@ In another project’s `package.json`:
 ```json
 {
   "dependencies": {
-    "@lingyun/agent-sdk": "file:/absolute/path/to/lingyun/packages/agent-sdk"
+    "@kooka/agent-sdk": "file:/absolute/path/to/lingyun/packages/agent-sdk"
   }
 }
 ```
@@ -44,13 +44,13 @@ pnpm --dir /absolute/path/to/lingyun/packages/agent-sdk run build
 
 ## Publishing
 
-`@lingyun/core` and `@lingyun/agent-sdk` are published together and must share the same version.
+`@kooka/core` and `@kooka/agent-sdk` are published together and must share the same version.
 
 From the repo root:
 
 ```bash
-pnpm --filter @lingyun/core publish --no-git-checks
-pnpm --filter @lingyun/agent-sdk publish --no-git-checks
+pnpm --filter @kooka/core publish --no-git-checks
+pnpm --filter @kooka/agent-sdk publish --no-git-checks
 ```
 
 ## Quickstart
@@ -58,7 +58,7 @@ pnpm --filter @lingyun/agent-sdk publish --no-git-checks
 Minimal “stream tokens + get final text” example:
 
 ```ts
-import { createLingyunAgent, LingyunSession } from '@lingyun/agent-sdk';
+import { createLingyunAgent, LingyunSession } from '@kooka/agent-sdk';
 
 const { agent, llm } = createLingyunAgent({
   llm: {
@@ -102,7 +102,7 @@ try {
 CommonJS:
 
 ```js
-const { createLingyunAgent, LingyunSession } = await import('@lingyun/agent-sdk')
+const { createLingyunAgent, LingyunSession } = await import('@kooka/agent-sdk')
 ```
 
 ## Sessions (Multi-Turn)
@@ -165,7 +165,7 @@ Tools can require approval via `ToolDefinition.metadata.requiresApproval`.
 Register a function-backed tool:
 
 ```ts
-import { createLingyunAgent } from '@lingyun/agent-sdk';
+import { createLingyunAgent } from '@kooka/agent-sdk';
 
 const { registry } = createLingyunAgent({
   llm: { provider: 'openaiCompatible', baseURL: 'http://localhost:8080/v1', model: 'your-model-id' },
@@ -279,7 +279,7 @@ Run:
 ```bash
 LINGYUN_E2E_BASE_URL="http://localhost:8080/v1" \
 LINGYUN_E2E_MODEL="your-model-id" \
-pnpm --filter @lingyun/agent-sdk test:e2e
+pnpm --filter @kooka/agent-sdk test:e2e
 ```
 
 Environment variables:

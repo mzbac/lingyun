@@ -21,7 +21,7 @@ import {
   registerBackgroundJob,
   removeBackgroundJob,
   requireString,
-} from '@lingyun/core';
+} from '@kooka/core';
 import { getWorkspaceRoot, resolveToolPath } from './workspace.js';
 
 const MAX_BASH_OUTPUT = 50_000;

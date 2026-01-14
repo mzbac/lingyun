@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as cp from 'child_process';
 import * as path from 'path';
-import { findExternalPathReferencesInShellCommand, isPathInsideWorkspace } from '@lingyun/core';
+import { findExternalPathReferencesInShellCommand, isPathInsideWorkspace } from '@kooka/core';
 import type { ToolContext, ToolResult } from '../core/types';
 
 export interface ShellExecution {

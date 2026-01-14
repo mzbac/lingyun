@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
-import type { CompactionConfig, ModelLimit } from '@lingyun/core';
+import type { CompactionConfig, ModelLimit } from '@kooka/core';
 
-export type { CompactionConfig, ModelLimit } from '@lingyun/core';
+export type { CompactionConfig, ModelLimit } from '@kooka/core';
 export {
   COMPACTED_TOOL_PLACEHOLDER,
   COMPACTION_AUTO_CONTINUE_TEXT,
@@ -14,7 +14,7 @@ export {
   getReservedOutputTokens,
   isOverflow,
   markPrunableToolOutputs,
-} from '@lingyun/core';
+} from '@kooka/core';
 
 function asFiniteNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;

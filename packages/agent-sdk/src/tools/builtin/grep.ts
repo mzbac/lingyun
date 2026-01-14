@@ -5,7 +5,7 @@ import { glob } from 'glob';
 import * as readline from 'readline';
 
 import type { ToolDefinition, ToolHandler } from '../../types.js';
-import { optionalString, requireString } from '@lingyun/core';
+import { optionalString, requireString } from '@kooka/core';
 import { getWorkspaceRoot, resolveToolPath, toPosixPath } from './workspace.js';
 
 const MAX_LINE_LENGTH = 2000;

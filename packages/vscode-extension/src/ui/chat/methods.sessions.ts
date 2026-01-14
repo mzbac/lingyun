@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import type { AgentLoop, AgentSessionState } from '../../core/agent';
 import { getModelLimit } from '../../core/compaction';
-import { getMessageText } from '@lingyun/core';
+import { getMessageText } from '@kooka/core';
 import { SessionStore } from '../../core/sessionStore';
 import type { ChatMessage, ChatSessionInfo } from './types';
 import { formatErrorForUser } from './utils';

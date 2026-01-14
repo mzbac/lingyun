@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import type { ChatMessage } from './types';
 import { isDefaultSessionTitle } from './sessionTitle';
-import { createUserHistoryMessage, getMessageText } from '@lingyun/core';
+import { createUserHistoryMessage, getMessageText } from '@kooka/core';
 import { ChatViewProvider } from '../chat';
 
 Object.assign(ChatViewProvider.prototype, {

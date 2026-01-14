@@ -21,7 +21,7 @@ import {
   requireString,
   registerBackgroundJob,
   removeBackgroundJob,
-} from '@lingyun/core';
+} from '@kooka/core';
 import { backgroundTerminalManager } from '../../core/terminal/backgroundTerminal';
 import { getWorkspaceRootUri, resolveToolPath } from './workspace';
 

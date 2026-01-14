@@ -6,7 +6,7 @@ import {
   OpenAICompatibleProvider,
   ToolRegistry,
   type ToolResult,
-} from '@lingyun/agent-sdk';
+} from '@kooka/agent-sdk';
 import { loadLingyunE2EConfig, type LingyunE2EConfig } from './e2eEnv.js';
 
 suite('LingYun Agent SDK (E2E)', function () {

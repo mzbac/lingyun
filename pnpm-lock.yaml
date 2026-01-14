@@ -20,7 +20,7 @@ importers:
       '@ai-sdk/openai-compatible':
         specifier: ^2.0.2
         version: 2.0.9(zod@4.3.5)
-      '@lingyun/core':
+      '@kooka/core':
         specifier: workspace:*
         version: link:../core
       ai:
@@ -70,7 +70,7 @@ importers:
       '@ai-sdk/openai-compatible':
         specifier: ^2.0.2
         version: 2.0.9(zod@4.3.5)
-      '@lingyun/core':
+      '@kooka/core':
         specifier: workspace:*
         version: link:../core
       ai:

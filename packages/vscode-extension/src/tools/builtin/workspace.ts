@@ -1,6 +1,6 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { normalizeFsPath } from '@lingyun/core';
+import { normalizeFsPath } from '@kooka/core';
 
 export const BINARY_EXTENSIONS = new Set([
   '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.webp', '.svg',

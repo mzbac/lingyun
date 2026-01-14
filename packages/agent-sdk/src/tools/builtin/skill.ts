@@ -1,7 +1,7 @@
 import * as path from 'path';
 
 import type { ToolDefinition, ToolHandler } from '../../types.js';
-import { optionalString } from '@lingyun/core';
+import { optionalString } from '@kooka/core';
 import { getSkillIndex, loadSkillFile } from '../../skills.js';
 
 function formatAvailableSkills(skills: Array<{ name: string; description: string }>): string {

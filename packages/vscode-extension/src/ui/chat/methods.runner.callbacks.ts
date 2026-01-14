@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { getMessageText } from '@lingyun/core';
+import { getMessageText } from '@kooka/core';
 import { EDIT_TOOL_IDS } from '../../core/agent/constants';
 import type { AgentCallbacks, ToolDefinition, ToolCall } from '../../core/types';
 import { cleanAssistantPreamble, formatErrorForUser, formatWorkspacePathForUI } from './utils';

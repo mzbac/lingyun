@@ -8,7 +8,7 @@
     "rootDir": "src/test",
     "baseUrl": ".",
     "paths": {
-      "@lingyun/agent-sdk": ["./dist/index.d.ts"]
+      "@kooka/agent-sdk": ["./dist/index.d.ts"]
     }
   },
   "include": ["src/test/**/*"],

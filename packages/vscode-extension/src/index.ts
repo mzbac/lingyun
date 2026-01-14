@@ -15,6 +15,6 @@ export type {
   LLMProvider,
 } from './core/types';
 
-export type { AgentHistoryMessage } from '@lingyun/core';
+export type { AgentHistoryMessage } from '@kooka/core';
 
 export { MODELS } from './providers/copilot';

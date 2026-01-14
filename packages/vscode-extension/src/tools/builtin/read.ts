@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 
 import type { ToolDefinition, ToolHandler } from '../../core/types';
 import { getLspAdapter } from '../../core/lsp';
-import { requireString, optionalNumber } from '@lingyun/core';
+import { requireString, optionalNumber } from '@kooka/core';
 import { BINARY_EXTENSIONS, containsBinaryData, resolveToolPath } from './workspace';
 import { recordFileRead } from './fileTime';
 import { suggestSiblingPaths } from './pathSuggestions';

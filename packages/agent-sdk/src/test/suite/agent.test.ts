@@ -24,7 +24,7 @@ import {
   type LLMProvider,
   type ToolDefinition,
   type ToolResult,
-} from '@lingyun/agent-sdk';
+} from '@kooka/agent-sdk';
 
 function getMessageText(message: AgentHistoryMessage): string {
   return message.parts

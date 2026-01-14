@@ -2,7 +2,7 @@ import * as assert from 'assert';
 import * as vscode from 'vscode';
 
 import type { ToolContext } from '../../core/types';
-import { killProcessTree } from '@lingyun/core';
+import { killProcessTree } from '@kooka/core';
 import { bashHandler } from '../../tools/builtin/bash';
 
 function createToolContext(): ToolContext {

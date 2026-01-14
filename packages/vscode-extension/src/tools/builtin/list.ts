@@ -2,7 +2,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 
 import type { ToolDefinition, ToolHandler } from '../../core/types';
-import { optionalString } from '@lingyun/core';
+import { optionalString } from '@kooka/core';
 import { getWorkspaceRootUri, resolveWorkspacePath, toPosixPath } from './workspace';
 
 export const listTool: ToolDefinition = {

@@ -1,6 +1,6 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { isSubPath, normalizeFsPath } from '@lingyun/core';
+import { isSubPath, normalizeFsPath } from '@kooka/core';
 import { resolveToolPath } from '../../tools/builtin/workspace';
 
 async function canOpenAsFile(uri: vscode.Uri): Promise<boolean> {

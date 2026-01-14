@@ -1,7 +1,7 @@
 import * as path from 'path';
 
 import type { ToolDefinition } from '../types';
-import type { PermissionAction, PermissionRuleset } from '@lingyun/core';
+import type { PermissionAction, PermissionRuleset } from '@kooka/core';
 import { EDIT_TOOL_IDS } from './constants';
 
 export function getPermissionRuleset(mode: 'build' | 'plan'): PermissionRuleset {

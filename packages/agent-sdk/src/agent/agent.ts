@@ -39,7 +39,7 @@ import {
   type ModelLimit,
   type PermissionAction,
   type PermissionRuleset,
-} from '@lingyun/core';
+} from '@kooka/core';
 import { PluginManager } from '../plugins/pluginManager.js';
 import { insertModeReminders } from './reminders.js';
 import { DEFAULT_SYSTEM_PROMPT } from './prompts.js';
