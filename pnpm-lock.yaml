@@ -39,6 +39,9 @@ importers:
         specifier: ^4.1.8
         version: 4.3.5
     devDependencies:
+      '@ai-sdk/provider':
+        specifier: ^3.0.2
+        version: 3.0.2
       '@ai-sdk/provider-utils':
         specifier: ^4.0.5
         version: 4.0.5(zod@4.3.5)
