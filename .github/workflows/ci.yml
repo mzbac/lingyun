@@ -133,7 +133,9 @@ jobs:
         run: pnpm package:vsix
 
       - name: Publish to VS Code Marketplace
-        run: pnpm --filter lingyun run publish -- -p ${{ secrets.VSCE_PAT }}
+        run: pnpm --filter lingyun run publish
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
