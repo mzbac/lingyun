@@ -1,7 +1,7 @@
 # AGENTS.md (LingYun)
 
 LingYun is a VS Code extension that provides an agentic AI assistant + a tool framework.
-This file is loaded into the agent’s system prompt (see `src/core/instructions.ts`), so keep it **accurate, compact, and actionable**.
+This file is loaded into the agent’s system prompt (see `packages/vscode-extension/src/core/instructions.ts`), so keep it **accurate, compact, and actionable**.
 
 ## Development Policy (Important)
 
@@ -14,22 +14,24 @@ This project is still in active development with no production users. Prefer bre
 
 ## Current Architecture (Source of Truth)
 
-- Extension entry + commands + public API: `src/extension.ts`
-- Agent core (assistant message + parts history; ai-sdk streaming + tool calls): `src/core/agent/index.ts`
-- Tool registry / providers: `src/core/registry.ts`
+- Extension entry + commands + public API: `packages/vscode-extension/src/extension.ts`
+- Agent core (OpenCode-aligned “assistant message + parts” history; ai-sdk streaming + tool calls): `packages/vscode-extension/src/core/agent/index.ts`
+- Tool registry / providers: `packages/vscode-extension/src/core/registry.ts`
 - LLM providers:
-  - GitHub Copilot: `src/providers/copilot.ts`
-  - OpenAI-compatible server: `src/providers/openaiCompatible.ts`
+  - GitHub Copilot: `packages/vscode-extension/src/providers/copilot.ts`
+  - OpenAI-compatible server: `packages/vscode-extension/src/providers/openaiCompatible.ts`
 - Workspace tools:
-  - `.vscode/agent-tools.json` and `.vscode/agent-tools/*.json` (loaded by `src/providers/workspace.ts`)
-  - Schema: `schemas/agent-tools.schema.json`
-- Built-in tools (stable IDs): `src/tools/builtin/*`
+  - `.vscode/agent-tools.json` and `.vscode/agent-tools/*.json` (loaded by `packages/vscode-extension/src/providers/workspace.ts`)
+  - Schema: `packages/vscode-extension/schemas/agent-tools.schema.json`
+- Built-in tools (stable IDs): `packages/vscode-extension/src/tools/builtin/*`
   - `read`, `write`, `edit`, `glob`, `grep`, `list`, `lsp`, `bash`
 - Chat UI:
-  - Webview provider: `src/ui/chat.ts` + `src/ui/chat/methods.*.ts`
-  - Webview assets: `media/chat.html`, `media/chat/*.js`
+  - Webview provider: `packages/vscode-extension/src/ui/chat.ts` + `packages/vscode-extension/src/ui/chat/methods.*.ts`
+  - Webview assets: `packages/vscode-extension/media/chat.html`, `packages/vscode-extension/media/chat/*.js`
+- Headless Agent SDK (Node runtime): `packages/agent-sdk/`
+- Shared core library (WIP): `packages/core/`
 
-## Modes
+## Modes (OpenCode-style)
 
 - Plan mode (`lingyun.mode=plan`): read-only. Edit/write are denied; auto-approve is disabled.
 - Build mode (`lingyun.mode=build`): full tool use with approvals based on tool metadata + settings.
@@ -51,7 +53,7 @@ This project is still in active development with no production users. Prefer bre
 
 ## Context Window / Compaction
 
-- Token tracking + prune/compaction live in `src/core/compaction.ts`.
+- Token tracking + prune/compaction live in `packages/vscode-extension/src/core/compaction.ts`.
 - Settings: `lingyun.compaction.*` + optional per-model limits `lingyun.modelLimits`.
 - UI should show compaction as a global operation (not “thinking” attached to an old turn).
 
@@ -71,3 +73,8 @@ This project is still in active development with no production users. Prefer bre
   "lingyun.openaiCompatible.maxTokens": 32000
 }
 ```
+
+## Reference Docs
+
+- `docs/PLUGINS.md`
+- `docs/SKILLS.md`

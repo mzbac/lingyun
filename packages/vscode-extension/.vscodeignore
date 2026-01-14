@@ -1,0 +1,35 @@
+# Exclude editor/dev-only files from the VS Code extension package (.vsix)
+.vscode/**
+.github/**
+.vscode-test/**
+.claude/**
+
+# Source (compiled output lives in dist/)
+src/**
+sdk/**
+
+# Docs and scripts
+docs/**
+scripts/**
+eslint.config.js
+tsconfig.json
+
+# Tests (compiled output)
+dist/test/**
+
+# Type declarations (not needed at runtime)
+dist/**/*.d.ts
+dist/**/*.d.ts.map
+
+# Local scratch/state
+mem/**
+temp/**
+
+# Common junk
+**/.DS_Store
+**/*.log
+**/*.tsbuildinfo
+**/*.map
+
+# Dependencies are bundled into dist/extension.js
+node_modules/**

@@ -13,31 +13,33 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
-    strategy:
-      matrix:
-        node-version: [18.x, 20.x]
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js ${{ matrix.node-version }}
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node-version }}
-          cache: 'npm'
+          node-version: '20.x'
+          cache: 'pnpm'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.28.0
+          run_install: false
 
       - name: Install dependencies
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
-      - name: Run TypeScript compilation
-        run: npm run compile
+      - name: Build packages
+        run: pnpm build
 
-      - name: Run verification
-        run: npm run verify
+      - name: Verify extension
+        run: pnpm --filter lingyun verify
 
       - name: Run manual tests
-        run: npm run test:manual
+        run: pnpm --filter lingyun test:manual
 
   lint:
     runs-on: ubuntu-latest
@@ -50,13 +52,19 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20.x'
-          cache: 'npm'
+          cache: 'pnpm'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.28.0
+          run_install: false
 
       - name: Install dependencies
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       - name: Run ESLint
-        run: npm run lint --if-present
+        run: pnpm lint
 
   package:
     runs-on: ubuntu-latest
@@ -71,19 +79,19 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20.x'
-          cache: 'npm'
+          cache: 'pnpm'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.28.0
+          run_install: false
 
       - name: Install dependencies
-        run: npm ci
-
-      - name: Compile
-        run: npm run compile
-
-      - name: Install vsce
-        run: npm install -g @vscode/vsce
+        run: pnpm install --frozen-lockfile
 
       - name: Package extension
-        run: vsce package --out lingyun.vsix
+        run: pnpm package:vsix && mv packages/vscode-extension/*.vsix lingyun.vsix
 
       - name: Upload VSIX artifact
         uses: actions/upload-artifact@v4
@@ -107,27 +115,27 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20.x'
-          cache: 'npm'
+          cache: 'pnpm'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.28.0
+          run_install: false
 
       - name: Install dependencies
-        run: npm ci
-
-      - name: Compile
-        run: npm run compile
-
-      - name: Install vsce
-        run: npm install -g @vscode/vsce
+        run: pnpm install --frozen-lockfile
 
       - name: Package extension
-        run: vsce package
+        run: pnpm package:vsix
 
       - name: Publish to VS Code Marketplace
-        run: vsce publish -p ${{ secrets.VSCE_PAT }}
+        run: pnpm --filter lingyun publish -- -p ${{ secrets.VSCE_PAT }}
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: '*.vsix'
+          files: 'packages/vscode-extension/*.vsix'
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

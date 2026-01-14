@@ -2,8 +2,9 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "type": "npm",
-      "script": "watch",
+      "label": "pnpm: watch (extension)",
+      "type": "shell",
+      "command": "pnpm --filter lingyun watch",
       "problemMatcher": "$tsc-watch",
       "isBackground": true,
       "presentation": {
@@ -15,20 +16,23 @@
       }
     },
     {
-      "type": "npm",
-      "script": "compile",
+      "label": "pnpm: compile (extension)",
+      "type": "shell",
+      "command": "pnpm --filter lingyun compile",
       "problemMatcher": "$tsc",
       "group": "build"
     },
     {
-      "type": "npm",
-      "script": "test",
+      "label": "pnpm: test (extension)",
+      "type": "shell",
+      "command": "pnpm --filter lingyun test",
       "problemMatcher": [],
       "group": "test"
     },
     {
-      "type": "npm",
-      "script": "lint",
+      "label": "pnpm: lint",
+      "type": "shell",
+      "command": "pnpm lint",
       "problemMatcher": ["$eslint-stylish"],
       "group": "test"
     }

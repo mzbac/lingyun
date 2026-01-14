@@ -6,23 +6,23 @@
       "type": "extensionHost",
       "request": "launch",
       "args": [
-        "--extensionDevelopmentPath=${workspaceFolder}"
+        "--extensionDevelopmentPath=${workspaceFolder}/packages/vscode-extension"
       ],
       "outFiles": [
-        "${workspaceFolder}/dist/**/*.js"
+        "${workspaceFolder}/packages/vscode-extension/dist/**/*.js"
       ],
-      "preLaunchTask": "npm: watch"
+      "preLaunchTask": "pnpm: watch (extension)"
     },
     {
       "name": "Run Extension (No Workspace)",
       "type": "extensionHost",
       "request": "launch",
       "args": [
-        "--extensionDevelopmentPath=${workspaceFolder}",
+        "--extensionDevelopmentPath=${workspaceFolder}/packages/vscode-extension",
         "--disable-extensions"
       ],
       "outFiles": [
-        "${workspaceFolder}/dist/**/*.js"
+        "${workspaceFolder}/packages/vscode-extension/dist/**/*.js"
       ]
     },
     {
@@ -30,28 +30,28 @@
       "type": "extensionHost",
       "request": "launch",
       "args": [
-        "--extensionDevelopmentPath=${workspaceFolder}",
-        "--extensionTestsPath=${workspaceFolder}/dist/test/suite/index"
+        "--extensionDevelopmentPath=${workspaceFolder}/packages/vscode-extension",
+        "--extensionTestsPath=${workspaceFolder}/packages/vscode-extension/dist/test/suite/index"
       ],
       "outFiles": [
-        "${workspaceFolder}/dist/**/*.js"
+        "${workspaceFolder}/packages/vscode-extension/dist/**/*.js"
       ],
-      "preLaunchTask": "npm: compile"
+      "preLaunchTask": "pnpm: compile (extension)"
     },
     {
       "name": "Debug Current Test File",
       "type": "node",
       "request": "launch",
-      "program": "${workspaceFolder}/node_modules/mocha/bin/_mocha",
+      "program": "${workspaceFolder}/packages/vscode-extension/node_modules/mocha/bin/_mocha",
       "args": [
         "--timeout",
         "10000",
-        "${workspaceFolder}/dist/test/suite/${fileBasenameNoExtension}.js"
+        "${workspaceFolder}/packages/vscode-extension/dist/test/suite/${fileBasenameNoExtension}.js"
       ],
       "outFiles": [
-        "${workspaceFolder}/dist/**/*.js"
+        "${workspaceFolder}/packages/vscode-extension/dist/**/*.js"
       ],
-      "preLaunchTask": "npm: compile"
+      "preLaunchTask": "pnpm: compile (extension)"
     }
   ]
 }

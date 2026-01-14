@@ -117,6 +117,9 @@ dist
 # DynamoDB Local files
 .dynamodb/
 
+# Turbo (monorepo build cache)
+.turbo/
+
 # Firebase cache directory
 .firebase/
 
