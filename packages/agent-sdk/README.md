@@ -15,7 +15,7 @@ This SDK is intentionally **not** optimized for max parallelism. It follows Ling
 npm i @lingyun/agent-sdk
 ```
 
-This package bundles `@lingyun/core` internally; consumers do not need to install `@lingyun/core` separately.
+This package depends on `@lingyun/core` (it will be installed automatically).
 
 ## Build (from source)
 
@@ -44,11 +44,13 @@ pnpm --dir /absolute/path/to/lingyun/packages/agent-sdk run build
 
 ## Publishing
 
+`@lingyun/core` and `@lingyun/agent-sdk` are published together and must share the same version.
+
 From the repo root:
 
 ```bash
-pnpm --filter @lingyun/agent-sdk pack
-pnpm --filter @lingyun/agent-sdk publish --access public
+pnpm --filter @lingyun/core publish --no-git-checks
+pnpm --filter @lingyun/agent-sdk publish --no-git-checks
 ```
 
 ## Quickstart

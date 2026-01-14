@@ -4,13 +4,8 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "outDir": "dist",
-    "rootDir": "src",
-    "baseUrl": ".",
-    "paths": {
-      "@lingyun/core": ["../core/dist/types/index.d.ts"],
-      "@lingyun/agent-sdk": ["./src/index.ts"]
-    }
+    "rootDir": "src"
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist"]
+  "exclude": ["node_modules", "dist", "dist-test", "src/test/**/*"]
 }

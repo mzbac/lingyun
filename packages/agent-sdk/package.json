@@ -6,6 +6,9 @@
   "license": "Apache-2.0",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "publishConfig": {
+    "access": "public"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -18,7 +21,7 @@
   ],
   "scripts": {
     "clean": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true }); require('fs').rmSync('dist-test', { recursive: true, force: true })\"",
-    "build": "pnpm run clean && pnpm --filter @lingyun/core build && node scripts/build.cjs",
+    "build": "pnpm run clean && pnpm --filter @lingyun/core build && tsc -p tsconfig.json",
     "prepack": "pnpm run build",
     "typecheck": "pnpm --filter @lingyun/core build && tsc -p tsconfig.json --noEmit",
     "build:test": "tsc -p tsconfig.test.json",
@@ -26,6 +29,7 @@
     "test:e2e": "pnpm run build && pnpm run build:test && mocha --ui tdd --timeout 300000 ./dist-test/e2e/*.test.js"
   },
   "dependencies": {
+    "@lingyun/core": "workspace:*",
     "@ai-sdk/openai-compatible": "^2.0.2",
     "ai": "^6.0.6",
     "glob": "^13.0.0",
@@ -35,8 +39,6 @@
   "devDependencies": {
     "@types/mocha": "^10.0.10",
     "@types/node": "^20.11.16",
-    "dts-bundle-generator": "^9.5.1",
-    "esbuild": "^0.25.0",
     "mocha": "^11.7.5",
     "typescript": "^5.3.3"
   }
