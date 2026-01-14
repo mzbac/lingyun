@@ -130,6 +130,9 @@ dist-test
 # Stores VSCode versions used for testing VSCode extensions
 .vscode-test
 
+# Husky (generated hook wrapper scripts)
+.husky/_/
+
 # yarn v3
 .pnp.*
 .yarn/*

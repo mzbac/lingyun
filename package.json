@@ -6,7 +6,8 @@
     "build": "turbo run build",
     "lint": "turbo run lint",
     "test": "turbo run test",
-    "package:vsix": "turbo run package --filter=lingyun"
+    "package:vsix": "turbo run package --filter=lingyun",
+    "prepare": "husky"
   },
   "pnpm": {
     "overrides": {
@@ -14,6 +15,7 @@
     }
   },
   "devDependencies": {
+    "husky": "^9.1.7",
     "turbo": "^2.7.4"
   }
 }
