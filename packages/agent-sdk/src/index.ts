@@ -22,6 +22,8 @@ export { ToolRegistry } from './tools/registry.js';
 export { PluginManager } from './plugins/pluginManager.js';
 export { LingyunAgent, LingyunSession, type LingyunAgentRuntimeOptions } from './agent/agent.js';
 export { registerBuiltinTools, getBuiltinTools, DEFAULT_SKILL_PATHS, type BuiltinToolsOptions } from './tools/builtin/index.js';
+export type { SkillInfo, SkillIndex } from './skills.js';
+export { getSkillIndex, loadSkillFile } from './skills.js';
 
 import type { AgentConfig, LLMProvider } from './types.js';
 import type { CompactionConfig, ModelLimit } from '@lingyun/core';

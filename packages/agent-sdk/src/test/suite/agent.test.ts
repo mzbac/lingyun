@@ -12,13 +12,28 @@ import type {
   LanguageModelV3Usage,
 } from '@ai-sdk/provider';
 
-import { LingyunAgent, LingyunSession } from '../../agent/agent.js';
-import { ToolRegistry } from '../../tools/registry.js';
-import type { LLMProvider, ToolDefinition, ToolResult } from '../../types.js';
-import { getMessageText } from '@lingyun/core';
-import { PluginManager } from '../../plugins/pluginManager.js';
-import { getSkillIndex, loadSkillFile } from '../../skills.js';
-import { bashTool } from '../../tools/builtin/bash.js';
+import {
+  getBuiltinTools,
+  getSkillIndex,
+  loadSkillFile,
+  LingyunAgent,
+  LingyunSession,
+  PluginManager,
+  ToolRegistry,
+  type AgentHistoryMessage,
+  type LLMProvider,
+  type ToolDefinition,
+  type ToolResult,
+} from '@lingyun/agent-sdk';
+
+function getMessageText(message: AgentHistoryMessage): string {
+  return message.parts
+    .filter((p: any): p is { type: 'text'; text: string } => p.type === 'text')
+    .map((p: { type: 'text'; text: string }) => p.text)
+    .join('');
+}
+
+const bashTool = getBuiltinTools().find((t) => t.tool.id === 'bash')!.tool;
 
 type ScriptedResponse =
   | { kind: 'text'; content: string; usage?: UsageOverride }

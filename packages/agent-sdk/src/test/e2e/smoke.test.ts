@@ -1,9 +1,12 @@
 import * as assert from 'assert';
-import type { ToolResult } from '../../types.js';
 
-import { OpenAICompatibleProvider } from '../../llm/openaiCompatible.js';
-import { ToolRegistry } from '../../tools/registry.js';
-import { LingyunAgent, LingyunSession } from '../../agent/agent.js';
+import {
+  LingyunAgent,
+  LingyunSession,
+  OpenAICompatibleProvider,
+  ToolRegistry,
+  type ToolResult,
+} from '@lingyun/agent-sdk';
 import { loadLingyunE2EConfig, type LingyunE2EConfig } from './e2eEnv.js';
 
 suite('LingYun Agent SDK (E2E)', function () {

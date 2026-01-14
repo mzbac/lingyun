@@ -9,14 +9,17 @@ This SDK is intentionally **not** optimized for max parallelism. It follows Ling
 - Node.js **18+** (Node 20+ recommended)
 - ESM (`"type":"module"` or `.mjs`) is recommended. CommonJS is supported via dynamic import.
 
-## Install / Build
-
-This package is currently **private** and **not published**. Use it from this repo (or a checked-out copy).
-
-### In this repo
+## Install
 
 ```bash
-# from the repo root
+npm i @lingyun/agent-sdk
+```
+
+This package bundles `@lingyun/core` internally; consumers do not need to install `@lingyun/core` separately.
+
+## Build (from source)
+
+```bash
 pnpm install
 pnpm --filter @lingyun/agent-sdk build
 ```
@@ -37,6 +40,15 @@ Then build the SDK once (it ships `dist/` via `files`, so consumers need the bui
 
 ```bash
 pnpm --dir /absolute/path/to/lingyun/packages/agent-sdk run build
+```
+
+## Publishing
+
+From the repo root:
+
+```bash
+pnpm --filter @lingyun/agent-sdk pack
+pnpm --filter @lingyun/agent-sdk publish --access public
 ```
 
 ## Quickstart

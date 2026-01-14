@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": false,
+    "declarationMap": false,
+    "outDir": "dist-test",
+    "rootDir": "src/test",
+    "baseUrl": ".",
+    "paths": {
+      "@lingyun/agent-sdk": ["./dist/index.d.ts"]
+    }
+  },
+  "include": ["src/test/**/*"],
+  "exclude": ["node_modules", "dist", "dist-test"]
+}
+

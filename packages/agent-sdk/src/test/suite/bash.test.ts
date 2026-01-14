@@ -1,8 +1,28 @@
 import * as assert from 'assert';
 
-import { isPidAlive, killProcessTree } from '@lingyun/core';
-import type { ToolContext } from '../../types.js';
-import { bashHandler } from '../../tools/builtin/bash.js';
+import { getBuiltinTools, type ToolContext } from '@lingyun/agent-sdk';
+
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function killBackgroundProcess(pid: number): void {
+  if (process.platform === 'win32') {
+    process.kill(pid, 'SIGTERM');
+    return;
+  }
+
+  try {
+    process.kill(-pid, 'SIGTERM');
+  } catch {
+    process.kill(pid, 'SIGTERM');
+  }
+}
 
 function createToolContext(): ToolContext {
   return {
@@ -14,6 +34,8 @@ function createToolContext(): ToolContext {
 }
 
 suite('Bash Tool', () => {
+  const bashHandler = getBuiltinTools().find((t) => t.tool.id === 'bash')!.handler;
+
   test('rejects likely long-running server commands without background or timeout', async () => {
     const context = createToolContext();
     const res = await bashHandler({ command: 'python -m http.server' }, context);
@@ -35,7 +57,7 @@ suite('Bash Tool', () => {
     assert.strictEqual((res2.metadata as any)?.reused, true);
     assert.strictEqual((res2.metadata as any)?.pid, pid1);
 
-    killProcessTree(pid1, 'SIGTERM');
+    killBackgroundProcess(pid1);
   });
 
   test('auto-stops background commands after ttlMs', async function () {
