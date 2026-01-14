@@ -55,6 +55,9 @@ jobs:
             exit 1
           fi
 
+      - name: Run lint
+        run: pnpm lint
+
       - name: Run agent-sdk tests
         run: pnpm --filter @kooka/agent-sdk test
 
