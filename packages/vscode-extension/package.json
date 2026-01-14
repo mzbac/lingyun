@@ -417,6 +417,8 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.2",
+    "@ai-sdk/provider": "^3.0.2",
+    "@ai-sdk/provider-utils": "^4.0.5",
     "@types/diff": "^7.0.0",
     "@types/mocha": "^10.0.10",
     "@types/node": "^20.11.16",
