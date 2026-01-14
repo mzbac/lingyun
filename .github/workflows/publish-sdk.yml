@@ -1,0 +1,73 @@
+name: Publish SDK Packages
+
+on:
+  push:
+    tags:
+      - "sdk-v*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build + pack, but do not publish"
+        type: boolean
+        default: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.x"
+          registry-url: "https://registry.npmjs.org"
+          cache: "pnpm"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.28.0
+          run_install: false
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate tag matches package versions
+        if: startsWith(github.ref, 'refs/tags/sdk-v')
+        run: |
+          set -euo pipefail
+          VERSION_CORE="$(node -p "require('./packages/core/package.json').version")"
+          VERSION_SDK="$(node -p "require('./packages/agent-sdk/package.json').version")"
+          TAG="${GITHUB_REF_NAME#sdk-v}"
+          if [ "${VERSION_CORE}" != "${TAG}" ]; then
+            echo "Tag version (${TAG}) does not match packages/core version (${VERSION_CORE})."
+            exit 1
+          fi
+          if [ "${VERSION_SDK}" != "${TAG}" ]; then
+            echo "Tag version (${TAG}) does not match packages/agent-sdk version (${VERSION_SDK})."
+            exit 1
+          fi
+          if [ "${VERSION_CORE}" != "${VERSION_SDK}" ]; then
+            echo "Package versions do not match: core=${VERSION_CORE} agent-sdk=${VERSION_SDK}."
+            exit 1
+          fi
+
+      - name: Run agent-sdk tests
+        run: pnpm --filter @lingyun/agent-sdk test
+
+      - name: Pack (dry run)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        run: |
+          pnpm --filter @lingyun/core pack
+          pnpm --filter @lingyun/agent-sdk pack
+
+      - name: Publish to npm
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.dry_run != true }}
+        run: |
+          pnpm --filter @lingyun/core publish --no-git-checks
+          pnpm --filter @lingyun/agent-sdk publish --no-git-checks
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
