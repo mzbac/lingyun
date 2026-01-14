@@ -24,6 +24,7 @@ type BackgroundTerminalRecord = {
   terminal: vscode.Terminal;
   terminalName: string;
   pid?: number;
+  pidAcquisition?: Promise<void>;
   pidFilePath: string;
   logFilePath: string;
   logStream: fs.WriteStream;
@@ -170,6 +171,56 @@ class BackgroundTerminalManager {
         }
       }
     });
+  }
+
+  private async acquirePidLater(args: {
+    recordId: string;
+    record: BackgroundTerminalRecord;
+    scope: string;
+    key: string;
+    command: string;
+    cwd: string;
+    jobState: { jobId?: string; ttlMs?: number; expiresAt?: number };
+    timeoutMs: number;
+    context: ToolContext;
+  }): Promise<void> {
+    try {
+      const pid =
+        process.platform === 'win32'
+          ? await waitForTerminalPid(args.record.terminal, args.timeoutMs)
+          : await waitForPidFile(args.record.pidFilePath, args.timeoutMs);
+
+      if (typeof pid !== 'number') return;
+
+      const current = this.records.get(args.recordId);
+      if (current !== args.record) return;
+      if (args.record.terminal.exitStatus) return;
+      if (typeof args.record.pid === 'number') return;
+
+      args.record.pid = pid;
+
+      const job = registerBackgroundJob({
+        scope: args.scope,
+        key: args.key,
+        command: args.command,
+        cwd: args.cwd,
+        pid,
+        ttlMs: args.record.ttlMs,
+      });
+      args.jobState.jobId = job.id;
+      args.jobState.ttlMs = job.ttlMs;
+      args.jobState.expiresAt = job.expiresAt;
+
+      args.context.log(`[Bash bg] PID acquired pid=${pid} terminal="${args.record.terminalName}"`);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      args.context.log(`[Bash bg] PID acquisition failed: ${msg}`);
+    } finally {
+      const current = this.records.get(args.recordId);
+      if (current === args.record) {
+        args.record.pidAcquisition = undefined;
+      }
+    }
   }
 
   private disposeRecord(id: string, record: BackgroundTerminalRecord): void {
@@ -394,12 +445,12 @@ class BackgroundTerminalManager {
 
     this.refreshRecordTtl(record, ttlMs);
 
-    if (shellIntegration) {
-      const wrappedCommand =
-        process.platform === 'win32'
-          ? args.command
-          : buildPosixPidWrappedCommand({ command: args.command, pidFilePath });
+    const wrappedCommand =
+      process.platform === 'win32'
+        ? args.command
+        : buildPosixPidWrappedCommand({ command: args.command, pidFilePath });
 
+    if (shellIntegration) {
       const startOutputLoop = async () => {
         const write = (text: string) => {
           try {
@@ -490,7 +541,7 @@ class BackgroundTerminalManager {
 
       void startOutputLoop();
     } else {
-      terminal.sendText(args.command, true);
+      terminal.sendText(wrappedCommand, true);
       settlePreview();
       if (previewTimer) clearTimeout(previewTimer);
       try {
@@ -519,6 +570,19 @@ class BackgroundTerminalManager {
       jobState.jobId = job.id;
       jobState.ttlMs = job.ttlMs;
       jobState.expiresAt = job.expiresAt;
+    } else if (!record.pidAcquisition) {
+      const pidRetryTimeoutMs = Math.max(10_000, args.pidTimeoutMs);
+      record.pidAcquisition = this.acquirePidLater({
+        recordId,
+        record,
+        scope,
+        key,
+        command: args.command,
+        cwd: args.cwd,
+        jobState,
+        timeoutMs: pidRetryTimeoutMs,
+        context: args.context,
+      });
     }
 
     const stopHint = computeStopHint(pid) ?? `Close the terminal "${terminalName}"`;
@@ -540,8 +604,8 @@ class BackgroundTerminalManager {
       outputParts.push('');
       outputParts.push(
         ttlMs > 0
-          ? `Warning: PID not available yet; auto-stop will close the terminal after ${ttlMs} ms.`
-          : 'Warning: PID not available; auto-stop is disabled for this background command.'
+          ? `Note: PID not available; auto-stop will close the terminal after ${ttlMs} ms.`
+          : 'Note: PID not available; auto-stop is disabled for this background command.'
       );
     }
     if (previewText) {
