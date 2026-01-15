@@ -186,6 +186,11 @@ export interface AgentCallbacks {
   onRequestApproval?: (tool: ToolCall, definition: ToolDefinition) => Promise<boolean>;
   onComplete?: (response: string) => void;
   onError?: (error: Error) => void;
+  /**
+   * User-facing notices emitted by the runtime (not sent to the model).
+   * Intended for hosts to render warnings/info in their UI.
+   */
+  onNotice?: (notice: LingyunNotice) => void | Promise<void>;
   onStatusChange?: (status: {
     type: 'running' | 'retry' | 'done' | 'error';
     attempt?: number;
@@ -194,8 +199,14 @@ export interface AgentCallbacks {
   }) => void;
 }
 
+export type LingyunNotice = {
+  level: 'warning' | 'info';
+  message: string;
+};
+
 export type LingyunEvent =
   | { type: 'debug'; message: string }
+  | { type: 'notice'; notice: LingyunNotice }
   | { type: 'status'; status: NonNullable<AgentCallbacks['onStatusChange']> extends (s: infer S) => any ? S : never }
   | { type: 'assistant_token'; token: string }
   | { type: 'thought_token'; token: string }

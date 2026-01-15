@@ -19,17 +19,25 @@ export type { AgentHistoryMessage, CompactionConfig, ModelLimit } from '@kooka/c
 
 export { OpenAICompatibleProvider, type OpenAICompatibleProviderOptions } from './llm/openaiCompatible.js';
 export { ToolRegistry } from './tools/registry.js';
+export {
+  createAgentBrowserToolProvider,
+  registerAgentBrowserTools,
+  type AgentBrowserRunAction,
+  type AgentBrowserRunner,
+  type AgentBrowserToolsOptions,
+} from './tools/agentBrowser.js';
 export { PluginManager } from './plugins/pluginManager.js';
 export { LingyunAgent, LingyunSession, type LingyunAgentRuntimeOptions } from './agent/agent.js';
 export { registerBuiltinTools, getBuiltinTools, DEFAULT_SKILL_PATHS, type BuiltinToolsOptions } from './tools/builtin/index.js';
 export type { SkillInfo, SkillIndex } from './skills.js';
 export { getSkillIndex, loadSkillFile } from './skills.js';
+export * from './persistence/index.js';
 
 import type { AgentConfig, LLMProvider } from './types.js';
 import type { CompactionConfig, ModelLimit } from '@kooka/core';
 import { OpenAICompatibleProvider, type OpenAICompatibleProviderOptions } from './llm/openaiCompatible.js';
 import { ToolRegistry } from './tools/registry.js';
-import { registerBuiltinTools, type BuiltinToolsOptions } from './tools/builtin/index.js';
+import { DEFAULT_SKILL_PATHS, registerBuiltinTools, type BuiltinToolsOptions } from './tools/builtin/index.js';
 import { PluginManager } from './plugins/pluginManager.js';
 import { LingyunAgent, type LingyunAgentRuntimeOptions } from './agent/agent.js';
 
@@ -90,6 +98,17 @@ export function createLingyunAgent(options: CreateLingyunAgentOptions): {
     plugins,
     workspaceRoot: options.workspaceRoot,
     allowExternalPaths: options.allowExternalPaths,
+    skills: (() => {
+      const skills = options.tools?.builtinOptions?.skills;
+      const paths = skills?.paths?.length ? skills.paths : DEFAULT_SKILL_PATHS;
+      return {
+        enabled: skills?.enabled,
+        paths,
+        maxPromptSkills: skills?.maxPromptSkills,
+        maxInjectSkills: skills?.maxInjectSkills,
+        maxInjectChars: skills?.maxInjectChars,
+      };
+    })(),
     modelLimits: options.modelLimits,
     compaction: options.compaction,
   };

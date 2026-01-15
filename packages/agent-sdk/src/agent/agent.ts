@@ -22,6 +22,7 @@ import {
   createUserHistoryMessage,
   evaluatePermission,
   evaluateShellCommand,
+  extractSkillMentions,
   extractUsageTokens,
   finalizeStreamingParts,
   findExternalPathReferencesInShellCommand,
@@ -31,6 +32,9 @@ import {
   isOverflow as isContextOverflow,
   isPathInsideWorkspace,
   markPrunableToolOutputs,
+  redactFsPathForPrompt,
+  renderSkillsSectionForPrompt,
+  selectSkillsForText,
   setDynamicToolError,
   setDynamicToolOutput,
   upsertDynamicToolCall,
@@ -46,6 +50,8 @@ import { DEFAULT_SYSTEM_PROMPT } from './prompts.js';
 import { EDIT_TOOL_IDS, MAX_TOOL_RESULT_LENGTH, THINK_BLOCK_REGEX, TOOL_BLOCK_REGEX } from './constants.js';
 import { delay as getRetryDelayMs, retryable as getRetryableLlmError, sleep as retrySleep } from './retry.js';
 import type { ToolRegistry } from '../tools/registry.js';
+import { DEFAULT_SKILL_PATHS } from '../tools/builtin/index.js';
+import { getSkillIndex, loadSkillFile } from '../skills.js';
 
 type AsyncQueueState<T> = {
   values: T[];
@@ -180,6 +186,13 @@ export type LingyunAgentRuntimeOptions = {
   plugins?: PluginManager;
   workspaceRoot?: string;
   allowExternalPaths?: boolean;
+  skills?: {
+    enabled?: boolean;
+    paths?: string[];
+    maxPromptSkills?: number;
+    maxInjectSkills?: number;
+    maxInjectChars?: number;
+  };
   modelLimits?: Record<string, ModelLimit>;
   compaction?: Partial<CompactionConfig>;
 };
@@ -188,6 +201,14 @@ export class LingyunAgent {
   private readonly plugins: PluginManager;
   private readonly workspaceRoot?: string;
   private allowExternalPaths: boolean;
+  private readonly skillsConfig: {
+    enabled: boolean;
+    paths: string[];
+    maxPromptSkills: number;
+    maxInjectSkills: number;
+    maxInjectChars: number;
+  };
+  private skillsPromptTextPromise?: Promise<string | undefined>;
   private readonly modelLimits?: Record<string, ModelLimit>;
   private readonly compactionConfig: CompactionConfig;
   private registeredPluginTools = new Set<string>();
@@ -201,6 +222,30 @@ export class LingyunAgent {
     this.plugins = runtime?.plugins ?? new PluginManager({ workspaceRoot: runtime?.workspaceRoot });
     this.workspaceRoot = runtime?.workspaceRoot ? path.resolve(runtime.workspaceRoot) : undefined;
     this.allowExternalPaths = !!runtime?.allowExternalPaths;
+
+    const skills = runtime?.skills ?? {};
+    const paths = Array.isArray(skills.paths) && skills.paths.length > 0 ? skills.paths : DEFAULT_SKILL_PATHS;
+    const maxPromptSkills =
+      Number.isFinite(skills.maxPromptSkills as number) && (skills.maxPromptSkills as number) >= 0
+        ? Math.floor(skills.maxPromptSkills as number)
+        : 50;
+    const maxInjectSkills =
+      Number.isFinite(skills.maxInjectSkills as number) && (skills.maxInjectSkills as number) > 0
+        ? Math.floor(skills.maxInjectSkills as number)
+        : 5;
+    const maxInjectChars =
+      Number.isFinite(skills.maxInjectChars as number) && (skills.maxInjectChars as number) > 0
+        ? Math.floor(skills.maxInjectChars as number)
+        : 20_000;
+
+    this.skillsConfig = {
+      enabled: skills.enabled !== false,
+      paths,
+      maxPromptSkills,
+      maxInjectSkills,
+      maxInjectChars,
+    };
+
     this.modelLimits = runtime?.modelLimits;
 
     const baseCompaction: CompactionConfig = {
@@ -850,15 +895,41 @@ export class LingyunAgent {
     });
   }
 
-  private composeSystemPrompt(modelId: string): Promise<string[]> {
-    const basePrompt = this.config.systemPrompt || DEFAULT_SYSTEM_PROMPT;
-    return this.plugins
-      .trigger(
-        'experimental.chat.system.transform',
-        { sessionId: this.config.sessionId, mode: this.getMode(), modelId },
-        { system: [basePrompt] }
+  private getSkillsPromptText(): Promise<string | undefined> {
+    if (!this.skillsConfig.enabled) return Promise.resolve(undefined);
+    if (this.skillsPromptTextPromise) return this.skillsPromptTextPromise;
+
+    const { paths, maxPromptSkills } = this.skillsConfig;
+
+    this.skillsPromptTextPromise = getSkillIndex({
+      workspaceRoot: this.workspaceRoot,
+      searchPaths: paths,
+      allowExternalPaths: this.allowExternalPaths,
+    })
+      .then((index) =>
+        renderSkillsSectionForPrompt({
+          skills: index.skills,
+          maxSkills: maxPromptSkills,
+          workspaceRoot: this.workspaceRoot,
+        }),
       )
-      .then((out) => (Array.isArray((out as any).system) ? (out as any).system.filter(Boolean) : [basePrompt]));
+      .catch(() => undefined);
+
+    return this.skillsPromptTextPromise;
+  }
+
+  private async composeSystemPrompt(modelId: string): Promise<string[]> {
+    const basePrompt = this.config.systemPrompt || DEFAULT_SYSTEM_PROMPT;
+    const skillsPromptText = await this.getSkillsPromptText();
+    const system = [basePrompt, skillsPromptText].filter(Boolean) as string[];
+
+    const out = await this.plugins.trigger(
+      'experimental.chat.system.transform',
+      { sessionId: this.config.sessionId, mode: this.getMode(), modelId },
+      { system },
+    );
+
+    return Array.isArray((out as any).system) ? (out as any).system.filter(Boolean) : system;
   }
 
   private async compactSessionInternal(
@@ -1235,6 +1306,82 @@ export class LingyunAgent {
     return lastResponse;
   }
 
+  private async injectSkillsForUserText(
+    session: LingyunSession,
+    text: string,
+    callbacks?: AgentCallbacks,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    if (!this.skillsConfig.enabled) return;
+
+    const mentions = extractSkillMentions(text);
+    if (mentions.length === 0) return;
+
+    const index = await getSkillIndex({
+      workspaceRoot: this.workspaceRoot,
+      searchPaths: this.skillsConfig.paths,
+      allowExternalPaths: this.allowExternalPaths,
+      signal,
+    });
+
+    const { selected, unknown } = selectSkillsForText(text, index);
+    if (unknown.length > 0) {
+      const availableSample = index.skills
+        .map((s) => s.name)
+        .slice(0, 20);
+
+      const availableLabel =
+        availableSample.length > 0
+          ? ` Available: ${availableSample.map((n) => `$${n}`).join(', ')}${index.skills.length > availableSample.length ? ', ...' : ''}`
+          : '';
+
+      callbacks?.onNotice?.({
+        level: 'warning',
+        message: `Unknown skills: ${unknown.map((n: string) => `$${n}`).join(', ')}.${availableLabel}`,
+      });
+    }
+
+    if (selected.length === 0) return;
+
+    const maxSkills = this.skillsConfig.maxInjectSkills;
+    const maxChars = this.skillsConfig.maxInjectChars;
+
+    const blocks: string[] = [];
+    for (const skill of selected.slice(0, maxSkills)) {
+      if (signal?.aborted) break;
+
+      let body: string;
+      try {
+        body = (await loadSkillFile(skill)).content;
+      } catch {
+        continue;
+      }
+
+      let truncated = false;
+      if (body.length > maxChars) {
+        body = body.slice(0, maxChars);
+        truncated = true;
+      }
+
+      blocks.push(
+        [
+          '<skill>',
+          `<name>${skill.name}</name>`,
+          `<path>${redactFsPathForPrompt(skill.filePath, { workspaceRoot: this.workspaceRoot })}</path>`,
+          body.trimEnd(),
+          truncated ? '\n\n... [TRUNCATED]' : '',
+          '</skill>',
+        ]
+          .filter(Boolean)
+          .join('\n'),
+      );
+    }
+
+    if (blocks.length > 0) {
+      session.history.push(createUserHistoryMessage(blocks.join('\n\n'), { synthetic: true, skill: true }));
+    }
+  }
+
   run(params: { session: LingyunSession; input: string; callbacks?: AgentCallbacks; signal?: AbortSignal }): LingyunRun {
     const queue = new AsyncQueue<LingyunEvent>();
 
@@ -1244,6 +1391,10 @@ export class LingyunAgent {
       onDebug: (message) => {
         callbacks?.onDebug?.(message);
         queue.push({ type: 'debug', message });
+      },
+      onNotice: (notice) => {
+        callbacks?.onNotice?.(notice);
+        queue.push({ type: 'notice', notice });
       },
       onStatusChange: (status) => {
         callbacks?.onStatusChange?.(status);
@@ -1288,6 +1439,7 @@ export class LingyunAgent {
 
     const done = (async () => {
       try {
+        await this.injectSkillsForUserText(params.session, params.input, proxy, params.signal);
         params.session.history.push(createUserHistoryMessage(params.input));
         const text = await this.runOnce(params.session, proxy, params.signal);
         queue.push({ type: 'status', status: { type: 'done', message: '' } as any });
@@ -1299,6 +1451,8 @@ export class LingyunAgent {
         queue.push({ type: 'status', status: { type: 'error', message: err.message } as any });
         queue.fail(err);
         throw err;
+      } finally {
+        params.session.history = params.session.history.filter((msg) => !(msg.role === 'user' && msg.metadata?.skill));
       }
     })();
 

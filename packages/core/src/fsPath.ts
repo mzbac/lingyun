@@ -22,3 +22,30 @@ export function expandHome(p: string): string {
   return trimmed;
 }
 
+export function redactFsPathForPrompt(
+  value: string,
+  options?: { workspaceRoot?: string; homeDir?: string; tailSegments?: number }
+): string {
+  const raw = (value || '').trim();
+  if (!raw) return '';
+
+  const normalized = raw.replace(/\\/g, '/');
+  if (!path.isAbsolute(raw)) return normalized;
+
+  const workspaceRoot = options?.workspaceRoot ? path.resolve(options.workspaceRoot) : undefined;
+  if (workspaceRoot && isSubPath(raw, workspaceRoot)) {
+    const rel = path.relative(workspaceRoot, raw).replace(/\\/g, '/');
+    return rel || '.';
+  }
+
+  const homeDir = options?.homeDir ?? os.homedir();
+  if (homeDir && isSubPath(raw, homeDir)) {
+    const rel = path.relative(homeDir, raw).replace(/\\/g, '/');
+    return rel ? `~/${rel}` : '~';
+  }
+
+  const tailSegments = Math.max(1, Math.floor(options?.tailSegments ?? 2));
+  const parts = normalized.split('/').filter(Boolean);
+  if (parts.length <= tailSegments) return normalized;
+  return `.../${parts.slice(-tailSegments).join('/')}`;
+}

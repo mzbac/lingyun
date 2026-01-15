@@ -495,6 +495,57 @@ suite('LingYun Agent SDK', () => {
     }
   });
 
+  test('injects skill blocks before the user prompt and does not persist them', async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'lingyun-sdk-test-skill-inject-'));
+    const skillDir = path.join(workspaceRoot, '.lingyun', 'skills', 'ask');
+    try {
+      await fs.mkdir(skillDir, { recursive: true });
+      await fs.writeFile(
+        path.join(skillDir, 'SKILL.md'),
+        [
+          '---',
+          'name: ask-questions-if-underspecified',
+          'description: Clarify requirements before implementing.',
+          '---',
+          '',
+          '# Ask Questions If Underspecified',
+          '',
+          '- Ask 1-5 must-have questions first.',
+        ].join('\n')
+      );
+
+      const llm = new MockLLMProvider();
+      llm.queueResponse({ kind: 'text', content: 'ok' });
+
+      const registry = new ToolRegistry();
+      const agent = new LingyunAgent(llm, { model: 'mock-model' }, registry, {
+        workspaceRoot,
+        allowExternalPaths: false,
+        skills: { enabled: true, paths: ['.lingyun/skills'] },
+      });
+      const session = new LingyunSession();
+
+      const input = `SENTINEL_${Date.now()} use $ask-questions-if-underspecified`;
+      const run = agent.run({ session, input });
+      for await (const _event of run.events) {
+        // drain
+      }
+      await run.done;
+
+      const promptJson = JSON.stringify(llm.lastPrompt ?? '');
+      const idxSkill = promptJson.lastIndexOf('<skill>');
+      const idxInput = promptJson.lastIndexOf(input);
+      assert.ok(idxSkill >= 0, 'expected <skill> block to be present in the prompt');
+      assert.ok(idxInput >= 0, 'expected user input to be present in the prompt');
+      assert.ok(idxInput > idxSkill, 'expected user input to appear after the injected <skill> block');
+
+      const history = session.getHistory();
+      assert.strictEqual(history.some((m) => m.role === 'user' && m.metadata?.skill), false);
+    } finally {
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
   test('requires approval for curl-like bash commands by default', async () => {
     const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'lingyun-sdk-test-bash-approve-'));
     try {

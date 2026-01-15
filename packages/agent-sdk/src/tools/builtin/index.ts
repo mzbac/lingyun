@@ -13,6 +13,9 @@ export type BuiltinToolsOptions = {
   skills?: {
     enabled?: boolean;
     paths?: string[];
+    maxPromptSkills?: number;
+    maxInjectSkills?: number;
+    maxInjectChars?: number;
   };
 };
 
@@ -48,4 +51,3 @@ export function registerBuiltinTools(registry: ToolRegistry, options: BuiltinToo
     registry.registerTool(tool, handler);
   }
 }
-

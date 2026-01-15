@@ -52,6 +52,7 @@ export class ChatViewProvider {
   inputHistoryEntries: string[] = [];
   inputHistoryLoadedFromDisk = false;
   inputHistoryStore?: InputHistoryStore;
+  skillNamesForUiPromise?: Promise<string[]>;
 
   snapshot?: WorkspaceSnapshot;
   snapshotUnavailableReason?: string;
@@ -203,6 +204,9 @@ export interface ChatViewProvider extends vscode.WebviewViewProvider {
   requestInlineApproval(tc: ToolCall, def: ToolDefinition, parentMessageId?: string): Promise<boolean>;
   markActiveStepStatus(status: 'running' | 'done' | 'error' | 'canceled'): void;
 
+  postUnknownSkillWarnings(content: string, turnId?: string): Promise<void>;
+  getSkillNamesForUI(): Promise<string[]>;
+
   postMessage(message: unknown): void;
   getHtml(webview: vscode.Webview): string;
 }
@@ -213,6 +217,7 @@ export interface ChatViewProvider extends vscode.WebviewViewProvider {
 require('./chat/methods.sessions');
 require('./chat/methods.inputHistory');
 require('./chat/methods.revert');
+require('./chat/methods.skills');
 require('./chat/methods.webview');
 require('./chat/methods.runner.input');
 require('./chat/methods.runner.callbacks');

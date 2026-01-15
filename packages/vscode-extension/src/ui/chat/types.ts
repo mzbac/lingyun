@@ -7,6 +7,7 @@ export type ChatMessageRole =
   | 'user'
   | 'assistant'
   | 'thought'
+  | 'warning'
   | 'tool'
   | 'error'
   | 'plan'

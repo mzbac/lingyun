@@ -305,6 +305,7 @@ Object.assign(ChatViewProvider.prototype, {
     };
     this.messages.push(userMsg);
     this.postMessage({ type: 'message', message: userMsg });
+    void this.postUnknownSkillWarnings(trimmed, planMsg.turnId);
 
     // Ensure the user follow-up is rendered before the global processing flag so the UI keeps the
     // status indicator tied to the correct (original) turn.

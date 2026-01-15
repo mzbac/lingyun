@@ -20,6 +20,7 @@ import { registerBuiltinTools } from './tools/builtin';
 
 import { PluginManager } from './core/hooks/pluginManager';
 import { PluginToolProvider } from './core/hooks/pluginToolProvider';
+import { getSkillIndex } from './core/skills';
 
 import { ChatViewProvider } from './ui/chat';
 import { LingyunDiffContentProvider, LINGYUN_DIFF_SCHEME } from './ui/chat/diffContentProvider';
@@ -170,6 +171,32 @@ async function initializeLLMAndAgent(context: vscode.ExtensionContext): Promise<
   );
 }
 
+async function warmSkillIndexOnStartup(context: vscode.ExtensionContext): Promise<void> {
+  const enabled = getConfig<boolean>('skills.enabled') ?? true;
+  if (!enabled) return;
+
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!workspaceRoot) return;
+
+  const allowExternalPaths = getConfig<boolean>('security.allowExternalPaths') ?? false;
+  const searchPaths = getConfig<string[]>('skills.paths') ?? [];
+
+  try {
+    await getSkillIndex({
+      extensionContext: context,
+      workspaceRoot,
+      searchPaths,
+      allowExternalPaths,
+      watchWorkspace: true,
+    });
+  } catch (error) {
+    const debug = getConfig<boolean>('debug.tools') ?? false;
+    if (debug) {
+      log(`Failed to warm skills index: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+}
+
 export async function activate(
   context: vscode.ExtensionContext
 ): Promise<LingyunAPI> {
@@ -181,6 +208,7 @@ export async function activate(
   extensionState.plugins = new PluginManager(context, { log });
 
   await initializeLLMAndAgent(context);
+  void warmSkillIndexOnStartup(context);
 
   for (const d of registerBuiltinTools()) {
     extensionState.addDisposable(d);

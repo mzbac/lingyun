@@ -7,17 +7,28 @@ import { ChatViewProvider } from '../chat';
 Object.assign(ChatViewProvider.prototype, {
   sendMessage(this: ChatViewProvider, content: string): void {
     if (this.view) {
-      if (this.pendingPlan && this.mode === 'plan') {
-        void this.revisePendingPlan(this.pendingPlan.planMessageId, content);
-      } else {
-        void this.handleUserMessage(content);
-      }
+      void this.handleUserMessage(content);
     }
   },
 
   async handleUserMessage(this: ChatViewProvider, content: string): Promise<void> {
     if (this.isProcessing || !this.view) return;
-    if (this.pendingPlan) return;
+
+    if (this.pendingPlan) {
+      const planMsg = this.messages.find(m => m.id === this.pendingPlan?.planMessageId);
+      if (!planMsg || planMsg.role !== 'plan') {
+        this.pendingPlan = undefined;
+        this.postMessage({ type: 'planPending', value: false, planMessageId: '' });
+        this.persistActiveSession();
+      } else {
+        if (!planMsg.plan) {
+          planMsg.plan = { status: 'draft', task: this.pendingPlan.task };
+          this.postMessage({ type: 'updateMessage', message: planMsg });
+        }
+        await this.revisePendingPlan(this.pendingPlan.planMessageId, content);
+        return;
+      }
+    }
 
     await this.ensureSessionsLoaded();
 
@@ -63,6 +74,7 @@ Object.assign(ChatViewProvider.prototype, {
     }
 
     this.postMessage({ type: 'message', message: userMsg });
+    void this.postUnknownSkillWarnings(content, userMsg.id);
     if (this.isSessionPersistenceEnabled()) {
       this.persistActiveSession();
     }

@@ -286,11 +286,7 @@ Object.assign(ChatViewProvider.prototype, {
             break;
           case 'send':
             this.abortRequested = false;
-            if (this.pendingPlan && this.mode === 'plan') {
-              await this.revisePendingPlan(this.pendingPlan.planMessageId, data.message);
-            } else {
-              await this.handleUserMessage(data.message);
-            }
+            await this.handleUserMessage(data.message);
             break;
           case 'abort':
             // If we're blocked waiting for tool approval, resolve those promises so the agent can unwind.
@@ -486,6 +482,7 @@ Object.assign(ChatViewProvider.prototype, {
       const currentModelIsFavorite = await this.isModelFavorite(this.currentModel);
 
       const todos = await readTodos(this.context, this.activeSessionId);
+      const skills = await this.getSkillNamesForUI();
 
       this.postMessage({
         type: 'init',
@@ -505,6 +502,7 @@ Object.assign(ChatViewProvider.prototype, {
         processing: this.isProcessing,
         pendingApprovals: this.pendingApprovals.size,
         autoApproveThisRun: this.autoApproveThisRun,
+        skills,
         ...this.getUndoRedoAvailability(),
       });
     } catch (error) {
@@ -522,6 +520,7 @@ Object.assign(ChatViewProvider.prototype, {
 
       try {
         const todos = await readTodos(this.context, this.activeSessionId);
+        const skills = await this.getSkillNamesForUI();
         this.postMessage({
           type: 'init',
           sessions: this.getSessionsForUI(),
@@ -540,6 +539,7 @@ Object.assign(ChatViewProvider.prototype, {
           processing: this.isProcessing,
           pendingApprovals: this.pendingApprovals.size,
           autoApproveThisRun: this.autoApproveThisRun,
+          skills,
           ...this.getUndoRedoAvailability(),
         });
       } catch (postError) {

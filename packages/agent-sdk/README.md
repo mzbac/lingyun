@@ -162,6 +162,7 @@ Useful event types:
 
 - `assistant_token`: user-facing assistant text (with `<think>` and tool-call markers removed)
 - `thought_token`: model “thinking” tokens (only if the provider emits them)
+- `notice`: user-facing notices from the runtime (e.g. unknown `$skill-name`)
 - `tool_call` / `tool_result` / `tool_blocked`: tool lifecycle
 - `compaction_start` / `compaction_end`: context overflow mitigation
 
@@ -178,6 +179,38 @@ You can disable built-ins:
 ```ts
 createLingyunAgent({ llm: { /*...*/ }, tools: { builtin: false } })
 ```
+
+### Skills (`$skill-name`)
+
+The SDK supports Codex-style `$skill-name` mentions.
+If a user message includes `$<skill-name>`, LingYun:
+
+1. Looks up the skill by `name:` in discovered `SKILL.md` files
+2. Injects the skill body as a synthetic `<skill>...</skill>` user message before calling the model
+
+Unknown skills are ignored and emitted as `notice` events (`callbacks.onNotice`).
+
+Configure discovery/injection via `tools.builtinOptions.skills`:
+
+```ts
+createLingyunAgent({
+  llm: { provider: 'openaiCompatible', baseURL: 'http://localhost:8080/v1', model: 'your-model-id' },
+  workspaceRoot: process.cwd(),
+  tools: {
+    builtinOptions: {
+      skills: {
+        enabled: true,
+        paths: ['.lingyun/skills', '~/.codex/skills'],
+        maxPromptSkills: 50,
+        maxInjectSkills: 5,
+        maxInjectChars: 20_000,
+      },
+    },
+  },
+});
+```
+
+Note: the “Available skills” list included in the system prompt is built once per `LingyunAgent` instance. Create a new agent to refresh it.
 
 ### Approvals
 
@@ -217,6 +250,43 @@ registry.registerTool(
 
 Return formatting hints via `ToolResult.metadata.outputText` / `title` to control what the agent sees.
 
+### Browser automation (agent-browser)
+
+If you install `agent-browser` and Chromium, you can register an **interactive browser toolset** (sessions + snapshot + actions):
+
+```bash
+npm i -g agent-browser
+agent-browser install
+```
+
+Then in your host:
+
+```ts
+import { createLingyunAgent, registerAgentBrowserTools } from '@kooka/agent-sdk';
+
+const { registry } = createLingyunAgent({
+  llm: { provider: 'openaiCompatible', baseURL: 'http://localhost:8080/v1', model: 'your-model-id' },
+  workspaceRoot: process.cwd(),
+});
+
+registerAgentBrowserTools(registry, {
+  artifactsDir: '.kooka/agent-browser',
+  timeoutMs: 30_000,
+});
+```
+
+Tools:
+- `browser.startSession` / `browser.closeSession`
+- `browser.snapshot` (read-only; returns accessibility tree with refs like `@e2`)
+- `browser.run` (requires approval; runs click/fill/type/wait/get/screenshot/pdf/trace actions)
+
+Security defaults:
+- HTTPS-only and blocks private hosts / IPs by default
+- No cookies/storage/state/headers APIs are exposed by this toolset (no auth-state support)
+- Screenshot/PDF/trace artifacts are written under `artifactsDir` (relative to `workspaceRoot` when set)
+
+If `agent-browser` is not on PATH, set `AGENT_BROWSER_BIN` or pass `agentBrowserBin` to `registerAgentBrowserTools`.
+
 ## Inspiration / Compatibility
 
 - **OpenCode SDK**: OpenCode’s JavaScript SDK primarily wraps an HTTP server (client + server helpers). LingYun SDK starts with an **in‑process** agent runtime that can later be wrapped by an HTTP server if needed.
@@ -241,7 +311,52 @@ A session holds:
 - message history (OpenCode-aligned “assistant message + parts”)
 - any pending plan text (optional)
 
-Sessions are serializable; persistence is the host application’s responsibility.
+Sessions are serializable; persistence is the host application’s responsibility. The SDK does not write to disk.
+
+You can snapshot + restore:
+
+```ts
+import { LingyunSession, snapshotSession, restoreSession } from '@kooka/agent-sdk';
+
+const session = new LingyunSession({ sessionId: 's1' });
+
+const snapshot = snapshotSession(session, {
+  sessionId: 's1',
+  // includeFileHandles: false, // omit fileId/path hints if you don't want to persist them
+});
+
+// Persist `snapshot` however you want (JSON files, sqlite, postgres, ...).
+
+const restored = restoreSession(snapshot);
+```
+
+If you want SQLite, the SDK ships a `SqliteSessionStore` that works with any driver you provide:
+
+```ts
+import Database from 'better-sqlite3';
+import { SqliteSessionStore, snapshotSession, restoreSession, type SqliteDriver } from '@kooka/agent-sdk';
+
+const db = new Database('lingyun.db');
+
+const driver: SqliteDriver = {
+  execute: (sql, params = []) => void db.prepare(sql).run(...params),
+  queryOne: (sql, params = []) => db.prepare(sql).get(...params),
+  queryAll: (sql, params = []) => db.prepare(sql).all(...params),
+};
+
+const store = new SqliteSessionStore(driver);
+
+const sessionId = 's1';
+const session = new LingyunSession({ sessionId });
+
+await store.save(sessionId, snapshotSession(session, { sessionId }));
+const loaded = await store.load(sessionId);
+const loadedSession = loaded ? restoreSession(loaded) : new LingyunSession({ sessionId });
+```
+
+Notes:
+- The SDK does not bundle a SQLite client library; you bring your own (e.g. `better-sqlite3`, `sqlite3`).
+- Session snapshots contain conversation text and may include file paths; treat persisted data as sensitive.
 
 ### Run + Streaming
 

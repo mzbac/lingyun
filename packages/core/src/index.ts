@@ -1,11 +1,14 @@
 export type { ToolParameterSchema } from './toolSchema';
 
-export { expandHome, isSubPath, normalizeFsPath } from './fsPath';
+export { expandHome, isSubPath, normalizeFsPath, redactFsPathForPrompt } from './fsPath';
 
 export type { PermissionAction, PermissionRule, PermissionRuleset } from './permission';
 export { evaluatePermission, mergeRulesets, wildcardMatch } from './permission';
 
 export { findExternalPathReferencesInShellCommand, isPathInsideWorkspace } from './shellPaths';
+
+export type { SkillListEntry } from './skills';
+export { extractSkillMentions, renderSkillsSectionForPrompt, selectSkillsForText } from './skills';
 
 export type { ValidationResult, ShellCommandDecision } from './validation';
 export {

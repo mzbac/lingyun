@@ -8,6 +8,7 @@
 		    const messages = document.getElementById('messages');
 		    const empty = document.getElementById('empty');
 		    const input = document.getElementById('input');
+		    const skillDropdown = document.getElementById('skillDropdown');
 		    const sendBtn = document.getElementById('send');
 		    const newSessionBtn = document.getElementById('newSession');
 		    const compactSessionBtn = document.getElementById('compactSession');
@@ -88,6 +89,166 @@
 	    let inputHistoryEntries = [];
 	    let inputHistoryIndex = -1;
 	    let inputHistorySavedDraft = null;
+
+	    const SKILL_DROPDOWN_MAX_ITEMS = 30;
+	    let availableSkills = [];
+	    let skillDropdownOpen = false;
+	    let skillDropdownItems = [];
+	    let skillDropdownSelectedIndex = 0;
+	    let skillDropdownTokenStart = -1;
+	    let skillDropdownQuery = '';
+
+	    function setAvailableSkills(skills) {
+	      const next = Array.isArray(skills) ? skills : [];
+	      const seen = new Set();
+	      const normalized = [];
+	      for (const item of next) {
+	        if (typeof item !== 'string') continue;
+	        const name = item.trim();
+	        if (!name) continue;
+	        if (seen.has(name)) continue;
+	        seen.add(name);
+	        normalized.push(name);
+	      }
+	      availableSkills = normalized;
+	      updateSkillDropdown();
+	    }
+
+	    function closeSkillDropdown() {
+	      if (!skillDropdown) return;
+	      skillDropdownOpen = false;
+	      skillDropdownItems = [];
+	      skillDropdownSelectedIndex = 0;
+	      skillDropdownTokenStart = -1;
+	      skillDropdownQuery = '';
+	      skillDropdown.classList.add('hidden');
+	      skillDropdown.innerHTML = '';
+	    }
+
+	    function getSkillMentionContext() {
+	      if (!input) return null;
+	      if (input.selectionStart !== input.selectionEnd) return null;
+	      const caret = input.selectionStart || 0;
+	      const before = (input.value || '').slice(0, caret);
+	      const match = before.match(/(^|\s)\$([A-Za-z0-9_.-]*)$/);
+	      if (!match) return null;
+	      const query = match[2] || '';
+	      const start = caret - query.length - 1;
+	      return { start, query };
+	    }
+
+	    function filterSkillsForQuery(query) {
+	      const q = (query || '').toLowerCase();
+	      if (!q) return availableSkills.slice(0, SKILL_DROPDOWN_MAX_ITEMS);
+	      const starts = availableSkills.filter((name) => name.toLowerCase().startsWith(q));
+	      const matches = starts.length > 0 ? starts : availableSkills.filter((name) => name.toLowerCase().includes(q));
+	      return matches.length > SKILL_DROPDOWN_MAX_ITEMS ? matches.slice(0, SKILL_DROPDOWN_MAX_ITEMS) : matches;
+	    }
+
+	    function renderSkillDropdown() {
+	      if (!skillDropdown) return;
+	      skillDropdown.innerHTML = '';
+
+	      if (skillDropdownItems.length === 0) {
+	        const emptyEl = document.createElement('div');
+	        emptyEl.className = 'skill-dropdown-empty';
+	        emptyEl.textContent = availableSkills.length === 0 ? 'No skills available.' : 'No matching skills.';
+	        skillDropdown.appendChild(emptyEl);
+	      } else {
+	        for (let i = 0; i < skillDropdownItems.length; i++) {
+	          const name = skillDropdownItems[i];
+	          const itemEl = document.createElement('button');
+	          itemEl.type = 'button';
+	          itemEl.className = 'skill-dropdown-item' + (i === skillDropdownSelectedIndex ? ' selected' : '');
+	          itemEl.dataset.index = String(i);
+	          itemEl.setAttribute('role', 'option');
+	          itemEl.setAttribute('aria-selected', i === skillDropdownSelectedIndex ? 'true' : 'false');
+	          itemEl.textContent = name;
+	          skillDropdown.appendChild(itemEl);
+	        }
+	      }
+
+	      skillDropdown.classList.toggle('hidden', false);
+	      skillDropdownOpen = true;
+
+	      const selected = skillDropdown.querySelector('.skill-dropdown-item.selected');
+	      if (selected && typeof selected.scrollIntoView === 'function') {
+	        try { selected.scrollIntoView({ block: 'nearest' }); } catch {}
+	      }
+	    }
+
+	    function updateSkillDropdown() {
+	      if (!skillDropdown) return;
+	      if (!initReceived || isProcessing) {
+	        closeSkillDropdown();
+	        return;
+	      }
+
+	      const ctx = getSkillMentionContext();
+	      if (!ctx) {
+	        closeSkillDropdown();
+	        return;
+	      }
+
+	      const prevQuery = skillDropdownQuery;
+	      const prevStart = skillDropdownTokenStart;
+
+	      const nextItems = filterSkillsForQuery(ctx.query);
+	      skillDropdownItems = nextItems;
+	      skillDropdownTokenStart = ctx.start;
+	      skillDropdownQuery = ctx.query;
+
+	      const queryChanged = prevQuery !== ctx.query || prevStart !== ctx.start;
+	      if (queryChanged || skillDropdownSelectedIndex >= nextItems.length) {
+	        skillDropdownSelectedIndex = 0;
+	      }
+
+	      renderSkillDropdown();
+	    }
+
+	    function moveSkillDropdownSelection(delta) {
+	      if (!skillDropdownOpen) return;
+	      if (!skillDropdownItems || skillDropdownItems.length === 0) return;
+	      const count = skillDropdownItems.length;
+	      let next = (skillDropdownSelectedIndex + delta) % count;
+	      if (next < 0) next += count;
+	      skillDropdownSelectedIndex = next;
+	      renderSkillDropdown();
+	    }
+
+	    function applySkillSuggestion(name) {
+	      if (!input) return;
+	      const text = input.value || '';
+	      const start = skillDropdownTokenStart;
+	      if (!Number.isFinite(start) || start < 0 || start >= text.length || text[start] !== '$') return;
+
+	      let end = start + 1;
+	      while (end < text.length && /[A-Za-z0-9_.-]/.test(text[end])) end++;
+
+	      const before = text.slice(0, start);
+	      const after = text.slice(end);
+	      let nextText = before + '$' + name + after;
+	      let caret = before.length + 1 + name.length;
+	      if (caret === nextText.length) {
+	        nextText += ' ';
+	        caret += 1;
+	      }
+
+	      input.value = nextText;
+	      try { input.setSelectionRange(caret, caret); } catch {}
+	      updateInputLayout();
+	      closeSkillDropdown();
+	      try { input.focus(); } catch {}
+	    }
+
+	    function applySelectedSkill() {
+	      if (!skillDropdownOpen) return false;
+	      if (!skillDropdownItems || skillDropdownItems.length === 0) return false;
+	      const name = skillDropdownItems[skillDropdownSelectedIndex];
+	      if (!name) return false;
+	      applySkillSuggestion(name);
+	      return true;
+	    }
 
 	    function setInputHistoryEntries(entries) {
 	      const next = Array.isArray(entries) ? entries : [];
@@ -318,11 +479,12 @@
 	      'file.create': '📄'
 	    };
 
-    const avatarColors = {
-      user: 'U',
-      assistant: 'A',
-      thought: 'T'
-    };
+	    const avatarColors = {
+	      user: 'U',
+	      assistant: 'A',
+	      thought: 'T',
+	      warning: '!',
+	    };
 
 	    function setMode(mode) {
 	      currentMode = mode === 'plan' ? 'plan' : 'build';
@@ -498,9 +660,60 @@
         inputHistoryIndex = -1;
         inputHistorySavedDraft = null;
       }
+      updateSkillDropdown();
     });
 
+    input.addEventListener('click', () => updateSkillDropdown());
+    input.addEventListener('keyup', () => updateSkillDropdown());
+    input.addEventListener('focus', () => updateSkillDropdown());
+
+    if (skillDropdown) {
+      skillDropdown.addEventListener('mousedown', (e) => {
+        // Keep focus in the textarea when selecting a skill.
+        e.preventDefault();
+      });
+
+      skillDropdown.addEventListener('click', (e) => {
+        const item = e.target && e.target.closest ? e.target.closest('.skill-dropdown-item') : null;
+        if (!item) return;
+        const idx = Number(item.dataset.index);
+        if (!Number.isFinite(idx)) return;
+        skillDropdownSelectedIndex = Math.max(0, Math.min(idx, (skillDropdownItems || []).length - 1));
+        applySelectedSkill();
+      });
+    }
+
     input.addEventListener('keydown', (e) => {
+      if (skillDropdownOpen) {
+        const noModifiers = !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey;
+
+        if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && noModifiers) {
+          e.preventDefault();
+          moveSkillDropdownSelection(e.key === 'ArrowDown' ? 1 : -1);
+          return;
+        }
+
+        if (e.key === 'Tab' && noModifiers) {
+          if (applySelectedSkill()) {
+            e.preventDefault();
+            return;
+          }
+        }
+
+        if (e.key === 'Enter' && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) {
+          if (applySelectedSkill()) {
+            e.preventDefault();
+            return;
+          }
+        }
+
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          closeSkillDropdown();
+          return;
+        }
+      }
+
       if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
         if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
         if (!initReceived || isProcessing) return;
@@ -558,6 +771,7 @@
       inputHistorySavedDraft = null;
       input.value = '';
       updateInputLayout();
+      closeSkillDropdown();
       input.focus();
     });
 
@@ -577,6 +791,15 @@
 	    }
 
 	    document.addEventListener('click', (e) => {
+      if (skillDropdownOpen) {
+        const target = e && e.target ? e.target : null;
+        const clickedDropdown = !!(skillDropdown && target && skillDropdown.contains && skillDropdown.contains(target));
+        const clickedInput = target === input;
+        if (!clickedDropdown && !clickedInput) {
+          closeSkillDropdown();
+        }
+      }
+
       const quickAction = e.target.closest('.quick-action');
       if (quickAction) {
         const cmd = quickAction.dataset.cmd;
@@ -595,6 +818,7 @@
 		    function send() {
 		      const text = input.value.trim();
 		      if (!initReceived || !text || isProcessing) return;
+		      closeSkillDropdown();
 		      inputHistoryIndex = -1;
 		      inputHistorySavedDraft = null;
 		      addToInputHistory(text);

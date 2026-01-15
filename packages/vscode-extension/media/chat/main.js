@@ -115,6 +115,7 @@
 		          setPlanPending(!!data.planPending);
 		          setProcessing(!!data.processing);
 		          try { setInputHistoryEntries(Array.isArray(data.inputHistory) ? data.inputHistory : []); } catch {}
+		          try { setAvailableSkills(Array.isArray(data.skills) ? data.skills : []); } catch {}
 		          pendingApprovalsCount = Number(data.pendingApprovals || 0) || 0;
 		          autoApproveThisRun = !!data.autoApproveThisRun;
 		          updateApprovalBanner();

@@ -1,8 +1,7 @@
-import * as path from 'path';
 import * as vscode from 'vscode';
 
 import type { ToolDefinition, ToolHandler } from '../../core/types';
-import { optionalString } from '@kooka/core';
+import { optionalString, redactFsPathForPrompt } from '@kooka/core';
 import { getSkillIndex, loadSkillFile } from '../../core/skills';
 
 export const skillTool: ToolDefinition = {
@@ -104,9 +103,7 @@ export const skillHandler: ToolHandler = async (args, context) => {
     if (showDirs.length > 0) {
       lines.push('Searched directories:');
       for (const d of index.scannedDirs) {
-        const label = workspaceRoot && d.absPath.startsWith(workspaceRoot + path.sep)
-          ? path.relative(workspaceRoot, d.absPath) || '.'
-          : d.absPath;
+        const label = redactFsPathForPrompt(d.absPath, { workspaceRoot });
         lines.push(`- ${label} (${d.status}${d.reason ? `: ${d.reason}` : ''})`);
       }
     }
@@ -137,10 +134,11 @@ export const skillHandler: ToolHandler = async (args, context) => {
   }
 
   const { content } = await loadSkillFile(skill);
+  const displayDir = redactFsPathForPrompt(skill.dir, { workspaceRoot });
   const output = [
     `## Skill: ${skill.name}`,
     '',
-    `**Base directory**: ${skill.dir}`,
+    `**Base directory**: ${displayDir}`,
     '',
     content,
   ].join('\n');
@@ -150,7 +148,7 @@ export const skillHandler: ToolHandler = async (args, context) => {
     data: output.trimEnd(),
     metadata: {
       name: skill.name,
-      dir: skill.dir,
+      dir: displayDir,
       source: skill.source,
     },
   };

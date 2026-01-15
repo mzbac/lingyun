@@ -35,11 +35,15 @@ import {
   markPrunableToolOutputs,
 } from '../compaction';
 import {
+  extractSkillMentions,
   type AgentHistoryMessage,
   createAssistantHistoryMessage,
   createUserHistoryMessage,
+  redactFsPathForPrompt,
+  renderSkillsSectionForPrompt,
   finalizeStreamingParts,
   getMessageText,
+  selectSkillsForText,
   setDynamicToolError,
   setDynamicToolOutput,
   upsertDynamicToolCall,
@@ -62,13 +66,54 @@ import { extractPlanFromReasoning } from './planExtract';
 import { PluginManager } from '../hooks/pluginManager';
 import { delay as getRetryDelayMs, retryable as getRetryableLlmError, sleep as retrySleep } from './retry';
 import { generateSessionTitle as generateSessionTitleInternal } from '../sessionTitle';
-import {
-  extractSkillMentions,
-  getSkillIndex,
-  loadSkillFile,
-  renderSkillsSectionForPrompt,
-  selectSkillsForText,
-} from '../skills';
+import { getSkillIndex, loadSkillFile } from '../skills';
+
+let cachedSkillsPromptTextPromise: Promise<string | undefined> | undefined;
+
+async function getCachedSkillsPromptText(options: {
+  extensionContext: vscode.ExtensionContext;
+  workspaceRoot?: vscode.Uri;
+}): Promise<string | undefined> {
+  if (cachedSkillsPromptTextPromise) return cachedSkillsPromptTextPromise;
+
+  const enabled =
+    vscode.workspace.getConfiguration('lingyun').get<boolean>('skills.enabled', true) ?? true;
+  if (!enabled) {
+    cachedSkillsPromptTextPromise = Promise.resolve(undefined);
+    return cachedSkillsPromptTextPromise;
+  }
+
+  const allowExternalPaths =
+    vscode.workspace.getConfiguration('lingyun').get<boolean>('security.allowExternalPaths', false) ?? false;
+  const searchPaths =
+    vscode.workspace.getConfiguration('lingyun').get<string[]>('skills.paths', []) ?? [];
+  const maxPromptSkillsRaw =
+    vscode.workspace.getConfiguration('lingyun').get<number>('skills.maxPromptSkills', 50);
+  const maxPromptSkills =
+    Number.isFinite(maxPromptSkillsRaw as number) && (maxPromptSkillsRaw as number) >= 0
+      ? Math.floor(maxPromptSkillsRaw as number)
+      : 50;
+
+  const workspaceRoot = options.workspaceRoot?.fsPath ?? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+
+  cachedSkillsPromptTextPromise = getSkillIndex({
+    extensionContext: options.extensionContext,
+    workspaceRoot,
+    searchPaths,
+    allowExternalPaths,
+    watchWorkspace: true,
+  })
+    .then((index) =>
+      renderSkillsSectionForPrompt({
+        skills: index.skills,
+        maxSkills: maxPromptSkills,
+        workspaceRoot,
+      }),
+    )
+    .catch(() => undefined);
+
+  return cachedSkillsPromptTextPromise;
+}
 
 function dirnameUri(uri: vscode.Uri): vscode.Uri {
   const normalized = uri.path.replace(/\/+$/, '') || '/';
@@ -138,40 +183,6 @@ export class AgentLoop {
     return workspaceFolder?.uri ?? vscode.workspace.workspaceFolders?.[0]?.uri;
   }
 
-  private async refreshSkillsPromptText(options: { workspaceRoot?: vscode.Uri }): Promise<void> {
-    const enabled =
-      vscode.workspace.getConfiguration('lingyun').get<boolean>('skills.enabled', true) ?? true;
-    if (!enabled) {
-      this.skillsPromptText = undefined;
-      return;
-    }
-
-    const allowExternalPaths =
-      vscode.workspace.getConfiguration('lingyun').get<boolean>('security.allowExternalPaths', false) ?? false;
-    const searchPaths =
-      vscode.workspace.getConfiguration('lingyun').get<string[]>('skills.paths', []) ?? [];
-    const maxPromptSkillsRaw =
-      vscode.workspace.getConfiguration('lingyun').get<number>('skills.maxPromptSkills', 50);
-    const maxPromptSkills =
-      Number.isFinite(maxPromptSkillsRaw as number) && (maxPromptSkillsRaw as number) >= 0
-        ? Math.floor(maxPromptSkillsRaw as number)
-        : 50;
-
-    const workspaceRoot = options.workspaceRoot?.fsPath;
-    const index = await getSkillIndex({
-      extensionContext: this.context,
-      workspaceRoot,
-      searchPaths,
-      allowExternalPaths,
-      watchWorkspace: true,
-    });
-
-    this.skillsPromptText = renderSkillsSectionForPrompt({
-      skills: index.skills,
-      maxSkills: maxPromptSkills,
-    });
-  }
-
   private async injectSkillsForUserText(text: string): Promise<void> {
     const enabled =
       vscode.workspace.getConfiguration('lingyun').get<boolean>('skills.enabled', true) ?? true;
@@ -206,7 +217,7 @@ export class AgentLoop {
       return;
     }
 
-    const selected = selectSkillsForText(text, index);
+    const { selected } = selectSkillsForText(text, index);
     if (selected.length === 0) return;
 
     const maxInjectSkillsRaw =
@@ -235,7 +246,7 @@ export class AgentLoop {
         [
           '<skill>',
           `<name>${skill.name}</name>`,
-          `<path>${skill.filePath}</path>`,
+          `<path>${redactFsPathForPrompt(skill.filePath, { workspaceRoot })}</path>`,
           body.trimEnd(),
           truncated ? '\n\n... [TRUNCATED]' : '',
           '</skill>',
@@ -246,8 +257,12 @@ export class AgentLoop {
     }
 
     if (blocks.length > 0) {
-      this.history.push(createUserHistoryMessage(blocks.join('\n\n'), { synthetic: true }));
+      this.history.push(createUserHistoryMessage(blocks.join('\n\n'), { synthetic: true, skill: true }));
     }
+  }
+
+  private stripTurnSkillMessages(): void {
+    this.history = this.history.filter((msg) => !(msg.role === 'user' && msg.metadata?.skill));
   }
 
   private async refreshInstructions(): Promise<void> {
@@ -284,14 +299,15 @@ export class AgentLoop {
       }
     }
 
-    await this.refreshSkillsPromptText({ workspaceRoot }).catch(() => {
-      this.skillsPromptText = undefined;
+    this.skillsPromptText = await getCachedSkillsPromptText({
+      extensionContext: this.context,
+      workspaceRoot,
     });
   }
 
   exportState(): AgentSessionState {
     return {
-      history: [...this.history],
+      history: this.history.filter((msg) => !(msg.role === 'user' && msg.metadata?.skill)),
       pendingPlan: this.pendingPlan,
       fileHandles: this.fileHandles.exportState(),
     };
@@ -336,14 +352,15 @@ export class AgentLoop {
     await this.refreshInstructions();
 
     const planningSystem = this.composeSystemPrompt(this.getMode());
-    this.history.push(createUserHistoryMessage(task));
     await this.injectSkillsForUserText(task);
+    this.history.push(createUserHistoryMessage(task));
 
     try {
       const plan = (await this.loop(planningSystem, callbacks)).trim();
       this.pendingPlan = plan;
       return plan;
     } finally {
+      this.stripTurnSkillMessages();
       this._running = false;
       this.disposeAllCancellations();
       if (previousMode !== 'plan') {
@@ -390,12 +407,13 @@ export class AgentLoop {
 
     await this.refreshInstructions();
 
-    this.history.push(createUserHistoryMessage(task));
     await this.injectSkillsForUserText(task);
+    this.history.push(createUserHistoryMessage(task));
 
     try {
       return await this.loop(this.composeSystemPrompt(this.getMode()), callbacks);
     } finally {
+      this.stripTurnSkillMessages();
       this._running = false;
       this.disposeAllCancellations();
     }
@@ -411,12 +429,13 @@ export class AgentLoop {
     this.pendingPlan = undefined;
     await this.refreshInstructions();
 
-    this.history.push(createUserHistoryMessage(message));
     await this.injectSkillsForUserText(message);
+    this.history.push(createUserHistoryMessage(message));
 
     try {
       return await this.loop(this.composeSystemPrompt(this.getMode()), callbacks);
     } finally {
+      this.stripTurnSkillMessages();
       this._running = false;
       this.disposeAllCancellations();
     }

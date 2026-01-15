@@ -4,6 +4,7 @@ export type AgentHistoryMetadata = {
   mode?: 'build' | 'plan';
   finishReason?: string;
   synthetic?: boolean;
+  skill?: boolean;
   summary?: boolean;
   compaction?: { auto: boolean };
   tokens?: {
@@ -20,12 +21,16 @@ export type AgentHistoryMessage = UIMessage<AgentHistoryMetadata>;
 
 export function createUserHistoryMessage(
   text: string,
-  options?: { synthetic?: boolean; compaction?: { auto: boolean } }
+  options?: { synthetic?: boolean; skill?: boolean; compaction?: { auto: boolean } }
 ): AgentHistoryMessage {
   const metadata: AgentHistoryMetadata = {};
 
   if (options?.synthetic) {
     metadata.synthetic = true;
+  }
+
+  if (options?.skill) {
+    metadata.skill = true;
   }
 
   if (options?.compaction) {
@@ -148,4 +153,3 @@ export function finalizeStreamingParts(message: AgentHistoryMessage): void {
     }
   }
 }
-

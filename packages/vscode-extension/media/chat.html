@@ -2350,6 +2350,11 @@
       border: 1px solid var(--vscode-inputValidation-errorBorder);
     }
 
+    .warning .message-content {
+      background: var(--vscode-inputValidation-warningBackground, rgba(255, 196, 0, 0.12));
+      border: 1px solid var(--vscode-inputValidation-warningBorder, rgba(255, 196, 0, 0.35));
+    }
+
     .input-area {
       padding: 8px 12px;
       border-top: 1px solid var(--vscode-widget-border);
@@ -2660,6 +2665,49 @@
     textarea:disabled {
       opacity: 0.5;
       cursor: not-allowed;
+    }
+
+    .skill-dropdown {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: calc(100% + 6px);
+      background: var(--vscode-input-background);
+      border: 1px solid var(--vscode-input-border);
+      border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+      max-height: 240px;
+      overflow-y: auto;
+      z-index: 50;
+    }
+
+    .skill-dropdown.hidden {
+      display: none;
+    }
+
+    .skill-dropdown-item {
+      width: 100%;
+      background: transparent;
+      border: none;
+      padding: 8px 10px;
+      cursor: pointer;
+      text-align: left;
+      font: inherit;
+      color: var(--vscode-input-foreground);
+    }
+
+    .skill-dropdown-item:hover {
+      background: var(--vscode-list-hoverBackground, rgba(255, 255, 255, 0.06));
+    }
+
+    .skill-dropdown-item.selected {
+      background: var(--vscode-list-activeSelectionBackground);
+      color: var(--vscode-list-activeSelectionForeground);
+    }
+
+    .skill-dropdown-empty {
+      padding: 8px 10px;
+      opacity: 0.7;
     }
 
     .input-actions {
@@ -3036,6 +3084,7 @@
   <div class="input-area">
     <div class="input-wrapper">
       <textarea id="input" placeholder="Describe a task..." rows="1" aria-label="Chat input"></textarea>
+      <div id="skillDropdown" class="skill-dropdown hidden" role="listbox" aria-label="Skill suggestions"></div>
       <div class="input-actions">
         <button id="clearInput" class="input-btn" title="Clear input" aria-label="Clear input" disabled>✕</button>
       </div>

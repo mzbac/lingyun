@@ -3,7 +3,8 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { extractSkillMentions, getSkillIndex, loadSkillFile, renderSkillsSectionForPrompt, selectSkillsForText } from '../../core/skills';
+import { extractSkillMentions, renderSkillsSectionForPrompt, selectSkillsForText } from '@kooka/core';
+import { getSkillIndex, loadSkillFile } from '../../core/skills';
 
 async function writeFile(filePath: string, content: string): Promise<void> {
   await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
@@ -49,8 +50,8 @@ suite('Skills', () => {
       scannedDirs: [],
     };
 
-    assert.deepStrictEqual(selectSkillsForText('Try $two then $one.', index).map((s) => s.name), ['two', 'one']);
-    assert.deepStrictEqual(selectSkillsForText('Unknown $three.', index).map((s) => s.name), []);
+    assert.deepStrictEqual(selectSkillsForText('Try $two then $one.', index).selected.map((s) => s.name), ['two', 'one']);
+    assert.deepStrictEqual(selectSkillsForText('Unknown $three.', index).selected.map((s) => s.name), []);
   });
 
   test('renderSkillsSectionForPrompt renders skill list and usage rules', () => {

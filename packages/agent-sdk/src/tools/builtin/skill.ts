@@ -1,7 +1,5 @@
-import * as path from 'path';
-
 import type { ToolDefinition, ToolHandler } from '../../types.js';
-import { optionalString } from '@kooka/core';
+import { optionalString, redactFsPathForPrompt } from '@kooka/core';
 import { getSkillIndex, loadSkillFile } from '../../skills.js';
 
 function formatAvailableSkills(skills: Array<{ name: string; description: string }>): string {
@@ -95,10 +93,7 @@ export function createSkillTool(options: {
       if (showDirs.length > 0) {
         lines.push('Searched directories:');
         for (const d of index.scannedDirs) {
-          const label =
-            workspaceRoot && d.absPath.startsWith(workspaceRoot + path.sep)
-              ? path.relative(workspaceRoot, d.absPath) || '.'
-              : d.absPath;
+          const label = redactFsPathForPrompt(d.absPath, { workspaceRoot });
           lines.push(`- ${label} (${d.status}${d.reason ? `: ${d.reason}` : ''})`);
         }
       }
@@ -129,14 +124,15 @@ export function createSkillTool(options: {
     }
 
     const { content } = await loadSkillFile(skill);
-    const output = [`## Skill: ${skill.name}`, '', `**Base directory**: ${skill.dir}`, '', content].join('\n');
+    const displayDir = redactFsPathForPrompt(skill.dir, { workspaceRoot });
+    const output = [`## Skill: ${skill.name}`, '', `**Base directory**: ${displayDir}`, '', content].join('\n');
 
     return {
       success: true,
       data: output.trimEnd(),
       metadata: {
         name: skill.name,
-        dir: skill.dir,
+        dir: displayDir,
         source: skill.source,
       },
     };
