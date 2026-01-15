@@ -1,6 +1,6 @@
 {
   "name": "@kooka/core",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "Shared LingYun core library (runtime-agnostic agent primitives).",
   "license": "Apache-2.0",
