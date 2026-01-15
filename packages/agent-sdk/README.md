@@ -24,6 +24,8 @@ pnpm install
 pnpm --filter @kooka/agent-sdk build
 ```
 
+Tip: in a clean monorepo checkout, this auto-builds missing `@kooka/core` outputs (types + runtime entrypoints).
+
 ### As a dependency (local path)
 
 In another project’s `package.json`:
@@ -99,7 +101,31 @@ try {
 }
 ```
 
-CommonJS:
+## Custom Tools
+
+`createLingyunAgent(...)` returns a `ToolRegistry` so hosts can register their own tools:
+
+```ts
+import { createLingyunAgent, type ToolDefinition } from '@kooka/agent-sdk';
+
+const { agent, registry } = createLingyunAgent({ /* ... */ });
+
+const timeTool: ToolDefinition = {
+  id: 'time.now',
+  name: 'time.now',
+  description: 'Get the current time as an ISO string.',
+  parameters: { type: 'object', properties: {} },
+  execution: { type: 'function', handler: 'time.now' },
+  metadata: { readOnly: true },
+};
+
+registry.registerTool(timeTool, async () => ({
+  success: true,
+  data: { now: new Date().toISOString() },
+}));
+```
+
+## CommonJS
 
 ```js
 const { createLingyunAgent, LingyunSession } = await import('@kooka/agent-sdk')

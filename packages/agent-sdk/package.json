@@ -12,7 +12,8 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
+      "default": "./dist/index.js",
+      "import": "./dist/index.js"
     }
   },
   "files": [
@@ -21,10 +22,10 @@
   ],
   "scripts": {
     "clean": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true }); require('fs').rmSync('dist-test', { recursive: true, force: true })\"",
-    "build": "pnpm run clean && pnpm --filter @kooka/core build && tsc -p tsconfig.json",
+    "build": "pnpm run clean && node scripts/ensure-core-build.cjs && tsc -p tsconfig.json",
     "prepack": "pnpm run build",
-    "typecheck": "pnpm --filter @kooka/core build && tsc -p tsconfig.json --noEmit",
-    "build:test": "tsc -p tsconfig.test.json",
+    "typecheck": "node scripts/ensure-core-build.cjs && tsc -p tsconfig.json --noEmit",
+    "build:test": "node scripts/ensure-core-build.cjs && tsc -p tsconfig.test.json",
     "test": "pnpm run build && pnpm run build:test && mocha --ui tdd ./dist-test/suite/*.test.js",
     "test:e2e": "pnpm run build && pnpm run build:test && mocha --ui tdd --timeout 300000 ./dist-test/e2e/*.test.js"
   },
