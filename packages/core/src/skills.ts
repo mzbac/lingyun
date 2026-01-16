@@ -81,7 +81,8 @@ export function renderSkillsSectionForPrompt(options: {
     [
       '- Trigger: If the user includes `$<skill-name>` in their message, you MUST apply that skill for this turn.',
       '- The skill contents will be provided as a `<skill>...</skill>` block in the conversation history.',
-      '- If multiple skills are mentioned, apply them all (use the minimal set that covers the request).',
+      '- If multiple skills are mentioned, you MUST apply ALL of them for this turn (skills are additive; do not ignore one).',
+      '- Skills are listed in the order they were mentioned. If instructions conflict, call it out and ask the user how to proceed.',
       '- Do not carry skills across turns unless they are re-mentioned.',
       '- If a skill is missing or can’t be loaded, say so briefly and proceed without it.',
     ].join('\n'),

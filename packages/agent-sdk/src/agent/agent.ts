@@ -51,7 +51,7 @@ import { EDIT_TOOL_IDS, MAX_TOOL_RESULT_LENGTH, THINK_BLOCK_REGEX, TOOL_BLOCK_RE
 import { delay as getRetryDelayMs, retryable as getRetryableLlmError, sleep as retrySleep } from './retry.js';
 import type { ToolRegistry } from '../tools/registry.js';
 import { DEFAULT_SKILL_PATHS } from '../tools/builtin/index.js';
-import { getSkillIndex, loadSkillFile } from '../skills.js';
+import { getSkillIndex, loadSkillFile, type SkillInfo } from '../skills.js';
 
 type AsyncQueueState<T> = {
   values: T[];
@@ -1324,7 +1324,7 @@ export class LingyunAgent {
       signal,
     });
 
-    const { selected, unknown } = selectSkillsForText(text, index);
+    const { selected, unknown } = selectSkillsForText<SkillInfo>(text, index);
     if (unknown.length > 0) {
       const availableSample = index.skills
         .map((s) => s.name)
@@ -1346,8 +1346,23 @@ export class LingyunAgent {
     const maxSkills = this.skillsConfig.maxInjectSkills;
     const maxChars = this.skillsConfig.maxInjectChars;
 
+    const selectedForInject = selected.slice(0, maxSkills);
+    const activeLabel = selectedForInject.map((s: SkillInfo) => `$${s.name}`).join(', ');
+
     const blocks: string[] = [];
-    for (const skill of selected.slice(0, maxSkills)) {
+    if (activeLabel) {
+      blocks.push(
+        [
+          '<skills>',
+          `<active>${activeLabel}</active>`,
+          'You MUST apply ALL active skills for the next user request.',
+          'Treat skill instructions as additive. If they conflict, call it out and ask the user how to proceed (do not ignore a skill silently).',
+          '</skills>',
+        ].join('\n'),
+      );
+    }
+
+    for (const skill of selectedForInject) {
       if (signal?.aborted) break;
 
       let body: string;

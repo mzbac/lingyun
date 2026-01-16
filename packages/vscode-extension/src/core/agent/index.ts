@@ -227,8 +227,23 @@ export class AgentLoop {
         ? Math.floor(maxInjectSkillsRaw as number)
         : 5;
 
+    const selectedForInject = selected.slice(0, maxInjectSkills);
+    const activeLabel = selectedForInject.map((s) => `$${s.name}`).join(', ');
+
     const blocks: string[] = [];
-    for (const skill of selected.slice(0, maxInjectSkills)) {
+    if (activeLabel) {
+      blocks.push(
+        [
+          '<skills>',
+          `<active>${activeLabel}</active>`,
+          'You MUST apply ALL active skills for the next user request.',
+          'Treat skill instructions as additive. If they conflict, call it out and ask the user how to proceed (do not ignore a skill silently).',
+          '</skills>',
+        ].join('\n'),
+      );
+    }
+
+    for (const skill of selectedForInject) {
       let body: string;
       try {
         body = (await loadSkillFile(skill)).content;
