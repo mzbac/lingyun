@@ -48,16 +48,18 @@ export {
   upsertDynamicToolCall,
 } from './history';
 
-export type { CompactionConfig, ModelLimit } from './compaction';
+export type { CompactionConfig, ModelLimit, ToolOutputCompactionMode } from './compaction';
 export {
   COMPACTED_TOOL_PLACEHOLDER,
   COMPACTION_AUTO_CONTINUE_TEXT,
   COMPACTION_MARKER_TEXT,
   COMPACTION_PROMPT_TEXT,
   COMPACTION_SYSTEM_PROMPT,
+  createHistoryForCompactionPrompt,
   createHistoryForModel,
   extractUsageTokens,
   getEffectiveHistory,
+  markPreviousAssistantToolOutputs,
   getReservedOutputTokens,
   isOverflow,
   markPrunableToolOutputs,

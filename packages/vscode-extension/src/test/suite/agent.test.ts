@@ -951,6 +951,80 @@ suite('AgentLoop', () => {
     assert.strictEqual(toolPart.output.data, COMPACTED_TOOL_PLACEHOLDER);
   });
 
+  test('run - tool output compaction afterToolCall', async () => {
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const previousMode = cfg.get<unknown>('compaction.toolOutputMode');
+    await cfg.update('compaction.toolOutputMode', 'afterToolCall', true);
+
+    try {
+      mockLLM.setNextResponse({
+        kind: 'tool-call',
+        toolCallId: 'call_compact_1',
+        toolName: 'test.echo',
+        input: { message: 'Hello' },
+      });
+      mockLLM.queueResponse({ kind: 'text', content: 'Done' });
+
+      const result = await agent.run('Echo something');
+      assert.strictEqual(result, 'Done');
+
+      const history = agent.getHistory();
+      const toolMessage = history.find(
+        (m) =>
+          m.role === 'assistant' &&
+          m.parts.some((p: any) => p.type === 'dynamic-tool' && p.toolName === 'test.echo' && p.state === 'output-available'),
+      ) as any;
+      assert.ok(toolMessage, 'tool message exists');
+
+      const toolPart = toolMessage.parts.find((p: any) => p.type === 'dynamic-tool' && p.toolName === 'test.echo') as any;
+      assert.ok(typeof toolPart.compactedAt === 'number', 'tool output is marked compacted after being consumed once');
+
+      const prepared = createHistoryForModel(history as any);
+      const preparedToolMessage = prepared.find(
+        (m: any) =>
+          m.role === 'assistant' &&
+          m.parts.some((p: any) => p.type === 'dynamic-tool' && p.toolName === 'test.echo' && p.state === 'output-available'),
+      ) as any;
+      const preparedToolPart = preparedToolMessage.parts.find((p: any) => p.type === 'dynamic-tool' && p.toolName === 'test.echo') as any;
+      assert.strictEqual(preparedToolPart.output.data, COMPACTED_TOOL_PLACEHOLDER);
+    } finally {
+      await cfg.update('compaction.toolOutputMode', previousMode as any, true);
+    }
+  });
+
+  test('run - tool output compaction onCompaction', async () => {
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const previousMode = cfg.get<unknown>('compaction.toolOutputMode');
+    await cfg.update('compaction.toolOutputMode', 'onCompaction', true);
+
+    try {
+      mockLLM.setNextResponse({
+        kind: 'tool-call',
+        toolCallId: 'call_compact_2',
+        toolName: 'test.echo',
+        input: { message: 'Hello' },
+      });
+      mockLLM.queueResponse({ kind: 'text', content: 'Done' });
+
+      const result = await agent.run('Echo something');
+      assert.strictEqual(result, 'Done');
+
+      const history = agent.getHistory();
+      const toolMessage = history.find(
+        (m) =>
+          m.role === 'assistant' &&
+          m.parts.some((p: any) => p.type === 'dynamic-tool' && p.toolName === 'test.echo' && p.state === 'output-available'),
+      ) as any;
+      assert.ok(toolMessage, 'tool message exists');
+
+      const toolPart = toolMessage.parts.find((p: any) => p.type === 'dynamic-tool' && p.toolName === 'test.echo') as any;
+      assert.ok(toolPart.compactedAt === undefined, 'tool output is not compacted outside of session compaction');
+      assert.strictEqual(toolPart.output?.data, 'Echo: Hello');
+    } finally {
+      await cfg.update('compaction.toolOutputMode', previousMode as any, true);
+    }
+  });
+
   test('history conversion - tool messages always follow tool calls', async () => {
     mockLLM.setNextResponse({
       kind: 'tool-call',

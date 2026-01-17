@@ -18,6 +18,7 @@ import {
   COMPACTION_PROMPT_TEXT,
   COMPACTION_SYSTEM_PROMPT,
   createAssistantHistoryMessage,
+  createHistoryForCompactionPrompt,
   createHistoryForModel,
   createUserHistoryMessage,
   evaluatePermission,
@@ -31,7 +32,7 @@ import {
   getReservedOutputTokens,
   isOverflow as isContextOverflow,
   isPathInsideWorkspace,
-  markPrunableToolOutputs,
+  markPreviousAssistantToolOutputs,
   redactFsPathForPrompt,
   renderSkillsSectionForPrompt,
   selectSkillsForText,
@@ -248,20 +249,22 @@ export class LingyunAgent {
 
     this.modelLimits = runtime?.modelLimits;
 
-    const baseCompaction: CompactionConfig = {
-      auto: true,
-      prune: true,
-      pruneProtectTokens: 40_000,
-      pruneMinimumTokens: 20_000,
-    };
-    const c = runtime?.compaction ?? {};
-    this.compactionConfig = {
-      auto: c.auto ?? baseCompaction.auto,
-      prune: c.prune ?? baseCompaction.prune,
-      pruneProtectTokens: Math.max(0, c.pruneProtectTokens ?? baseCompaction.pruneProtectTokens),
-      pruneMinimumTokens: Math.max(0, c.pruneMinimumTokens ?? baseCompaction.pruneMinimumTokens),
-    };
-  }
+	    const baseCompaction: CompactionConfig = {
+	      auto: true,
+	      prune: true,
+	      pruneProtectTokens: 40_000,
+	      pruneMinimumTokens: 20_000,
+	      toolOutputMode: 'afterToolCall',
+	    };
+	    const c = runtime?.compaction ?? {};
+	    this.compactionConfig = {
+	      auto: c.auto ?? baseCompaction.auto,
+	      prune: c.prune ?? baseCompaction.prune,
+	      pruneProtectTokens: Math.max(0, c.pruneProtectTokens ?? baseCompaction.pruneProtectTokens),
+	      pruneMinimumTokens: Math.max(0, c.pruneMinimumTokens ?? baseCompaction.pruneMinimumTokens),
+	      toolOutputMode: c.toolOutputMode ?? baseCompaction.toolOutputMode,
+	    };
+	  }
 
   updateConfig(config: Partial<AgentConfig>): void {
     this.config = { ...this.config, ...config };
@@ -976,7 +979,7 @@ export class LingyunAgent {
       });
 
       const effective = getEffectiveHistory(session.history);
-      const prepared = createHistoryForModel(effective);
+      const prepared = createHistoryForCompactionPrompt(effective, this.compactionConfig);
       const withoutIds = prepared.map(({ id: _id, ...rest }: AgentHistoryMessage) => rest);
 
       const compactionUser = createUserHistoryMessage(promptText, { synthetic: true });
@@ -1268,7 +1271,9 @@ export class LingyunAgent {
       const lastAssistantText = getMessageText(assistantMessage).trim();
       lastResponse = lastAssistantText || lastResponse;
 
-      markPrunableToolOutputs(session.history, this.compactionConfig);
+      if (this.compactionConfig.prune && this.compactionConfig.toolOutputMode === 'afterToolCall') {
+        markPreviousAssistantToolOutputs(session.history);
+      }
       await Promise.resolve(callbacksSafe?.onIterationEnd?.(iteration));
 
       const modelLimit = this.getModelLimit(modelId);

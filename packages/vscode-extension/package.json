@@ -249,6 +249,15 @@
           "default": 20000,
           "description": "Only prune tool outputs if at least this many tokens would be cleared"
         },
+        "lingyun.compaction.toolOutputMode": {
+          "type": "string",
+          "default": "afterToolCall",
+          "enum": [
+            "onCompaction",
+            "afterToolCall"
+          ],
+          "description": "When to compact tool outputs in the model prompt. onCompaction only prunes outputs during session compaction; afterToolCall prunes tool outputs after the model has seen them once."
+        },
         "lingyun.autoApprove": {
           "type": "boolean",
           "default": false,

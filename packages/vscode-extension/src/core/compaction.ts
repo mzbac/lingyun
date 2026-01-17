@@ -8,9 +8,11 @@ export {
   COMPACTION_MARKER_TEXT,
   COMPACTION_PROMPT_TEXT,
   COMPACTION_SYSTEM_PROMPT,
+  createHistoryForCompactionPrompt,
   createHistoryForModel,
   extractUsageTokens,
   getEffectiveHistory,
+  markPreviousAssistantToolOutputs,
   getReservedOutputTokens,
   isOverflow,
   markPrunableToolOutputs,
@@ -27,8 +29,10 @@ export function getCompactionConfig(): CompactionConfig {
   const prune = cfg.get<boolean>('compaction.prune') ?? true;
   const pruneProtectTokens = Math.max(0, cfg.get<number>('compaction.pruneProtectTokens') ?? 40_000);
   const pruneMinimumTokens = Math.max(0, cfg.get<number>('compaction.pruneMinimumTokens') ?? 20_000);
+  const toolOutputModeRaw = cfg.get<unknown>('compaction.toolOutputMode');
+  const toolOutputMode = toolOutputModeRaw === 'onCompaction' ? 'onCompaction' : 'afterToolCall';
 
-  return { auto, prune, pruneProtectTokens, pruneMinimumTokens };
+  return { auto, prune, pruneProtectTokens, pruneMinimumTokens, toolOutputMode };
 }
 
 export function getModelLimit(modelId: string): ModelLimit | undefined {

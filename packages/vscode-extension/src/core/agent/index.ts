@@ -25,6 +25,7 @@ import {
   COMPACTION_MARKER_TEXT,
   COMPACTION_PROMPT_TEXT,
   COMPACTION_SYSTEM_PROMPT,
+  createHistoryForCompactionPrompt,
   createHistoryForModel,
   extractUsageTokens,
   getCompactionConfig,
@@ -32,7 +33,7 @@ import {
   getModelLimit,
   getReservedOutputTokens,
   isOverflow as isContextOverflow,
-  markPrunableToolOutputs,
+  markPreviousAssistantToolOutputs,
 } from '../compaction';
 import {
   extractSkillMentions,
@@ -897,7 +898,9 @@ export class AgentLoop {
       lastResponse = lastAssistantText || lastResponse;
 
       const compactionConfig = getCompactionConfig();
-      markPrunableToolOutputs(this.history, compactionConfig);
+      if (compactionConfig.prune && compactionConfig.toolOutputMode === 'afterToolCall') {
+        markPreviousAssistantToolOutputs(this.history);
+      }
       await maybeAwait(callbacks?.onIterationEnd?.(iteration));
 
       const modelLimit = getModelLimit(modelId);
@@ -1009,7 +1012,7 @@ export class AgentLoop {
 	      });
 
       const effective = getEffectiveHistory(this.history);
-      const prepared = createHistoryForModel(effective);
+      const prepared = createHistoryForCompactionPrompt(effective, getCompactionConfig());
       const withoutIds = prepared.map(({ id: _id, ...rest }) => rest);
 
 	      const compactionUser = createUserHistoryMessage(promptText, { synthetic: true });

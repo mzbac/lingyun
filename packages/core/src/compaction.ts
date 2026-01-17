@@ -2,11 +2,14 @@ import type { AgentHistoryMessage, AgentHistoryMetadata } from './history';
 
 export type ModelLimit = { context: number; output?: number };
 
+export type ToolOutputCompactionMode = 'onCompaction' | 'afterToolCall';
+
 export type CompactionConfig = {
   auto: boolean;
   prune: boolean;
   pruneProtectTokens: number;
   pruneMinimumTokens: number;
+  toolOutputMode: ToolOutputCompactionMode;
 };
 
 export const COMPACTION_MARKER_TEXT = 'What did we do so far?';
@@ -146,6 +149,31 @@ function getToolOutputTokens(part: DynamicToolPart): number {
   return estimateTokensFromUnknown(part.output);
 }
 
+export function markPreviousAssistantToolOutputs(history: AgentHistoryMessage[], now: number = Date.now()): {
+  markedParts: number;
+} {
+  if (history.length < 2) return { markedParts: 0 };
+
+  for (let msgIndex = history.length - 2; msgIndex >= 0; msgIndex--) {
+    const msg = history[msgIndex];
+    if (msg.role !== 'assistant') continue;
+    if (msg.metadata?.summary) continue;
+
+    let markedParts = 0;
+    for (const part of msg.parts as any[]) {
+      if (!isCompletedToolPart(part)) continue;
+      if ((part as any).compactedAt) continue;
+      if ((part as any).output === undefined) continue;
+      (part as any).compactedAt = now;
+      markedParts += 1;
+    }
+
+    return { markedParts };
+  }
+
+  return { markedParts: 0 };
+}
+
 export function markPrunableToolOutputs(history: AgentHistoryMessage[], config: CompactionConfig): {
   totalToolOutputTokens: number;
   prunedTokens: number;
@@ -229,6 +257,21 @@ export function createHistoryForModel(history: AgentHistoryMessage[]): AgentHist
 
     return copied;
   });
+}
+
+export function createHistoryForCompactionPrompt(history: AgentHistoryMessage[], config: CompactionConfig): AgentHistoryMessage[] {
+  if (!config.prune) {
+    return createHistoryForModel(history);
+  }
+
+  const cloned: AgentHistoryMessage[] = history.map((msg) => ({
+    ...msg,
+    metadata: msg.metadata ? { ...msg.metadata } : undefined,
+    parts: msg.parts.map((part) => ({ ...(part as any) })),
+  }));
+
+  markPrunableToolOutputs(cloned, config);
+  return createHistoryForModel(cloned);
 }
 
 export function isOverflow(params: {
