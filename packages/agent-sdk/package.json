@@ -1,6 +1,6 @@
 {
   "name": "@kooka/agent-sdk",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "description": "Headless LingYun agent runtime for Node.js (tools + skills + plugins).",
   "license": "Apache-2.0",
