@@ -24,7 +24,7 @@ importers:
         specifier: ^2.0.2
         version: 2.0.9(zod@4.3.5)
       '@kooka/core':
-        specifier: workspace:*
+        specifier: ^0.1.4
         version: link:../core
       ai:
         specifier: ^6.0.6

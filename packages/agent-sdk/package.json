@@ -1,6 +1,6 @@
 {
   "name": "@kooka/agent-sdk",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "type": "module",
   "description": "Headless LingYun agent runtime for Node.js (tools + skills + plugins).",
   "repository": {
@@ -35,7 +35,7 @@
     "test:e2e": "pnpm run build && pnpm run build:test && mocha --ui tdd --timeout 300000 ./dist-test/e2e/*.test.js"
   },
   "dependencies": {
-    "@kooka/core": "workspace:*",
+    "@kooka/core": "^0.1.4",
     "@ai-sdk/openai-compatible": "^2.0.2",
     "ai": "^6.0.6",
     "glob": "^13.0.0",
