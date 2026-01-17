@@ -29,6 +29,12 @@ Object.assign(ChatViewProvider.prototype, {
     }
 
     await this.ensureSessionsLoaded();
+    this.commitRevertedConversationIfNeeded();
+
+    if (!this.pendingPlan) {
+      void vscode.window.showInformationMessage('LingYun: No pending plan to execute.');
+      return;
+    }
 
     const requestedId =
       typeof planMessageId === 'string' && planMessageId.trim() ? planMessageId : undefined;
