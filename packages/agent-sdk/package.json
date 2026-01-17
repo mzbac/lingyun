@@ -1,8 +1,13 @@
 {
   "name": "@kooka/agent-sdk",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "type": "module",
   "description": "Headless LingYun agent runtime for Node.js (tools + skills + plugins).",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mzbac/lingyun",
+    "directory": "packages/agent-sdk"
+  },
   "license": "Apache-2.0",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
