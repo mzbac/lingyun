@@ -70,6 +70,33 @@ jobs:
       - name: Run agent-sdk tests
         run: pnpm --filter @kooka/agent-sdk test
 
+      - name: Ensure published deps do not use workspace protocol
+        run: |
+          node - <<'NODE'
+          const packageJsonPaths = [
+            './packages/core/package.json',
+            './packages/agent-sdk/package.json',
+          ];
+          const depFields = ['dependencies', 'optionalDependencies', 'peerDependencies'];
+          const bad = [];
+          for (const packageJsonPath of packageJsonPaths) {
+            const pkg = require(packageJsonPath);
+            for (const field of depFields) {
+              const deps = pkg[field] ?? {};
+              for (const [name, spec] of Object.entries(deps)) {
+                if (typeof spec === 'string' && spec.startsWith('workspace:')) {
+                  bad.push(`${pkg.name} ${field} ${name}=${spec}`);
+                }
+              }
+            }
+          }
+          if (bad.length > 0) {
+            console.error('Found workspace: protocol in publishable dependency fields:');
+            for (const line of bad) console.error(`- ${line}`);
+            process.exit(1);
+          }
+          NODE
+
       - name: Pack (dry run)
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
         run: |
