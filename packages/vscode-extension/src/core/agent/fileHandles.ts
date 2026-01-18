@@ -123,7 +123,7 @@ export class FileHandleRegistry {
       }
       lines.push(
         '',
-        'Tip: For TS/JS symbol questions (functions/classes/definitions/references), prefer lsp (documentSymbol/workspaceSymbol/goToDefinition/findReferences) over grep.'
+        'Tip: For symbol/code-intelligence questions (functions/classes/definitions/references), prefer lsp (documentSymbol/workspaceSymbol/goToDefinition/findReferences) over grep.'
       );
       if (truncated) {
         lines.push('', '(Results are truncated. Consider using a more specific path or pattern.)');
@@ -218,7 +218,7 @@ export class FileHandleRegistry {
     lines.push(`Found ${totalMatches} matches`);
     lines.push('');
     lines.push(
-      'Tip: For TS/JS symbol tasks (functions/classes/definitions/references), use lsp (documentSymbol/workspaceSymbol/goToDefinition/findReferences) with fileId + line/character from matches.'
+      'Tip: For symbol/code-intelligence tasks (functions/classes/definitions/references), use lsp (documentSymbol/workspaceSymbol/goToDefinition/findReferences) with fileId + line/character from matches.'
     );
 
     for (const [filePath, fileMatches] of byFile.entries()) {

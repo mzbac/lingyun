@@ -66,7 +66,7 @@ export const lspTool: ToolDefinition = {
   id: 'lsp',
   name: 'Language Features (VS Code)',
   description:
-    `Get semantic code intelligence via VS Code language features (LSP). Prefer this over regex grep for TypeScript/JavaScript symbol tasks.
+    `Get semantic code intelligence via VS Code language features (LSP). Prefer this over regex grep for symbol/code-intelligence tasks.
 
 Common patterns:
 - Find a symbol by name across the workspace -> operation: workspaceSymbol, query: "foo"

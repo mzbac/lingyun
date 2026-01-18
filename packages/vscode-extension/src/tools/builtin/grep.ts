@@ -36,7 +36,7 @@ export const grepTool: ToolDefinition = {
   id: 'grep',
   name: 'Search in Files',
   description:
-    'Search for a regex pattern in files (plain text search). Supports optional path (file or directory, workspace-scoped) and include glob. For TS/JS symbol queries (functions/classes/definitions/references), prefer lsp (workspaceSymbol/documentSymbol/goToDefinition/findReferences). Returns up to 100 matches grouped by file, including line+column (1-based) for follow-up lsp/read.',
+    'Search for a regex pattern in files (plain text search). Supports optional path (file or directory, workspace-scoped) and include glob. For symbol/code-intelligence queries (functions/classes/definitions/references), prefer lsp (workspaceSymbol/documentSymbol/goToDefinition/findReferences). Returns up to 100 matches grouped by file, including line+column (1-based) for follow-up lsp/read.',
   parameters: {
     type: 'object',
     properties: {
