@@ -66,24 +66,18 @@ export const lspTool: ToolDefinition = {
   id: 'lsp',
   name: 'Language Features (VS Code)',
   description:
-    `Interact with VS Code language features to get semantic code intelligence.
+    `Get semantic code intelligence via VS Code language features (LSP). Prefer this over regex grep for TypeScript/JavaScript symbol tasks.
 
-Supported operations (line/character are 1-based):
-- goToDefinition
-- findReferences
-- hover
-- documentSymbol
-- workspaceSymbol
-- goToImplementation
-- prepareCallHierarchy
-- incomingCalls
-- outgoingCalls
+Common patterns:
+- Find a symbol by name across the workspace -> operation: workspaceSymbol, query: "foo"
+- List symbols (functions/classes/methods) in a file -> operation: documentSymbol, fileId: "F1"
+- Go to definition / references at a position -> operation: goToDefinition / findReferences, fileId: "F1", line: 10, character: 5
+- Get type/signature -> operation: hover, fileId: "F1", line: 10, character: 5
 
-Inputs:
-- filePath: absolute or workspace-relative path
-- line/character: 1-based position (required for position-based operations)
-- query (optional): workspaceSymbol search query (default "")
-- limit (optional): max results (default 20, max 100)`,
+Notes:
+- line/character are 1-based.
+- Prefer fileId from glob/grep; filePath also works (absolute or workspace-relative).
+- limit defaults to 20 (max 100).`,
   parameters: {
     type: 'object',
     properties: {

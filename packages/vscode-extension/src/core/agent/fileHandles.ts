@@ -121,6 +121,10 @@ export class FileHandleRegistry {
         const handle = this.getOrCreate(filePath);
         lines.push(`${handle.id}  ${handle.filePath}`);
       }
+      lines.push(
+        '',
+        'Tip: For TS/JS symbol questions (functions/classes/definitions/references), prefer lsp (documentSymbol/workspaceSymbol/goToDefinition/findReferences) over grep.'
+      );
       if (truncated) {
         lines.push('', '(Results are truncated. Consider using a more specific path or pattern.)');
       }
@@ -214,7 +218,7 @@ export class FileHandleRegistry {
     lines.push(`Found ${totalMatches} matches`);
     lines.push('');
     lines.push(
-      'Tip: Prefer lsp (hover/goToDefinition/documentSymbol) using fileId + line/character from matches; fall back to read with offset+limit for small snippets.'
+      'Tip: For TS/JS symbol tasks (functions/classes/definitions/references), use lsp (documentSymbol/workspaceSymbol/goToDefinition/findReferences) with fileId + line/character from matches.'
     );
 
     for (const [filePath, fileMatches] of byFile.entries()) {
@@ -230,14 +234,16 @@ export class FileHandleRegistry {
       for (const match of sorted) {
         const truncatedLine =
           match.text.length > MAX_LINE_LENGTH ? match.text.substring(0, MAX_LINE_LENGTH) + '...' : match.text;
-        const pos = match.column ? `Line ${match.line}, Col ${match.column}` : `Line ${match.line}`;
+        const pos = match.column ? `Line ${match.line}, Character ${match.column}` : `Line ${match.line}`;
         lines.push(`  ${pos}: ${truncatedLine}`);
       }
 
       const first = sorted[0];
       if (first) {
         const character = first.column && first.column > 0 ? first.column : 1;
-        lines.push(`  LSP: hover at [${first.line}:${character}] or documentSymbol (fileId: ${handle.id})`);
+        lines.push(
+          `  LSP: hover/goToDefinition/findReferences at line=${first.line} character=${character} (fileId: ${handle.id})`
+        );
       } else {
         lines.push(`  LSP: documentSymbol (fileId: ${handle.id})`);
       }

@@ -17,10 +17,11 @@ export const DEFAULT_SYSTEM_PROMPT = `You are a helpful AI assistant integrated 
 You have access to tools to interact with the workspace, files, and shell.
 
 ## Tool Usage Guidelines
-- Use list/glob/grep FIRST to discover relevant files, then read specific ones
+- Use list/glob FIRST to discover relevant files
 - Prefer fileId from glob/grep for read/edit/write/lsp (selection) instead of spelling file paths (generation)
 - Batch your work: gather context before making changes
 - read is capped by lingyun.tools.read.maxLines (default 300); for files longer than this you MUST provide offset+limit (0-based) or use lsp
+- For symbol / code-intelligence tasks in TS/JS (find functions/classes, go-to-definition, references), prefer lsp (workspaceSymbol/documentSymbol/goToDefinition/findReferences) over grep
 - After grep, prefer lsp on the matched fileId + line/character for semantic navigation; avoid reading whole files
 - bash is slower than file tools; prefer list/glob/grep/read when possible
 - Prefer lsp for symbol navigation/refactors; use grep for plain text search

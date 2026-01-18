@@ -15,13 +15,13 @@ import { writeHandler, writeTool } from './write';
 
 export function registerBuiltinTools(): vscode.Disposable[] {
   return [
+    toolRegistry.registerTool(listTool, listHandler),
+    toolRegistry.registerTool(globTool, globHandler),
+    toolRegistry.registerTool(lspTool, lspHandler),
+    toolRegistry.registerTool(grepTool, grepHandler),
     toolRegistry.registerTool(readTool, readHandler),
     toolRegistry.registerTool(writeTool, writeHandler),
     toolRegistry.registerTool(editTool, editHandler),
-    toolRegistry.registerTool(globTool, globHandler),
-    toolRegistry.registerTool(grepTool, grepHandler),
-    toolRegistry.registerTool(listTool, listHandler),
-    toolRegistry.registerTool(lspTool, lspHandler),
     toolRegistry.registerTool(bashTool, bashHandler),
     toolRegistry.registerTool(skillTool, skillHandler),
     toolRegistry.registerTool(todoreadTool, todoreadHandler),
