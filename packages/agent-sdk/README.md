@@ -111,11 +111,11 @@ import { createLingyunAgent, type ToolDefinition } from '@kooka/agent-sdk';
 const { agent, registry } = createLingyunAgent({ /* ... */ });
 
 const timeTool: ToolDefinition = {
-  id: 'time.now',
-  name: 'time.now',
+  id: 'time_now',
+  name: 'time_now',
   description: 'Get the current time as an ISO string.',
   parameters: { type: 'object', properties: {} },
-  execution: { type: 'function', handler: 'time.now' },
+  execution: { type: 'function', handler: 'time_now' },
   metadata: { readOnly: true },
 };
 
@@ -233,7 +233,7 @@ const { registry } = createLingyunAgent({
 
 registry.registerTool(
   {
-    id: 'demo.echo',
+    id: 'demo_echo',
     name: 'Echo',
     description: 'Echo back the message argument',
     parameters: {
@@ -241,7 +241,7 @@ registry.registerTool(
       properties: { message: { type: 'string' } },
       required: ['message'],
     },
-    execution: { type: 'function', handler: 'demo.echo' },
+    execution: { type: 'function', handler: 'demo_echo' },
     metadata: { requiresApproval: false, permission: 'read', readOnly: true },
   },
   async (args) => ({ success: true, data: `Echo: ${String(args.message ?? '')}` })
@@ -276,9 +276,9 @@ registerAgentBrowserTools(registry, {
 ```
 
 Tools:
-- `browser.startSession` / `browser.closeSession`
-- `browser.snapshot` (read-only; returns accessibility tree with refs like `@e2`)
-- `browser.run` (requires approval; runs click/fill/type/wait/get/screenshot/pdf/trace actions)
+- `browser_start_session` / `browser_close_session`
+- `browser_snapshot` (read-only; returns accessibility tree with refs like `@e2`)
+- `browser_run` (requires approval; runs click/fill/type/wait/get/screenshot/pdf/trace actions)
 
 Security defaults:
 - HTTPS-only and blocks private hosts / IPs by default

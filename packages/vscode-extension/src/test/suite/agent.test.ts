@@ -200,7 +200,7 @@ suite('AgentLoop', () => {
 
     registry.registerTool(
       {
-        id: 'test.echo',
+        id: 'test_echo',
         name: 'Echo',
         description: 'Echoes back input',
         parameters: {
@@ -210,7 +210,7 @@ suite('AgentLoop', () => {
           },
           required: ['message'],
         },
-        execution: { type: 'function', handler: 'test.echo' },
+        execution: { type: 'function', handler: 'test_echo' },
       },
       async (args) => ({
         success: true,
@@ -270,7 +270,7 @@ suite('AgentLoop', () => {
     mockLLM.setNextResponse({
       kind: 'tool-call',
       toolCallId: 'call_123',
-      toolName: 'test.echo',
+      toolName: 'test_echo',
       input: { message: 'Hello World' },
     });
 
@@ -439,7 +439,7 @@ suite('AgentLoop', () => {
     mockLLM.setNextResponse({
       kind: 'tool-call',
       toolCallId: 'call_stop',
-      toolName: 'test.echo',
+      toolName: 'test_echo',
       input: { message: 'x' },
       finishReason: 'stop',
     });
@@ -497,7 +497,7 @@ suite('AgentLoop', () => {
 
       registry.registerTool(
         {
-          id: 'test.external',
+          id: 'test_external',
           name: 'External Tool',
           description: 'Tool that accepts a filePath',
           parameters: {
@@ -507,7 +507,7 @@ suite('AgentLoop', () => {
             },
             required: ['filePath'],
           },
-          execution: { type: 'function', handler: 'test.external' },
+          execution: { type: 'function', handler: 'test_external' },
           metadata: {
             permission: 'read',
             readOnly: true,
@@ -524,7 +524,7 @@ suite('AgentLoop', () => {
       mockLLM.setNextResponse({
         kind: 'tool-call',
         toolCallId: 'call_ext_disabled',
-        toolName: 'test.external',
+        toolName: 'test_external',
         input: { filePath: externalPath },
       });
       mockLLM.queueResponse({ kind: 'text', content: '' });
@@ -751,7 +751,7 @@ suite('AgentLoop', () => {
 
       registry.registerTool(
         {
-          id: 'workspace.shellTool',
+          id: 'workspace_shell_tool',
           name: 'Workspace Shell Tool',
           description: 'Tool that executes a shell script',
           parameters: {
@@ -770,7 +770,7 @@ suite('AgentLoop', () => {
       mockLLM.setNextResponse({
         kind: 'tool-call',
         toolCallId: 'call_shell_type_disabled',
-        toolName: 'workspace.shellTool',
+        toolName: 'workspace_shell_tool',
         input: {},
       });
       mockLLM.queueResponse({ kind: 'text', content: '' });
@@ -811,7 +811,7 @@ suite('AgentLoop', () => {
 
       registry.registerTool(
         {
-          id: 'test.external2',
+          id: 'test_external2',
           name: 'External Tool 2',
           description: 'Tool that accepts a filePath',
           parameters: {
@@ -821,7 +821,7 @@ suite('AgentLoop', () => {
             },
             required: ['filePath'],
           },
-          execution: { type: 'function', handler: 'test.external2' },
+          execution: { type: 'function', handler: 'test_external2' },
           metadata: {
             permission: 'read',
             readOnly: true,
@@ -838,7 +838,7 @@ suite('AgentLoop', () => {
       mockLLM.setNextResponse({
         kind: 'tool-call',
         toolCallId: 'call_ext_enabled',
-        toolName: 'test.external2',
+        toolName: 'test_external2',
         input: { filePath: externalPath },
       });
       mockLLM.queueResponse({ kind: 'text', content: 'Done' });
@@ -883,7 +883,7 @@ suite('AgentLoop', () => {
       mockLLM.setNextResponse({
         kind: 'tool-call',
         toolCallId: 'call_overflow',
-        toolName: 'test.echo',
+        toolName: 'test_echo',
         input: { message: 'Hello World' },
         usage: { inputNoCache: 10, cacheRead: 0, outputTotal: 1 },
       });
@@ -935,7 +935,7 @@ suite('AgentLoop', () => {
         parts: [
           {
             type: 'dynamic-tool',
-            toolName: 'test.echo',
+            toolName: 'test_echo',
             toolCallId: 'call_1',
             state: 'output-available',
             input: { message: 'x' },
@@ -960,7 +960,7 @@ suite('AgentLoop', () => {
       mockLLM.setNextResponse({
         kind: 'tool-call',
         toolCallId: 'call_compact_1',
-        toolName: 'test.echo',
+        toolName: 'test_echo',
         input: { message: 'Hello' },
       });
       mockLLM.queueResponse({ kind: 'text', content: 'Done' });
@@ -972,20 +972,20 @@ suite('AgentLoop', () => {
       const toolMessage = history.find(
         (m) =>
           m.role === 'assistant' &&
-          m.parts.some((p: any) => p.type === 'dynamic-tool' && p.toolName === 'test.echo' && p.state === 'output-available'),
+          m.parts.some((p: any) => p.type === 'dynamic-tool' && p.toolName === 'test_echo' && p.state === 'output-available'),
       ) as any;
       assert.ok(toolMessage, 'tool message exists');
 
-      const toolPart = toolMessage.parts.find((p: any) => p.type === 'dynamic-tool' && p.toolName === 'test.echo') as any;
+      const toolPart = toolMessage.parts.find((p: any) => p.type === 'dynamic-tool' && p.toolName === 'test_echo') as any;
       assert.ok(typeof toolPart.compactedAt === 'number', 'tool output is marked compacted after being consumed once');
 
       const prepared = createHistoryForModel(history as any);
       const preparedToolMessage = prepared.find(
         (m: any) =>
           m.role === 'assistant' &&
-          m.parts.some((p: any) => p.type === 'dynamic-tool' && p.toolName === 'test.echo' && p.state === 'output-available'),
+          m.parts.some((p: any) => p.type === 'dynamic-tool' && p.toolName === 'test_echo' && p.state === 'output-available'),
       ) as any;
-      const preparedToolPart = preparedToolMessage.parts.find((p: any) => p.type === 'dynamic-tool' && p.toolName === 'test.echo') as any;
+      const preparedToolPart = preparedToolMessage.parts.find((p: any) => p.type === 'dynamic-tool' && p.toolName === 'test_echo') as any;
       assert.strictEqual(preparedToolPart.output.data, COMPACTED_TOOL_PLACEHOLDER);
     } finally {
       await cfg.update('compaction.toolOutputMode', previousMode as any, true);
@@ -1001,7 +1001,7 @@ suite('AgentLoop', () => {
       mockLLM.setNextResponse({
         kind: 'tool-call',
         toolCallId: 'call_compact_2',
-        toolName: 'test.echo',
+        toolName: 'test_echo',
         input: { message: 'Hello' },
       });
       mockLLM.queueResponse({ kind: 'text', content: 'Done' });
@@ -1013,11 +1013,11 @@ suite('AgentLoop', () => {
       const toolMessage = history.find(
         (m) =>
           m.role === 'assistant' &&
-          m.parts.some((p: any) => p.type === 'dynamic-tool' && p.toolName === 'test.echo' && p.state === 'output-available'),
+          m.parts.some((p: any) => p.type === 'dynamic-tool' && p.toolName === 'test_echo' && p.state === 'output-available'),
       ) as any;
       assert.ok(toolMessage, 'tool message exists');
 
-      const toolPart = toolMessage.parts.find((p: any) => p.type === 'dynamic-tool' && p.toolName === 'test.echo') as any;
+      const toolPart = toolMessage.parts.find((p: any) => p.type === 'dynamic-tool' && p.toolName === 'test_echo') as any;
       assert.ok(toolPart.compactedAt === undefined, 'tool output is not compacted outside of session compaction');
       assert.strictEqual(toolPart.output?.data, 'Echo: Hello');
     } finally {
@@ -1029,7 +1029,7 @@ suite('AgentLoop', () => {
     mockLLM.setNextResponse({
       kind: 'tool-call',
       toolCallId: 'call_seq',
-      toolName: 'test.echo',
+      toolName: 'test_echo',
       input: { message: 'Hello' },
     });
     mockLLM.queueResponse({ kind: 'text', content: 'Done' });
@@ -1099,11 +1099,11 @@ suite('AgentLoop', () => {
   test('run - requests approval for tools', async () => {
     registry.registerTool(
       {
-        id: 'test.dangerous',
+        id: 'test_dangerous',
         name: 'Dangerous',
         description: 'Needs approval',
         parameters: { type: 'object', properties: {} },
-        execution: { type: 'function', handler: 'test.dangerous' },
+        execution: { type: 'function', handler: 'test_dangerous' },
         metadata: { requiresApproval: true },
       },
       async () => ({ success: true, data: 'executed' })
@@ -1114,7 +1114,7 @@ suite('AgentLoop', () => {
     mockLLM.setNextResponse({
       kind: 'tool-call',
       toolCallId: 'call_danger',
-      toolName: 'test.dangerous',
+      toolName: 'test_dangerous',
       input: {},
     });
 
@@ -1133,11 +1133,11 @@ suite('AgentLoop', () => {
   test('run - rejects tool when not approved', async () => {
     registry.registerTool(
       {
-        id: 'test.reject',
+        id: 'test_reject',
         name: 'Reject',
         description: 'Will be rejected',
         parameters: { type: 'object', properties: {} },
-        execution: { type: 'function', handler: 'test.reject' },
+        execution: { type: 'function', handler: 'test_reject' },
         metadata: { requiresApproval: true },
       },
       async () => ({ success: true, data: 'should not run' })
@@ -1146,7 +1146,7 @@ suite('AgentLoop', () => {
     mockLLM.setNextResponse({
       kind: 'tool-call',
       toolCallId: 'call_reject',
-      toolName: 'test.reject',
+      toolName: 'test_reject',
       input: {},
     });
 
@@ -1169,7 +1169,7 @@ suite('AgentLoop', () => {
     mockLLM.setNextResponse({
       kind: 'tool-call',
       toolCallId: 'call_abort',
-      toolName: 'test.echo',
+      toolName: 'test_echo',
       input: { message: 'x' },
     });
 
@@ -1293,7 +1293,7 @@ suite('AgentLoop', () => {
     mockLLM.setNextResponse({
       kind: 'tool-call',
       toolCallId: 'call_before',
-      toolName: 'test.echo',
+      toolName: 'test_echo',
       input: { message: 'Hello World' },
     });
     mockLLM.queueResponse({ kind: 'text', content: 'Done' });
@@ -1319,7 +1319,7 @@ suite('AgentLoop', () => {
     mockLLM.setNextResponse({
       kind: 'tool-call',
       toolCallId: 'call_after',
-      toolName: 'test.echo',
+      toolName: 'test_echo',
       input: { message: 'Hello World' },
     });
     mockLLM.queueResponse({ kind: 'text', content: 'Done' });
@@ -1345,7 +1345,7 @@ suite('AgentLoop', () => {
     mockLLM.setNextResponse({
       kind: 'tool-call',
       toolCallId: 'call_deny',
-      toolName: 'test.echo',
+      toolName: 'test_echo',
       input: { message: 'Hello World' },
     });
 

@@ -121,7 +121,7 @@ function buildSnippet(doc: vscode.TextDocument, centerLineOneBased: number): { s
 }
 
 export const symbolsSearchTool: ToolDefinition = {
-  id: 'symbols.search',
+  id: 'symbols_search',
   name: 'Search Symbols',
   description:
     'Semantic symbol search using VS Code workspace symbols. Use this to find where something is defined without regex grep.',
@@ -202,7 +202,7 @@ export const symbolsSearchHandler: ToolHandler = async (args, context) => {
     const note =
       results.length === 0
         ? 'No workspace symbols found. If you expected results, try opening a relevant file in the editor to warm the language server, then retry. As a fallback, use grep.'
-        : 'Use symbols.peek with a returned symbolId (or fileId + line/character) to fetch hover/definition/snippet.';
+        : 'Use symbols_peek with a returned symbolId (or fileId + line/character) to fetch hover/definition/snippet.';
 
     return {
       success: true,
@@ -220,14 +220,14 @@ export const symbolsSearchHandler: ToolHandler = async (args, context) => {
 };
 
 export const symbolsPeekTool: ToolDefinition = {
-  id: 'symbols.peek',
+  id: 'symbols_peek',
   name: 'Peek Symbol',
   description:
     'One-call semantic context pack: hover + definition + small snippet + optional reference sample. Prefer this over grep+read loops.',
   parameters: {
     type: 'object',
     properties: {
-      symbolId: { type: 'string', description: 'Symbol handle from symbols.search output (e.g. "S1")' },
+      symbolId: { type: 'string', description: 'Symbol handle from symbols_search output (e.g. "S1")' },
       matchId: { type: 'string', description: 'Match handle from grep output (e.g. "M1")' },
       locId: { type: 'string', description: 'Location handle from previous outputs (e.g. "L1")' },
       fileId: { type: 'string', description: 'File handle from glob/grep output (e.g. "F1")' },
@@ -294,7 +294,7 @@ export const symbolsPeekHandler: ToolHandler = async (args, context) => {
     if (!Number.isFinite(lineRaw as number)) {
       return {
         success: false,
-        error: 'line is required for symbols.peek (1-based). Provide symbolId/matchId/locId or a fileId/filePath + line/character.',
+        error: 'line is required for symbols_peek (1-based). Provide symbolId/matchId/locId or a fileId/filePath + line/character.',
       };
     }
 
@@ -352,4 +352,3 @@ export const symbolsPeekHandler: ToolHandler = async (args, context) => {
     return { success: false, error: error instanceof Error ? error.message : String(error) };
   }
 };
-

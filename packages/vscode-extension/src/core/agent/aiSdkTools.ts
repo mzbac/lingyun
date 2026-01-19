@@ -76,11 +76,11 @@ export function createAISDKTools(params: CreateAISDKToolsParams): Record<string,
         if (
           isRecord(resolvedArgs) &&
           (def.id === 'read' ||
-            def.id === 'read.range' ||
+            def.id === 'read_range' ||
             def.id === 'edit' ||
             def.id === 'write' ||
             def.id === 'lsp' ||
-            def.id === 'symbols.peek') &&
+            def.id === 'symbols_peek') &&
           typeof (resolvedArgs as any).fileId === 'string'
         ) {
           const filePathRaw =
@@ -99,7 +99,7 @@ export function createAISDKTools(params: CreateAISDKToolsParams): Record<string,
           }
         }
 
-        if (isRecord(resolvedArgs) && def.id === 'symbols.peek') {
+        if (isRecord(resolvedArgs) && def.id === 'symbols_peek') {
           const symbolId =
             typeof (resolvedArgs as any).symbolId === 'string' ? String((resolvedArgs as any).symbolId) : '';
           const matchId =
@@ -125,7 +125,7 @@ export function createAISDKTools(params: CreateAISDKToolsParams): Record<string,
               return {
                 success: false,
                 error:
-                  `${errorType}: ${handleId}. Re-run symbols.search (for symbolId) or grep (for matchId) and use the returned handle.`,
+                  `${errorType}: ${handleId}. Re-run symbols_search (for symbolId) or grep (for matchId) and use the returned handle.`,
                 metadata: { errorType, handleId },
               };
             }
@@ -153,7 +153,7 @@ export function createAISDKTools(params: CreateAISDKToolsParams): Record<string,
           }
         }
 
-        if (isRecord(resolvedArgs) && def.id === 'read.range') {
+        if (isRecord(resolvedArgs) && def.id === 'read_range') {
           const locId =
             typeof (resolvedArgs as any).locId === 'string' ? String((resolvedArgs as any).locId) : '';
           const symbolId =
@@ -179,7 +179,7 @@ export function createAISDKTools(params: CreateAISDKToolsParams): Record<string,
               return {
                 success: false,
                 error:
-                  `${errorType}: ${handleId}. Re-run symbols.search (for symbolId) or symbols.peek/grep (for locId/matchId) and use the returned handle.`,
+                  `${errorType}: ${handleId}. Re-run symbols_search (for symbolId) or symbols_peek/grep (for locId/matchId) and use the returned handle.`,
                 metadata: { errorType, handleId },
               };
             }
@@ -427,11 +427,11 @@ export function createAISDKTools(params: CreateAISDKToolsParams): Record<string,
           });
         }
 
-        if (def.id === 'symbols.search') {
+        if (def.id === 'symbols_search') {
           result = params.semanticHandles.decorateSymbolsSearchResult(result, params.fileHandles);
         }
 
-        if (def.id === 'symbols.peek') {
+        if (def.id === 'symbols_peek') {
           result = params.semanticHandles.decorateSymbolsPeekResult(result, params.fileHandles);
         }
 

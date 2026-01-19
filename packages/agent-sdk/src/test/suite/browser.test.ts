@@ -24,7 +24,7 @@ suite('Agent Browser Tools', () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'kooka-browser-'));
     const ctx = createToolContext(root);
 
-    const res = await provider.executeTool('browser.snapshot', { sessionId: 's1', url: 'http://example.com' }, ctx);
+    const res = await provider.executeTool('browser_snapshot', { sessionId: 's1', url: 'http://example.com' }, ctx);
     assert.strictEqual(res.success, false);
     assert.match(String(res.error), /https/i);
   });
@@ -51,7 +51,7 @@ suite('Agent Browser Tools', () => {
     const ctx = createToolContext(root);
 
     const res = await provider.executeTool(
-      'browser.snapshot',
+      'browser_snapshot',
       {
         sessionId: 's1',
         url: 'https://example.com',
@@ -94,7 +94,7 @@ suite('Agent Browser Tools', () => {
     const ctx = createToolContext(root);
 
     const res = await provider.executeTool(
-      'browser.run',
+      'browser_run',
       {
         sessionId: 's1',
         actions: [

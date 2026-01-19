@@ -3,6 +3,16 @@ import { combineAbortSignals } from '../abort.js';
 
 export type Disposable = { dispose: () => void };
 
+const TOOL_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
+
+function assertValidToolId(toolId: unknown, source: string): asserts toolId is string {
+  if (typeof toolId !== 'string' || !TOOL_ID_PATTERN.test(toolId)) {
+    throw new Error(
+      `Invalid tool id ${JSON.stringify(toolId)} from ${source}. Tool ids must match ${TOOL_ID_PATTERN.toString()}.`
+    );
+  }
+}
+
 class SimpleToolProvider implements ToolProvider {
   readonly id: string;
   readonly name: string;
@@ -85,11 +95,18 @@ export class ToolRegistry {
 
   private indexProviderTools(providerId: string, tools: ToolDefinition[]): void {
     for (const tool of tools) {
+      try {
+        assertValidToolId(tool?.id, `provider "${providerId}"`);
+      } catch (error) {
+        console.error('[ToolRegistry] Skipping tool:', error);
+        continue;
+      }
       this.toolToProvider.set(tool.id, providerId);
     }
   }
 
   registerTool(definition: ToolDefinition, handler: ToolHandler): Disposable {
+    assertValidToolId(definition?.id, 'builtin tool registration');
     this.simpleProvider.addTool(definition, handler);
     this.toolToProvider.set(definition.id, 'builtin');
     return {
@@ -104,7 +121,10 @@ export class ToolRegistry {
     const all: ToolDefinition[] = [];
     for (const provider of this.providers.values()) {
       const tools = await Promise.resolve(provider.getTools());
-      all.push(...tools);
+      for (const tool of tools) {
+        if (!this.toolToProvider.has(tool.id)) continue;
+        all.push(tool);
+      }
     }
     return all;
   }

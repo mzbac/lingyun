@@ -24,7 +24,7 @@ suite('ToolRegistry', () => {
 
   test('registerTool - adds tool to registry', async () => {
     const definition: ToolDefinition = {
-      id: 'test.hello',
+      id: 'test_hello',
       name: 'Hello',
       description: 'Says hello',
       parameters: {
@@ -34,7 +34,7 @@ suite('ToolRegistry', () => {
         },
         required: ['name'],
       },
-      execution: { type: 'function', handler: 'test.hello' },
+      execution: { type: 'function', handler: 'test_hello' },
     };
 
     const handler = async (args: Record<string, unknown>) => ({
@@ -46,16 +46,16 @@ suite('ToolRegistry', () => {
 
     const tools = await registry.getTools();
     assert.strictEqual(tools.length, 1);
-    assert.strictEqual(tools[0].id, 'test.hello');
+    assert.strictEqual(tools[0].id, 'test_hello');
   });
 
   test('registerTool - disposes correctly', async () => {
     const definition: ToolDefinition = {
-      id: 'test.disposable',
+      id: 'test_disposable',
       name: 'Disposable',
       description: 'Will be disposed',
       parameters: { type: 'object', properties: {} },
-      execution: { type: 'function', handler: 'test.disposable' },
+      execution: { type: 'function', handler: 'test_disposable' },
     };
 
     const disposable = registry.registerTool(definition, async () => ({ success: true }));
@@ -79,17 +79,17 @@ suite('ToolRegistry', () => {
     });
 
     const definition: ToolDefinition = {
-      id: 'test.event',
+      id: 'test_event',
       name: 'Event Test',
       description: 'Tests events',
       parameters: { type: 'object', properties: {} },
-      execution: { type: 'function', handler: 'test.event' },
+      execution: { type: 'function', handler: 'test_event' },
     };
 
     registry.registerTool(definition, async () => ({ success: true }));
 
     assert.strictEqual(eventFired, true);
-    assert.strictEqual(registeredToolId, 'test.event');
+    assert.strictEqual(registeredToolId, 'test_event');
   });
 
   // ===========================================================================
@@ -102,18 +102,18 @@ suite('ToolRegistry', () => {
       name: 'Test Provider',
       getTools: () => [
         {
-          id: 'provider.tool1',
+          id: 'provider_tool1',
           name: 'Tool 1',
           description: 'First tool',
           parameters: { type: 'object', properties: {} },
-          execution: { type: 'function', handler: 'provider.tool1' },
+          execution: { type: 'function', handler: 'provider_tool1' },
         },
         {
-          id: 'provider.tool2',
+          id: 'provider_tool2',
           name: 'Tool 2',
           description: 'Second tool',
           parameters: { type: 'object', properties: {} },
-          execution: { type: 'function', handler: 'provider.tool2' },
+          execution: { type: 'function', handler: 'provider_tool2' },
         },
       ],
       executeTool: async () => ({ success: true, data: 'executed' }),
@@ -125,8 +125,8 @@ suite('ToolRegistry', () => {
     assert.strictEqual(tools.length, 2);
     
     const ids = tools.map(t => t.id);
-    assert.ok(ids.includes('provider.tool1'));
-    assert.ok(ids.includes('provider.tool2'));
+    assert.ok(ids.includes('provider_tool1'));
+    assert.ok(ids.includes('provider_tool2'));
   });
 
   test('registerProvider - throws on duplicate ID', () => {
@@ -159,7 +159,7 @@ suite('ToolRegistry', () => {
     let receivedArgs: Record<string, unknown> | null = null;
 
     const definition: ToolDefinition = {
-      id: 'test.args',
+      id: 'test_args',
       name: 'Args Test',
       description: 'Tests args',
       parameters: {
@@ -168,7 +168,7 @@ suite('ToolRegistry', () => {
           value: { type: 'number' },
         },
       },
-      execution: { type: 'function', handler: 'test.args' },
+      execution: { type: 'function', handler: 'test_args' },
     };
 
     registry.registerTool(definition, async (args) => {
@@ -177,7 +177,7 @@ suite('ToolRegistry', () => {
     });
 
     const context = createMockContext();
-    const result = await registry.executeTool('test.args', { value: 42 }, context);
+    const result = await registry.executeTool('test_args', { value: 42 }, context);
 
     assert.strictEqual(result.success, true);
     assert.strictEqual(result.data, 42);
@@ -186,7 +186,7 @@ suite('ToolRegistry', () => {
 
   test('executeTool - returns error for unknown tool', async () => {
     const context = createMockContext();
-    const result = await registry.executeTool('nonexistent.tool', {}, context);
+    const result = await registry.executeTool('nonexistent_tool', {}, context);
 
     assert.strictEqual(result.success, false);
     assert.ok(result.error?.includes('Unknown tool'));
@@ -194,11 +194,11 @@ suite('ToolRegistry', () => {
 
   test('executeTool - handles handler errors', async () => {
     const definition: ToolDefinition = {
-      id: 'test.error',
+      id: 'test_error',
       name: 'Error Test',
       description: 'Throws error',
       parameters: { type: 'object', properties: {} },
-      execution: { type: 'function', handler: 'test.error' },
+      execution: { type: 'function', handler: 'test_error' },
     };
 
     registry.registerTool(definition, async () => {
@@ -206,7 +206,7 @@ suite('ToolRegistry', () => {
     });
 
     const context = createMockContext();
-    const result = await registry.executeTool('test.error', {}, context);
+    const result = await registry.executeTool('test_error', {}, context);
 
     assert.strictEqual(result.success, false);
     assert.strictEqual(result.error, 'Something went wrong');
@@ -218,54 +218,54 @@ suite('ToolRegistry', () => {
 
   test('getTools - filters by category', async () => {
     registry.registerTool({
-      id: 'cat.file1',
+      id: 'cat_file1',
       name: 'File 1',
       description: 'File tool',
       parameters: { type: 'object', properties: {} },
-      execution: { type: 'function', handler: 'cat.file1' },
+      execution: { type: 'function', handler: 'cat_file1' },
       metadata: { category: 'file' },
     }, async () => ({ success: true }));
 
     registry.registerTool({
-      id: 'cat.shell1',
+      id: 'cat_shell1',
       name: 'Shell 1',
       description: 'Shell tool',
       parameters: { type: 'object', properties: {} },
-      execution: { type: 'function', handler: 'cat.shell1' },
+      execution: { type: 'function', handler: 'cat_shell1' },
       metadata: { category: 'shell' },
     }, async () => ({ success: true }));
 
     const fileTools = await registry.getTools({ category: 'file' });
     assert.strictEqual(fileTools.length, 1);
-    assert.strictEqual(fileTools[0].id, 'cat.file1');
+    assert.strictEqual(fileTools[0].id, 'cat_file1');
 
     const shellTools = await registry.getTools({ category: 'shell' });
     assert.strictEqual(shellTools.length, 1);
-    assert.strictEqual(shellTools[0].id, 'cat.shell1');
+    assert.strictEqual(shellTools[0].id, 'cat_shell1');
   });
 
   test('getTools - filters by tags', async () => {
     registry.registerTool({
-      id: 'tag.read',
+      id: 'tag_read',
       name: 'Read',
       description: 'Read tool',
       parameters: { type: 'object', properties: {} },
-      execution: { type: 'function', handler: 'tag.read' },
+      execution: { type: 'function', handler: 'tag_read' },
       metadata: { tags: ['safe', 'readonly'] },
     }, async () => ({ success: true }));
 
     registry.registerTool({
-      id: 'tag.write',
+      id: 'tag_write',
       name: 'Write',
       description: 'Write tool',
       parameters: { type: 'object', properties: {} },
-      execution: { type: 'function', handler: 'tag.write' },
+      execution: { type: 'function', handler: 'tag_write' },
       metadata: { tags: ['dangerous', 'write'] },
     }, async () => ({ success: true }));
 
     const safeTools = await registry.getTools({ tags: ['safe'] });
     assert.strictEqual(safeTools.length, 1);
-    assert.strictEqual(safeTools[0].id, 'tag.read');
+    assert.strictEqual(safeTools[0].id, 'tag_read');
   });
 
   // ===========================================================================
@@ -274,7 +274,7 @@ suite('ToolRegistry', () => {
 
   test('getToolsForLLM - returns OpenAI format', async () => {
     registry.registerTool({
-      id: 'llm.test',
+      id: 'llm_test',
       name: 'LLM Test',
       description: 'A test tool for LLM',
       parameters: {
@@ -284,14 +284,14 @@ suite('ToolRegistry', () => {
         },
         required: ['query'],
       },
-      execution: { type: 'function', handler: 'llm.test' },
+      execution: { type: 'function', handler: 'llm_test' },
     }, async () => ({ success: true }));
 
     const llmTools = await registry.getToolsForLLM();
     
     assert.strictEqual(llmTools.length, 1);
     assert.strictEqual(llmTools[0].type, 'function');
-    assert.strictEqual(llmTools[0].function.name, 'llm.test');
+    assert.strictEqual(llmTools[0].function.name, 'llm_test');
     assert.strictEqual(llmTools[0].function.description, 'A test tool for LLM');
     assert.deepStrictEqual(llmTools[0].function.parameters, {
       type: 'object',

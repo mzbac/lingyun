@@ -242,7 +242,7 @@ export async function createSampleToolsConfig(): Promise<void> {
     },
     tools: [
       {
-        id: 'kb.search',
+        id: 'kb_search',
         name: 'Knowledge Search',
         description: 'Semantic search across knowledge base. Use BEFORE answering factual questions. Returns ranked results with snippets.',
         parameters: {
@@ -271,7 +271,7 @@ export async function createSampleToolsConfig(): Promise<void> {
         category: 'knowledge',
       },
       {
-        id: 'kb.retrieve',
+        id: 'kb_retrieve',
         name: 'Get Document',
         description: 'Retrieve full document by ID when you need complete content from search results.',
         parameters: {

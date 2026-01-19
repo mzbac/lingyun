@@ -182,7 +182,7 @@ suite('LingYun Agent SDK', () => {
 
     registry.registerTool(
       {
-        id: 'test.echo',
+        id: 'test_echo',
         name: 'Echo',
         description: 'Echoes back input',
         parameters: {
@@ -190,7 +190,7 @@ suite('LingYun Agent SDK', () => {
           properties: { message: { type: 'string' } },
           required: ['message'],
         },
-        execution: { type: 'function', handler: 'test.echo' },
+        execution: { type: 'function', handler: 'test_echo' },
       },
       async (args): Promise<ToolResult> => ({
         success: true,
@@ -201,7 +201,7 @@ suite('LingYun Agent SDK', () => {
     llm.queueResponse({
       kind: 'tool-call',
       toolCallId: 'call_1',
-      toolName: 'test.echo',
+      toolName: 'test_echo',
       input: { message: 'hi' },
       finishReason: 'tool-calls',
     });
@@ -228,7 +228,7 @@ suite('LingYun Agent SDK', () => {
     )!;
     const toolPart = toolAssistant.parts.find((p: any) => p.type === 'dynamic-tool' && p.toolCallId === 'call_1') as any;
     assert.ok(toolPart, 'expected dynamic-tool part');
-    assert.strictEqual(toolPart.toolName, 'test.echo');
+    assert.strictEqual(toolPart.toolName, 'test_echo');
     assert.strictEqual(toolPart.state, 'output-available');
     assert.strictEqual(toolPart.output?.success, true);
     assert.ok(String(toolPart.output?.data).includes('Echo: hi'));

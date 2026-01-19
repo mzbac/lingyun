@@ -73,7 +73,7 @@ suite('LingYun Agent SDK (E2E)', function () {
       const registry = new ToolRegistry();
       registry.registerTool(
         {
-          id: 'test.echo',
+          id: 'test_echo',
           name: 'Echo',
           description: 'Echo back the message argument',
           parameters: {
@@ -81,7 +81,7 @@ suite('LingYun Agent SDK (E2E)', function () {
             properties: { message: { type: 'string' } },
             required: ['message'],
           },
-          execution: { type: 'function', handler: 'test.echo' },
+          execution: { type: 'function', handler: 'test_echo' },
         },
         async (args): Promise<ToolResult> => {
           return { success: true, data: `Echo: ${String(args.message)}` };
@@ -101,7 +101,7 @@ suite('LingYun Agent SDK (E2E)', function () {
       const run = agent.run({
         session,
         input:
-          'You MUST call the tool test.echo exactly once with {\"message\":\"ping\"} before responding.\n' +
+          'You MUST call the tool test_echo exactly once with {\"message\":\"ping\"} before responding.\n' +
           'After the tool result, reply with exactly: DONE',
         callbacks: {
           onToolCall: () => {

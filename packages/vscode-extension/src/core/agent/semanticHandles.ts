@@ -249,7 +249,7 @@ export class SemanticHandleRegistry {
       return { ...result, metadata: { ...(result.metadata || {}), outputText: lines.join('\n').trimEnd() } };
     }
 
-    lines.push('Use symbolId with symbols.peek:', '');
+    lines.push('Use symbolId with symbols_peek:', '');
 
     let count = 0;
     for (const item of resultsRaw) {

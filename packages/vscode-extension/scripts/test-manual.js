@@ -100,18 +100,18 @@ async function runTests() {
     const registry = new ToolRegistry();
     const disposable = registry.registerTool(
       {
-        id: 'test.hello',
+        id: 'test_hello',
         name: 'Hello',
         description: 'Says hello',
         parameters: { type: 'object', properties: { name: { type: 'string' } } },
-        execution: { type: 'function', handler: 'test.hello' },
+        execution: { type: 'function', handler: 'test_hello' },
       },
       async (args) => ({ success: true, data: `Hello, ${args.name}!` })
     );
     
     const tools = await registry.getTools();
     if (tools.length !== 1) throw new Error(`Expected 1 tool, got ${tools.length}`);
-    if (tools[0].id !== 'test.hello') throw new Error(`Expected 'test.hello', got ${tools[0].id}`);
+    if (tools[0].id !== 'test_hello') throw new Error(`Expected 'test_hello', got ${tools[0].id}`);
     
     console.log('✅ Tool registration');
     passed++;
@@ -128,11 +128,11 @@ async function runTests() {
     const registry = new ToolRegistry();
     registry.registerTool(
       {
-        id: 'test.echo',
+        id: 'test_echo',
         name: 'Echo',
         description: 'Echoes input',
         parameters: { type: 'object', properties: { msg: { type: 'string' } } },
-        execution: { type: 'function', handler: 'test.echo' },
+        execution: { type: 'function', handler: 'test_echo' },
       },
       async (args) => ({ success: true, data: args.msg })
     );
@@ -144,7 +144,7 @@ async function runTests() {
       log: () => {},
     };
 
-    const result = await registry.executeTool('test.echo', { msg: 'Hello World' }, context);
+    const result = await registry.executeTool('test_echo', { msg: 'Hello World' }, context);
     
     if (!result.success) throw new Error('Execution failed');
     if (result.data !== 'Hello World') throw new Error(`Expected 'Hello World', got ${result.data}`);
@@ -163,11 +163,11 @@ async function runTests() {
     const registry = new ToolRegistry();
     const disposable = registry.registerTool(
       {
-        id: 'test.dispose',
+        id: 'test_dispose',
         name: 'Dispose',
         description: 'Will be disposed',
         parameters: { type: 'object', properties: {} },
-        execution: { type: 'function', handler: 'test.dispose' },
+        execution: { type: 'function', handler: 'test_dispose' },
       },
       async () => ({ success: true })
     );
@@ -197,8 +197,8 @@ async function runTests() {
       id: 'test-provider',
       name: 'Test Provider',
       getTools: () => [
-        { id: 'provider.a', name: 'A', description: 'Tool A', parameters: { type: 'object', properties: {} }, execution: { type: 'function', handler: 'a' } },
-        { id: 'provider.b', name: 'B', description: 'Tool B', parameters: { type: 'object', properties: {} }, execution: { type: 'function', handler: 'b' } },
+        { id: 'provider_a', name: 'A', description: 'Tool A', parameters: { type: 'object', properties: {} }, execution: { type: 'function', handler: 'a' } },
+        { id: 'provider_b', name: 'B', description: 'Tool B', parameters: { type: 'object', properties: {} }, execution: { type: 'function', handler: 'b' } },
       ],
       executeTool: async () => ({ success: true, data: 'from provider' }),
     };
@@ -228,7 +228,7 @@ async function runTests() {
       log: () => {},
     };
 
-    const result = await registry.executeTool('nonexistent.tool', {}, context);
+    const result = await registry.executeTool('nonexistent_tool', {}, context);
     
     if (result.success) throw new Error('Should have failed');
     if (!result.error.includes('Unknown tool')) throw new Error('Wrong error message');
@@ -247,7 +247,7 @@ async function runTests() {
     const registry = new ToolRegistry();
     registry.registerTool(
       {
-        id: 'llm.test',
+        id: 'llm_test',
         name: 'LLM Test',
         description: 'A tool for LLM testing',
         parameters: { 
@@ -257,7 +257,7 @@ async function runTests() {
           },
           required: ['query']
         },
-        execution: { type: 'function', handler: 'llm.test' },
+        execution: { type: 'function', handler: 'llm_test' },
       },
       async () => ({ success: true })
     );
@@ -266,7 +266,7 @@ async function runTests() {
     
     if (llmTools.length !== 1) throw new Error(`Expected 1 tool, got ${llmTools.length}`);
     if (llmTools[0].type !== 'function') throw new Error('Wrong type');
-    if (llmTools[0].function.name !== 'llm.test') throw new Error('Wrong name');
+    if (llmTools[0].function.name !== 'llm_test') throw new Error('Wrong name');
     if (!llmTools[0].function.parameters) throw new Error('Missing parameters');
     
     console.log('✅ LLM format conversion');

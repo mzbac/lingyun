@@ -116,12 +116,12 @@ export class FileHandleRegistry {
     if (files.length === 0) {
       lines.push('No files found');
     } else {
-      lines.push('Use fileId with read/read.range/edit/write/lsp/symbols.peek:', '');
+      lines.push('Use fileId with read/read_range/edit/write/lsp/symbols_peek:', '');
       for (const filePath of files) {
         const handle = this.getOrCreate(filePath);
         lines.push(`${handle.id}  ${handle.filePath}`);
       }
-      lines.push('', 'Tip: For symbol navigation (definitions/references/types), prefer symbols.search → symbols.peek or lsp over grep.');
+      lines.push('', 'Tip: For symbol navigation (definitions/references/types), prefer symbols_search → symbols_peek or lsp over grep.');
       if (truncated) {
         lines.push('', '(Results are truncated. Consider using a more specific path or pattern.)');
       }
@@ -220,7 +220,7 @@ export class FileHandleRegistry {
     lines.push(`Found ${totalMatches} matches`);
     lines.push('');
     lines.push(
-      'Tip: For symbol/code-intelligence tasks (definitions/references/types), prefer symbols.peek (matchId) or lsp (hover/goToDefinition/findReferences) using fileId + line/character from matches.'
+      'Tip: For symbol/code-intelligence tasks (definitions/references/types), prefer symbols_peek (matchId) or lsp (hover/goToDefinition/findReferences) using fileId + line/character from matches.'
     );
 
     for (const [filePath, fileMatches] of byFile.entries()) {
@@ -248,7 +248,7 @@ export class FileHandleRegistry {
       if (first) {
         const character = first.column && first.column > 0 ? first.column : 1;
         lines.push(
-          `  Next: symbols.peek { matchId: ${firstMatchId ?? '(matchId)'} } OR lsp hover/goToDefinition/findReferences at line=${first.line} character=${character} (fileId: ${handle.id})`
+          `  Next: symbols_peek { matchId: ${firstMatchId ?? '(matchId)'} } OR lsp hover/goToDefinition/findReferences at line=${first.line} character=${character} (fileId: ${handle.id})`
         );
       } else {
         lines.push(`  LSP: documentSymbol (fileId: ${handle.id})`);

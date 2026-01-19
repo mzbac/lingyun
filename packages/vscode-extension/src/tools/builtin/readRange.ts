@@ -15,15 +15,15 @@ function getMaxRangeLines(): number {
 }
 
 export const readRangeTool: ToolDefinition = {
-  id: 'read.range',
+  id: 'read_range',
   name: 'Read Range',
   description:
-    "Reads a small line range from a file (cat-style numbered lines). Prefer locId from symbols.peek, or use fileId + {startLine,endLine}. Lines are 1-based. Enforces a strict max line count (<= lingyun.tools.read.maxLines).",
+    "Reads a small line range from a file (cat-style numbered lines). Prefer locId from symbols_peek, or use fileId + {startLine,endLine}. Lines are 1-based. Enforces a strict max line count (<= lingyun.tools.read.maxLines).",
   parameters: {
     type: 'object',
     properties: {
-      locId: { type: 'string', description: 'Location handle from symbols.peek output (e.g. "L1")' },
-      symbolId: { type: 'string', description: 'Symbol handle from symbols.search output (e.g. "S1")' },
+      locId: { type: 'string', description: 'Location handle from symbols_peek output (e.g. "L1")' },
+      symbolId: { type: 'string', description: 'Symbol handle from symbols_search output (e.g. "S1")' },
       matchId: { type: 'string', description: 'Match handle from grep output (e.g. "M1")' },
       fileId: { type: 'string', description: 'File handle from glob/grep output (e.g. "F1")' },
       filePath: { type: 'string', description: 'Absolute path or path relative to workspace root' },

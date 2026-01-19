@@ -393,7 +393,7 @@ function toAgentBrowserArgsForAction(params: {
     case 'open': {
       const validated = validatePublicUrl(action.url, { allowHttp: params.allowHttp, allowPrivateHosts: params.allowPrivateHosts });
       if (!validated.ok) {
-        return Promise.reject(new Error(`browser.run rejected url: ${validated.reason}`));
+        return Promise.reject(new Error(`browser_run rejected url: ${validated.reason}`));
       }
       return Promise.resolve({ args: ['open', validated.url.toString()] });
     }
@@ -581,11 +581,11 @@ export class AgentBrowserToolProvider implements ToolProvider {
     }, defaultTtlMs);
 
     this.startSessionTool = {
-      id: 'browser.startSession',
+      id: 'browser_start_session',
       name: 'Browser: Start Session',
       description:
         'Start (or reuse) an isolated browser session for multi-step browser work. ' +
-        'Use browser.snapshot to inspect the page and get stable refs (@e1). Sessions auto-close after a TTL.',
+        'Use browser_snapshot to inspect the page and get stable refs (@e1). Sessions auto-close after a TTL.',
       parameters: {
         type: 'object',
         properties: {
@@ -598,13 +598,13 @@ export class AgentBrowserToolProvider implements ToolProvider {
     };
 
     this.closeSessionTool = {
-      id: 'browser.closeSession',
+      id: 'browser_close_session',
       name: 'Browser: Close Session',
       description: 'Close a browser session and release resources.',
       parameters: {
         type: 'object',
         properties: {
-          sessionId: { type: 'string', description: 'Session id returned by browser.startSession' },
+          sessionId: { type: 'string', description: 'Session id returned by browser_start_session' },
         },
         required: ['sessionId'],
       },
@@ -613,7 +613,7 @@ export class AgentBrowserToolProvider implements ToolProvider {
     };
 
     this.snapshotTool = {
-      id: 'browser.snapshot',
+      id: 'browser_snapshot',
       name: 'Browser: Snapshot',
       description:
         'Open (optional) and snapshot the current page into an accessibility tree with stable refs (use @eN selectors). ' +
@@ -621,7 +621,7 @@ export class AgentBrowserToolProvider implements ToolProvider {
       parameters: {
         type: 'object',
         properties: {
-          sessionId: { type: 'string', description: 'Session id (use browser.startSession first)' },
+          sessionId: { type: 'string', description: 'Session id (use browser_start_session first)' },
           url: { type: 'string', description: 'Optional URL to open before snapshot (defaults to current page)' },
           interactive: { type: 'boolean', description: 'Only interactive elements (default true)' },
           compact: { type: 'boolean', description: 'Remove empty structural elements (default true)' },
@@ -637,16 +637,16 @@ export class AgentBrowserToolProvider implements ToolProvider {
     };
 
     this.runTool = {
-      id: 'browser.run',
+      id: 'browser_run',
       name: 'Browser: Run Actions',
       description:
         'Run a sequence of browser actions in a session (click/fill/type/press/wait/get/etc). ' +
-        'Use refs from browser.snapshot when possible (e.g. selector "@e2"). ' +
+        'Use refs from browser_snapshot when possible (e.g. selector "@e2"). ' +
         'This tool can take screenshots / PDFs / traces into a local artifacts directory.',
       parameters: {
         type: 'object',
         properties: {
-          sessionId: { type: 'string', description: 'Session id (use browser.startSession first)' },
+          sessionId: { type: 'string', description: 'Session id (use browser_start_session first)' },
           actions: {
             type: 'array',
             description: 'Action list to execute sequentially',
@@ -674,13 +674,13 @@ export class AgentBrowserToolProvider implements ToolProvider {
     if (!this.enabled) return { success: false, error: 'Browser tools are disabled.' };
 
     switch (toolId) {
-      case 'browser.startSession':
+      case 'browser_start_session':
         return await this.handleStartSession(args);
-      case 'browser.closeSession':
+      case 'browser_close_session':
         return await this.handleCloseSession(args, context);
-      case 'browser.snapshot':
+      case 'browser_snapshot':
         return await this.handleSnapshot(args, context);
-      case 'browser.run':
+      case 'browser_run':
         return await this.handleRun(args, context);
       default:
         return { success: false, error: `Unknown browser tool: ${toolId}` };
@@ -740,7 +740,7 @@ export class AgentBrowserToolProvider implements ToolProvider {
     let openInfo: Record<string, unknown> | undefined;
     if (urlRaw && urlRaw.trim()) {
       const validated = validatePublicUrl(urlRaw, { allowHttp: this.allowHttp, allowPrivateHosts: this.allowPrivateHosts });
-      if (!validated.ok) return { success: false, error: `browser.snapshot rejected url: ${validated.reason}` };
+      if (!validated.ok) return { success: false, error: `browser_snapshot rejected url: ${validated.reason}` };
 
       const opened = await this.runner(['--session', sessionRes.sessionId, 'open', validated.url.toString()], { timeoutMs, cwd, bin });
       if (!opened.success) return { success: false, error: opened.error || 'agent-browser open failed' };

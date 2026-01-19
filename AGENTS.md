@@ -24,7 +24,7 @@ This project is still in active development with no production users. Prefer bre
   - `.vscode/agent-tools.json` and `.vscode/agent-tools/*.json` (loaded by `packages/vscode-extension/src/providers/workspace.ts`)
   - Schema: `packages/vscode-extension/schemas/agent-tools.schema.json`
 - Built-in tools (stable IDs): `packages/vscode-extension/src/tools/builtin/*`
-  - `read`, `read.range`, `write`, `edit`, `glob`, `grep`, `list`, `lsp`, `symbols.search`, `symbols.peek`, `bash`
+  - `read`, `read_range`, `write`, `edit`, `glob`, `grep`, `list`, `lsp`, `symbols_search`, `symbols_peek`, `bash`
 - Chat UI:
   - Webview provider: `packages/vscode-extension/src/ui/chat.ts` + `packages/vscode-extension/src/ui/chat/methods.*.ts`
   - Webview assets: `packages/vscode-extension/media/chat.html`, `packages/vscode-extension/media/chat/*.js`

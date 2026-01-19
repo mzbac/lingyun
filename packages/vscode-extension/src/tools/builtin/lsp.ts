@@ -69,8 +69,8 @@ export const lspTool: ToolDefinition = {
     `Get semantic code intelligence via VS Code language features (LSP). Prefer this over regex grep for symbol/code-intelligence tasks.
 
 Prefer higher-level tools for common navigation:
-- symbols.search -> find a symbol by name (no file/position needed)
-- symbols.peek -> hover + definition + snippet in one call
+- symbols_search -> find a symbol by name (no file/position needed)
+- symbols_peek -> hover + definition + snippet in one call
 
 Common patterns:
 - Find a symbol by name across the workspace -> operation: workspaceSymbol, query: "foo"
