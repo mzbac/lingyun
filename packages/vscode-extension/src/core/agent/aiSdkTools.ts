@@ -14,6 +14,7 @@ import type { AgentCallbacks, AgentConfig, ToolContext, ToolDefinition, ToolResu
 import { isRecord } from '../utils/guards';
 import type { PluginManager } from '../hooks/pluginManager';
 import { FileHandleRegistry } from './fileHandles';
+import { SemanticHandleRegistry } from './semanticHandles';
 import { toToolCall } from './toolCall';
 import {
   combinePermissionActions,
@@ -38,6 +39,7 @@ export type CreateAISDKToolsParams = {
   registry: ToolRegistry;
   plugins: PluginManager;
   fileHandles: FileHandleRegistry;
+  semanticHandles: SemanticHandleRegistry;
   createToolContext: (abortSignal?: AbortSignal) => ToolContext;
   formatToolResult: (result: ToolResult, toolName: string) => Promise<string>;
 };
@@ -73,7 +75,12 @@ export function createAISDKTools(params: CreateAISDKToolsParams): Record<string,
 
         if (
           isRecord(resolvedArgs) &&
-          (def.id === 'read' || def.id === 'edit' || def.id === 'write' || def.id === 'lsp') &&
+          (def.id === 'read' ||
+            def.id === 'read.range' ||
+            def.id === 'edit' ||
+            def.id === 'write' ||
+            def.id === 'lsp' ||
+            def.id === 'symbols.peek') &&
           typeof (resolvedArgs as any).fileId === 'string'
         ) {
           const filePathRaw =
@@ -89,6 +96,114 @@ export function createAISDKTools(params: CreateAISDKToolsParams): Record<string,
               };
             }
             resolvedArgs = { ...resolvedArgs, filePath: resolvedPath };
+          }
+        }
+
+        if (isRecord(resolvedArgs) && def.id === 'symbols.peek') {
+          const symbolId =
+            typeof (resolvedArgs as any).symbolId === 'string' ? String((resolvedArgs as any).symbolId) : '';
+          const matchId =
+            typeof (resolvedArgs as any).matchId === 'string' ? String((resolvedArgs as any).matchId) : '';
+          const locId =
+            typeof (resolvedArgs as any).locId === 'string' ? String((resolvedArgs as any).locId) : '';
+
+          const handleId = symbolId.trim() || matchId.trim() || locId.trim();
+          if (handleId) {
+            const handle =
+              symbolId.trim()
+                ? params.semanticHandles.resolveSymbol(handleId)
+                : matchId.trim()
+                  ? params.semanticHandles.resolveMatch(handleId)
+                  : params.semanticHandles.resolveLocation(handleId);
+
+            if (!handle) {
+              const errorType = symbolId.trim()
+                ? 'unknown_symbol_id'
+                : matchId.trim()
+                  ? 'unknown_match_id'
+                  : 'unknown_loc_id';
+              return {
+                success: false,
+                error:
+                  `${errorType}: ${handleId}. Re-run symbols.search (for symbolId) or grep (for matchId) and use the returned handle.`,
+                metadata: { errorType, handleId },
+              };
+            }
+
+            const fileId = handle.fileId;
+            const filePath = params.fileHandles.resolve(fileId);
+            if (!filePath) {
+              return {
+                success: false,
+                error: `Unknown fileId: ${fileId}. Run glob first and use one of the returned fileId values.`,
+                metadata: { errorType: 'unknown_file_id', fileId },
+              };
+            }
+
+            const line = handle.range.start.line;
+            const character = handle.range.start.character;
+
+            resolvedArgs = {
+              ...resolvedArgs,
+              fileId,
+              filePath,
+              line,
+              character,
+            };
+          }
+        }
+
+        if (isRecord(resolvedArgs) && def.id === 'read.range') {
+          const locId =
+            typeof (resolvedArgs as any).locId === 'string' ? String((resolvedArgs as any).locId) : '';
+          const symbolId =
+            typeof (resolvedArgs as any).symbolId === 'string' ? String((resolvedArgs as any).symbolId) : '';
+          const matchId =
+            typeof (resolvedArgs as any).matchId === 'string' ? String((resolvedArgs as any).matchId) : '';
+
+          const handleId = locId.trim() || symbolId.trim() || matchId.trim();
+          if (handleId) {
+            const handle =
+              locId.trim()
+                ? params.semanticHandles.resolveLocation(handleId)
+                : symbolId.trim()
+                  ? params.semanticHandles.resolveSymbol(handleId)
+                  : params.semanticHandles.resolveMatch(handleId);
+
+            if (!handle) {
+              const errorType = locId.trim()
+                ? 'unknown_loc_id'
+                : symbolId.trim()
+                  ? 'unknown_symbol_id'
+                  : 'unknown_match_id';
+              return {
+                success: false,
+                error:
+                  `${errorType}: ${handleId}. Re-run symbols.search (for symbolId) or symbols.peek/grep (for locId/matchId) and use the returned handle.`,
+                metadata: { errorType, handleId },
+              };
+            }
+
+            const fileId = handle.fileId;
+            const filePath = params.fileHandles.resolve(fileId);
+            if (!filePath) {
+              return {
+                success: false,
+                error: `Unknown fileId: ${fileId}. Run glob first and use one of the returned fileId values.`,
+                metadata: { errorType: 'unknown_file_id', fileId },
+              };
+            }
+
+            const startLine = handle.range.start.line;
+            const endLine = handle.range.end.line;
+
+            resolvedArgs = {
+              ...resolvedArgs,
+              fileId,
+              filePath,
+              startLine,
+              endLine,
+            };
           }
         }
 
@@ -306,7 +421,18 @@ export function createAISDKTools(params: CreateAISDKToolsParams): Record<string,
         }
 
         if (def.id === 'grep') {
-          result = params.fileHandles.decorateGrepResultWithFileHandles(result);
+          result = params.fileHandles.decorateGrepResultWithFileHandles(result, {
+            createMatchId: (fileId, line, character, preview) =>
+              params.semanticHandles.createMatchHandle(fileId, line, character, preview).matchId,
+          });
+        }
+
+        if (def.id === 'symbols.search') {
+          result = params.semanticHandles.decorateSymbolsSearchResult(result, params.fileHandles);
+        }
+
+        if (def.id === 'symbols.peek') {
+          result = params.semanticHandles.decorateSymbolsPeekResult(result, params.fileHandles);
         }
 
         // Allow plugins to rewrite the tool output that is fed back to the model.

@@ -1,7 +1,6 @@
 import * as vscode from 'vscode';
 import type { ChatMessage } from './types';
 import { isDefaultSessionTitle } from './sessionTitle';
-import { createUserHistoryMessage, getMessageText } from '@kooka/core';
 import { ChatViewProvider } from '../chat';
 
 Object.assign(ChatViewProvider.prototype, {
@@ -176,30 +175,6 @@ Object.assign(ChatViewProvider.prototype, {
     this.currentTurnId = toolMsg.turnId || lastUserTurn || this.currentTurnId;
 
     this.commitRevertedConversationIfNeeded();
-
-    if (toolMsg.toolCall.blockedReason === 'external_paths_disabled') {
-      const allowExternalPaths =
-        vscode.workspace.getConfiguration('lingyun').get<boolean>('security.allowExternalPaths', false) ?? false;
-
-      if (allowExternalPaths) {
-        const note =
-          'System note: External paths are now enabled (lingyun.security.allowExternalPaths=true). ' +
-          'You may retry actions that use paths outside the workspace.';
-
-        const state = this.agent.exportState();
-        const last = state.history.at(-1);
-        const alreadyAdded =
-          last?.role === 'user' && last?.metadata?.synthetic === true && getMessageText(last).trim() === note.trim();
-
-        if (!alreadyAdded) {
-          state.history.push(createUserHistoryMessage(note, { synthetic: true }));
-          this.agent.importState(state);
-          // Keep agent config in sync with the UI after state mutation.
-          this.agent.updateConfig({ model: this.currentModel, mode: this.mode });
-          this.agent.setMode(this.mode);
-        }
-      }
-    }
 
     this.isProcessing = true;
     this.autoApproveThisRun = false;

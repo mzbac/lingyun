@@ -116,15 +116,12 @@ export class FileHandleRegistry {
     if (files.length === 0) {
       lines.push('No files found');
     } else {
-      lines.push('Use fileId with read/edit/write/lsp:', '');
+      lines.push('Use fileId with read/read.range/edit/write/lsp/symbols.peek:', '');
       for (const filePath of files) {
         const handle = this.getOrCreate(filePath);
         lines.push(`${handle.id}  ${handle.filePath}`);
       }
-      lines.push(
-        '',
-        'Tip: For symbol/code-intelligence questions (functions/classes/definitions/references), prefer lsp (documentSymbol/workspaceSymbol/goToDefinition/findReferences) over grep.'
-      );
+      lines.push('', 'Tip: For symbol navigation (definitions/references/types), prefer symbols.search → symbols.peek or lsp over grep.');
       if (truncated) {
         lines.push('', '(Results are truncated. Consider using a more specific path or pattern.)');
       }
@@ -139,7 +136,12 @@ export class FileHandleRegistry {
     };
   }
 
-  decorateGrepResultWithFileHandles(result: ToolResult): ToolResult {
+  decorateGrepResultWithFileHandles(
+    result: ToolResult,
+    options?: {
+      createMatchId?: (fileId: string, line: number, character: number, preview: string) => string;
+    }
+  ): ToolResult {
     if (!result.success) return result;
 
     const data = result.data;
@@ -218,7 +220,7 @@ export class FileHandleRegistry {
     lines.push(`Found ${totalMatches} matches`);
     lines.push('');
     lines.push(
-      'Tip: For symbol/code-intelligence tasks (functions/classes/definitions/references), use lsp (documentSymbol/workspaceSymbol/goToDefinition/findReferences) with fileId + line/character from matches.'
+      'Tip: For symbol/code-intelligence tasks (definitions/references/types), prefer symbols.peek (matchId) or lsp (hover/goToDefinition/findReferences) using fileId + line/character from matches.'
     );
 
     for (const [filePath, fileMatches] of byFile.entries()) {
@@ -231,18 +233,22 @@ export class FileHandleRegistry {
 
       lines.push('');
       lines.push(`${handle.id}  ${handle.filePath}:`);
+      let firstMatchId: string | undefined;
       for (const match of sorted) {
         const truncatedLine =
           match.text.length > MAX_LINE_LENGTH ? match.text.substring(0, MAX_LINE_LENGTH) + '...' : match.text;
+        const character = match.column && match.column > 0 ? match.column : 1;
+        const matchId = options?.createMatchId?.(handle.id, match.line, character, truncatedLine);
+        if (!firstMatchId && matchId) firstMatchId = matchId;
         const pos = match.column ? `Line ${match.line}, Character ${match.column}` : `Line ${match.line}`;
-        lines.push(`  ${pos}: ${truncatedLine}`);
+        lines.push(`  ${matchId ? `${matchId}  ` : ''}${pos}: ${truncatedLine}`);
       }
 
       const first = sorted[0];
       if (first) {
         const character = first.column && first.column > 0 ? first.column : 1;
         lines.push(
-          `  LSP: hover/goToDefinition/findReferences at line=${first.line} character=${character} (fileId: ${handle.id})`
+          `  Next: symbols.peek { matchId: ${firstMatchId ?? '(matchId)'} } OR lsp hover/goToDefinition/findReferences at line=${first.line} character=${character} (fileId: ${handle.id})`
         );
       } else {
         lines.push(`  LSP: documentSymbol (fileId: ${handle.id})`);

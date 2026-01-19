@@ -238,10 +238,17 @@ Object.assign(ChatViewProvider.prototype, {
       }
     }
 
+    const semanticHandlesRaw = state.semanticHandles;
+    const semanticHandles =
+      semanticHandlesRaw && typeof semanticHandlesRaw === 'object'
+        ? (semanticHandlesRaw as AgentSessionState['semanticHandles'])
+        : undefined;
+
     return {
       history,
       pendingPlan: typeof state.pendingPlan === 'string' ? state.pendingPlan : undefined,
       fileHandles,
+      semanticHandles,
     };
   },
 
@@ -343,7 +350,19 @@ Object.assign(ChatViewProvider.prototype, {
   },
 
   getBlankAgentState(this: ChatViewProvider): AgentSessionState {
-    return { history: [], pendingPlan: undefined, fileHandles: { nextId: 1, byId: {} } };
+    return {
+      history: [],
+      pendingPlan: undefined,
+      fileHandles: { nextId: 1, byId: {} },
+      semanticHandles: {
+        nextMatchId: 1,
+        nextSymbolId: 1,
+        nextLocId: 1,
+        matches: {},
+        symbols: {},
+        locations: {},
+      },
+    };
   },
 
   getActiveSession(this: ChatViewProvider): ChatSessionInfo {

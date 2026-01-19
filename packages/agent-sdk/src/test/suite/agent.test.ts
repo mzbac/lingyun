@@ -237,6 +237,26 @@ suite('LingYun Agent SDK', () => {
     assert.strictEqual(getMessageText(finalAssistant).trim(), 'done');
   });
 
+  test('prompt - injects external path access reminder', async () => {
+    const llm = new MockLLMProvider();
+    const registry = new ToolRegistry();
+
+    llm.queueResponse({ kind: 'text', content: 'ok' });
+
+    const agent = new LingyunAgent(llm, { model: 'mock-model' }, registry, { allowExternalPaths: true });
+    const session = new LingyunSession();
+
+    const run = agent.run({ session, input: 'hi' });
+    for await (const _event of run.events) {
+      // drain
+    }
+    await run.done;
+
+    const prompt = JSON.stringify(llm.lastPrompt ?? '');
+    assert.ok(prompt.includes('<system-reminder>'), 'system-reminder tag should be present in prompt');
+    assert.ok(prompt.includes('External paths are enabled'), 'external path reminder should reflect setting');
+  });
+
   test('file handles - glob assigns fileId and read resolves it', async () => {
     const llm = new MockLLMProvider();
     const registry = new ToolRegistry();

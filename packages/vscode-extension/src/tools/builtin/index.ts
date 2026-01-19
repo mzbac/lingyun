@@ -8,6 +8,8 @@ import { grepHandler, grepTool } from './grep';
 import { listHandler, listTool } from './list';
 import { lspHandler, lspTool } from './lsp';
 import { readHandler, readTool } from './read';
+import { readRangeHandler, readRangeTool } from './readRange';
+import { symbolsPeekHandler, symbolsPeekTool, symbolsSearchHandler, symbolsSearchTool } from './symbols';
 import { skillHandler, skillTool } from './skill';
 import { todoreadHandler, todoreadTool } from './todoread';
 import { todowriteHandler, todowriteTool } from './todowrite';
@@ -18,8 +20,11 @@ export function registerBuiltinTools(): vscode.Disposable[] {
     toolRegistry.registerTool(listTool, listHandler),
     toolRegistry.registerTool(globTool, globHandler),
     toolRegistry.registerTool(lspTool, lspHandler),
+    toolRegistry.registerTool(symbolsSearchTool, symbolsSearchHandler),
+    toolRegistry.registerTool(symbolsPeekTool, symbolsPeekHandler),
     toolRegistry.registerTool(grepTool, grepHandler),
     toolRegistry.registerTool(readTool, readHandler),
+    toolRegistry.registerTool(readRangeTool, readRangeHandler),
     toolRegistry.registerTool(writeTool, writeHandler),
     toolRegistry.registerTool(editTool, editHandler),
     toolRegistry.registerTool(bashTool, bashHandler),

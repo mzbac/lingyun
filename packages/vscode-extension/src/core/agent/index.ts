@@ -51,6 +51,7 @@ import {
 } from '@kooka/core';
 import { isRecord } from '../utils/guards';
 import { FileHandleRegistry, type FileHandlesState } from './fileHandles';
+import { SemanticHandleRegistry, type SemanticHandlesState } from './semanticHandles';
 import { toToolCall } from './toolCall';
 import { createAISDKTools } from './aiSdkTools';
 
@@ -135,6 +136,7 @@ export type AgentSessionState = {
   history: AgentHistoryMessage[];
   pendingPlan?: string;
   fileHandles?: FileHandlesState;
+  semanticHandles?: SemanticHandlesState;
 };
 
 export class AgentLoop {
@@ -151,6 +153,7 @@ export class AgentLoop {
   private readonly fileHandles = new FileHandleRegistry(
     () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
   );
+  private readonly semanticHandles = new SemanticHandleRegistry();
 
   constructor(
     private llm: LLMProvider,
@@ -326,6 +329,7 @@ export class AgentLoop {
       history: this.history.filter((msg) => !(msg.role === 'user' && msg.metadata?.skill)),
       pendingPlan: this.pendingPlan,
       fileHandles: this.fileHandles.exportState(),
+      semanticHandles: this.semanticHandles.exportState(),
     };
   }
 
@@ -343,6 +347,7 @@ export class AgentLoop {
     this.pendingPlan = state.pendingPlan;
     this.history = [...(state.history || [])];
     this.fileHandles.importState(state.fileHandles);
+    this.semanticHandles.importState(state.semanticHandles);
     // The system prompt is rebuilt dynamically; refresh project instructions for the current editor/workspace.
     this.instructionsKey = undefined;
   }
@@ -420,6 +425,7 @@ export class AgentLoop {
     this.aborted = false;
     this.history = [];
     this.fileHandles.reset();
+    this.semanticHandles.reset();
 
     await this.refreshInstructions();
 
@@ -546,6 +552,7 @@ export class AgentLoop {
         registry: this.registry,
         plugins: this.plugins,
         fileHandles: this.fileHandles,
+        semanticHandles: this.semanticHandles,
         createToolContext: this.createToolContext.bind(this),
         formatToolResult: this.formatToolResult.bind(this),
       });
@@ -953,7 +960,9 @@ export class AgentLoop {
   private async toModelMessages(tools: Record<string, unknown>, modelId: string): Promise<ModelMessage[]> {
     const effective = getEffectiveHistory(this.history);
     const prepared = createHistoryForModel(effective);
-    const reminded = insertModeReminders(prepared, this.getMode());
+    const allowExternalPaths =
+      vscode.workspace.getConfiguration('lingyun').get<boolean>('security.allowExternalPaths', false) ?? false;
+    const reminded = insertModeReminders(prepared, this.getMode(), { allowExternalPaths });
     const withoutIds = reminded.map(({ id: _id, ...rest }) => rest);
 
     const messagesOutput = await this.plugins.trigger(
@@ -1240,6 +1249,7 @@ export class AgentLoop {
     this.history = [];
     this.pendingPlan = undefined;
     this.fileHandles.reset();
+    this.semanticHandles.reset();
   }
 
   getHistory(): AgentHistoryMessage[] {

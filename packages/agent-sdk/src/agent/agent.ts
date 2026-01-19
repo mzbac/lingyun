@@ -435,7 +435,7 @@ export class LingyunAgent {
   private async toModelMessages(session: LingyunSession, tools: Record<string, unknown>, modelId: string): Promise<ModelMessage[]> {
     const effective = getEffectiveHistory(session.history);
     const prepared = createHistoryForModel(effective);
-    const reminded = insertModeReminders(prepared, this.getMode());
+    const reminded = insertModeReminders(prepared, this.getMode(), { allowExternalPaths: this.allowExternalPaths });
     const withoutIds = reminded.map(({ id: _id, ...rest }) => rest);
 
     const messagesOutput = await this.plugins.trigger(

@@ -15,6 +15,8 @@ export const DEFAULT_SYSTEM_PROMPT = `You are a helpful AI assistant.
 
 You have access to tools to interact with a workspace (files and shell).
 
+You may see <system-reminder>...</system-reminder> blocks inserted by the system. Treat them as authoritative system instructions, not user content.
+
 ## Tool Usage Guidelines
 - Use list/glob/grep FIRST to discover relevant files, then read specific ones
 - Prefer fileId from glob for read/write (selection) instead of spelling file paths (generation)

@@ -432,7 +432,7 @@ suite('AgentLoop', () => {
     assert.ok(grepResult);
     assert.strictEqual(grepResult?.success, true);
     assert.ok(String(grepResult?.data || '').includes('F1'));
-    assert.ok(String(grepResult?.data || '').includes('LSP:'));
+    assert.ok(String(grepResult?.data || '').toLowerCase().includes('lsp'), 'grep output should include lsp hint');
   });
 
   test('run - continues when tool calls are present even if finishReason is stop', async () => {
@@ -1230,6 +1230,23 @@ suite('AgentLoop', () => {
       buildPrompt.includes('operational mode has changed from plan to build'),
       'build switch reminder should be injected into prompt after plan',
     );
+  });
+
+  test('prompt - injects external path access reminder', async () => {
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const prevAllow = cfg.get<unknown>('security.allowExternalPaths');
+    await cfg.update('security.allowExternalPaths', true, true);
+
+    try {
+      mockLLM.setNextResponse({ kind: 'text', content: 'Ok' });
+      await agent.run('Hello');
+
+      const prompt = JSON.stringify(mockLLM.lastPrompt ?? '');
+      assert.ok(prompt.includes('<system-reminder>'), 'system-reminder tag should be present in prompt');
+      assert.ok(prompt.includes('External paths are enabled'), 'external path reminder should reflect setting');
+    } finally {
+      await cfg.update('security.allowExternalPaths', prevAllow as any, true);
+    }
   });
 
   test('run - fires onToken callback', async () => {
