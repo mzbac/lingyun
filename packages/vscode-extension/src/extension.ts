@@ -105,6 +105,7 @@ function createAgentConfig(): AgentConfig {
 
   return {
     model: getConfig('model') || MODELS.GPT_4O,
+    subagentModel: getConfig('subagents.model') || undefined,
     mode: (getConfig<'build' | 'plan'>('mode') || 'build'),
     temperature,
     maxRetries,

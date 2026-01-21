@@ -12,6 +12,40 @@ const MAX_TOOL_DIFF_FILE_BYTES = 400_000;
 const TOOL_DIFF_CONTEXT_LINES = 3;
 const MAX_TOOL_DIFF_SNAPSHOTS = 20;
 
+function upsertTaskChildSession(view: ChatViewProvider, result: unknown): string | undefined {
+  if (!result || typeof result !== 'object') return undefined;
+  const meta = (result as any).metadata;
+  if (!meta || typeof meta !== 'object') return undefined;
+  const child = (meta as any).childSession;
+  if (!child || typeof child !== 'object') return undefined;
+
+  const task = (meta as any).task;
+  const modelWarning =
+    task && typeof task === 'object' && typeof (task as any).model_warning === 'string'
+      ? String((task as any).model_warning).trim()
+      : '';
+  if (modelWarning) {
+    const msg: ChatMessage = {
+      id: crypto.randomUUID(),
+      role: 'warning',
+      content: modelWarning,
+      timestamp: Date.now(),
+      turnId: view.currentTurnId,
+    };
+    view.messages.push(msg);
+    view.postMessage({ type: 'message', message: msg });
+  }
+
+  const normalized = view.normalizeLoadedSession(child as any);
+  view.sessions.set(normalized.id, normalized);
+  view.postSessions();
+
+  view.markSessionDirty(normalized.id);
+  void view.flushSessionSave();
+
+  return normalized.id;
+}
+
 function cacheToolDiffSnapshot(
   view: ChatViewProvider,
   toolCallId: string,
@@ -313,6 +347,10 @@ Object.assign(ChatViewProvider.prototype, {
             } catch {
               // ignore parse errors
             }
+          }
+
+          if (toolMsg.toolCall.id === 'task' && result.success) {
+            upsertTaskChildSession(this, result);
           }
 
           const hasDiff = typeof toolMsg.toolCall.diff === 'string' && toolMsg.toolCall.diff.length > 0;
@@ -778,6 +816,9 @@ Object.assign(ChatViewProvider.prototype, {
           }
 
           const toolId = toolMsg.toolCall.id;
+          if (toolId === 'task' && result.success) {
+            upsertTaskChildSession(this, result);
+          }
           if (result.success && (toolId === 'glob' || toolId === 'file.list') && typeof resultStr === 'string') {
             const trimmed = resultStr.trim();
             if (trimmed && trimmed !== 'No files found matching the criteria' && trimmed !== 'No files found') {

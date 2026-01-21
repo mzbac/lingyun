@@ -132,6 +132,11 @@ export interface LLMProvider {
 
 export interface AgentConfig {
   model?: string;
+  /**
+   * Optional model override for subagents spawned via the `task` tool.
+   * If unset/empty, subagents use the parent agent's model.
+   */
+  subagentModel?: string;
   systemPrompt?: string;
   mode?: 'build' | 'plan';
   temperature?: number;

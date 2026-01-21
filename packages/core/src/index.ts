@@ -10,6 +10,9 @@ export { findExternalPathReferencesInShellCommand, isPathInsideWorkspace } from 
 export type { SkillListEntry } from './skills';
 export { extractSkillMentions, renderSkillsSectionForPrompt, selectSkillsForText } from './skills';
 
+export type { SubagentDefinition, SubagentName } from './subagents';
+export { listBuiltinSubagents, resolveBuiltinSubagent } from './subagents';
+
 export type { ValidationResult, ShellCommandDecision } from './validation';
 export {
   evaluateShellCommand,

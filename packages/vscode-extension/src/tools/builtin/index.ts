@@ -11,6 +11,7 @@ import { readHandler, readTool } from './read';
 import { readRangeHandler, readRangeTool } from './readRange';
 import { symbolsPeekHandler, symbolsPeekTool, symbolsSearchHandler, symbolsSearchTool } from './symbols';
 import { skillHandler, skillTool } from './skill';
+import { taskHandler, taskTool } from './task';
 import { todoreadHandler, todoreadTool } from './todoread';
 import { todowriteHandler, todowriteTool } from './todowrite';
 import { writeHandler, writeTool } from './write';
@@ -29,6 +30,7 @@ export function registerBuiltinTools(): vscode.Disposable[] {
     toolRegistry.registerTool(editTool, editHandler),
     toolRegistry.registerTool(bashTool, bashHandler),
     toolRegistry.registerTool(skillTool, skillHandler),
+    toolRegistry.registerTool(taskTool, taskHandler),
     toolRegistry.registerTool(todoreadTool, todoreadHandler),
     toolRegistry.registerTool(todowriteTool, todowriteHandler),
   ];

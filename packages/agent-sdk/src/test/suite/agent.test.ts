@@ -35,6 +35,12 @@ function getMessageText(message: AgentHistoryMessage): string {
 
 const bashTool = getBuiltinTools().find((t) => t.tool.id === 'bash')!.tool;
 
+function registerTaskTool(registry: ToolRegistry): void {
+  const task = getBuiltinTools({ skills: { enabled: false } }).find((t) => t.tool.id === 'task');
+  assert.ok(task, 'expected builtin task tool to exist');
+  registry.registerTool(task.tool, task.handler);
+}
+
 type ScriptedResponse =
   | { kind: 'text'; content: string; usage?: UsageOverride }
   | {
@@ -130,6 +136,8 @@ class MockLLMProvider implements LLMProvider {
   readonly name = 'Mock LLM';
 
   private responses: ScriptedResponse[] = [];
+  private unavailableModels = new Set<string>();
+  modelCalls: string[] = [];
   callCount = 0;
   lastPrompt: unknown;
 
@@ -137,11 +145,20 @@ class MockLLMProvider implements LLMProvider {
     this.responses.push(response);
   }
 
+  markModelUnavailable(modelId: string): void {
+    this.unavailableModels.add(modelId);
+  }
+
   private nextResponse(): ScriptedResponse {
     return this.responses.shift() ?? { kind: 'text', content: 'No response configured' };
   }
 
   async getModel(modelId: string): Promise<unknown> {
+    this.modelCalls.push(modelId);
+    if (this.unavailableModels.has(modelId)) {
+      throw new Error(`model unavailable: ${modelId}`);
+    }
+
     const model: LanguageModelV3 = {
       specificationVersion: 'v3',
       provider: 'mock',
@@ -620,6 +637,275 @@ suite('LingYun Agent SDK', () => {
       assert.ok(String(toolPart.output?.error || '').includes('User rejected'));
     } finally {
       await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('task tool spawns a subagent and returns child session metadata (without persisting it in parent history)', async () => {
+    const llm = new MockLLMProvider();
+    const registry = new ToolRegistry();
+    registerTaskTool(registry);
+
+    llm.queueResponse({
+      kind: 'tool-call',
+      toolCallId: 'call_task',
+      toolName: 'task',
+      input: {
+        description: 'Explore task',
+        prompt: 'Return a short answer.',
+        subagent_type: 'general',
+        session_id: 'child-1',
+      },
+      finishReason: 'tool-calls',
+    });
+    llm.queueResponse({ kind: 'text', content: 'subagent answer' }); // subagent
+    llm.queueResponse({ kind: 'text', content: 'parent done' }); // parent after tool result
+
+    let taskResult: ToolResult | undefined;
+
+    const agent = new LingyunAgent(llm, { model: 'parent-model' }, registry, { allowExternalPaths: false });
+    const session = new LingyunSession({ sessionId: 'parent-1' });
+
+    const run = agent.run({
+      session,
+      input: 'run task',
+      callbacks: {
+        onToolResult: (tool, result) => {
+          if (tool.function.name === 'task') taskResult = result;
+        },
+      },
+    });
+    for await (const _event of run.events) {
+      // drain
+    }
+    const result = await run.done;
+
+    assert.strictEqual(result.text, 'parent done');
+    assert.ok(taskResult, 'expected task tool result');
+    assert.strictEqual(taskResult!.success, true);
+
+    const meta = taskResult!.metadata as any;
+    assert.ok(meta?.task, 'expected metadata.task');
+    assert.ok(meta?.childSession, 'expected metadata.childSession');
+    assert.strictEqual(meta.task.session_id, 'child-1');
+    assert.strictEqual(meta.task.parent_session_id, 'parent-1');
+    assert.strictEqual(meta.task.subagent_type, 'general');
+    assert.strictEqual(meta.task.model_id, 'parent-model');
+    assert.strictEqual(meta.childSession.sessionId, 'child-1');
+    assert.strictEqual(meta.childSession.parentSessionId, 'parent-1');
+    assert.strictEqual(meta.childSession.subagentType, 'general');
+    assert.strictEqual(meta.childSession.modelId, 'parent-model');
+
+    const history = session.getHistory();
+    const assistant = history.find((m) => m.role === 'assistant');
+    assert.ok(assistant, 'expected assistant message');
+
+    const toolPart = assistant!.parts.find((p: any) => p.type === 'dynamic-tool' && p.toolCallId === 'call_task') as any;
+    assert.ok(toolPart, 'expected task dynamic-tool part');
+    assert.strictEqual(toolPart.output?.success, true);
+    assert.ok(toolPart.output?.metadata, 'expected persisted tool output metadata');
+    assert.ok(!('childSession' in toolPart.output.metadata), 'childSession should not be persisted in parent history');
+    assert.ok(!('task' in toolPart.output.metadata), 'task metadata should not be persisted in parent history');
+  });
+
+  test('task tool uses subagentModel override and remembers model per session_id', async () => {
+    const llm = new MockLLMProvider();
+    const registry = new ToolRegistry();
+    registerTaskTool(registry);
+
+    llm.queueResponse({
+      kind: 'tool-call',
+      toolCallId: 'call_task_1',
+      toolName: 'task',
+      input: {
+        description: 'Run with override',
+        prompt: 'Return ok.',
+        subagent_type: 'general',
+        session_id: 'task-sess',
+      },
+      finishReason: 'tool-calls',
+    });
+    llm.queueResponse({ kind: 'text', content: 'child ok 1' }); // subagent
+    llm.queueResponse({ kind: 'text', content: 'parent ok 1' }); // parent
+    llm.queueResponse({
+      kind: 'tool-call',
+      toolCallId: 'call_task_2',
+      toolName: 'task',
+      input: {
+        description: 'Continue with same session',
+        prompt: 'Return ok again.',
+        subagent_type: 'general',
+        session_id: 'task-sess',
+      },
+      finishReason: 'tool-calls',
+    });
+    llm.queueResponse({ kind: 'text', content: 'child ok 2' }); // subagent
+    llm.queueResponse({ kind: 'text', content: 'parent ok 2' }); // parent
+
+    const agent = new LingyunAgent(llm, { model: 'parent-model', subagentModel: 'child-model-a' }, registry);
+    const session = new LingyunSession({ sessionId: 'parent-1' });
+
+    const seen: ToolResult[] = [];
+    const run1 = agent.run({
+      session,
+      input: 'first',
+      callbacks: {
+        onToolResult: (tool, result) => {
+          if (tool.function.name === 'task') seen.push(result);
+        },
+      },
+    });
+    for await (const _event of run1.events) {
+      // drain
+    }
+    await run1.done;
+
+    agent.updateConfig({ subagentModel: 'child-model-b' });
+
+    const run2 = agent.run({
+      session,
+      input: 'second',
+      callbacks: {
+        onToolResult: (tool, result) => {
+          if (tool.function.name === 'task') seen.push(result);
+        },
+      },
+    });
+    for await (const _event of run2.events) {
+      // drain
+    }
+    await run2.done;
+
+    assert.strictEqual(seen.length, 2, 'expected two task results');
+    assert.strictEqual((seen[0]!.metadata as any)?.task?.model_id, 'child-model-a');
+    assert.strictEqual((seen[1]!.metadata as any)?.task?.model_id, 'child-model-a', 'should reuse persisted child model');
+    assert.ok(!llm.modelCalls.includes('child-model-b'), 'should not attempt the updated override when session already has a model');
+  });
+
+  test('task tool falls back to parent model when subagentModel is unavailable', async () => {
+    const llm = new MockLLMProvider();
+    llm.markModelUnavailable('child-model');
+    const registry = new ToolRegistry();
+    registerTaskTool(registry);
+
+    llm.queueResponse({
+      kind: 'tool-call',
+      toolCallId: 'call_task',
+      toolName: 'task',
+      input: {
+        description: 'Fallback',
+        prompt: 'Return ok.',
+        subagent_type: 'general',
+        session_id: 'fallback-sess',
+      },
+      finishReason: 'tool-calls',
+    });
+    llm.queueResponse({ kind: 'text', content: 'child ok' }); // subagent runs on parent model
+    llm.queueResponse({ kind: 'text', content: 'parent ok' });
+
+    const notices: any[] = [];
+    let taskResult: ToolResult | undefined;
+    const agent = new LingyunAgent(llm, { model: 'parent-model', subagentModel: 'child-model' }, registry);
+    const session = new LingyunSession({ sessionId: 'parent-1' });
+
+    const run = agent.run({
+      session,
+      input: 'go',
+      callbacks: {
+        onNotice: (notice) => {
+          notices.push(notice);
+        },
+        onToolResult: (tool, result) => {
+          if (tool.function.name === 'task') taskResult = result;
+        },
+      },
+    });
+    for await (const _event of run.events) {
+      // drain
+    }
+    await run.done;
+
+    assert.ok(taskResult, 'expected task tool result');
+    const taskMeta = (taskResult!.metadata as any)?.task;
+    assert.ok(taskMeta?.model_warning, 'expected model_warning');
+    assert.strictEqual(taskMeta.requested_model_id, 'child-model');
+    assert.strictEqual(taskMeta.model_id, 'parent-model');
+    assert.ok(notices.some((n) => n.level === 'warning'), 'expected warning notice');
+  });
+
+  test('task tool rejects recursion from subagent sessions and enforces plan-mode subagent restrictions', async () => {
+    {
+      const llm = new MockLLMProvider();
+      const registry = new ToolRegistry();
+      registerTaskTool(registry);
+
+      llm.queueResponse({
+        kind: 'tool-call',
+        toolCallId: 'call_task',
+        toolName: 'task',
+        input: { description: 'noop', prompt: 'noop', subagent_type: 'general' },
+        finishReason: 'tool-calls',
+      });
+      llm.queueResponse({ kind: 'text', content: 'ok' });
+
+      let taskResult: ToolResult | undefined;
+      const agent = new LingyunAgent(llm, { model: 'parent-model' }, registry);
+      const session = new LingyunSession({ sessionId: 'child', parentSessionId: 'parent', subagentType: 'general' });
+
+      const run = agent.run({
+        session,
+        input: 'try recursion',
+        callbacks: {
+          onToolResult: (tool, result) => {
+            if (tool.function.name === 'task') taskResult = result;
+          },
+        },
+      });
+      for await (const _event of run.events) {
+        // drain
+      }
+      await run.done;
+
+      assert.ok(taskResult, 'expected task tool result');
+      assert.strictEqual(taskResult!.success, false);
+      assert.strictEqual(taskResult!.metadata?.errorType, 'task_recursion_denied');
+    }
+
+    {
+      const llm = new MockLLMProvider();
+      const registry = new ToolRegistry();
+      registerTaskTool(registry);
+
+      llm.queueResponse({
+        kind: 'tool-call',
+        toolCallId: 'call_task',
+        toolName: 'task',
+        input: { description: 'noop', prompt: 'noop', subagent_type: 'general' },
+        finishReason: 'tool-calls',
+      });
+      llm.queueResponse({ kind: 'text', content: 'ok' });
+
+      let taskResult: ToolResult | undefined;
+      const agent = new LingyunAgent(llm, { model: 'parent-model', mode: 'plan' }, registry);
+      const session = new LingyunSession({ sessionId: 'parent' });
+
+      const run = agent.run({
+        session,
+        input: 'plan mode',
+        callbacks: {
+          onToolResult: (tool, result) => {
+            if (tool.function.name === 'task') taskResult = result;
+          },
+        },
+      });
+      for await (const _event of run.events) {
+        // drain
+      }
+      await run.done;
+
+      assert.ok(taskResult, 'expected task tool result');
+      assert.strictEqual(taskResult!.success, false);
+      assert.strictEqual(taskResult!.metadata?.errorType, 'subagent_denied_in_plan');
+      assert.strictEqual(taskResult!.metadata?.subagentType, 'general');
     }
   });
 });

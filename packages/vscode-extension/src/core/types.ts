@@ -124,6 +124,11 @@ export interface ToolCall {
 
 export interface AgentConfig {
   model?: string;
+  /**
+   * Optional model override for subagents spawned via the `task` tool.
+   * If unset/empty, subagents use the parent agent's model.
+   */
+  subagentModel?: string;
   systemPrompt?: string;
   mode?: 'build' | 'plan';
   temperature?: number;
@@ -139,6 +144,14 @@ export interface AgentConfig {
    * Optional session identifier (provided by the UI layer).
    */
   sessionId?: string;
+  /**
+   * Optional parent session id when running inside a subagent session.
+   */
+  parentSessionId?: string;
+  /**
+   * Subagent type name when running inside a subagent session.
+   */
+  subagentType?: string;
 }
 
 export interface AgentCallbacks {

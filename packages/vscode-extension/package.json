@@ -127,6 +127,11 @@
           "default": "gpt-4o",
           "description": "Model ID to use (populated by the in-extension model picker)"
         },
+        "lingyun.subagents.model": {
+          "type": "string",
+          "default": "",
+          "description": "Optional model ID to use for subagents spawned via the task tool (falls back to lingyun.model when empty)."
+        },
         "lingyun.mode": {
           "type": "string",
           "default": "build",

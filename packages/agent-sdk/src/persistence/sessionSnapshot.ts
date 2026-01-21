@@ -7,6 +7,9 @@ export type LingyunSessionSnapshotV1 = {
   version: 1;
   savedAt: string;
   sessionId?: string;
+  parentSessionId?: string;
+  subagentType?: string;
+  modelId?: string;
   pendingPlan?: string;
   history: AgentHistoryMessage[];
   fileHandles?: {
@@ -27,6 +30,9 @@ export const LingyunSessionSnapshotSchema = z
     version: z.literal(1),
     savedAt: z.string(),
     sessionId: z.string().optional(),
+    parentSessionId: z.string().optional(),
+    subagentType: z.string().optional(),
+    modelId: z.string().optional(),
     pendingPlan: z.string().optional(),
     history: z.array(z.unknown()),
     fileHandles: FileHandlesSchema.optional(),
@@ -45,6 +51,9 @@ export function snapshotSession(
     version: 1,
     savedAt,
     ...(sessionId ? { sessionId } : {}),
+    ...(session.parentSessionId ? { parentSessionId: session.parentSessionId } : {}),
+    ...(session.subagentType ? { subagentType: session.subagentType } : {}),
+    ...(session.modelId ? { modelId: session.modelId } : {}),
     ...(session.pendingPlan ? { pendingPlan: session.pendingPlan } : {}),
     history: session.getHistory(),
     ...(includeFileHandles && session.fileHandles ? { fileHandles: session.fileHandles } : {}),
@@ -56,6 +65,9 @@ export function restoreSession(snapshot: LingyunSessionSnapshot): LingyunSession
     history: snapshot.history,
     pendingPlan: snapshot.pendingPlan,
     sessionId: snapshot.sessionId,
+    parentSessionId: snapshot.parentSessionId,
+    subagentType: snapshot.subagentType,
+    modelId: snapshot.modelId,
     fileHandles: snapshot.fileHandles,
   });
 }
@@ -72,9 +84,11 @@ export function parseSessionSnapshot(input: unknown): LingyunSessionSnapshot {
     version: 1,
     savedAt: parsed.savedAt,
     ...(parsed.sessionId ? { sessionId: parsed.sessionId } : {}),
+    ...(parsed.parentSessionId ? { parentSessionId: parsed.parentSessionId } : {}),
+    ...(parsed.subagentType ? { subagentType: parsed.subagentType } : {}),
+    ...(parsed.modelId ? { modelId: parsed.modelId } : {}),
     ...(parsed.pendingPlan ? { pendingPlan: parsed.pendingPlan } : {}),
     history: parsed.history as AgentHistoryMessage[],
     ...(parsed.fileHandles ? { fileHandles: parsed.fileHandles } : {}),
   };
 }
-

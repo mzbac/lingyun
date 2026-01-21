@@ -11,11 +11,35 @@ function fileExists(filePath) {
   }
 }
 
+function getMtimeMs(filePath) {
+  try {
+    return fs.statSync(filePath).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
+function getNewestMtimeMs(dirPath) {
+  let newest = 0;
+  for (const entry of fs.readdirSync(dirPath, { withFileTypes: true })) {
+    const entryPath = path.join(dirPath, entry.name);
+    if (entry.isDirectory()) {
+      newest = Math.max(newest, getNewestMtimeMs(entryPath));
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    newest = Math.max(newest, getMtimeMs(entryPath));
+  }
+  return newest;
+}
+
 function run(command) {
   execSync(command, { stdio: 'inherit' });
 }
 
 const coreDir = path.resolve(__dirname, '../../core');
+const coreSrcDir = path.join(coreDir, 'src');
+const newestCoreSourceMtimeMs = fileExists(coreSrcDir) ? getNewestMtimeMs(coreSrcDir) : 0;
 const coreOutputs = {
   types: path.join(coreDir, 'dist/types/index.d.ts'),
   esm: path.join(coreDir, 'dist/esm/index.js'),
@@ -26,15 +50,19 @@ const missing = Object.entries(coreOutputs)
   .filter(([, outputPath]) => !fileExists(outputPath))
   .map(([key]) => key);
 
-if (missing.length === 0) {
-  process.exit(0);
-}
+const stale = Object.entries(coreOutputs)
+  .filter(([, outputPath]) => fileExists(outputPath) && getMtimeMs(outputPath) < newestCoreSourceMtimeMs)
+  .map(([key]) => key);
 
-console.log(`[agent-sdk] Building missing @kooka/core outputs: ${missing.join(', ')}`);
+const required = [...new Set([...missing, ...stale])];
 
-if (missing.includes('types')) run('pnpm -w --filter @kooka/core build:types');
-if (missing.includes('esm')) run('pnpm -w --filter @kooka/core build:esm');
-if (missing.includes('cjs')) run('pnpm -w --filter @kooka/core build:cjs');
+if (required.length === 0) process.exit(0);
+
+console.log(`[agent-sdk] Building @kooka/core outputs: ${required.join(', ')}`);
+
+if (required.includes('types')) run('pnpm -w --filter @kooka/core build:types');
+if (required.includes('esm')) run('pnpm -w --filter @kooka/core build:esm');
+if (required.includes('cjs')) run('pnpm -w --filter @kooka/core build:cjs');
 
 const stillMissing = Object.entries(coreOutputs)
   .filter(([, outputPath]) => !fileExists(outputPath))

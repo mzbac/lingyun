@@ -73,6 +73,9 @@ suite('persistence', () => {
   test('snapshotSession + restoreSession roundtrip', () => {
     const session = new LingyunSession({
       sessionId: 's1',
+      parentSessionId: 'parent-1',
+      subagentType: 'explore',
+      modelId: 'mock-model',
       pendingPlan: 'do the thing',
       history: [
         { id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hello' }] } as any,
@@ -84,6 +87,9 @@ suite('persistence', () => {
     const snapshot = snapshotSession(session, { savedAt: new Date('2020-01-01T00:00:00.000Z') });
     assert.equal(snapshot.version, 1);
     assert.equal(snapshot.sessionId, 's1');
+    assert.equal(snapshot.parentSessionId, 'parent-1');
+    assert.equal(snapshot.subagentType, 'explore');
+    assert.equal(snapshot.modelId, 'mock-model');
     assert.equal(snapshot.pendingPlan, 'do the thing');
     assert.equal(snapshot.savedAt, '2020-01-01T00:00:00.000Z');
     assert.deepEqual(snapshot.fileHandles, { nextId: 2, byId: { F1: 'src/index.ts' } });
@@ -91,6 +97,9 @@ suite('persistence', () => {
 
     const restored = restoreSession(snapshot);
     assert.equal(restored.sessionId, 's1');
+    assert.equal(restored.parentSessionId, 'parent-1');
+    assert.equal(restored.subagentType, 'explore');
+    assert.equal(restored.modelId, 'mock-model');
     assert.equal(restored.pendingPlan, 'do the thing');
     assert.deepEqual(restored.fileHandles, { nextId: 2, byId: { F1: 'src/index.ts' } });
     assert.equal(restored.getHistory().length, 2);
@@ -151,4 +160,3 @@ suite('persistence', () => {
     assert.equal(rows.has('s1'), false);
   });
 });
-

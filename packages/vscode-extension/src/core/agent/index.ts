@@ -3,13 +3,14 @@ import * as path from 'path';
 import {
   convertToModelMessages,
   extractReasoningMiddleware,
+  jsonSchema,
   streamText,
+  tool as aiTool,
   wrapLanguageModel,
   type ModelMessage,
   type TextStreamPart,
 } from 'ai';
 import type {
-  ToolCall,
   ToolDefinition,
   ToolContext,
   ToolResult,
@@ -40,8 +41,10 @@ import {
   type AgentHistoryMessage,
   createAssistantHistoryMessage,
   createUserHistoryMessage,
+  listBuiltinSubagents,
   redactFsPathForPrompt,
   renderSkillsSectionForPrompt,
+  resolveBuiltinSubagent,
   finalizeStreamingParts,
   getMessageText,
   selectSkillsForText,
@@ -169,7 +172,7 @@ export class AgentLoop {
     return this.config.mode === 'plan' ? 'plan' : 'build';
   }
 
-  private composeSystemPrompt(mode: 'build' | 'plan'): string[] {
+  private composeSystemPrompt(_mode: 'build' | 'plan'): string[] {
     const basePrompt = this.config.systemPrompt || DEFAULT_SYSTEM_PROMPT;
     const parts = [basePrompt];
     if (this.instructionsText) {
@@ -557,6 +560,282 @@ export class AgentLoop {
         formatToolResult: this.formatToolResult.bind(this),
       });
 
+      const taskDef = toolNameToDefinition.get('task');
+      if (taskDef) {
+        (tools as any).task = aiTool({
+          id: 'task' as any,
+          description: taskDef.description,
+          inputSchema: jsonSchema(taskDef.parameters as any),
+          execute: async (args: any, options: any) => {
+            const resolvedArgs: any = args ?? {};
+
+            if (this.config.parentSessionId || this.config.subagentType) {
+              return {
+                success: false,
+                error: 'Subagents cannot spawn other subagents via task.',
+                metadata: { errorType: 'task_recursion_denied' },
+              };
+            }
+
+            const parentMode = this.getMode();
+
+            const descriptionRaw = typeof resolvedArgs.description === 'string' ? resolvedArgs.description.trim() : '';
+            const promptRaw = typeof resolvedArgs.prompt === 'string' ? resolvedArgs.prompt : '';
+            const subagentTypeRaw =
+              typeof resolvedArgs.subagent_type === 'string' ? resolvedArgs.subagent_type.trim() : '';
+            const sessionIdRaw = typeof resolvedArgs.session_id === 'string' ? resolvedArgs.session_id.trim() : '';
+
+            if (!descriptionRaw) return { success: false, error: 'Missing required argument: description' };
+            if (!promptRaw) return { success: false, error: 'Missing required argument: prompt' };
+            if (!subagentTypeRaw) return { success: false, error: 'Missing required argument: subagent_type' };
+
+            const subagent = resolveBuiltinSubagent(subagentTypeRaw);
+            if (!subagent) {
+              const names = listBuiltinSubagents().map((a) => a.name).join(', ');
+              return {
+                success: false,
+                error: `Unknown subagent_type: ${subagentTypeRaw}. Available: ${names || '(none)'}`,
+                metadata: { errorType: 'unknown_subagent_type', subagentType: subagentTypeRaw },
+              };
+            }
+
+            if (parentMode === 'plan' && subagent.name !== 'explore') {
+              return {
+                success: false,
+                error: 'Only the explore subagent is allowed in Plan mode.',
+                metadata: { errorType: 'subagent_denied_in_plan', subagentType: subagent.name },
+              };
+            }
+
+            const parentSessionId = this.config.sessionId;
+            const childSessionId = sessionIdRaw || crypto.randomUUID();
+            const now = Date.now();
+
+            // Best-effort: load existing child session state from persisted sessions when session_id is provided.
+            let existingMessages: any[] = [];
+            let existingAgentState: AgentSessionState | undefined;
+            let existingCreatedAt: number | undefined;
+            let existingCurrentModel: string | undefined;
+            if (sessionIdRaw) {
+              try {
+                const baseUri = this.context.storageUri ?? this.context.globalStorageUri;
+                if (baseUri) {
+                  const sessionUri = vscode.Uri.joinPath(baseUri, 'sessions', `${childSessionId}.json`);
+                  const bytes = await vscode.workspace.fs.readFile(sessionUri);
+                  const raw = JSON.parse(new TextDecoder('utf-8').decode(bytes));
+                  if (raw && typeof raw === 'object') {
+                    if (Array.isArray((raw as any).messages)) {
+                      existingMessages = (raw as any).messages;
+                    }
+                    if ((raw as any).agentState && typeof (raw as any).agentState === 'object') {
+                      existingAgentState = (raw as any).agentState as AgentSessionState;
+                    }
+                    if (typeof (raw as any).createdAt === 'number') {
+                      existingCreatedAt = (raw as any).createdAt;
+                    }
+                    if (typeof (raw as any).currentModel === 'string' && String((raw as any).currentModel).trim()) {
+                      existingCurrentModel = String((raw as any).currentModel).trim();
+                    }
+                  }
+                }
+              } catch {
+                // ignore missing/invalid persisted sessions
+              }
+            }
+
+            const parentModelId = this.config.model;
+            if (!parentModelId) {
+              return {
+                success: false,
+                error: 'No model configured. Set lingyun.model.',
+                metadata: { errorType: 'missing_model' },
+              };
+            }
+
+            const configuredSubagentModel =
+              typeof this.config.subagentModel === 'string' ? this.config.subagentModel.trim() : '';
+
+            const desiredChildModelId = existingCurrentModel || configuredSubagentModel || parentModelId;
+            let childModelId = parentModelId;
+            let childModelWarning: string | undefined;
+            if (desiredChildModelId !== parentModelId) {
+              try {
+                await this.llm.getModel(desiredChildModelId);
+                childModelId = desiredChildModelId;
+              } catch (error) {
+                childModelWarning =
+                  `Subagent model "${desiredChildModelId}" is unavailable; ` +
+                  `using parent model "${parentModelId}".`;
+                callbacks?.onDebug?.(
+                  `[Task] subagent model fallback requested=${desiredChildModelId} using=${parentModelId} error=${summarizeErrorForDebug(error)}`,
+                );
+                childModelId = parentModelId;
+              }
+            }
+
+            const basePrompt = this.config.systemPrompt || DEFAULT_SYSTEM_PROMPT;
+            const childAgent = new AgentLoop(
+              this.llm,
+              this.context,
+              {
+                model: childModelId,
+                mode: 'build',
+                temperature: this.config.temperature,
+                maxRetries: this.config.maxRetries,
+                toolFilter: subagent.toolFilter?.length ? subagent.toolFilter : undefined,
+                autoApprove: this.config.autoApprove,
+                systemPrompt: `${basePrompt}\n\n${subagent.prompt}`,
+                sessionId: childSessionId,
+                parentSessionId,
+                subagentType: subagent.name,
+              },
+              this.registry,
+              this.plugins,
+            );
+
+            if (existingAgentState) {
+              try {
+                childAgent.importState(existingAgentState);
+              } catch {
+                // ignore invalid saved state; start fresh
+              }
+            }
+
+            const childMessages: any[] = Array.isArray(existingMessages) ? [...existingMessages] : [];
+            const turnId = crypto.randomUUID();
+
+            childMessages.push({
+              id: turnId,
+              role: 'user',
+              content: promptRaw,
+              timestamp: now,
+            });
+
+            let assistantMsg: any | undefined;
+            const toolSummary = new Map<
+              string,
+              { id: string; tool: string; status: 'running' | 'success' | 'error' }
+            >();
+
+            const childCallbacks: AgentCallbacks = {
+              onRequestApproval: async (tc, def) => {
+                return (await callbacks?.onRequestApproval?.(tc, def)) ?? false;
+              },
+              onToolCall: async (tc, def) => {
+                toolSummary.set(tc.id, { id: tc.id, tool: def.id, status: 'running' });
+                if (def.metadata?.requiresApproval) {
+                  await callbacks?.onToolCall?.(tc, def);
+                }
+
+                childMessages.push({
+                  id: crypto.randomUUID(),
+                  role: 'tool',
+                  content: '',
+                  timestamp: Date.now(),
+                  turnId,
+                  toolCall: {
+                    id: def.id,
+                    name: def.name,
+                    args: tc.function.arguments,
+                    status: 'running',
+                    approvalId: tc.id,
+                  },
+                });
+              },
+              onToolResult: (tc, result) => {
+                const def = toolNameToDefinition.get(tc.function.name);
+                if (def?.metadata?.requiresApproval) {
+                  callbacks?.onToolResult?.(tc, result);
+                }
+
+                const summary = toolSummary.get(tc.id);
+                toolSummary.set(tc.id, {
+                  id: tc.id,
+                  tool: summary?.tool ?? tc.function.name,
+                  status: result.success ? 'success' : 'error',
+                });
+
+                const toolMsg = [...childMessages]
+                  .reverse()
+                  .find((m) => m?.role === 'tool' && m?.toolCall?.approvalId === tc.id);
+                if (toolMsg?.toolCall) {
+                  toolMsg.toolCall.status = result.success ? 'success' : 'error';
+                  let resultStr = '';
+                  if (result.data === undefined || result.data === null) {
+                    resultStr = result.error || (result.success ? 'Done' : 'No data');
+                  } else if (typeof result.data === 'string') {
+                    resultStr = result.data;
+                  } else {
+                    resultStr = JSON.stringify(result.data, null, 2);
+                  }
+                  toolMsg.toolCall.result = resultStr.substring(0, 4000);
+                }
+              },
+              onAssistantToken: (token) => {
+                if (!token) return;
+                if (!assistantMsg) {
+                  assistantMsg = {
+                    id: crypto.randomUUID(),
+                    role: 'assistant',
+                    content: '',
+                    timestamp: Date.now(),
+                    turnId,
+                  };
+                  childMessages.push(assistantMsg);
+                }
+                assistantMsg.content += token;
+              },
+            };
+
+            const text = existingAgentState
+              ? await childAgent.continue(promptRaw, childCallbacks)
+              : await childAgent.run(promptRaw, childCallbacks);
+
+            const title = `${descriptionRaw} (@${subagent.name} subagent)`;
+            const outputText =
+              text.trimEnd() + '\n\n' + ['<task_metadata>', `session_id: ${childSessionId}`, '</task_metadata>'].join('\n');
+
+            const summary = [...toolSummary.values()].sort((a, b) => a.id.localeCompare(b.id));
+
+            return {
+              success: true,
+              data: text,
+              metadata: {
+                title,
+                outputText,
+                task: {
+                  description: descriptionRaw,
+                  subagent_type: subagent.name,
+                  session_id: childSessionId,
+                  parent_session_id: parentSessionId,
+                  summary,
+                  model_id: childModelId,
+                  ...(childModelWarning
+                    ? { model_warning: childModelWarning, requested_model_id: desiredChildModelId }
+                    : {}),
+                },
+                childSession: {
+                  id: childSessionId,
+                  title,
+                  createdAt: existingCreatedAt ?? now,
+                  updatedAt: Date.now(),
+                  messages: childMessages,
+                  agentState: childAgent.exportState(),
+                  currentModel: childModelId,
+                  mode: 'build',
+                  stepCounter: 0,
+                },
+              },
+            };
+          },
+          toModelOutput: async (options: any) => {
+            const output = options.output as ToolResult;
+            const content = await this.formatToolResult(output, taskDef.name);
+            return { type: 'text', value: content };
+          },
+        });
+      }
+
       const abortController = new AbortController();
       this.activeAbortController = abortController;
 
@@ -741,7 +1020,17 @@ export class AgentLoop {
                   const toolName = String(part.toolName);
                   const toolCallId = String(part.toolCallId);
                   const def = toolNameToDefinition.get(toolName);
-                  const output = await this.pruneToolResultForHistory(part.output as any, def?.name ?? toolName);
+                  const rawOutput = part.output as any;
+                  let output = await this.pruneToolResultForHistory(rawOutput, def?.name ?? toolName);
+
+                  const isTaskTool = def?.id === 'task' || toolName === 'task';
+                  if (isTaskTool && output.metadata && typeof output.metadata === 'object') {
+                    // Do not persist child session snapshots inside the main session history.
+                    const meta = { ...(output.metadata as Record<string, unknown>) };
+                    delete (meta as any).childSession;
+                    delete (meta as any).task;
+                    output = { ...output, metadata: meta };
+                  }
 
                   setDynamicToolOutput(assistantMessage, {
                     toolName,
@@ -751,7 +1040,11 @@ export class AgentLoop {
                   });
 
                   const tc = toToolCall(toolCallId, toolName, part.input);
-                  callbacks?.onToolResult?.(tc, output);
+                  if (isTaskTool && rawOutput && typeof rawOutput === 'object' && typeof rawOutput.success === 'boolean') {
+                    callbacks?.onToolResult?.(tc, rawOutput as ToolResult);
+                  } else {
+                    callbacks?.onToolResult?.(tc, output);
+                  }
                   callbacks?.onStatusChange?.({ type: 'running', message: '' });
                   break;
                 }

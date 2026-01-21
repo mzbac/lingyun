@@ -7,6 +7,7 @@ import { grepHandler, grepTool } from './grep.js';
 import { listHandler, listTool } from './list.js';
 import { readHandler, readTool } from './read.js';
 import { createSkillTool } from './skill.js';
+import { taskHandler, taskTool } from './task.js';
 import { writeHandler, writeTool } from './write.js';
 
 export type BuiltinToolsOptions = {
@@ -43,6 +44,7 @@ export function getBuiltinTools(options: BuiltinToolsOptions = {}): Array<{ tool
     { tool: grepTool, handler: grepHandler },
     { tool: bashTool, handler: bashHandler },
     { tool: skill.tool, handler: skill.handler },
+    { tool: taskTool, handler: taskHandler },
   ];
 }
 
