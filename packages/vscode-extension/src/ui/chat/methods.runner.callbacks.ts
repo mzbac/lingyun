@@ -297,6 +297,7 @@ Object.assign(ChatViewProvider.prototype, {
           .reverse()
           .find(m => m.toolCall?.approvalId === tc.id && m.stepId === planContainerId);
         if (toolMsg?.toolCall) {
+          const toolId = toolMsg.toolCall.id;
           const previousStatus = toolMsg.toolCall.status;
           toolMsg.toolCall.status = result.success
             ? 'success'
@@ -304,7 +305,15 @@ Object.assign(ChatViewProvider.prototype, {
               ? 'rejected'
               : 'error';
           let resultStr: string;
-          if (result.data === undefined || result.data === null) {
+          if (
+            toolId === 'task' &&
+            result.success &&
+            result.data &&
+            typeof result.data === 'object' &&
+            typeof (result.data as any).text === 'string'
+          ) {
+            resultStr = String((result.data as any).text);
+          } else if (result.data === undefined || result.data === null) {
             resultStr = result.error || (result.success ? 'Done' : 'No data');
           } else if (typeof result.data === 'string') {
             resultStr = result.data;
@@ -349,7 +358,7 @@ Object.assign(ChatViewProvider.prototype, {
             }
           }
 
-          if (toolMsg.toolCall.id === 'task' && result.success) {
+          if (toolId === 'task' && result.success) {
             upsertTaskChildSession(this, result);
           }
 
@@ -800,6 +809,7 @@ Object.assign(ChatViewProvider.prototype, {
         });
         if (toolMsg?.toolCall) {
           const toolCall = toolMsg.toolCall;
+          const toolId = toolCall.id;
           const previousStatus = toolMsg.toolCall.status;
           toolMsg.toolCall.status = result.success
             ? 'success'
@@ -807,7 +817,15 @@ Object.assign(ChatViewProvider.prototype, {
               ? 'rejected'
               : 'error';
           let resultStr: string;
-          if (result.data === undefined || result.data === null) {
+          if (
+            toolId === 'task' &&
+            result.success &&
+            result.data &&
+            typeof result.data === 'object' &&
+            typeof (result.data as any).text === 'string'
+          ) {
+            resultStr = String((result.data as any).text);
+          } else if (result.data === undefined || result.data === null) {
             resultStr = result.error || (result.success ? 'Done' : 'No data');
           } else if (typeof result.data === 'string') {
             resultStr = result.data;
@@ -815,7 +833,6 @@ Object.assign(ChatViewProvider.prototype, {
             resultStr = JSON.stringify(result.data, null, 2);
           }
 
-          const toolId = toolMsg.toolCall.id;
           if (toolId === 'task' && result.success) {
             upsertTaskChildSession(this, result);
           }

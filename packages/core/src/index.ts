@@ -16,6 +16,7 @@ export { listBuiltinSubagents, resolveBuiltinSubagent } from './subagents';
 export type { ValidationResult, ShellCommandDecision } from './validation';
 export {
   evaluateShellCommand,
+  normalizeSessionId,
   optionalBoolean,
   optionalNumber,
   optionalString,

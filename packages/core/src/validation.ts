@@ -139,6 +139,27 @@ export function requireString(
   return { value };
 }
 
+export function normalizeSessionId(
+  value: unknown,
+  options?: { maxLength?: number }
+): string | undefined {
+  const trimmed = typeof value === 'string' ? value.trim() : '';
+  if (!trimmed) return undefined;
+
+  const maxLength =
+    typeof options?.maxLength === 'number' && Number.isFinite(options.maxLength) && options.maxLength > 0
+      ? Math.floor(options.maxLength)
+      : 64;
+
+  if (trimmed.length > maxLength) return undefined;
+
+  // Prevent path traversal / weird filenames: only allow simple url-safe tokens.
+  // This is used for session identifiers that may become part of a filename (e.g. `${id}.json`).
+  if (!/^[a-zA-Z0-9_-]+$/.test(trimmed)) return undefined;
+
+  return trimmed;
+}
+
 export function optionalString(args: Record<string, unknown>, field: string, defaultValue?: string): string | undefined {
   const value = args[field];
   if (value === undefined || value === null) {
@@ -276,4 +297,3 @@ export function evaluateShellCommand(command: string): ShellCommandDecision {
 
   return { verdict: 'needs_approval', reason: `Command '${baseCommand}' requires approval` };
 }
-

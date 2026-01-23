@@ -33,6 +33,7 @@ import {
   isOverflow as isContextOverflow,
   isPathInsideWorkspace,
   listBuiltinSubagents,
+  normalizeSessionId,
   markPreviousAssistantToolOutputs,
   redactFsPathForPrompt,
   renderSkillsSectionForPrompt,
@@ -227,6 +228,7 @@ export class LingyunAgent {
   private readonly compactionConfig: CompactionConfig;
   private registeredPluginTools = new Set<string>();
   private readonly taskSessions = new Map<string, LingyunSession>();
+  private readonly maxTaskSessions = 50;
 
   constructor(
     private readonly llm: LLMProvider,
@@ -704,7 +706,8 @@ export class LingyunAgent {
                 : '';
 
             const parentSessionId = session.sessionId ?? this.config.sessionId;
-            const childSessionId = sessionIdRaw || crypto.randomUUID();
+            const requestedSessionId = normalizeSessionId(sessionIdRaw) || '';
+            const childSessionId = requestedSessionId || crypto.randomUUID();
 
             const existing = this.taskSessions.get(childSessionId);
             const childSession =
@@ -717,9 +720,18 @@ export class LingyunAgent {
 
             if (!existing) {
               this.taskSessions.set(childSessionId, childSession);
+              while (this.taskSessions.size > this.maxTaskSessions) {
+                const oldestKey = this.taskSessions.keys().next().value as string | undefined;
+                if (!oldestKey) break;
+                if (oldestKey === childSessionId) break;
+                this.taskSessions.delete(oldestKey);
+              }
             } else {
               childSession.parentSessionId = parentSessionId;
               childSession.subagentType = subagent.name;
+              // Refresh LRU order.
+              this.taskSessions.delete(childSessionId);
+              this.taskSessions.set(childSessionId, childSession);
             }
 
             const parentModelId = this.config.model;

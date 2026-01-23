@@ -42,6 +42,7 @@ import {
   createAssistantHistoryMessage,
   createUserHistoryMessage,
   listBuiltinSubagents,
+  normalizeSessionId,
   redactFsPathForPrompt,
   renderSkillsSectionForPrompt,
   resolveBuiltinSubagent,
@@ -584,6 +585,7 @@ export class AgentLoop {
             const subagentTypeRaw =
               typeof resolvedArgs.subagent_type === 'string' ? resolvedArgs.subagent_type.trim() : '';
             const sessionIdRaw = typeof resolvedArgs.session_id === 'string' ? resolvedArgs.session_id.trim() : '';
+            const requestedSessionId = normalizeSessionId(sessionIdRaw) || '';
 
             if (!descriptionRaw) return { success: false, error: 'Missing required argument: description' };
             if (!promptRaw) return { success: false, error: 'Missing required argument: prompt' };
@@ -608,7 +610,7 @@ export class AgentLoop {
             }
 
             const parentSessionId = this.config.sessionId;
-            const childSessionId = sessionIdRaw || crypto.randomUUID();
+            const childSessionId = requestedSessionId || crypto.randomUUID();
             const now = Date.now();
 
             // Best-effort: load existing child session state from persisted sessions when session_id is provided.
@@ -616,7 +618,7 @@ export class AgentLoop {
             let existingAgentState: AgentSessionState | undefined;
             let existingCreatedAt: number | undefined;
             let existingCurrentModel: string | undefined;
-            if (sessionIdRaw) {
+            if (requestedSessionId) {
               try {
                 const baseUri = this.context.storageUri ?? this.context.globalStorageUri;
                 if (baseUri) {
@@ -799,7 +801,11 @@ export class AgentLoop {
 
             return {
               success: true,
-              data: text,
+              data: {
+                session_id: childSessionId,
+                subagent_type: subagent.name,
+                text,
+              },
               metadata: {
                 title,
                 outputText,

@@ -707,6 +707,108 @@ suite('LingYun Agent SDK', () => {
     assert.ok(!('task' in toolPart.output.metadata), 'task metadata should not be persisted in parent history');
   });
 
+  test('task tool ignores invalid session_id and generates a safe id', async () => {
+    const llm = new MockLLMProvider();
+    const registry = new ToolRegistry();
+    registerTaskTool(registry);
+
+    llm.queueResponse({
+      kind: 'tool-call',
+      toolCallId: 'call_task',
+      toolName: 'task',
+      input: {
+        description: 'Explore task',
+        prompt: 'Return a short answer.',
+        subagent_type: 'general',
+        session_id: '../evil',
+      },
+      finishReason: 'tool-calls',
+    });
+    llm.queueResponse({ kind: 'text', content: 'subagent answer' }); // subagent
+    llm.queueResponse({ kind: 'text', content: 'parent done' }); // parent after tool result
+
+    let taskResult: ToolResult | undefined;
+
+    const agent = new LingyunAgent(llm, { model: 'parent-model' }, registry, { allowExternalPaths: false });
+    const session = new LingyunSession({ sessionId: 'parent-1' });
+
+    const run = agent.run({
+      session,
+      input: 'run task',
+      callbacks: {
+        onToolResult: (tool, result) => {
+          if (tool.function.name === 'task') taskResult = result;
+        },
+      },
+    });
+    for await (const _event of run.events) {
+      // drain
+    }
+    const result = await run.done;
+
+    assert.strictEqual(result.text, 'parent done');
+    assert.ok(taskResult, 'expected task tool result');
+    assert.strictEqual(taskResult!.success, true);
+
+    const meta = taskResult!.metadata as any;
+    assert.ok(meta?.task, 'expected metadata.task');
+    assert.ok(meta?.childSession, 'expected metadata.childSession');
+
+    const childId = String(meta.task.session_id || '');
+    assert.ok(childId, 'expected a generated child session id');
+    assert.notStrictEqual(childId, '../evil');
+    assert.ok(/^[a-zA-Z0-9_-]+$/.test(childId), 'expected session_id to be filename-safe');
+    assert.strictEqual(meta.childSession.sessionId, childId);
+  });
+
+  test('task tool caps the in-memory taskSessions map', async function () {
+    this.timeout(10_000);
+
+    const llm = new MockLLMProvider();
+    const registry = new ToolRegistry();
+    registerTaskTool(registry);
+
+    const runs = 2;
+    const perRun = 30; // maxIterations is 50; keep each run under the limit.
+    let counter = 0;
+
+    for (let run = 1; run <= runs; run++) {
+      for (let i = 1; i <= perRun; i++) {
+        counter += 1;
+        llm.queueResponse({
+          kind: 'tool-call',
+          toolCallId: `call_task_${counter}`,
+          toolName: 'task',
+          input: {
+            description: `Task ${counter}`,
+            prompt: 'Return ok.',
+            subagent_type: 'general',
+            session_id: `sess-${counter}`,
+          },
+          finishReason: 'tool-calls',
+        });
+        llm.queueResponse({ kind: 'text', content: 'ok' }); // subagent
+      }
+      llm.queueResponse({ kind: 'text', content: `done ${run}` }); // parent
+    }
+
+    const agent = new LingyunAgent(llm, { model: 'parent-model' }, registry);
+    for (let run = 1; run <= runs; run++) {
+      const session = new LingyunSession({ sessionId: `parent-${run}` });
+      const exec = agent.run({ session, input: `many tasks ${run}` });
+      for await (const _event of exec.events) {
+        // drain
+      }
+      await exec.done;
+    }
+
+    const taskSessions = (agent as any).taskSessions as Map<string, unknown>;
+    assert.ok(taskSessions, 'expected taskSessions to exist');
+    assert.ok(taskSessions.size <= 50, `expected taskSessions size <= 50, got ${String(taskSessions.size)}`);
+    assert.ok(taskSessions.has('sess-60'), 'expected newest session to be retained');
+    assert.ok(!taskSessions.has('sess-1'), 'expected oldest session to be evicted');
+  });
+
   test('task tool uses subagentModel override and remembers model per session_id', async () => {
     const llm = new MockLLMProvider();
     const registry = new ToolRegistry();

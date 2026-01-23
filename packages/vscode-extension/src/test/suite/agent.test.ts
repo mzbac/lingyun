@@ -21,6 +21,7 @@ import type { LLMProvider } from '../../core/types';
 import { getMessageText } from '@kooka/core';
 import { COMPACTED_TOOL_PLACEHOLDER, createHistoryForModel } from '../../core/compaction';
 import { PluginManager } from '../../core/hooks/pluginManager';
+import { taskHandler, taskTool } from '../../tools/builtin/task';
 
 type ScriptedResponse =
   | { kind: 'text'; content: string; usage?: UsageOverride }
@@ -285,6 +286,42 @@ suite('AgentLoop', () => {
     assert.ok(toolResult);
     assert.strictEqual(toolResult?.success, true);
     assert.strictEqual(toolResult?.data, 'Echo: Hello World');
+  });
+
+  test('run - task tool returns sanitized session_id and text payload', async () => {
+    registry.registerTool(taskTool, taskHandler);
+
+    mockLLM.setNextResponse({
+      kind: 'tool-call',
+      toolCallId: 'call_task',
+      toolName: 'task',
+      input: {
+        description: 'Explore task',
+        prompt: 'Return a short answer.',
+        subagent_type: 'general',
+        session_id: '../evil',
+      },
+    });
+    mockLLM.queueResponse({ kind: 'text', content: 'subagent answer' }); // subagent
+    mockLLM.queueResponse({ kind: 'text', content: 'parent done' }); // parent after tool result
+
+    let taskResult: any;
+    const result = await agent.run('Run a task', {
+      onToolResult: (tool, toolOutput) => {
+        if (tool.function.name === 'task') taskResult = toolOutput;
+      },
+    });
+    assert.strictEqual(result, 'parent done');
+    assert.strictEqual(mockLLM.callCount, 3);
+
+    assert.ok(taskResult);
+    assert.strictEqual(taskResult.success, true);
+    assert.ok(taskResult.data && typeof taskResult.data === 'object');
+    assert.strictEqual(taskResult.data.text, 'subagent answer');
+    assert.strictEqual(taskResult.data.subagent_type, 'general');
+    assert.ok(typeof taskResult.data.session_id === 'string' && taskResult.data.session_id.length > 0);
+    assert.notStrictEqual(taskResult.data.session_id, '../evil');
+    assert.ok(/^[a-zA-Z0-9_-]+$/.test(taskResult.data.session_id));
   });
 
   test('file handles - glob assigns fileId and read resolves it', async () => {
