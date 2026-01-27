@@ -15,6 +15,7 @@ export function getPermissionRuleset(mode: 'build' | 'plan'): PermissionRuleset 
       { permission: 'glob', pattern: '*', action: 'allow' },
       { permission: 'grep', pattern: '*', action: 'allow' },
       { permission: 'lsp', pattern: '*', action: 'allow' },
+      { permission: 'memory', pattern: '*', action: 'allow' },
       // Planning state tools are safe in plan mode.
       { permission: 'todoread', pattern: '*', action: 'allow' },
       { permission: 'todowrite', pattern: '*', action: 'allow' },

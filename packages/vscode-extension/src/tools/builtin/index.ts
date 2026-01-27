@@ -7,6 +7,9 @@ import { globHandler, globTool } from './glob';
 import { grepHandler, grepTool } from './grep';
 import { listHandler, listTool } from './list';
 import { lspHandler, lspTool } from './lsp';
+import { memorySearchHandler, memorySearchTool } from './memorySearch';
+import { memoryGetHandler, memoryGetTool } from './memoryGet';
+import { memoryWriteHandler, memoryWriteTool } from './memoryWrite';
 import { readHandler, readTool } from './read';
 import { readRangeHandler, readRangeTool } from './readRange';
 import { symbolsPeekHandler, symbolsPeekTool, symbolsSearchHandler, symbolsSearchTool } from './symbols';
@@ -33,5 +36,8 @@ export function registerBuiltinTools(): vscode.Disposable[] {
     toolRegistry.registerTool(taskTool, taskHandler),
     toolRegistry.registerTool(todoreadTool, todoreadHandler),
     toolRegistry.registerTool(todowriteTool, todowriteHandler),
+    toolRegistry.registerTool(memorySearchTool, memorySearchHandler),
+    toolRegistry.registerTool(memoryGetTool, memoryGetHandler),
+    toolRegistry.registerTool(memoryWriteTool, memoryWriteHandler),
   ];
 }

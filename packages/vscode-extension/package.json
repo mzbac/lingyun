@@ -2,7 +2,7 @@
   "name": "lingyun",
   "displayName": "LingYun",
   "description": "Agentic AI assistant for VS Code",
-  "version": "2.0.6",
+  "version": "2.0.7",
   "publisher": "mzbac",
   "icon": "images/icon.png",
   "license": "MIT",
@@ -262,6 +262,36 @@
             "afterToolCall"
           ],
           "description": "When to compact tool outputs in the model prompt. onCompaction only prunes outputs during session compaction; afterToolCall prunes tool outputs after the model has seen them once."
+        },
+        "lingyun.compaction.memoryFlush.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Before compaction, write a durable memory snapshot to MEMORY.md or memory/*.md"
+        },
+        "lingyun.compaction.memoryFlush.filePath": {
+          "type": "string",
+          "default": "MEMORY.md",
+          "description": "Target memory file for compaction-time memory flush (MEMORY.md or memory/*.md)"
+        },
+        "lingyun.compaction.memoryFlush.maxChars": {
+          "type": "number",
+          "default": 8000,
+          "description": "Maximum characters to write during compaction memory flush"
+        },
+        "lingyun.memory.cache.maxEntries": {
+          "type": "number",
+          "default": 200,
+          "description": "Maximum number of cached memory files kept in-memory for faster memory_search/memory_get"
+        },
+        "lingyun.memory.cache.maxSnippetChars": {
+          "type": "number",
+          "default": 1200,
+          "description": "Maximum snippet length returned by memory_search"
+        },
+        "lingyun.memory.get.maxLines": {
+          "type": "number",
+          "default": 80,
+          "description": "Maximum number of lines returned by memory_get"
         },
         "lingyun.autoApprove": {
           "type": "boolean",
