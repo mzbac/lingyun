@@ -21,6 +21,9 @@ export function extractSkillMentions(text: string): string[] {
   for (const match of input.matchAll(re)) {
     const name = match[1];
     if (!name) continue;
+    // Avoid false positives for common shell/env vars like `$GITHUB_OUTPUT`.
+    // These are typically all-caps with underscores, and should not trigger skill selection warnings.
+    if (/^[A-Z][A-Z0-9_]*$/.test(name)) continue;
     if (seen.has(name)) continue;
     seen.add(name);
     result.push(name);
