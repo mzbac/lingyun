@@ -173,6 +173,7 @@ export class LingyunSession {
   parentSessionId?: string;
   subagentType?: string;
   modelId?: string;
+  mentionedSkills: string[] = [];
   fileHandles?: {
     nextId: number;
     byId: Record<string, string>;
@@ -180,7 +181,10 @@ export class LingyunSession {
 
   constructor(
     init?: Partial<
-      Pick<LingyunSession, 'history' | 'pendingPlan' | 'sessionId' | 'parentSessionId' | 'subagentType' | 'modelId' | 'fileHandles'>
+      Pick<
+        LingyunSession,
+        'history' | 'pendingPlan' | 'sessionId' | 'parentSessionId' | 'subagentType' | 'modelId' | 'mentionedSkills' | 'fileHandles'
+      >
     >,
   ) {
     if (init?.history) this.history = [...init.history];
@@ -189,6 +193,7 @@ export class LingyunSession {
     if (init?.parentSessionId) this.parentSessionId = init.parentSessionId;
     if (init?.subagentType) this.subagentType = init.subagentType;
     if (init?.modelId) this.modelId = init.modelId;
+    if (init?.mentionedSkills) this.mentionedSkills = [...init.mentionedSkills];
     if (init?.fileHandles) this.fileHandles = init.fileHandles;
   }
 
@@ -1588,22 +1593,7 @@ export class LingyunAgent {
       signal,
     });
 
-    const { selected, unknown } = selectSkillsForText<SkillInfo>(text, index);
-    if (unknown.length > 0) {
-      const availableSample = index.skills
-        .map((s) => s.name)
-        .slice(0, 20);
-
-      const availableLabel =
-        availableSample.length > 0
-          ? ` Available: ${availableSample.map((n) => `$${n}`).join(', ')}${index.skills.length > availableSample.length ? ', ...' : ''}`
-          : '';
-
-      callbacks?.onNotice?.({
-        level: 'warning',
-        message: `Unknown skills: ${unknown.map((n: string) => `$${n}`).join(', ')}.${availableLabel}`,
-      });
-    }
+    const { selected } = selectSkillsForText<SkillInfo>(text, index);
 
     if (selected.length === 0) return;
 
@@ -1628,6 +1618,9 @@ export class LingyunAgent {
 
     for (const skill of selectedForInject) {
       if (signal?.aborted) break;
+      if (!session.mentionedSkills.includes(skill.name)) {
+        session.mentionedSkills.push(skill.name);
+      }
 
       let body: string;
       try {

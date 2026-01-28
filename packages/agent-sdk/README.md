@@ -162,7 +162,7 @@ Useful event types:
 
 - `assistant_token`: user-facing assistant text (with `<think>` and tool-call markers removed)
 - `thought_token`: model “thinking” tokens (only if the provider emits them)
-- `notice`: user-facing notices from the runtime (e.g. unknown `$skill-name`)
+- `notice`: user-facing notices from the runtime (e.g. subagent model fallback warnings)
 - `tool_call` / `tool_result` / `tool_blocked`: tool lifecycle
 - `compaction_start` / `compaction_end`: context overflow mitigation
 
@@ -188,7 +188,7 @@ If a user message includes `$<skill-name>`, LingYun:
 1. Looks up the skill by `name:` in discovered `SKILL.md` files
 2. Injects the skill body as a synthetic `<skill>...</skill>` user message before calling the model
 
-Unknown skills are ignored and emitted as `notice` events (`callbacks.onNotice`).
+Unknown skills are ignored.
 
 Configure discovery/injection via `tools.builtinOptions.skills`:
 

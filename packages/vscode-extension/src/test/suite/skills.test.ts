@@ -22,8 +22,6 @@ async function rmDir(dir: string): Promise<void> {
 suite('Skills', () => {
   test('extractSkillMentions parses $skill tokens and dedupes', () => {
     assert.deepStrictEqual(extractSkillMentions('Use $one then $two then $one again.'), ['one', 'two']);
-    assert.deepStrictEqual(extractSkillMentions('Write to $GITHUB_OUTPUT then run $one.'), ['one']);
-    assert.deepStrictEqual(extractSkillMentions('Common vars like $PATH should not trigger skills.'), []);
     assert.deepStrictEqual(extractSkillMentions('No skills here.'), []);
   });
 
@@ -54,6 +52,8 @@ suite('Skills', () => {
 
     assert.deepStrictEqual(selectSkillsForText('Try $two then $one.', index).selected.map((s) => s.name), ['two', 'one']);
     assert.deepStrictEqual(selectSkillsForText('Unknown $three.', index).selected.map((s) => s.name), []);
+    assert.deepStrictEqual(selectSkillsForText('Write to $GITHUB_OUTPUT then run $one.', index).selected.map((s) => s.name), ['one']);
+    assert.deepStrictEqual(selectSkillsForText('Common vars like $PATH should not trigger skills.', index).selected.map((s) => s.name), []);
   });
 
   test('renderSkillsSectionForPrompt renders skill list and usage rules', () => {

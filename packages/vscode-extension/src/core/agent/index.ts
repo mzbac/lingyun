@@ -142,6 +142,7 @@ export type AgentSessionState = {
   pendingPlan?: string;
   fileHandles?: FileHandlesState;
   semanticHandles?: SemanticHandlesState;
+  mentionedSkills?: string[];
 };
 
 export class AgentLoop {
@@ -154,6 +155,7 @@ export class AgentLoop {
   private instructionsText?: string;
   private instructionsKey?: string;
   private skillsPromptText?: string;
+  private mentionedSkills = new Set<string>();
   private readonly plugins: PluginManager;
   private readonly fileHandles = new FileHandleRegistry(
     () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
@@ -279,6 +281,7 @@ export class AgentLoop {
     }
 
     for (const skill of selectedForInject) {
+      this.mentionedSkills.add(skill.name);
       let body: string;
       try {
         body = (await loadSkillFile(skill)).content;
@@ -361,6 +364,7 @@ export class AgentLoop {
       pendingPlan: this.pendingPlan,
       fileHandles: this.fileHandles.exportState(),
       semanticHandles: this.semanticHandles.exportState(),
+      mentionedSkills: [...this.mentionedSkills],
     };
   }
 
@@ -377,6 +381,7 @@ export class AgentLoop {
     this.aborted = false;
     this.pendingPlan = state.pendingPlan;
     this.history = [...(state.history || [])];
+    this.mentionedSkills = new Set(Array.isArray(state.mentionedSkills) ? state.mentionedSkills : []);
     this.fileHandles.importState(state.fileHandles);
     this.semanticHandles.importState(state.semanticHandles);
     // The system prompt is rebuilt dynamically; refresh project instructions for the current editor/workspace.
