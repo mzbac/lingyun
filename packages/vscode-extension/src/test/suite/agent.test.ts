@@ -134,14 +134,15 @@ function generateResultForResponse(response: ScriptedResponse): LanguageModelV3G
 }
 
 class MockLLMProvider implements LLMProvider {
-  readonly id = 'mock';
-  readonly name = 'Mock LLM';
+  readonly id: string = 'mock';
+  readonly name: string = 'Mock LLM';
 
   private responses: ScriptedResponse[] = [];
   callCount = 0;
   lastPrompt: unknown;
+  lastCallOptions: unknown;
 
-  private nextResponse(): ScriptedResponse {
+  protected nextResponse(): ScriptedResponse {
     return this.responses.shift() ?? { kind: 'text', content: 'No response configured' };
   }
 
@@ -162,12 +163,54 @@ class MockLLMProvider implements LLMProvider {
       doGenerate: async (options: any) => {
         this.callCount++;
         this.lastPrompt = options?.prompt;
+        this.lastCallOptions = options;
         const response = this.nextResponse();
         return generateResultForResponse(response);
       },
       doStream: async (options: any): Promise<LanguageModelV3StreamResult> => {
         this.callCount++;
         this.lastPrompt = options?.prompt;
+        this.lastCallOptions = options;
+
+        const response = this.nextResponse();
+        const chunks =
+          response.kind === 'tool-call'
+            ? streamPartsForToolCall(response)
+            : response.kind === 'stream'
+              ? response.chunks
+            : streamPartsForText(response.content, response.usage);
+
+        return {
+          stream: simulateReadableStream<LanguageModelV3StreamPart>({ chunks }),
+        };
+      },
+    };
+
+    return model;
+  }
+}
+
+class MockCopilotProvider extends MockLLMProvider {
+  override readonly id: string = 'copilot';
+  override readonly name: string = 'Copilot';
+
+  override async getModel(modelId: string): Promise<unknown> {
+    const model: LanguageModelV3 = {
+      specificationVersion: 'v3',
+      provider: 'copilot',
+      modelId,
+      supportedUrls: {},
+      doGenerate: async (options: any) => {
+        this.callCount++;
+        this.lastPrompt = options?.prompt;
+        this.lastCallOptions = options;
+        const response = this.nextResponse();
+        return generateResultForResponse(response);
+      },
+      doStream: async (options: any): Promise<LanguageModelV3StreamResult> => {
+        this.callCount++;
+        this.lastPrompt = options?.prompt;
+        this.lastCallOptions = options;
 
         const response = this.nextResponse();
         const chunks =
@@ -231,6 +274,17 @@ suite('AgentLoop', () => {
 
     assert.strictEqual(result, 'Hello! How can I help you?');
     assert.strictEqual(mockLLM.callCount, 1);
+  });
+
+  test('run - injects Copilot reasoningEffort for GPT-5 models', async () => {
+    const copilotLLM = new MockCopilotProvider();
+    agent = new AgentLoop(copilotLLM, mockContext, { model: 'gpt-5' }, registry);
+    copilotLLM.setNextResponse({ kind: 'text', content: 'OK' });
+
+    await agent.run('Hi');
+
+    const options = copilotLLM.lastCallOptions as any;
+    assert.strictEqual(options?.providerOptions?.copilot?.reasoningEffort, 'x-high');
   });
 
   test('run - strips <think> blocks from assistant output', async () => {

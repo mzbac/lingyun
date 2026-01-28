@@ -127,6 +127,18 @@
           "default": "gpt-4o",
           "description": "Model ID to use (populated by the in-extension model picker)"
         },
+        "lingyun.copilot.reasoningEffort": {
+          "type": "string",
+          "default": "x-high",
+          "enum": [
+            "",
+            "low",
+            "medium",
+            "high",
+            "x-high"
+          ],
+          "description": "Copilot-only: reasoning effort hint to send for GPT-5 family models. Set to empty to disable."
+        },
         "lingyun.subagents.model": {
           "type": "string",
           "default": "",

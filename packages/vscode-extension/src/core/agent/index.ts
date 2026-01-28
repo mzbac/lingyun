@@ -170,6 +170,32 @@ export class AgentLoop {
     this.plugins = plugins ?? new PluginManager(context);
   }
 
+  private buildProviderOptions(options: Record<string, unknown> | undefined, modelId: string): Record<string, unknown> | undefined {
+    let resolved = options;
+
+    // Copilot (OpenAI-compatible) supports `reasoning_effort` / `text_verbosity` via providerOptions.
+    // Only apply to GPT-5 family models by default, and only when not explicitly set by plugins.
+    if (this.llm.id === 'copilot') {
+      const configuredEffortRaw =
+        vscode.workspace.getConfiguration('lingyun').get<string>('copilot.reasoningEffort', 'x-high') ?? '';
+      const configuredEffort = configuredEffortRaw.trim();
+      const isGpt5 = /^gpt-5([.-]|$)/i.test(modelId);
+
+      if (configuredEffort && isGpt5) {
+        const merged: Record<string, unknown> = { ...(resolved ?? {}) };
+        const existingCopilot = merged['copilot'];
+        const copilotOptions: Record<string, unknown> = isRecord(existingCopilot) ? { ...existingCopilot } : {};
+        if (copilotOptions['reasoningEffort'] === undefined) {
+          copilotOptions['reasoningEffort'] = configuredEffort;
+        }
+        merged['copilot'] = copilotOptions;
+        resolved = merged;
+      }
+    }
+
+    return resolved;
+  }
+
   private getMode(): 'build' | 'plan' {
     return this.config.mode === 'plan' ? 'plan' : 'build';
   }
@@ -936,6 +962,8 @@ export class AgentLoop {
         },
       );
 
+      const providerOptions = this.buildProviderOptions(callParams.options, modelId);
+
       let assistantMessage = createAssistantHistoryMessage();
       let attemptText = '';
       let attemptReasoning = '';
@@ -976,7 +1004,7 @@ export class AgentLoop {
               temperature: callParams.temperature,
               topP: callParams.topP,
               topK: callParams.topK,
-              ...(callParams.options ? { providerOptions: callParams.options as any } : {}),
+              ...(providerOptions ? { providerOptions: providerOptions as any } : {}),
               maxOutputTokens: this.getMaxOutputTokens(),
               abortSignal: abortController.signal,
             });
