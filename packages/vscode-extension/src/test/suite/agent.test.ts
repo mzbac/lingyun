@@ -26,13 +26,13 @@ import { taskHandler, taskTool } from '../../tools/builtin/task';
 type ScriptedResponse =
   | { kind: 'text'; content: string; usage?: UsageOverride }
   | {
-      kind: 'tool-call';
-      toolCallId: string;
-      toolName: string;
-      input: Record<string, unknown>;
-      usage?: UsageOverride;
-      finishReason?: 'tool-calls' | 'stop' | 'other';
-    }
+    kind: 'tool-call';
+    toolCallId: string;
+    toolName: string;
+    input: Record<string, unknown>;
+    usage?: UsageOverride;
+    finishReason?: 'tool-calls' | 'stop' | 'other';
+  }
   | { kind: 'stream'; chunks: LanguageModelV3StreamPart[] };
 
 type UsageOverride = {
@@ -50,14 +50,14 @@ function usage(override?: UsageOverride): LanguageModelV3Usage {
     raw: {},
     ...(override
       ? {
-          inputTokens: {
-            total: override.inputTotal ?? ((override.inputNoCache ?? 0) + (override.cacheRead ?? 0)),
-            noCache: override.inputNoCache ?? 0,
-            cacheRead: override.cacheRead ?? 0,
-            cacheWrite: override.cacheWrite ?? 0,
-          },
-          outputTokens: { total: override.outputTotal ?? 0, text: 0, reasoning: 0 },
-        }
+        inputTokens: {
+          total: override.inputTotal ?? ((override.inputNoCache ?? 0) + (override.cacheRead ?? 0)),
+          noCache: override.inputNoCache ?? 0,
+          cacheRead: override.cacheRead ?? 0,
+          cacheWrite: override.cacheWrite ?? 0,
+        },
+        outputTokens: { total: override.outputTotal ?? 0, text: 0, reasoning: 0 },
+      }
       : {}),
   };
 }
@@ -178,7 +178,7 @@ class MockLLMProvider implements LLMProvider {
             ? streamPartsForToolCall(response)
             : response.kind === 'stream'
               ? response.chunks
-            : streamPartsForText(response.content, response.usage);
+              : streamPartsForText(response.content, response.usage);
 
         return {
           stream: simulateReadableStream<LanguageModelV3StreamPart>({ chunks }),
@@ -218,7 +218,7 @@ class MockCopilotProvider extends MockLLMProvider {
             ? streamPartsForToolCall(response)
             : response.kind === 'stream'
               ? response.chunks
-            : streamPartsForText(response.content, response.usage);
+              : streamPartsForText(response.content, response.usage);
 
         return {
           stream: simulateReadableStream<LanguageModelV3StreamPart>({ chunks }),
@@ -284,7 +284,7 @@ suite('AgentLoop', () => {
     await agent.run('Hi');
 
     const options = copilotLLM.lastCallOptions as any;
-    assert.strictEqual(options?.providerOptions?.copilot?.reasoningEffort, 'x-high');
+    assert.strictEqual(options?.providerOptions?.copilot?.reasoningEffort, 'xhigh');
   });
 
   test('run - strips <think> blocks from assistant output', async () => {
@@ -962,13 +962,13 @@ suite('AgentLoop', () => {
       const compactionEvents: Array<
         | { type: 'start'; auto: boolean; markerMessageId: string }
         | {
-            type: 'end';
-            auto: boolean;
-            markerMessageId: string;
-            summaryMessageId?: string;
-            status: 'done' | 'error' | 'canceled';
-            error?: string;
-          }
+          type: 'end';
+          auto: boolean;
+          markerMessageId: string;
+          summaryMessageId?: string;
+          status: 'done' | 'error' | 'canceled';
+          error?: string;
+        }
       > = [];
 
       mockLLM.setNextResponse({
@@ -1475,13 +1475,13 @@ function createMockExtensionContext(): vscode.ExtensionContext {
   const envVarCollection: vscode.GlobalEnvironmentVariableCollection = {
     persistent: true,
     description: undefined,
-    replace: () => {},
-    append: () => {},
-    prepend: () => {},
+    replace: () => { },
+    append: () => { },
+    prepend: () => { },
     get: () => undefined,
-    forEach: () => {},
-    delete: () => {},
-    clear: () => {},
+    forEach: () => { },
+    delete: () => { },
+    clear: () => { },
     getScoped: () => envVarCollection,
     [Symbol.iterator]: function* () {
       // no-op iterator for tests
@@ -1492,14 +1492,14 @@ function createMockExtensionContext(): vscode.ExtensionContext {
     subscriptions: [],
     workspaceState: {
       get: () => undefined,
-      update: async () => {},
+      update: async () => { },
       keys: () => [],
     },
     globalState: {
       get: () => undefined,
-      update: async () => {},
+      update: async () => { },
       keys: () => [],
-      setKeysForSync: () => {},
+      setKeysForSync: () => { },
     },
     extensionPath: '/mock/extension',
     extensionUri: vscode.Uri.file('/mock/extension'),
@@ -1515,8 +1515,8 @@ function createMockExtensionContext(): vscode.ExtensionContext {
     extension: undefined as any,
     secrets: {
       get: async () => undefined,
-      store: async () => {},
-      delete: async () => {},
+      store: async () => { },
+      delete: async () => { },
       onDidChange: new vscode.EventEmitter<vscode.SecretStorageChangeEvent>().event,
     },
     storage: undefined as any,

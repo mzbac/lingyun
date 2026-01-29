@@ -179,7 +179,7 @@ export class AgentLoop {
     // Only apply to GPT-5 family models by default, and only when not explicitly set by plugins.
     if (this.llm.id === 'copilot') {
       const configuredEffortRaw =
-        vscode.workspace.getConfiguration('lingyun').get<string>('copilot.reasoningEffort', 'x-high') ?? '';
+        vscode.workspace.getConfiguration('lingyun').get<string>('copilot.reasoningEffort', 'xhigh') ?? '';
       const configuredEffort = configuredEffortRaw.trim();
       const isGpt5 = /^gpt-5([.-]|$)/i.test(modelId);
 

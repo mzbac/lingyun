@@ -129,13 +129,13 @@
         },
         "lingyun.copilot.reasoningEffort": {
           "type": "string",
-          "default": "x-high",
+          "default": "xhigh",
           "enum": [
             "",
             "low",
             "medium",
             "high",
-            "x-high"
+            "xhigh"
           ],
           "description": "Copilot-only: reasoning effort hint to send for GPT-5 family models. Set to empty to disable."
         },
