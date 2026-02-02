@@ -17,6 +17,35 @@ function createToolContext(): ToolContext {
 }
 
 suite('Bash Tool', () => {
+  test('blocks git push when configured', async () => {
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const prev = cfg.get<unknown>('security.blockGitPush');
+    await cfg.update('security.blockGitPush', true, true);
+
+    try {
+      const context = createToolContext();
+      const res = await bashHandler({ command: 'git push origin main' }, context);
+      assert.strictEqual(res.success, false);
+      assert.strictEqual((res.metadata as any)?.errorType, 'bash_git_push_blocked');
+    } finally {
+      await cfg.update('security.blockGitPush', prev as any, true);
+    }
+  });
+
+  test('does not treat "echo git push" as a push attempt', async () => {
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const prev = cfg.get<unknown>('security.blockGitPush');
+    await cfg.update('security.blockGitPush', true, true);
+
+    try {
+      const context = createToolContext();
+      const res = await bashHandler({ command: 'echo git push' }, context);
+      assert.strictEqual(res.success, true);
+    } finally {
+      await cfg.update('security.blockGitPush', prev as any, true);
+    }
+  });
+
   test('rejects likely long-running server commands without background or timeout', async () => {
     const context = createToolContext();
     const res = await bashHandler({ command: 'python -m http.server' }, context);

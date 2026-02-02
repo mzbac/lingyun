@@ -60,6 +60,47 @@ function looksLikeLongRunningServerCommand(command: string): boolean {
   return patterns.some((re) => re.test(normalized));
 }
 
+function sanitizeGitToken(token: string): string {
+  return token.replace(/^[^a-z0-9_-]+/gi, '').replace(/[^a-z0-9_-]+$/gi, '');
+}
+
+function segmentInvokesGitPush(segment: string): boolean {
+  const normalized = normalizeCommandForHeuristics(segment);
+  const tokens = normalized.split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return false;
+
+  const first = sanitizeGitToken(tokens[0]);
+  if (first !== 'git') return false;
+
+  const optionsWithValue = new Set(['-c', '--config-env', '-C', '--git-dir', '--work-tree']);
+  for (let i = 1; i < tokens.length; i++) {
+    const token = tokens[i];
+
+    if (token === '--') {
+      const next = tokens[i + 1];
+      return sanitizeGitToken(next ?? '') === 'push';
+    }
+
+    if (token.startsWith('-')) {
+      if (optionsWithValue.has(token)) {
+        i += 1;
+      }
+      continue;
+    }
+
+    return sanitizeGitToken(token) === 'push';
+  }
+
+  return false;
+}
+
+function looksLikeGitPushCommand(command: string): boolean {
+  // Split on common shell control operators to avoid false positives like: `echo git push`
+  // This is intentionally conservative; it primarily targets direct `git push` invocations.
+  const segments = command.split(/(?:\|\||&&|;|\|(?!\|)|\n|\r)/);
+  return segments.some((segment) => segmentInvokesGitPush(segment));
+}
+
 function computeStopHint(pid?: number): string | undefined {
   if (typeof pid !== 'number') return undefined;
   return process.platform === 'win32'
@@ -149,7 +190,7 @@ export const bashTool: ToolDefinition = {
   id: 'bash',
   name: 'Run Command',
   description:
-    'Execute a shell command. Use for git/npm/dev tools. For long-running commands (dev servers, watchers), pass { background: true } to run in the VS Code integrated terminal (auto-stops after a TTL, output written to a log file). For non-background commands, you can provide { timeout: <ms> } to bound execution. Background commands are deduplicated per (workdir + command) to avoid spawning multiple servers. Avoid using shell for file operations (reading, searching, editing, writing) — prefer the dedicated tools: read/list/glob/grep/edit/write. Use "workdir" instead of "cd". Output is captured and truncated if large.',
+    'Execute a shell command. Use for git/npm/dev tools. Note: if lingyun.security.blockGitPush is enabled, `git push` is blocked; ask the user to push manually or disable the setting. For long-running commands (dev servers, watchers), pass { background: true } to run in the VS Code integrated terminal (auto-stops after a TTL, output written to a log file). For non-background commands, you can provide { timeout: <ms> } to bound execution. Background commands are deduplicated per (workdir + command) to avoid spawning multiple servers. Avoid using shell for file operations (reading, searching, editing, writing) — prefer the dedicated tools: read/list/glob/grep/edit/write. Use "workdir" instead of "cd". Output is captured and truncated if large.',
   parameters: {
     type: 'object',
     properties: {
@@ -254,6 +295,21 @@ export const bashHandler: ToolHandler = async (args, context) => {
         },
       };
     }
+  }
+
+  const blockGitPush =
+    vscode.workspace.getConfiguration('lingyun').get<boolean>('security.blockGitPush', true) ?? true;
+  if (blockGitPush && looksLikeGitPushCommand(command)) {
+    return {
+      success: false,
+      error:
+        'Blocked `git push` command (lingyun.security.blockGitPush=true). ' +
+        'Run `git push` manually in your terminal, or disable the setting to allow it.',
+      metadata: {
+        errorType: 'bash_git_push_blocked',
+        blockedSettingKey: 'lingyun.security.blockGitPush',
+      },
+    };
   }
 
   const timeoutRaw = optionalNumber(args, 'timeout');

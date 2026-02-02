@@ -421,6 +421,11 @@
           "default": false,
           "description": "Allow tools to access paths outside the current workspace. When disabled, external paths are always blocked (even if approvals/autoApprove are enabled) and shell commands/scripts that reference paths outside the workspace are blocked."
         },
+        "lingyun.security.blockGitPush": {
+          "type": "boolean",
+          "default": true,
+          "description": "When enabled, the bash tool blocks `git push` to avoid accidentally pushing to remote. Disable this setting to allow the agent to run git push."
+        },
         "lingyun.debug.llm": {
           "type": "boolean",
           "default": false,
