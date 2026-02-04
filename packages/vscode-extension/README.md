@@ -36,10 +36,25 @@ LingYun uses tools to do real work:
 - Editing: `edit`, `write`
 - Commands: `bash`
 - Code intelligence: `lsp` (definition/references/symbols via VS Code)
+- Subagents: `task` (spawn a specialized subagent like `explore` or `general`)
 
 When a tool needs approval you’ll see **Allow/Deny** (and **Allow all** for the current run). You can also enable:
 
 - `lingyun.autoApprove` (not recommended)
+
+## Subagents (optional)
+
+The agent can delegate work to a separate “subagent” via the `task` tool. This can help reduce main-session context bloat by running exploration in a separate session and only returning a short summary.
+
+Auto-run the **explore** subagent before each user turn (runtime-driven prepass):
+
+```json
+{
+  "lingyun.subagents.explorePrepass.enabled": true,
+  "lingyun.subagents.explorePrepass.maxChars": 8000,
+  "lingyun.subagents.model": ""
+}
+```
 
 ## Skills (SKILL.md)
 

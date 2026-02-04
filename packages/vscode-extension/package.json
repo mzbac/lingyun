@@ -144,6 +144,16 @@
           "default": "",
           "description": "Optional model ID to use for subagents spawned via the task tool (falls back to lingyun.model when empty)."
         },
+        "lingyun.subagents.explorePrepass.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically run the explore subagent before each user turn to gather lightweight workspace context (reduces main agent prompt bloat)."
+        },
+        "lingyun.subagents.explorePrepass.maxChars": {
+          "type": "number",
+          "default": 8000,
+          "description": "Maximum characters of explore-subagent output to inject into the main agent context."
+        },
         "lingyun.mode": {
           "type": "string",
           "default": "build",

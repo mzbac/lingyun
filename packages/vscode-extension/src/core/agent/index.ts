@@ -314,6 +314,128 @@ export class AgentLoop {
     }
   }
 
+  private getAutoExploreConfig(): { enabled: boolean; maxChars: number } {
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const enabled = cfg.get<boolean>('subagents.explorePrepass.enabled', false) ?? false;
+    const maxCharsRaw = cfg.get<number>('subagents.explorePrepass.maxChars', 8000);
+    const maxChars =
+      typeof maxCharsRaw === 'number' && Number.isFinite(maxCharsRaw) && maxCharsRaw >= 500
+        ? Math.floor(maxCharsRaw)
+        : 8000;
+    return { enabled, maxChars };
+  }
+
+  private async maybeAutoExplore(userText: string, callbacks?: AgentCallbacks): Promise<void> {
+    const config = this.getAutoExploreConfig();
+    if (!config.enabled) return;
+
+    // Avoid recursion: a subagent session should not spawn more subagents automatically.
+    if (this.config.parentSessionId || this.config.subagentType) return;
+
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (!workspaceRoot) return;
+
+    const parentModelId = typeof this.config.model === 'string' ? this.config.model.trim() : '';
+    if (!parentModelId) return;
+
+    const subagent = resolveBuiltinSubagent('explore');
+    if (!subagent) return;
+
+    const configuredSubagentModel =
+      typeof this.config.subagentModel === 'string' ? this.config.subagentModel.trim() : '';
+    const desiredChildModelId = configuredSubagentModel || parentModelId;
+    let childModelId = parentModelId;
+    if (desiredChildModelId !== parentModelId) {
+      try {
+        await this.llm.getModel(desiredChildModelId);
+        childModelId = desiredChildModelId;
+      } catch (error) {
+        callbacks?.onDebug?.(
+          `[AutoExplore] subagent model fallback requested=${desiredChildModelId} using=${parentModelId} error=${summarizeErrorForDebug(error)}`,
+        );
+        childModelId = parentModelId;
+      }
+    }
+
+    const basePrompt = this.config.systemPrompt || DEFAULT_SYSTEM_PROMPT;
+    const childSessionId = crypto.randomUUID();
+    const parentSessionId = this.config.sessionId;
+
+    const childAgent = new AgentLoop(
+      this.llm,
+      this.context,
+      {
+        model: childModelId,
+        mode: 'build',
+        temperature: this.config.temperature,
+        maxRetries: this.config.maxRetries,
+        toolFilter: subagent.toolFilter?.length ? subagent.toolFilter : undefined,
+        autoApprove: false,
+        systemPrompt: `${basePrompt}\n\n${subagent.prompt}`,
+        sessionId: childSessionId,
+        parentSessionId,
+        subagentType: subagent.name,
+      },
+      this.registry,
+      this.plugins,
+    );
+
+    const explorePrompt = [
+      'Explore the current workspace and gather the minimum context needed to answer the user request.',
+      'Focus on file paths and key findings; avoid long code dumps.',
+      '',
+      '<user_request>',
+      userText.trim(),
+      '</user_request>',
+      '',
+      'Return a concise report with:',
+      '- Relevant files (paths) and what they contain',
+      '- Key findings',
+      '- Suggested next steps for the parent agent',
+    ].join('\n');
+
+    let explored = '';
+    try {
+      explored = await childAgent.run(explorePrompt, {
+        onRequestApproval: async (tc, def) => (await callbacks?.onRequestApproval?.(tc, def)) ?? false,
+      });
+    } catch (error) {
+      callbacks?.onDebug?.(`[AutoExplore] explore subagent failed: ${summarizeErrorForDebug(error)}`);
+      return;
+    }
+
+    let exploredText = explored.trim();
+    if (exploredText.length > config.maxChars) {
+      exploredText = exploredText.slice(0, config.maxChars).trimEnd() + '…';
+    }
+
+    if (!exploredText) return;
+
+    const toolCallId = `auto_explore_${crypto.randomUUID()}`;
+    const injectedText = ['<subagent_explore_context>', exploredText, '</subagent_explore_context>'].join('\n');
+
+    const toolOutput: ToolResult = {
+      success: true,
+      data: injectedText,
+      metadata: { title: 'Explore context', outputText: injectedText },
+    };
+
+    const prepass = createAssistantHistoryMessage();
+    prepass.metadata = { synthetic: true, mode: this.getMode(), finishReason: 'tool' };
+    setDynamicToolOutput(prepass, {
+      toolName: 'task',
+      toolCallId,
+      input: {
+        description: 'Explore workspace context',
+        prompt: explorePrompt,
+        subagent_type: subagent.name,
+        session_id: childSessionId,
+      },
+      output: toolOutput,
+    });
+    this.history.push(prepass);
+  }
+
   private stripTurnSkillMessages(): void {
     this.history = this.history.filter((msg) => !(msg.role === 'user' && msg.metadata?.skill));
   }
@@ -411,6 +533,7 @@ export class AgentLoop {
     const planningSystem = this.composeSystemPrompt(this.getMode());
     await this.injectSkillsForUserText(task);
     this.history.push(createUserHistoryMessage(task));
+    await this.maybeAutoExplore(task, callbacks);
 
     try {
       const plan = (await this.loop(planningSystem, callbacks)).trim();
@@ -467,6 +590,7 @@ export class AgentLoop {
 
     await this.injectSkillsForUserText(task);
     this.history.push(createUserHistoryMessage(task));
+    await this.maybeAutoExplore(task, callbacks);
 
     try {
       return await this.loop(this.composeSystemPrompt(this.getMode()), callbacks);
@@ -489,6 +613,7 @@ export class AgentLoop {
 
     await this.injectSkillsForUserText(message);
     this.history.push(createUserHistoryMessage(message));
+    await this.maybeAutoExplore(message, callbacks);
 
     try {
       return await this.loop(this.composeSystemPrompt(this.getMode()), callbacks);

@@ -1340,6 +1340,34 @@ suite('AgentLoop', () => {
     }
   });
 
+  test('autoExplore - injects explore subagent context into the next prompt', async () => {
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const prevEnabled = cfg.get<unknown>('subagents.explorePrepass.enabled');
+    const prevMaxChars = cfg.get<unknown>('subagents.explorePrepass.maxChars');
+    await cfg.update('subagents.explorePrepass.enabled', true, true);
+    await cfg.update('subagents.explorePrepass.maxChars', 8000, true);
+
+    try {
+      mockLLM.queueResponse({ kind: 'text', content: 'Found relevant files: src/a.ts, src/b.ts' });
+      mockLLM.queueResponse({ kind: 'text', content: 'Ok' });
+
+      await agent.run('Please help me understand this codebase.');
+
+      assert.strictEqual(mockLLM.callCount, 2, 'should invoke the model once for explore prepass and once for the main turn');
+
+      const prompt = JSON.stringify(mockLLM.lastPrompt ?? '');
+      assert.ok(prompt.includes('subagent_explore_context'), 'prompt should include auto-explore injected context tag');
+      assert.ok(prompt.includes('Found relevant files'), 'prompt should include explore subagent output');
+
+      const history = agent.getHistory();
+      const injected = history.find((msg) => msg.role === 'assistant' && msg.metadata?.synthetic);
+      assert.ok(injected, 'history should include a synthetic assistant message for auto-explore');
+    } finally {
+      await cfg.update('subagents.explorePrepass.enabled', prevEnabled as any, true);
+      await cfg.update('subagents.explorePrepass.maxChars', prevMaxChars as any, true);
+    }
+  });
+
   test('run - fires onToken callback', async () => {
     const tokens: string[] = [];
 
