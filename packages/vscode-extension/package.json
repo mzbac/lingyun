@@ -154,6 +154,12 @@
           "default": 8000,
           "description": "Maximum characters of explore-subagent output to inject into the main agent context."
         },
+        "lingyun.subagents.task.maxOutputChars": {
+          "type": "number",
+          "default": 8000,
+          "minimum": 500,
+          "description": "Maximum characters of task subagent output to inject into the main agent context (the full subagent session is still saved separately)."
+        },
         "lingyun.mode": {
           "type": "string",
           "default": "build",
@@ -464,7 +470,7 @@
     "vscode:prepublish": "pnpm run bundle",
     "build": "pnpm run bundle",
     "clean": "node scripts/clean.js",
-    "compile": "pnpm run clean && tsc -p ./",
+    "compile": "pnpm --filter @kooka/core build && pnpm run clean && tsc -p ./",
     "bundle": "pnpm run clean && node scripts/bundle.js",
     "watch": "tsc -watch -p ./",
     "lint": "eslint src --ext ts",

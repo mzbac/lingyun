@@ -951,8 +951,30 @@ export class AgentLoop {
               : await childAgent.run(promptRaw, childCallbacks);
 
             const title = `${descriptionRaw} (@${subagent.name} subagent)`;
-            const outputText =
-              text.trimEnd() + '\n\n' + ['<task_metadata>', `session_id: ${childSessionId}`, '</task_metadata>'].join('\n');
+            const taskMaxOutputCharsRaw =
+              vscode.workspace.getConfiguration('lingyun').get<number>('subagents.task.maxOutputChars', 8000);
+            const taskMaxOutputChars =
+              typeof taskMaxOutputCharsRaw === 'number' && Number.isFinite(taskMaxOutputCharsRaw) && taskMaxOutputCharsRaw >= 500
+                ? Math.floor(taskMaxOutputCharsRaw)
+                : 8000;
+
+            const taskMetaText = ['<task_metadata>', `session_id: ${childSessionId}`, '</task_metadata>'].join('\n');
+            const taskMetaSeparator = '\n\n';
+            const taskTruncationMarker = '\n\n... [TRUNCATED]';
+
+            let taskBodyText = text.trimEnd();
+            let outputText = `${taskBodyText}${taskMetaSeparator}${taskMetaText}`;
+
+            if (outputText.length > taskMaxOutputChars) {
+              const maxBodyChars = Math.max(0, taskMaxOutputChars - taskMetaSeparator.length - taskMetaText.length);
+              if (maxBodyChars > taskTruncationMarker.length) {
+                const budget = Math.max(0, maxBodyChars - taskTruncationMarker.length);
+                taskBodyText = budget > 0 ? taskBodyText.slice(0, budget).trimEnd() : '';
+                outputText = `${taskBodyText}${taskTruncationMarker}${taskMetaSeparator}${taskMetaText}`;
+              } else {
+                outputText = taskMetaText.length > taskMaxOutputChars ? taskMetaText.slice(0, taskMaxOutputChars) : taskMetaText;
+              }
+            }
 
             const summary = [...toolSummary.values()].sort((a, b) => a.id.localeCompare(b.id));
 

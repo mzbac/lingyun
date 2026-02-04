@@ -378,6 +378,49 @@ suite('AgentLoop', () => {
     assert.ok(/^[a-zA-Z0-9_-]+$/.test(taskResult.data.session_id));
   });
 
+  test('run - task tool caps injected subagent outputText', async () => {
+    registry.registerTool(taskTool, taskHandler);
+
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const prevMaxChars = cfg.get<unknown>('subagents.task.maxOutputChars');
+    await cfg.update('subagents.task.maxOutputChars', 500, true);
+
+    const longText = 'x'.repeat(2000);
+
+    try {
+      mockLLM.setNextResponse({
+        kind: 'tool-call',
+        toolCallId: 'call_task',
+        toolName: 'task',
+        input: {
+          description: 'Explore task',
+          prompt: 'Return a long answer.',
+          subagent_type: 'general',
+        },
+      });
+      mockLLM.queueResponse({ kind: 'text', content: longText }); // subagent
+      mockLLM.queueResponse({ kind: 'text', content: 'parent done' }); // parent after tool result
+
+      let taskResult: any;
+      const result = await agent.run('Run a task', {
+        onToolResult: (tool, toolOutput) => {
+          if (tool.function.name === 'task') taskResult = toolOutput;
+        },
+      });
+      assert.strictEqual(result, 'parent done');
+      assert.strictEqual(mockLLM.callCount, 3);
+
+      assert.ok(taskResult);
+      const outputText = String(taskResult?.metadata?.outputText ?? '');
+      assert.ok(outputText.includes('<task_metadata>'));
+      assert.ok(outputText.includes('session_id:'));
+      assert.ok(outputText.includes('[TRUNCATED]'));
+      assert.ok(outputText.length <= 500);
+    } finally {
+      await cfg.update('subagents.task.maxOutputChars', prevMaxChars as any, true);
+    }
+  });
+
   test('file handles - glob assigns fileId and read resolves it', async () => {
     let readArgs: any;
 
