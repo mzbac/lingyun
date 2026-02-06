@@ -1,6 +1,7 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { jsonSchema, tool as aiTool } from 'ai';
+
 import {
   evaluatePermission,
   evaluateShellCommand,
@@ -8,7 +9,6 @@ import {
   isPathInsideWorkspace,
   type PermissionAction,
 } from '@kooka/core';
-
 import type { ToolRegistry } from '../registry';
 import type { AgentCallbacks, AgentConfig, ToolContext, ToolDefinition, ToolResult } from '../types';
 import { isRecord } from '../utils/guards';
@@ -44,6 +44,29 @@ export type CreateAISDKToolsParams = {
   formatToolResult: (result: ToolResult, toolName: string) => Promise<string>;
 };
 
+type ExecuteOptions = {
+  toolCallId?: string;
+  abortSignal?: AbortSignal;
+};
+
+function isToolResult(value: unknown): value is ToolResult {
+  return isRecord(value) && typeof value.success === 'boolean';
+}
+
+function asUnknownRecord(value: unknown): Record<string, unknown> | undefined {
+  return isRecord(value) ? value : undefined;
+}
+
+function asString(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
+function getShellCwd(execution: ToolDefinition['execution']): string | undefined {
+  if (execution.type !== 'shell') return undefined;
+  const executionRecord = asUnknownRecord(execution);
+  return asString(executionRecord?.cwd);
+}
+
 export function createAISDKTools(params: CreateAISDKToolsParams): Record<string, unknown> {
   const out: Record<string, unknown> = {};
 
@@ -52,12 +75,19 @@ export function createAISDKTools(params: CreateAISDKToolsParams): Record<string,
     params.toolNameToDefinition.set(toolName, def);
 
     out[toolName] = aiTool({
-      id: toolName as any,
       description: def.description,
-      inputSchema: jsonSchema(def.parameters as any),
-      execute: async (args: any, options: any) => {
-        const callId = String(options.toolCallId);
-        let resolvedArgs: any = args ?? {};
+      inputSchema: jsonSchema(def.parameters as unknown as Parameters<typeof jsonSchema>[0]),
+      execute: async (args: unknown, options: unknown) => {
+        const optionsRecord = asUnknownRecord(options);
+        const executeOptions: ExecuteOptions = optionsRecord
+          ? {
+              toolCallId: asString(optionsRecord.toolCallId),
+              abortSignal: optionsRecord.abortSignal instanceof AbortSignal ? optionsRecord.abortSignal : undefined,
+            }
+          : {};
+        const callId = executeOptions.toolCallId?.trim() || `${toolName}-${Date.now().toString(36)}`;
+        const argsRecord = asUnknownRecord(args);
+        let resolvedArgs: Record<string, unknown> = argsRecord ? { ...argsRecord } : {};
         const config = params.getConfig();
         const sessionId = config.sessionId;
 
@@ -68,8 +98,10 @@ export function createAISDKTools(params: CreateAISDKToolsParams): Record<string,
             { tool: toolName, sessionId, callId },
             { args: resolvedArgs },
           );
-          if (before && typeof (before as any).args === 'object' && (before as any).args !== null) {
-            resolvedArgs = (before as any).args;
+          const beforeRecord = asUnknownRecord(before);
+          const beforeArgs = asUnknownRecord(beforeRecord?.args);
+          if (beforeArgs) {
+            resolvedArgs = { ...beforeArgs };
           }
         }
 
@@ -81,12 +113,11 @@ export function createAISDKTools(params: CreateAISDKToolsParams): Record<string,
             def.id === 'write' ||
             def.id === 'lsp' ||
             def.id === 'symbols_peek') &&
-          typeof (resolvedArgs as any).fileId === 'string'
+          typeof resolvedArgs.fileId === 'string'
         ) {
-          const filePathRaw =
-            typeof (resolvedArgs as any).filePath === 'string' ? String((resolvedArgs as any).filePath) : '';
+          const filePathRaw = asString(resolvedArgs.filePath) ?? '';
           if (!filePathRaw.trim()) {
-            const fileId = String((resolvedArgs as any).fileId);
+            const fileId = String(resolvedArgs.fileId);
             const resolvedPath = params.fileHandles.resolve(fileId);
             if (!resolvedPath) {
               return {
@@ -100,12 +131,9 @@ export function createAISDKTools(params: CreateAISDKToolsParams): Record<string,
         }
 
         if (isRecord(resolvedArgs) && def.id === 'symbols_peek') {
-          const symbolId =
-            typeof (resolvedArgs as any).symbolId === 'string' ? String((resolvedArgs as any).symbolId) : '';
-          const matchId =
-            typeof (resolvedArgs as any).matchId === 'string' ? String((resolvedArgs as any).matchId) : '';
-          const locId =
-            typeof (resolvedArgs as any).locId === 'string' ? String((resolvedArgs as any).locId) : '';
+          const symbolId = asString(resolvedArgs.symbolId) ?? '';
+          const matchId = asString(resolvedArgs.matchId) ?? '';
+          const locId = asString(resolvedArgs.locId) ?? '';
 
           const handleId = symbolId.trim() || matchId.trim() || locId.trim();
           if (handleId) {
@@ -154,12 +182,9 @@ export function createAISDKTools(params: CreateAISDKToolsParams): Record<string,
         }
 
         if (isRecord(resolvedArgs) && def.id === 'read_range') {
-          const locId =
-            typeof (resolvedArgs as any).locId === 'string' ? String((resolvedArgs as any).locId) : '';
-          const symbolId =
-            typeof (resolvedArgs as any).symbolId === 'string' ? String((resolvedArgs as any).symbolId) : '';
-          const matchId =
-            typeof (resolvedArgs as any).matchId === 'string' ? String((resolvedArgs as any).matchId) : '';
+          const locId = asString(resolvedArgs.locId) ?? '';
+          const symbolId = asString(resolvedArgs.symbolId) ?? '';
+          const matchId = asString(resolvedArgs.matchId) ?? '';
 
           const handleId = locId.trim() || symbolId.trim() || matchId.trim();
           if (handleId) {
@@ -251,10 +276,10 @@ export function createAISDKTools(params: CreateAISDKToolsParams): Record<string,
 
         if (isShellExecutionTool && !allowExternalPaths && workspaceRoot) {
           const cwdRaw =
-            typeof resolvedArgs?.workdir === 'string'
+            typeof resolvedArgs.workdir === 'string'
               ? resolvedArgs.workdir
-              : def.execution?.type === 'shell' && typeof (def.execution as any).cwd === 'string'
-                ? String((def.execution as any).cwd)
+              : typeof getShellCwd(def.execution) === 'string'
+                ? String(getShellCwd(def.execution))
                 : '';
 
           const cwd =
@@ -265,10 +290,10 @@ export function createAISDKTools(params: CreateAISDKToolsParams): Record<string,
               : workspaceRoot;
 
           const commandText =
-            typeof resolvedArgs?.command === 'string'
+            typeof resolvedArgs.command === 'string'
               ? resolvedArgs.command
-              : def.execution?.type === 'shell' && typeof (def.execution as any).script === 'string'
-                ? String((def.execution as any).script)
+              : def.execution?.type === 'shell' && typeof def.execution.script === 'string'
+                ? String(def.execution.script)
                 : undefined;
 
           const externalRefs = new Set<string>();
@@ -310,10 +335,10 @@ export function createAISDKTools(params: CreateAISDKToolsParams): Record<string,
         }
 
         const commandForSafety =
-          typeof resolvedArgs?.command === 'string'
+          typeof resolvedArgs.command === 'string'
             ? resolvedArgs.command
-            : def.execution?.type === 'shell' && typeof (def.execution as any).script === 'string'
-              ? String((def.execution as any).script)
+            : def.execution?.type === 'shell' && typeof def.execution.script === 'string'
+              ? String(def.execution.script)
               : undefined;
 
         if (isShellExecutionTool && typeof commandForSafety === 'string') {
@@ -409,11 +434,11 @@ export function createAISDKTools(params: CreateAISDKToolsParams): Record<string,
 
         if (debugToolsEnabled) {
           params.callbacks?.onDebug?.(
-            `[Tool] start tool=${toolName} call=${tc.id} args=${summarizeToolArgsForDebug(args ?? {})}`,
+            `[Tool] start tool=${toolName} call=${tc.id} args=${summarizeToolArgsForDebug(argsRecord ?? {})}`,
           );
         }
 
-        const context = params.createToolContext(options.abortSignal);
+        const context = params.createToolContext(executeOptions.abortSignal);
         let result = await params.registry.executeTool(def.id, resolvedArgs ?? {}, context);
 
         if (def.id === 'glob') {
@@ -477,8 +502,10 @@ export function createAISDKTools(params: CreateAISDKToolsParams): Record<string,
         }
         return result;
       },
-      toModelOutput: async (options: any) => {
-        const output = options.output as ToolResult;
+      toModelOutput: async (options: unknown) => {
+        const optionsRecord = asUnknownRecord(options);
+        const outputCandidate = optionsRecord?.output;
+        const output = isToolResult(outputCandidate) ? outputCandidate : { success: false };
         const content = await params.formatToolResult(output, def.name);
         return { type: 'text', value: content };
       },

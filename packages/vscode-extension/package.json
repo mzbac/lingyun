@@ -2,7 +2,7 @@
   "name": "lingyun",
   "displayName": "LingYun",
   "description": "Agentic AI assistant for VS Code",
-  "version": "2.0.12",
+  "version": "2.0.13",
   "publisher": "mzbac",
   "icon": "images/icon.png",
   "license": "MIT",
@@ -212,6 +212,18 @@
           "default": 50,
           "minimum": 0,
           "description": "When background bash commands are used, maximum number of startup output lines to include in the tool result."
+        },
+        "lingyun.tools.workspaceShell.timeoutMs": {
+          "type": "number",
+          "default": 60000,
+          "minimum": 0,
+          "description": "Timeout in milliseconds for workspace-defined shell tools (0 disables timeout). This helps prevent long-running scripts from blocking the turn."
+        },
+        "lingyun.tools.http.timeoutMs": {
+          "type": "number",
+          "default": 30000,
+          "minimum": 0,
+          "description": "Timeout in milliseconds for workspace-defined HTTP tools (0 disables timeout)."
         },
         "lingyun.openaiCompatible.baseURL": {
           "type": "string",
@@ -424,8 +436,8 @@
         },
         "lingyun.plugins.autoDiscover": {
           "type": "boolean",
-          "default": true,
-          "description": "Automatically discover workspace plugins under <workspace>/<plugins.workspaceDir>/plugin/*.js (also checks parent directories up to the git root)."
+          "default": false,
+          "description": "Automatically discover workspace plugins under <workspace>/<plugins.workspaceDir>/plugin/*.js (also checks parent directories up to the git root). Plugin loading is disabled in untrusted workspaces."
         },
         "lingyun.plugins.workspaceDir": {
           "type": "string",

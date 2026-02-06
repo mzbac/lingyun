@@ -119,7 +119,9 @@ Object.assign(ChatViewProvider.prototype, {
     const delayMs = this.isProcessing ? 2000 : 500;
     this.sessionSaveTimer = setTimeout(() => {
       this.sessionSaveTimer = undefined;
-      void this.flushSessionSave();
+      void this.flushSessionSave().catch(error => {
+        console.error('Failed to persist sessions:', error);
+      });
     }, delayMs);
   },
 
@@ -186,6 +188,10 @@ Object.assign(ChatViewProvider.prototype, {
       activeStepId: typeof raw.activeStepId === 'string' ? raw.activeStepId : undefined,
       pendingPlan:
         raw.pendingPlan && typeof raw.pendingPlan === 'object' ? raw.pendingPlan : undefined,
+      parentSessionId:
+        typeof (raw as any).parentSessionId === 'string' ? String((raw as any).parentSessionId) : undefined,
+      subagentType:
+        typeof (raw as any).subagentType === 'string' ? String((raw as any).subagentType) : undefined,
       revert:
         raw.revert &&
         typeof raw.revert === 'object' &&
@@ -455,7 +461,10 @@ Object.assign(ChatViewProvider.prototype, {
   },
 
   getSessionsForUI(this: ChatViewProvider): Array<{ id: string; title: string }> {
-    return [...this.sessions.values()].map(s => ({ id: s.id, title: s.title }));
+    return [...this.sessions.values()].map(s => ({
+      id: s.id,
+      title: s.parentSessionId ? `↳ ${s.title}` : s.title,
+    }));
   },
 
   postSessions(this: ChatViewProvider): void {
@@ -524,7 +533,13 @@ Object.assign(ChatViewProvider.prototype, {
     this.mode = session.mode;
 
     this.agent.importState(session.agentState);
-    this.agent.updateConfig({ model: this.currentModel, mode: this.mode, sessionId });
+    this.agent.updateConfig({
+      model: this.currentModel,
+      mode: this.mode,
+      sessionId,
+      parentSessionId: session.parentSessionId,
+      subagentType: session.subagentType,
+    });
     this.agent.setMode(this.mode);
   },
 

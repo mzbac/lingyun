@@ -37,11 +37,17 @@ function upsertTaskChildSession(view: ChatViewProvider, result: unknown): string
   }
 
   const normalized = view.normalizeLoadedSession(child as any);
+  if (!normalized.parentSessionId) normalized.parentSessionId = view.activeSessionId;
+  if (!normalized.subagentType && typeof (child as any).subagentType === 'string') {
+    normalized.subagentType = String((child as any).subagentType);
+  }
   view.sessions.set(normalized.id, normalized);
   view.postSessions();
 
   view.markSessionDirty(normalized.id);
-  void view.flushSessionSave();
+  void view.flushSessionSave().catch(error => {
+    console.error('Failed to persist subagent session:', error);
+  });
 
   return normalized.id;
 }
@@ -297,7 +303,7 @@ Object.assign(ChatViewProvider.prototype, {
           .reverse()
           .find(m => m.toolCall?.approvalId === tc.id && m.stepId === planContainerId);
         if (toolMsg?.toolCall) {
-          const toolId = toolMsg.toolCall.id;
+          const isTaskTool = toolMsg.toolCall.id === 'task';
           const previousStatus = toolMsg.toolCall.status;
           toolMsg.toolCall.status = result.success
             ? 'success'
@@ -305,15 +311,7 @@ Object.assign(ChatViewProvider.prototype, {
               ? 'rejected'
               : 'error';
           let resultStr: string;
-          if (
-            toolId === 'task' &&
-            result.success &&
-            result.data &&
-            typeof result.data === 'object' &&
-            typeof (result.data as any).text === 'string'
-          ) {
-            resultStr = String((result.data as any).text);
-          } else if (result.data === undefined || result.data === null) {
+          if (result.data === undefined || result.data === null) {
             resultStr = result.error || (result.success ? 'Done' : 'No data');
           } else if (typeof result.data === 'string') {
             resultStr = result.data;
@@ -358,8 +356,9 @@ Object.assign(ChatViewProvider.prototype, {
             }
           }
 
-          if (toolId === 'task' && result.success) {
-            upsertTaskChildSession(this, result);
+          if (isTaskTool && result.success) {
+            const childId = upsertTaskChildSession(this, result);
+            if (childId) toolMsg.toolCall.taskSessionId = childId;
           }
 
           const hasDiff = typeof toolMsg.toolCall.diff === 'string' && toolMsg.toolCall.diff.length > 0;
@@ -808,8 +807,8 @@ Object.assign(ChatViewProvider.prototype, {
           return true;
         });
         if (toolMsg?.toolCall) {
+          const isTaskTool = toolMsg.toolCall.id === 'task';
           const toolCall = toolMsg.toolCall;
-          const toolId = toolCall.id;
           const previousStatus = toolMsg.toolCall.status;
           toolMsg.toolCall.status = result.success
             ? 'success'
@@ -817,15 +816,7 @@ Object.assign(ChatViewProvider.prototype, {
               ? 'rejected'
               : 'error';
           let resultStr: string;
-          if (
-            toolId === 'task' &&
-            result.success &&
-            result.data &&
-            typeof result.data === 'object' &&
-            typeof (result.data as any).text === 'string'
-          ) {
-            resultStr = String((result.data as any).text);
-          } else if (result.data === undefined || result.data === null) {
+          if (result.data === undefined || result.data === null) {
             resultStr = result.error || (result.success ? 'Done' : 'No data');
           } else if (typeof result.data === 'string') {
             resultStr = result.data;
@@ -833,9 +824,7 @@ Object.assign(ChatViewProvider.prototype, {
             resultStr = JSON.stringify(result.data, null, 2);
           }
 
-          if (toolId === 'task' && result.success) {
-            upsertTaskChildSession(this, result);
-          }
+          const toolId = toolMsg.toolCall.id;
           if (result.success && (toolId === 'glob' || toolId === 'file.list') && typeof resultStr === 'string') {
             const trimmed = resultStr.trim();
             if (trimmed && trimmed !== 'No files found matching the criteria' && trimmed !== 'No files found') {
@@ -950,6 +939,11 @@ Object.assign(ChatViewProvider.prototype, {
             } catch {
               // ignore parse errors
             }
+          }
+
+          if (isTaskTool && result.success) {
+            const childId = upsertTaskChildSession(this, result);
+            if (childId) toolCall.taskSessionId = childId;
           }
 
           const hasDiff = typeof toolMsg.toolCall.diff === 'string' && toolMsg.toolCall.diff.length > 0;

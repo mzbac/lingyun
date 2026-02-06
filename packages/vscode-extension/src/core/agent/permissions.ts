@@ -16,6 +16,7 @@ export function getPermissionRuleset(mode: 'build' | 'plan'): PermissionRuleset 
       { permission: 'grep', pattern: '*', action: 'allow' },
       { permission: 'lsp', pattern: '*', action: 'allow' },
       { permission: 'memory', pattern: '*', action: 'allow' },
+      { permission: 'task', pattern: '*', action: 'allow' },
       // Planning state tools are safe in plan mode.
       { permission: 'todoread', pattern: '*', action: 'allow' },
       { permission: 'todowrite', pattern: '*', action: 'allow' },
@@ -71,10 +72,11 @@ export function getPermissionPatterns(
     return ['*'];
   }
 
+  const argsRecord = args && typeof args === 'object' ? (args as Record<string, unknown>) : undefined;
   const patterns: string[] = [];
   for (const item of patternsMeta) {
     if (!item || typeof item.arg !== 'string' || !item.arg) continue;
-    const raw = (args as any)?.[item.arg];
+    const raw = argsRecord?.[item.arg];
     if (typeof raw !== 'string') continue;
     const value = raw.trim();
     if (!value) continue;
@@ -99,11 +101,12 @@ export function getExternalPathPatterns(
   if (!patternsMeta || patternsMeta.length === 0) return [];
   if (!workspaceRootFsPath) return [];
 
+  const argsRecord = args && typeof args === 'object' ? (args as Record<string, unknown>) : undefined;
   const out = new Set<string>();
   for (const item of patternsMeta) {
     if (!item || typeof item.arg !== 'string' || !item.arg) continue;
     if (item.kind !== 'path') continue;
-    const raw = (args as any)?.[item.arg];
+    const raw = argsRecord?.[item.arg];
     if (typeof raw !== 'string') continue;
     const value = raw.trim();
     if (!value) continue;

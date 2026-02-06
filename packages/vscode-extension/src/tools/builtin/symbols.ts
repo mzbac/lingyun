@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 import type { ToolDefinition, ToolHandler } from '../../core/types';
 import { getLspAdapter } from '../../core/lsp';
 import { optionalNumber, optionalString, requireString } from '@kooka/core';
-import { getWorkspaceRootUri, resolveWorkspacePath, toPosixPath } from './workspace';
+import { resolveWorkspacePath, toPosixPath } from './workspace';
 
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
@@ -23,37 +23,58 @@ const WORKSPACE_SYMBOL_KINDS = new Set<vscode.SymbolKind>([
   vscode.SymbolKind.Enum,
 ]);
 
+type OneBasedPosition = { line: number; character: number };
+type OneBasedRange = { start: OneBasedPosition; end: OneBasedPosition };
+
+type NormalizedLocation = {
+  filePath: string;
+  range: OneBasedRange;
+};
+
+type SearchResultEntry = {
+  name: string;
+  kind: string;
+  containerName?: string;
+  location?: NormalizedLocation;
+};
+
+function asUnknownRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' ? (value as Record<string, unknown>) : undefined;
+}
+
+function asString(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
 function clampLimit(raw: number | undefined): number {
   if (!Number.isFinite(raw as number)) return DEFAULT_LIMIT;
   const value = Math.floor(raw as number);
   return Math.min(MAX_LIMIT, Math.max(1, value));
 }
 
-function toOneBasedPosition(pos: vscode.Position): { line: number; character: number } {
+function toOneBasedPosition(pos: vscode.Position): OneBasedPosition {
   return { line: pos.line + 1, character: pos.character + 1 };
 }
 
-function toOneBasedRange(range: vscode.Range): {
-  start: { line: number; character: number };
-  end: { line: number; character: number };
-} {
+function toOneBasedRange(range: vscode.Range): OneBasedRange {
   return { start: toOneBasedPosition(range.start), end: toOneBasedPosition(range.end) };
 }
 
 function symbolKindToString(kind: vscode.SymbolKind): string {
-  const name = (vscode.SymbolKind as any)[kind];
+  const symbolKindTable = vscode.SymbolKind as unknown as Record<number, string>;
+  const name = symbolKindTable[kind];
   return typeof name === 'string' ? name : String(kind);
 }
 
 function isLocation(value: unknown): value is vscode.Location {
-  const v = value as any;
-  return !!v && typeof v === 'object' && v.uri instanceof vscode.Uri && v.range instanceof vscode.Range;
+  const v = asUnknownRecord(value);
+  return !!v && v.uri instanceof vscode.Uri && v.range instanceof vscode.Range;
 }
 
 function normalizeLocationLike(
   value: vscode.Location | vscode.LocationLink,
   context: { workspaceFolder?: vscode.Uri }
-): { location?: any; skippedOutsideWorkspace?: boolean } {
+): { location?: NormalizedLocation; skippedOutsideWorkspace?: boolean } {
   const uri = isLocation(value) ? value.uri : (value as vscode.LocationLink).targetUri;
   const range = isLocation(value)
     ? value.range
@@ -72,7 +93,7 @@ function normalizeLocationLike(
   }
 }
 
-function normalizeHoverContents(contents: readonly any[]): string {
+function normalizeHoverContents(contents: readonly unknown[]): string {
   const parts: string[] = [];
 
   for (const entry of contents) {
@@ -81,19 +102,20 @@ function normalizeHoverContents(contents: readonly any[]): string {
       parts.push(entry);
       continue;
     }
-    if (typeof entry === 'object') {
-      const maybeMarkdown = entry as vscode.MarkdownString;
-      if (typeof (maybeMarkdown as any).value === 'string') {
-        parts.push((maybeMarkdown as any).value);
-        continue;
-      }
-      const marked = entry as { language?: string; value?: string };
-      if (typeof marked.value === 'string') {
-        if (marked.language) {
-          parts.push(`\`\`\`${marked.language}\n${marked.value}\n\`\`\``);
+    if (entry instanceof vscode.MarkdownString) {
+      parts.push(entry.value);
+      continue;
+    }
+    const entryRecord = asUnknownRecord(entry);
+    if (entryRecord) {
+      if (typeof entryRecord.value === 'string') {
+        const language = asString(entryRecord.language);
+        if (language && language.trim()) {
+          parts.push(`\`\`\`${language}\n${entryRecord.value}\n\`\`\``);
         } else {
-          parts.push(marked.value);
+          parts.push(entryRecord.value);
         }
+        continue;
       }
     }
   }
@@ -181,7 +203,7 @@ export const symbolsSearchHandler: ToolHandler = async (args, context) => {
     const items = await adapter.workspaceSymbol(query);
     const filtered = items.filter(item => WORKSPACE_SYMBOL_KINDS.has(item.kind));
 
-    const results: any[] = [];
+    const results: SearchResultEntry[] = [];
     let skippedOutsideWorkspace = 0;
     for (const item of filtered) {
       const normalized = normalizeLocationLike(item.location, context);
@@ -261,7 +283,8 @@ export const symbolsPeekHandler: ToolHandler = async (args, context) => {
   try {
     const adapter = getLspAdapter();
 
-    const includeObj = typeof (args as any).include === 'object' && (args as any).include ? (args as any).include : {};
+    const argsRecord = asUnknownRecord(args) ?? {};
+    const includeObj = asUnknownRecord(argsRecord.include) ?? {};
     const includeHover = includeObj.hover !== false;
     const includeDefinition = includeObj.definition !== false;
     const includeSnippet = includeObj.snippet !== false;
@@ -310,10 +333,10 @@ export const symbolsPeekHandler: ToolHandler = async (args, context) => {
       includeHover && hover.length > 0 ? normalizeHoverContents(hover[0]?.contents || []) : undefined;
 
     const defs = includeDefinition ? await adapter.goToDefinition(targetUri, position) : [];
-    const defResults: any[] = [];
+    const defResults: NormalizedLocation[] = [];
     let skippedDefsOutsideWorkspace = 0;
     for (const def of defs) {
-      const normalized = normalizeLocationLike(def as any, context);
+      const normalized = normalizeLocationLike(def, context);
       if (normalized.skippedOutsideWorkspace) {
         skippedDefsOutsideWorkspace += 1;
         continue;
@@ -323,10 +346,10 @@ export const symbolsPeekHandler: ToolHandler = async (args, context) => {
     }
 
     const refs = refsSample > 0 ? await adapter.findReferences(targetUri, position) : [];
-    const refResults: any[] = [];
+    const refResults: NormalizedLocation[] = [];
     let skippedRefsOutsideWorkspace = 0;
     for (const ref of refs) {
-      const normalized = normalizeLocationLike(ref as any, context);
+      const normalized = normalizeLocationLike(ref, context);
       if (normalized.skippedOutsideWorkspace) {
         skippedRefsOutsideWorkspace += 1;
         continue;

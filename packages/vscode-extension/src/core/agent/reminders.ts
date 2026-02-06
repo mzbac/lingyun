@@ -50,9 +50,9 @@ export function insertModeReminders(
 
   const out = history.slice();
   const userMessage = history[lastUserIndex];
-  const parts = [...userMessage.parts];
+  const parts: AgentHistoryMessage['parts'] = [...userMessage.parts];
   for (const text of additions) {
-    parts.push({ type: 'text', text } as any);
+    parts.push({ type: 'text', text } as AgentHistoryMessage['parts'][number]);
   }
   out[lastUserIndex] = { ...userMessage, parts };
   return out;

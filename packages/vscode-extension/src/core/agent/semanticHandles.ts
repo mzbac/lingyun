@@ -41,20 +41,33 @@ const MAX_MATCH_HANDLES = 500;
 const MAX_SYMBOL_HANDLES = 500;
 const MAX_LOCATION_HANDLES = 500;
 
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return isRecord(value) ? value : undefined;
+}
+
+function asTrimmedString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function asString(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
 function clampOneBasedInt(value: unknown, fallback: number): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
   return Math.max(1, Math.floor(value));
 }
 
 function parseRange(raw: unknown): OneBasedRange | null {
-  if (!isRecord(raw)) return null;
-  const start = (raw as any).start;
-  const end = (raw as any).end;
-  if (!isRecord(start) || !isRecord(end)) return null;
-  const startLine = clampOneBasedInt((start as any).line, 1);
-  const startChar = clampOneBasedInt((start as any).character, 1);
-  const endLine = clampOneBasedInt((end as any).line, startLine);
-  const endChar = clampOneBasedInt((end as any).character, startChar);
+  const rawRecord = asRecord(raw);
+  if (!rawRecord) return null;
+  const start = asRecord(rawRecord.start);
+  const end = asRecord(rawRecord.end);
+  if (!start || !end) return null;
+  const startLine = clampOneBasedInt(start.line, 1);
+  const startChar = clampOneBasedInt(start.character, 1);
+  const endLine = clampOneBasedInt(end.line, startLine);
+  const endChar = clampOneBasedInt(end.character, startChar);
   return {
     start: { line: startLine, character: startChar },
     end: { line: endLine, character: endChar },
@@ -100,11 +113,12 @@ export class SemanticHandleRegistry {
 
   importState(raw: unknown): void {
     this.reset();
-    if (!isRecord(raw)) return;
+    const rawRecord = asRecord(raw);
+    if (!rawRecord) return;
 
-    const nextMatchId = (raw as any).nextMatchId;
-    const nextSymbolId = (raw as any).nextSymbolId;
-    const nextLocId = (raw as any).nextLocId;
+    const nextMatchId = rawRecord.nextMatchId;
+    const nextSymbolId = rawRecord.nextSymbolId;
+    const nextLocId = rawRecord.nextLocId;
     if (typeof nextMatchId === 'number' && Number.isFinite(nextMatchId) && nextMatchId >= 1) {
       this.nextMatchId = Math.floor(nextMatchId);
     }
@@ -115,53 +129,52 @@ export class SemanticHandleRegistry {
       this.nextLocId = Math.floor(nextLocId);
     }
 
-    const matchesRaw = (raw as any).matches;
-    if (isRecord(matchesRaw)) {
-      for (const [id, value] of Object.entries(matchesRaw as Record<string, unknown>)) {
+    const matchesRaw = asRecord(rawRecord.matches);
+    if (matchesRaw) {
+      for (const [id, value] of Object.entries(matchesRaw)) {
         if (typeof id !== 'string' || !/^M\\d+$/.test(id)) continue;
-        if (!isRecord(value)) continue;
-        const fileId = typeof (value as any).fileId === 'string' ? (value as any).fileId.trim() : '';
+        const valueRecord = asRecord(value);
+        if (!valueRecord) continue;
+        const fileId = asTrimmedString(valueRecord.fileId);
         if (!/^F\\d+$/.test(fileId)) continue;
-        const range = parseRange((value as any).range);
+        const range = parseRange(valueRecord.range);
         if (!range) continue;
-        const preview = typeof (value as any).preview === 'string' ? (value as any).preview : '';
+        const preview = asString(valueRecord.preview) ?? '';
         this.matches.set(id, { fileId, range, preview });
       }
     }
 
-    const symbolsRaw = (raw as any).symbols;
-    if (isRecord(symbolsRaw)) {
-      for (const [id, value] of Object.entries(symbolsRaw as Record<string, unknown>)) {
+    const symbolsRaw = asRecord(rawRecord.symbols);
+    if (symbolsRaw) {
+      for (const [id, value] of Object.entries(symbolsRaw)) {
         if (typeof id !== 'string' || !/^S\\d+$/.test(id)) continue;
-        if (!isRecord(value)) continue;
-        const fileId = typeof (value as any).fileId === 'string' ? (value as any).fileId.trim() : '';
+        const valueRecord = asRecord(value);
+        if (!valueRecord) continue;
+        const fileId = asTrimmedString(valueRecord.fileId);
         if (!/^F\\d+$/.test(fileId)) continue;
-        const range = parseRange((value as any).range);
+        const range = parseRange(valueRecord.range);
         if (!range) continue;
-        const name = typeof (value as any).name === 'string' ? (value as any).name : '';
+        const name = asString(valueRecord.name) ?? '';
         if (!name.trim()) continue;
-        const kind = typeof (value as any).kind === 'string' ? (value as any).kind : '';
-        const containerName =
-          typeof (value as any).containerName === 'string' && (value as any).containerName.trim()
-            ? String((value as any).containerName)
-            : undefined;
+        const kind = asString(valueRecord.kind) ?? '';
+        const containerNameValue = asTrimmedString(valueRecord.containerName);
+        const containerName = containerNameValue ? containerNameValue : undefined;
         this.symbols.set(id, { name, kind, fileId, range, ...(containerName ? { containerName } : {}) });
       }
     }
 
-    const locationsRaw = (raw as any).locations;
-    if (isRecord(locationsRaw)) {
-      for (const [id, value] of Object.entries(locationsRaw as Record<string, unknown>)) {
+    const locationsRaw = asRecord(rawRecord.locations);
+    if (locationsRaw) {
+      for (const [id, value] of Object.entries(locationsRaw)) {
         if (typeof id !== 'string' || !/^L\\d+$/.test(id)) continue;
-        if (!isRecord(value)) continue;
-        const fileId = typeof (value as any).fileId === 'string' ? (value as any).fileId.trim() : '';
+        const valueRecord = asRecord(value);
+        if (!valueRecord) continue;
+        const fileId = asTrimmedString(valueRecord.fileId);
         if (!/^F\\d+$/.test(fileId)) continue;
-        const range = parseRange((value as any).range);
+        const range = parseRange(valueRecord.range);
         if (!range) continue;
-        const label =
-          typeof (value as any).label === 'string' && (value as any).label.trim()
-            ? String((value as any).label)
-            : undefined;
+        const labelValue = asTrimmedString(valueRecord.label);
+        const label = labelValue ? labelValue : undefined;
         this.locations.set(id, { fileId, range, ...(label ? { label } : {}) });
       }
     }
@@ -222,14 +235,14 @@ export class SemanticHandleRegistry {
 
   decorateSymbolsSearchResult(result: ToolResult, fileHandles: FileHandleRegistry): ToolResult {
     if (!result.success) return result;
-    if (!isRecord(result.data)) return result;
+    const data = asRecord(result.data);
+    if (!data) return result;
 
-    const data = result.data as any;
-    const query = typeof data.query === 'string' ? data.query : '';
+    const query = asString(data.query) ?? '';
     const resultsRaw = data.results;
     if (!Array.isArray(resultsRaw)) return result;
 
-    const note = typeof data.note === 'string' ? data.note.trim() : '';
+    const note = asTrimmedString(data.note);
     const truncated = Boolean(data.truncated);
     const skippedOutsideWorkspace =
       typeof data.skippedOutsideWorkspace === 'number' && Number.isFinite(data.skippedOutsideWorkspace)
@@ -253,18 +266,17 @@ export class SemanticHandleRegistry {
 
     let count = 0;
     for (const item of resultsRaw) {
-      if (!isRecord(item)) continue;
-      const name = typeof (item as any).name === 'string' ? String((item as any).name) : '';
-      const kind = typeof (item as any).kind === 'string' ? String((item as any).kind) : '';
-      const containerName =
-        typeof (item as any).containerName === 'string' && (item as any).containerName.trim()
-          ? String((item as any).containerName)
-          : undefined;
-      const loc = (item as any).location;
-      if (!name.trim() || !isRecord(loc)) continue;
-      const filePath = typeof (loc as any).filePath === 'string' ? String((loc as any).filePath) : '';
-      const range = (loc as any).range;
-      if (!filePath.trim() || !isRecord(range)) continue;
+      const itemRecord = asRecord(item);
+      if (!itemRecord) continue;
+      const name = asString(itemRecord.name) ?? '';
+      const kind = asString(itemRecord.kind) ?? '';
+      const containerNameValue = asTrimmedString(itemRecord.containerName);
+      const containerName = containerNameValue ? containerNameValue : undefined;
+      const loc = asRecord(itemRecord.location);
+      if (!name.trim() || !loc) continue;
+      const filePath = asString(loc.filePath) ?? '';
+      if (!filePath.trim()) continue;
+      const range = loc.range;
       const parsedRange = parseRange(range);
       if (!parsedRange) continue;
 
@@ -299,13 +311,13 @@ export class SemanticHandleRegistry {
 
   decorateSymbolsPeekResult(result: ToolResult, fileHandles: FileHandleRegistry): ToolResult {
     if (!result.success) return result;
-    if (!isRecord(result.data)) return result;
+    const data = asRecord(result.data);
+    if (!data) return result;
 
-    const data = result.data as any;
-    const filePath = typeof data.filePath === 'string' ? data.filePath.trim() : '';
-    const position = isRecord(data.position) ? data.position : undefined;
-    const line = position ? clampOneBasedInt((position as any).line, 1) : undefined;
-    const character = position ? clampOneBasedInt((position as any).character, 1) : undefined;
+    const filePath = asTrimmedString(data.filePath);
+    const position = asRecord(data.position);
+    const line = position ? clampOneBasedInt(position.line, 1) : undefined;
+    const character = position ? clampOneBasedInt(position.character, 1) : undefined;
 
     const file = filePath ? fileHandles.getOrCreate(filePath) : undefined;
 
@@ -318,7 +330,7 @@ export class SemanticHandleRegistry {
       linesOut.push(`Target: ${filePath}`);
     }
 
-    const hover = typeof data.hover === 'string' ? data.hover.trim() : '';
+    const hover = asTrimmedString(data.hover);
     if (hover) {
       linesOut.push('', 'Hover:', hover);
     }
@@ -332,9 +344,10 @@ export class SemanticHandleRegistry {
     if (defsRaw.length > 0 || skippedDefsOutsideWorkspace > 0) {
       linesOut.push('', 'Definition:');
       for (const entry of defsRaw) {
-        if (!isRecord(entry)) continue;
-        const defPath = typeof (entry as any).filePath === 'string' ? String((entry as any).filePath) : '';
-        const range = parseRange((entry as any).range);
+        const entryRecord = asRecord(entry);
+        if (!entryRecord) continue;
+        const defPath = asString(entryRecord.filePath) ?? '';
+        const range = parseRange(entryRecord.range);
         if (!defPath.trim() || !range) continue;
         const defFile = fileHandles.getOrCreate(defPath);
         const loc = this.createLocationHandle({
@@ -360,9 +373,10 @@ export class SemanticHandleRegistry {
     if (refsRaw.length > 0 || skippedRefsOutsideWorkspace > 0) {
       linesOut.push('', 'References (sample):');
       for (const entry of refsRaw) {
-        if (!isRecord(entry)) continue;
-        const refPath = typeof (entry as any).filePath === 'string' ? String((entry as any).filePath) : '';
-        const range = parseRange((entry as any).range);
+        const entryRecord = asRecord(entry);
+        if (!entryRecord) continue;
+        const refPath = asString(entryRecord.filePath) ?? '';
+        const range = parseRange(entryRecord.range);
         if (!refPath.trim() || !range) continue;
         const refFile = fileHandles.getOrCreate(refPath);
         const loc = this.createLocationHandle({
@@ -379,10 +393,10 @@ export class SemanticHandleRegistry {
       }
     }
 
-    const snippetRaw = data.snippet;
-    if (isRecord(snippetRaw) && typeof (snippetRaw as any).text === 'string') {
-      linesOut.push('', `Snippet (${String((snippetRaw as any).startLine)}-${String((snippetRaw as any).endLine)}):`);
-      linesOut.push(String((snippetRaw as any).text).trimEnd());
+    const snippetRaw = asRecord(data.snippet);
+    if (snippetRaw && typeof snippetRaw.text === 'string') {
+      linesOut.push('', `Snippet (${String(snippetRaw.startLine)}-${String(snippetRaw.endLine)}):`);
+      linesOut.push(String(snippetRaw.text).trimEnd());
     }
 
     return {

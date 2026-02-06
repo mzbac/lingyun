@@ -91,8 +91,9 @@ export const listHandler: ToolHandler = async (args, context) => {
         const dirPath = i === 0 ? '.' : parts.slice(0, i).join('/');
         dirs.add(dirPath);
       }
-      if (!filesByDir.has(dir)) filesByDir.set(dir, []);
-      filesByDir.get(dir)!.push(path.posix.basename(file));
+      const fileList = filesByDir.get(dir) ?? [];
+      fileList.push(path.posix.basename(file));
+      filesByDir.set(dir, fileList);
     }
 
     const renderDir = (dirPath: string, depth: number): string => {

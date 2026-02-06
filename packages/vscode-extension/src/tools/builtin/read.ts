@@ -46,6 +46,7 @@ export const readTool: ToolDefinition = {
 
 export const readHandler: ToolHandler = async (args, context) => {
   try {
+    const argsRecord = args && typeof args === 'object' ? (args as Record<string, unknown>) : undefined;
     const filePathResult = requireString(args, 'filePath');
     if ('error' in filePathResult) return { success: false, error: filePathResult.error };
     const filePath = filePathResult.value;
@@ -73,7 +74,10 @@ export const readHandler: ToolHandler = async (args, context) => {
       bytes = await vscode.workspace.fs.readFile(uri);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const code = typeof error === 'object' && error ? (error as any).code : undefined;
+      const code =
+        error && typeof error === 'object'
+          ? (error as Record<string, unknown>).code
+          : undefined;
       const isNotFound =
         code === 'ENOENT' ||
         code === 'FileNotFound' ||
@@ -104,8 +108,8 @@ export const readHandler: ToolHandler = async (args, context) => {
     const maxLines = getMaxReadLines();
     const offsetRaw = optionalNumber(args, 'offset');
     const limitRaw = optionalNumber(args, 'limit');
-    const offsetProvided = args.offset !== undefined && args.offset !== null;
-    const limitProvided = args.limit !== undefined && args.limit !== null;
+    const offsetProvided = argsRecord?.offset !== undefined && argsRecord?.offset !== null;
+    const limitProvided = argsRecord?.limit !== undefined && argsRecord?.limit !== null;
 
     const totalLines = lines.length;
     if (totalLines > maxLines && !(offsetProvided && limitProvided)) {
@@ -120,6 +124,7 @@ export const readHandler: ToolHandler = async (args, context) => {
         metadata: { errorType: 'read_requires_range', totalLines, maxLines },
       };
     }
+
     const offset = Math.max(0, Math.floor(offsetRaw ?? 0));
     const limit = Math.max(1, Math.floor(limitRaw ?? maxLines));
 

@@ -42,13 +42,14 @@ Usage:
 
 export const writeHandler: ToolHandler = async (args, context) => {
   try {
+    const argsRecord = args && typeof args === 'object' ? (args as Record<string, unknown>) : undefined;
     const filePathResult = requireString(args, 'filePath');
     if ('error' in filePathResult) return { success: false, error: filePathResult.error };
     const contentResult = requireString(args, 'content');
     if ('error' in contentResult) return { success: false, error: contentResult.error };
 
     const { uri, absPath, relPath, isExternal } = resolveToolPath(filePathResult.value, context);
-    const overwrite = Boolean((args as any).overwrite);
+    const overwrite = Boolean(argsRecord?.overwrite);
 
     return await withFileLock(absPath, async () => {
       let exists = true;

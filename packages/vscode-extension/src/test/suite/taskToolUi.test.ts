@@ -90,7 +90,10 @@ suite('Task tool UI', () => {
     callbacks.onToolResult?.(tc, result);
 
     assert.strictEqual(toolMsg.toolCall?.status, 'success');
-    assert.strictEqual(toolMsg.toolCall?.result, 'subagent answer');
+    const parsedResult = JSON.parse(toolMsg.toolCall?.result || '{}') as Record<string, unknown>;
+    assert.strictEqual(parsedResult.session_id, 'child-1');
+    assert.strictEqual(parsedResult.subagent_type, 'general');
+    assert.strictEqual(parsedResult.text, 'subagent answer');
 
     assert.ok(provider.sessions.has('child-1'), 'expected child session to be added to sessions map');
     assert.ok(dirty.includes('child-1'), 'expected child session to be marked dirty');
@@ -102,4 +105,3 @@ suite('Task tool UI', () => {
     assert.ok(posted.some((m: any) => m?.type === 'updateTool'), 'expected updateTool to be posted');
   });
 });
-

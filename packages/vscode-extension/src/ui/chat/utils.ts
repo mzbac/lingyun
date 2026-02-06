@@ -42,19 +42,23 @@ export function formatWorkspacePathForUI(rawPath?: string): string | undefined {
 
 export function formatErrorForUser(error: unknown): string {
   const err = error instanceof Error ? error : new Error(String(error));
-  const anyErr = err as any;
+  const errRecord = err as Error & { statusCode?: unknown; url?: unknown; code?: unknown; cause?: unknown };
+  const causeRecord =
+    errRecord.cause && typeof errRecord.cause === 'object'
+      ? (errRecord.cause as Record<string, unknown>)
+      : undefined;
   const name = err.name && err.name !== 'Error' ? err.name : undefined;
   const statusCode =
-    typeof anyErr?.statusCode === 'number'
-      ? anyErr.statusCode
-      : typeof anyErr?.cause?.statusCode === 'number'
-        ? anyErr.cause.statusCode
+    typeof errRecord.statusCode === 'number'
+      ? errRecord.statusCode
+      : typeof causeRecord?.statusCode === 'number'
+        ? causeRecord.statusCode
         : undefined;
   const urlValue =
-    typeof anyErr?.url === 'string'
-      ? anyErr.url
-      : typeof anyErr?.cause?.url === 'string'
-        ? anyErr.cause.url
+    typeof errRecord.url === 'string'
+      ? errRecord.url
+      : typeof causeRecord?.url === 'string'
+        ? causeRecord.url
         : undefined;
   let urlPath: string | undefined;
   if (urlValue) {
@@ -65,16 +69,16 @@ export function formatErrorForUser(error: unknown): string {
     }
   }
   const code =
-    typeof anyErr?.code === 'string'
-      ? anyErr.code
-      : typeof anyErr?.cause?.code === 'string'
-        ? anyErr.cause.code
+    typeof errRecord.code === 'string'
+      ? errRecord.code
+      : typeof causeRecord?.code === 'string'
+        ? causeRecord.code
         : undefined;
   const causeMessage =
-    typeof anyErr?.cause?.message === 'string'
-      ? anyErr.cause.message
-      : typeof anyErr?.cause === 'string'
-        ? anyErr.cause
+    typeof causeRecord?.message === 'string'
+      ? causeRecord.message
+      : typeof errRecord.cause === 'string'
+        ? errRecord.cause
         : undefined;
 
   const meta = [name, code, causeMessage].filter(Boolean).join(' | ');

@@ -51,6 +51,7 @@ Usage:
 
 export const editHandler: ToolHandler = async (args, context) => {
   try {
+    const argsRecord = args && typeof args === 'object' ? (args as Record<string, unknown>) : undefined;
     const filePathResult = requireString(args, 'filePath');
     if ('error' in filePathResult) return { success: false, error: filePathResult.error };
     const oldStringResult = requireString(args, 'oldString');
@@ -66,8 +67,8 @@ export const editHandler: ToolHandler = async (args, context) => {
 
     const { uri, absPath, relPath, isExternal } = resolveToolPath(filePathResult.value, context);
 
-    const replaceAll = Boolean(args.replaceAll);
-    const overwrite = Boolean((args as any).overwrite);
+    const replaceAll = Boolean(argsRecord?.replaceAll);
+    const overwrite = Boolean(argsRecord?.overwrite);
 
     return await withFileLock(absPath, async () => {
       let exists = true;

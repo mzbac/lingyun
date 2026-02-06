@@ -8,7 +8,7 @@ export async function sleep(ms: number, signal: AbortSignal): Promise<void> {
     const onAbort = () => {
       clearTimeout(timer);
       const err = new Error('Aborted');
-      (err as any).name = 'AbortError';
+      err.name = 'AbortError';
       reject(err);
     };
 
@@ -45,25 +45,29 @@ function getErrorMessage(error: unknown): string {
 
 function getErrorName(error: unknown): string {
   if (error instanceof Error && error.name) return error.name;
-  const maybe = (error as any)?.name;
+  const maybe = asRecord(error)?.name;
   return typeof maybe === 'string' ? maybe : '';
 }
 
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' ? (value as Record<string, unknown>) : undefined;
+}
+
 function getErrorCode(error: unknown): string | undefined {
-  const direct = (error as any)?.code;
+  const direct = asRecord(error)?.code;
   if (typeof direct === 'string' && direct.trim()) return direct.trim();
-  const cause = (error as any)?.cause?.code;
+  const cause = asRecord(asRecord(error)?.cause)?.code;
   if (typeof cause === 'string' && cause.trim()) return cause.trim();
   return undefined;
 }
 
 function getStatusCode(error: unknown): number | undefined {
   const candidates = [
-    (error as any)?.status,
-    (error as any)?.statusCode,
-    (error as any)?.response?.status,
-    (error as any)?.cause?.status,
-    (error as any)?.cause?.statusCode,
+    asRecord(error)?.status,
+    asRecord(error)?.statusCode,
+    asRecord(asRecord(error)?.response)?.status,
+    asRecord(asRecord(error)?.cause)?.status,
+    asRecord(asRecord(error)?.cause)?.statusCode,
   ];
 
   for (const value of candidates) {
@@ -79,13 +83,13 @@ function getStatusCode(error: unknown): number | undefined {
 
 function getResponseHeaders(error: unknown): Record<string, string> | undefined {
   const candidates = [
-    (error as any)?.responseHeaders,
-    (error as any)?.cause?.responseHeaders,
-    (error as any)?.headers,
-    (error as any)?.cause?.headers,
-    (error as any)?.response?.headers,
-    (error as any)?.cause?.response?.headers,
-    (error as any)?.data?.responseHeaders,
+    asRecord(error)?.responseHeaders,
+    asRecord(asRecord(error)?.cause)?.responseHeaders,
+    asRecord(error)?.headers,
+    asRecord(asRecord(error)?.cause)?.headers,
+    asRecord(asRecord(error)?.response)?.headers,
+    asRecord(asRecord(asRecord(error)?.cause)?.response)?.headers,
+    asRecord(asRecord(error)?.data)?.responseHeaders,
   ];
 
   for (const value of candidates) {
@@ -202,4 +206,3 @@ export function retryable(error: unknown): RetryableReason | undefined {
 
   return undefined;
 }
-

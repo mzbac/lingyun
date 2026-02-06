@@ -8,6 +8,14 @@ export type FileHandlesState = {
   byId: Record<string, string>;
 };
 
+function asUnknownRecord(value: unknown): Record<string, unknown> | undefined {
+  return isRecord(value) ? value : undefined;
+}
+
+function asString(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
 export class FileHandleRegistry {
   private nextId = 1;
   private readonly byId = new Map<string, string>();
@@ -31,22 +39,24 @@ export class FileHandleRegistry {
   importState(raw: unknown): void {
     this.reset();
 
-    if (!isRecord(raw)) return;
+    const rawRecord = asUnknownRecord(raw);
+    if (!rawRecord) return;
 
-    const nextId = (raw as any).nextId;
-    const byId = (raw as any).byId;
+    const nextId = rawRecord.nextId;
+    const byId = asUnknownRecord(rawRecord.byId);
     if (typeof nextId !== 'number' || !Number.isFinite(nextId) || nextId < 1) return;
-    if (!isRecord(byId)) return;
+    if (!byId) return;
 
     const entries: Array<[string, string]> = [];
     let maxNumericId = 0;
-    for (const [id, filePath] of Object.entries(byId as Record<string, unknown>)) {
+    for (const [id, filePath] of Object.entries(byId)) {
       if (typeof id !== 'string' || !id.trim()) continue;
-      if (typeof filePath !== 'string' || !filePath.trim()) continue;
+      const pathValue = asString(filePath);
+      if (!pathValue || !pathValue.trim()) continue;
       const normalizedId = id.trim();
       if (!/^F\d+$/.test(normalizedId)) continue;
 
-      const normalizedPath = this.normalizePath(filePath.trim());
+      const normalizedPath = this.normalizePath(pathValue.trim());
       if (!normalizedPath) continue;
 
       entries.push([normalizedId, normalizedPath]);
@@ -87,10 +97,10 @@ export class FileHandleRegistry {
   decorateGlobResultWithFileHandles(result: ToolResult): ToolResult {
     if (!result.success) return result;
 
-    const data = result.data;
-    if (!isRecord(data)) return result;
+    const data = asUnknownRecord(result.data);
+    if (!data) return result;
 
-    const filesRaw = (data as any).files;
+    const filesRaw = data.files;
     if (!Array.isArray(filesRaw)) return result;
 
     const files = filesRaw
@@ -98,7 +108,7 @@ export class FileHandleRegistry {
       .map((value: string) => value.trim())
       .filter(Boolean);
 
-    const notesRaw = (data as any).notes;
+    const notesRaw = data.notes;
     const notes = Array.isArray(notesRaw)
       ? notesRaw
           .filter((value: unknown): value is string => typeof value === 'string')
@@ -106,7 +116,7 @@ export class FileHandleRegistry {
           .filter(Boolean)
       : [];
 
-    const truncated = Boolean((data as any).truncated);
+    const truncated = Boolean(data.truncated);
 
     const lines: string[] = [];
     if (notes.length > 0) {
@@ -144,22 +154,23 @@ export class FileHandleRegistry {
   ): ToolResult {
     if (!result.success) return result;
 
-    const data = result.data;
-    if (!isRecord(data)) return result;
+    const data = asUnknownRecord(result.data);
+    if (!data) return result;
 
-    const matchesRaw = (data as any).matches;
+    const matchesRaw = data.matches;
     if (!Array.isArray(matchesRaw)) return result;
 
     type GrepMatch = { filePath: string; line: number; column?: number; text: string };
 
     const matches: GrepMatch[] = [];
     for (const item of matchesRaw) {
-      if (!isRecord(item)) continue;
+      const itemRecord = asUnknownRecord(item);
+      if (!itemRecord) continue;
 
-      const filePathRaw = (item as any).filePath;
-      const lineRaw = (item as any).line;
-      const columnRaw = (item as any).column;
-      const textRaw = (item as any).text;
+      const filePathRaw = itemRecord.filePath;
+      const lineRaw = itemRecord.line;
+      const columnRaw = itemRecord.column;
+      const textRaw = itemRecord.text;
 
       if (typeof filePathRaw !== 'string' || !filePathRaw.trim()) continue;
       if (typeof lineRaw !== 'number' || !Number.isFinite(lineRaw)) continue;
@@ -176,7 +187,7 @@ export class FileHandleRegistry {
       });
     }
 
-    const notesRaw = (data as any).notes;
+    const notesRaw = data.notes;
     const notes = Array.isArray(notesRaw)
       ? notesRaw
           .filter((value: unknown): value is string => typeof value === 'string')
@@ -184,7 +195,7 @@ export class FileHandleRegistry {
           .filter(Boolean)
       : [];
 
-    const truncated = Boolean((data as any).truncated);
+    const truncated = Boolean(data.truncated);
 
     const byFile = new Map<string, GrepMatch[]>();
     for (const match of matches) {
@@ -193,7 +204,7 @@ export class FileHandleRegistry {
       byFile.set(match.filePath, entry);
     }
 
-    const totalMatchesRaw = (data as any).totalMatches;
+    const totalMatchesRaw = data.totalMatches;
     const totalMatches =
       typeof totalMatchesRaw === 'number' && Number.isFinite(totalMatchesRaw)
         ? Math.max(0, Math.floor(totalMatchesRaw))

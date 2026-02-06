@@ -74,6 +74,10 @@ export interface ChatMessage {
     additionalCount?: number;
     lsp?: unknown;
     todos?: unknown;
+    /**
+     * For `task` tool calls, this links to the spawned subagent session id (if created).
+     */
+    taskSessionId?: string;
   };
 }
 
@@ -89,6 +93,14 @@ export interface ChatSessionInfo {
   stepCounter: number;
   activeStepId?: string;
   pendingPlan?: { task: string; planMessageId: string };
+  /**
+   * When set, this session is a subagent session created via the `task` tool.
+   */
+  parentSessionId?: string;
+  /**
+   * Built-in subagent type name (e.g. "explore", "general") for subagent sessions.
+   */
+  subagentType?: string;
   revert?: {
     messageId: string;
     snapshotHash: string;

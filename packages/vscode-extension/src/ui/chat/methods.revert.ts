@@ -91,7 +91,7 @@ Object.assign(ChatViewProvider.prototype, {
     if (boundaryIndex < 0) return null;
 
     const revertedUsers = this.messages.slice(boundaryIndex).filter(m => m.role === 'user').length;
-    const files = Array.isArray(session.revert?.files) ? session.revert!.files : [];
+    const files = Array.isArray(session.revert?.files) ? session.revert.files : [];
 
     return {
       active: true,

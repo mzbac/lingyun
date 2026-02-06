@@ -40,7 +40,10 @@ function toHeaderRecord(initHeaders: unknown): Record<string, string> {
 }
 
 function combineAbortSignals(signals: AbortSignal[]): AbortSignal {
-  const any = (AbortSignal as any)?.any;
+  const abortSignalExt = AbortSignal as typeof AbortSignal & {
+    any?: (signals: AbortSignal[]) => AbortSignal;
+  };
+  const any = abortSignalExt.any;
   if (typeof any === 'function') {
     return any(signals);
   }
@@ -64,6 +67,7 @@ type FetchWithDefaults = { fetch: FetchFunction; dispose: () => void };
 function createFetchWithStreamingDefaults(timeoutMs?: number): FetchWithDefaults {
   const timeoutValue = typeof timeoutMs === 'number' && Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 0;
   const dispatcher = new Agent({ bodyTimeout: 0 });
+  const fetchUndici = undiciFetch as unknown as (input: unknown, init?: unknown) => Promise<unknown>;
 
   const fetchFn: FetchFunction = (input, init?) => {
     const headers: Record<string, string> = {};
@@ -80,15 +84,23 @@ function createFetchWithStreamingDefaults(timeoutMs?: number): FetchWithDefaults
     if (init?.signal) signals.push(init.signal);
 
     if (timeoutValue > 0) {
-      const timeoutFn = (AbortSignal as any)?.timeout;
+      const abortSignalExt = AbortSignal as typeof AbortSignal & {
+        timeout?: (ms: number) => AbortSignal;
+      };
+      const timeoutFn = abortSignalExt.timeout;
       if (typeof timeoutFn === 'function') {
         signals.push(timeoutFn(timeoutValue));
       }
     }
 
     const signal = signals.length > 0 ? combineAbortSignals(signals) : undefined;
-
-    return undiciFetch(input as any, { ...(init as any), dispatcher, headers, signal } as any) as any;
+    const requestInit = {
+      ...(init ?? {}),
+      dispatcher: dispatcher as unknown,
+      headers,
+      ...(signal ? { signal } : {}),
+    };
+    return fetchUndici(input, requestInit) as Promise<Response>;
   };
 
   return { fetch: fetchFn, dispose: () => dispatcher.close() };

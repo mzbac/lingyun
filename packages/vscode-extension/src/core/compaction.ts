@@ -22,6 +22,10 @@ function asFiniteNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' ? (value as Record<string, unknown>) : undefined;
+}
+
 export function getCompactionConfig(): CompactionConfig {
   const cfg = vscode.workspace.getConfiguration('lingyun');
 
@@ -58,10 +62,11 @@ export function getModelLimit(modelId: string): ModelLimit | undefined {
   if (!raw || typeof raw !== 'object') return undefined;
 
   const entry = (raw as Record<string, unknown>)[modelId];
-  if (!entry || typeof entry !== 'object') return undefined;
+  const entryRecord = asRecord(entry);
+  if (!entryRecord) return undefined;
 
-  const context = asFiniteNumber((entry as any).context);
-  const output = asFiniteNumber((entry as any).output);
+  const context = asFiniteNumber(entryRecord.context);
+  const output = asFiniteNumber(entryRecord.output);
 
   if (!context || context <= 0) return undefined;
   return { context, ...(output && output > 0 ? { output } : {}) };

@@ -221,23 +221,6 @@ Object.assign(ChatViewProvider.prototype, {
         : [{ id: fallbackModelId, name: fallbackModelId, vendor: 'configured', family: 'unknown' }]),
     ]);
 
-    const favorites = await this.getFavoriteModelIds();
-    const recents = await this.getRecentModelIds();
-    const favoritesSet = new Set(favorites);
-
-    const byId = new Map(models.map(m => [m.id, m] as const));
-    const favoriteModels = favorites.map(id => byId.get(id)).filter((m): m is ModelInfo => !!m);
-    const recentModels = recents
-      .filter(id => !favoritesSet.has(id))
-      .map(id => byId.get(id))
-      .filter((m): m is ModelInfo => !!m);
-
-    const recentSet = new Set(recentModels.map(m => m.id));
-    const allModels = models
-      .filter(m => !favoritesSet.has(m.id) && !recentSet.has(m.id))
-      .slice()
-      .sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id, undefined, { sensitivity: 'base' }));
-
     const favoriteButtonOn: vscode.QuickInputButton = {
       iconPath: new vscode.ThemeIcon('star-full'),
       tooltip: 'Remove from favorites',

@@ -61,7 +61,7 @@ export function summarizeErrorForDebug(error: unknown): string {
 
   const status = statusCandidates.find(v => typeof v === 'number' && Number.isFinite(v)) as number | undefined;
 
-  const cause = (error instanceof Error ? (error as any).cause : undefined) ?? asRecord(error)?.cause;
+  const cause = (error instanceof Error ? (error as Error & { cause?: unknown }).cause : undefined) ?? asRecord(error)?.cause;
   const causeMessage =
     cause instanceof Error
       ? `${cause.name}: ${cause.message}`

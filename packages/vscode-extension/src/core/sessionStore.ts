@@ -121,7 +121,7 @@ export class SessionStore<
       await this.ensureSessionsDir();
 
       const previousIndex = await this.tryReadJson<SessionsIndex>(this.indexUri);
-      const previousOrder = Array.isArray(previousIndex?.order) ? previousIndex!.order : [];
+      const previousOrder = Array.isArray(previousIndex?.order) ? previousIndex.order : [];
       const previousIds = new Set(previousOrder.filter((id): id is string => typeof id === 'string'));
       const currentIds = new Set(finalOrder);
       const removedIds: string[] = [];
@@ -167,12 +167,13 @@ export class SessionStore<
   }
 
   private async enqueueWrite(fn: () => Promise<void>): Promise<void> {
-    this.writeChain = this.writeChain.then(fn).catch(err => {
+    const run = this.writeChain.then(fn);
+    this.writeChain = run.catch(err => {
       this.options.log?.(
         `SessionStore write failed: ${err instanceof Error ? err.message : String(err)}`,
       );
     });
-    return this.writeChain;
+    return run;
   }
 
   private async tryReadJson<T>(uri: vscode.Uri): Promise<T | undefined> {

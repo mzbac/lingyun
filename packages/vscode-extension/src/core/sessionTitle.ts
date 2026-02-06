@@ -61,7 +61,7 @@ export async function generateSessionTitle(params: {
 
   const rawModel = await params.llm.getModel(params.modelId);
   const model = wrapLanguageModel({
-    model: rawModel as any,
+    model: rawModel as unknown as Parameters<typeof wrapLanguageModel>[0]['model'],
     middleware: [extractReasoningMiddleware({ tagName: 'think', startWithReasoning: false })],
   });
 
@@ -69,12 +69,12 @@ export async function generateSessionTitle(params: {
     [
       createUserHistoryMessage('Generate a title for this conversation:', { synthetic: true }),
       createUserHistoryMessage(params.message),
-    ] as any,
-    { tools: {} as any },
+    ] as unknown as Parameters<typeof convertToModelMessages>[0],
+    { tools: {} } as Parameters<typeof convertToModelMessages>[1],
   );
 
   const stream = streamText({
-    model: model as any,
+    model: model as unknown as Parameters<typeof streamText>[0]['model'],
     system: TITLE_SYSTEM_PROMPT,
     messages,
     temperature: 0,

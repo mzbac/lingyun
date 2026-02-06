@@ -62,26 +62,84 @@ const WORKSPACE_SYMBOL_KINDS = new Set<vscode.SymbolKind>([
   vscode.SymbolKind.Enum,
 ]);
 
+type OneBasedPosition = { line: number; character: number };
+type OneBasedRange = { start: OneBasedPosition; end: OneBasedPosition };
+
+type NormalizedLocation = {
+  filePath: string;
+  range: OneBasedRange;
+};
+
+type NormalizedDocumentSymbol = {
+  name: string;
+  detail?: string;
+  kind: string;
+  range: OneBasedRange;
+  selectionRange: OneBasedRange;
+  children: NormalizedDocumentSymbol[];
+};
+
+type NormalizedSymbolInformation = {
+  name: string;
+  kind: string;
+  containerName?: string;
+  location?: NormalizedLocation;
+};
+
+type NormalizedCallHierarchyItem = {
+  name: string;
+  kind: string;
+  detail?: string;
+  uri: string;
+  filePath: string;
+  range: OneBasedRange;
+  selectionRange: OneBasedRange;
+};
+
+type NormalizedIncomingCall = {
+  from: NormalizedCallHierarchyItem;
+  fromRanges: OneBasedRange[];
+};
+
+type NormalizedOutgoingCall = {
+  to: NormalizedCallHierarchyItem;
+  fromRanges: OneBasedRange[];
+};
+
+function asUnknownRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' ? (value as Record<string, unknown>) : undefined;
+}
+
+function asString(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
 export const lspTool: ToolDefinition = {
   id: 'lsp',
   name: 'Language Features (VS Code)',
   description:
-    `Get semantic code intelligence via VS Code language features (LSP). Prefer this over regex grep for symbol/code-intelligence tasks.
+    `Interact with VS Code language features to get semantic code intelligence.
 
 Prefer higher-level tools for common navigation:
 - symbols_search -> find a symbol by name (no file/position needed)
 - symbols_peek -> hover + definition + snippet in one call
 
-Common patterns:
-- Find a symbol by name across the workspace -> operation: workspaceSymbol, query: "foo"
-- List symbols (functions/classes/methods) in a file -> operation: documentSymbol, fileId: "F1"
-- Go to definition / references at a position -> operation: goToDefinition / findReferences, fileId: "F1", line: 10, character: 5
-- Get type/signature -> operation: hover, fileId: "F1", line: 10, character: 5
+Supported operations (OpenCode-aligned; line/character are 1-based):
+- goToDefinition
+- findReferences
+- hover
+- documentSymbol
+- workspaceSymbol
+- goToImplementation
+- prepareCallHierarchy
+- incomingCalls
+- outgoingCalls
 
-Notes:
-- line/character are 1-based.
-- Prefer fileId from glob/grep; filePath also works (absolute or workspace-relative).
-- limit defaults to 20 (max 100).`,
+Inputs:
+- filePath: absolute or workspace-relative path
+- line/character: 1-based position (required for position-based operations)
+- query (optional): workspaceSymbol search query (default "")
+- limit (optional): max results (default 20, max 100)`,
   parameters: {
     type: 'object',
     properties: {
@@ -167,15 +225,13 @@ function toOneBasedPosition(pos: vscode.Position): { line: number; character: nu
   return { line: pos.line + 1, character: pos.character + 1 };
 }
 
-function toOneBasedRange(range: vscode.Range): {
-  start: { line: number; character: number };
-  end: { line: number; character: number };
-} {
+function toOneBasedRange(range: vscode.Range): OneBasedRange {
   return { start: toOneBasedPosition(range.start), end: toOneBasedPosition(range.end) };
 }
 
 function symbolKindToString(kind: vscode.SymbolKind): string {
-  const name = (vscode.SymbolKind as any)[kind];
+  const symbolKindTable = vscode.SymbolKind as unknown as Record<number, string>;
+  const name = symbolKindTable[kind];
   return typeof name === 'string' ? name : String(kind);
 }
 
@@ -230,14 +286,14 @@ function getPosition(
 }
 
 function isLocation(value: unknown): value is vscode.Location {
-  const v = value as any;
-  return !!v && typeof v === 'object' && v.uri instanceof vscode.Uri && v.range instanceof vscode.Range;
+  const v = asUnknownRecord(value);
+  return !!v && v.uri instanceof vscode.Uri && v.range instanceof vscode.Range;
 }
 
 function normalizeLocationLike(
   value: vscode.Location | vscode.LocationLink,
   context: ToolContext
-): { location?: any; skippedOutsideWorkspace?: boolean } {
+): { location?: NormalizedLocation; skippedOutsideWorkspace?: boolean } {
   const uri = isLocation(value) ? value.uri : (value as vscode.LocationLink).targetUri;
   const range = isLocation(value)
     ? value.range
@@ -256,7 +312,7 @@ function normalizeLocationLike(
   }
 }
 
-function normalizeHoverContents(contents: readonly any[]): string {
+function normalizeHoverContents(contents: readonly unknown[]): string {
   const parts: string[] = [];
 
   for (const entry of contents) {
@@ -265,19 +321,20 @@ function normalizeHoverContents(contents: readonly any[]): string {
       parts.push(entry);
       continue;
     }
-    if (typeof entry === 'object') {
-      const maybeMarkdown = entry as vscode.MarkdownString;
-      if (typeof (maybeMarkdown as any).value === 'string') {
-        parts.push((maybeMarkdown as any).value);
-        continue;
-      }
-      const marked = entry as { language?: string; value?: string };
-      if (typeof marked.value === 'string') {
-        if (marked.language) {
-          parts.push(`\`\`\`${marked.language}\n${marked.value}\n\`\`\``);
+    if (entry instanceof vscode.MarkdownString) {
+      parts.push(entry.value);
+      continue;
+    }
+    const entryRecord = asUnknownRecord(entry);
+    if (entryRecord) {
+      if (typeof entryRecord.value === 'string') {
+        const language = asString(entryRecord.language);
+        if (language && language.trim()) {
+          parts.push(`\`\`\`${language}\n${entryRecord.value}\n\`\`\``);
         } else {
-          parts.push(marked.value);
+          parts.push(entryRecord.value);
         }
+        continue;
       }
     }
   }
@@ -290,8 +347,8 @@ function normalizeHoverContents(contents: readonly any[]): string {
 function normalizeDocumentSymbols(
   symbols: readonly vscode.DocumentSymbol[],
   remaining: { count: number }
-): any[] {
-  const out: any[] = [];
+): NormalizedDocumentSymbol[] {
+  const out: NormalizedDocumentSymbol[] = [];
   for (const symbol of symbols) {
     if (remaining.count <= 0) break;
     remaining.count -= 1;
@@ -308,7 +365,10 @@ function normalizeDocumentSymbols(
   return out;
 }
 
-function normalizeSymbolInformation(info: vscode.SymbolInformation, context: ToolContext): any | null {
+function normalizeSymbolInformation(
+  info: vscode.SymbolInformation,
+  context: ToolContext
+): NormalizedSymbolInformation | null {
   const normalized = normalizeLocationLike(info.location, context);
   if (normalized.skippedOutsideWorkspace) return null;
   return {
@@ -319,12 +379,13 @@ function normalizeSymbolInformation(info: vscode.SymbolInformation, context: Too
   };
 }
 
-function createCallHierarchyItemFromArgs(args: any): vscode.CallHierarchyItem | { error: string } {
-  if (!args || typeof args !== 'object') return { error: 'item is required for this operation' };
-  const name = typeof args.name === 'string' ? args.name : '';
-  const detail = typeof args.detail === 'string' ? args.detail : '';
-  const uriRaw = typeof args.uri === 'string' ? args.uri : '';
-  const kindRaw = typeof args.kind === 'number' ? args.kind : Number(args.kind);
+function createCallHierarchyItemFromArgs(args: unknown): vscode.CallHierarchyItem | { error: string } {
+  const argsRecord = asUnknownRecord(args);
+  if (!argsRecord) return { error: 'item is required for this operation' };
+  const name = asString(argsRecord.name) ?? '';
+  const detail = asString(argsRecord.detail) ?? '';
+  const uriRaw = asString(argsRecord.uri) ?? '';
+  const kindRaw = typeof argsRecord.kind === 'number' ? argsRecord.kind : Number(argsRecord.kind);
 
   if (!name || !uriRaw || !Number.isFinite(kindRaw)) {
     return { error: 'item must include name, kind, and uri' };
@@ -337,8 +398,8 @@ function createCallHierarchyItemFromArgs(args: any): vscode.CallHierarchyItem | 
     return { error: 'item.uri must be a valid URI string' };
   }
 
-  const rangeObj = args.range;
-  const selectionObj = args.selectionRange;
+  const rangeObj = argsRecord.range;
+  const selectionObj = argsRecord.selectionRange;
   const range = parseRange(rangeObj);
   const selectionRange = parseRange(selectionObj);
   if (!range || !selectionRange) {
@@ -348,25 +409,32 @@ function createCallHierarchyItemFromArgs(args: any): vscode.CallHierarchyItem | 
   return new vscode.CallHierarchyItem(kindRaw, name, detail, uri, range, selectionRange);
 }
 
-function parseRange(rangeObj: any): vscode.Range | null {
-  if (!rangeObj || typeof rangeObj !== 'object') return null;
-  const start = rangeObj.start;
-  const end = rangeObj.end;
+function parseRange(rangeObj: unknown): vscode.Range | null {
+  const rangeRecord = asUnknownRecord(rangeObj);
+  if (!rangeRecord) return null;
+  const start = asUnknownRecord(rangeRecord.start);
+  const end = asUnknownRecord(rangeRecord.end);
   if (!start || !end) return null;
   const startLine = Number(start.line);
   const startChar = Number(start.character);
   const endLine = Number(end.line);
   const endChar = Number(end.character);
   if (![startLine, startChar, endLine, endChar].every(n => Number.isFinite(n))) return null;
-  return new vscode.Range(new vscode.Position(Math.max(0, startLine - 1), Math.max(0, startChar - 1)), new vscode.Position(Math.max(0, endLine - 1), Math.max(0, endChar - 1)));
+  return new vscode.Range(
+    new vscode.Position(Math.max(0, startLine - 1), Math.max(0, startChar - 1)),
+    new vscode.Position(Math.max(0, endLine - 1), Math.max(0, endChar - 1))
+  );
 }
 
-function normalizeCallHierarchyItem(item: vscode.CallHierarchyItem, context: ToolContext): any | null {
+function normalizeCallHierarchyItem(
+  item: vscode.CallHierarchyItem,
+  context: ToolContext
+): NormalizedCallHierarchyItem | null {
   try {
     const resolved = resolveWorkspacePath(item.uri.fsPath, context);
     return {
       name: item.name,
-      kind: symbolKindToString(item.kind as any),
+      kind: symbolKindToString(item.kind),
       detail: item.detail || undefined,
       uri: item.uri.toString(),
       filePath: toPosixPath(resolved.relPath),
@@ -378,8 +446,11 @@ function normalizeCallHierarchyItem(item: vscode.CallHierarchyItem, context: Too
   }
 }
 
-function normalizeIncomingCalls(calls: readonly vscode.CallHierarchyIncomingCall[], context: ToolContext): any[] {
-  const out: any[] = [];
+function normalizeIncomingCalls(
+  calls: readonly vscode.CallHierarchyIncomingCall[],
+  context: ToolContext
+): NormalizedIncomingCall[] {
+  const out: NormalizedIncomingCall[] = [];
   for (const call of calls) {
     const from = normalizeCallHierarchyItem(call.from, context);
     if (!from) continue;
@@ -391,8 +462,11 @@ function normalizeIncomingCalls(calls: readonly vscode.CallHierarchyIncomingCall
   return out;
 }
 
-function normalizeOutgoingCalls(calls: readonly vscode.CallHierarchyOutgoingCall[], context: ToolContext): any[] {
-  const out: any[] = [];
+function normalizeOutgoingCalls(
+  calls: readonly vscode.CallHierarchyOutgoingCall[],
+  context: ToolContext
+): NormalizedOutgoingCall[] {
+  const out: NormalizedOutgoingCall[] = [];
   for (const call of calls) {
     const to = normalizeCallHierarchyItem(call.to, context);
     if (!to) continue;
@@ -453,7 +527,7 @@ export const lspHandler: ToolHandler = async (args, context) => {
 
       const items = await adapter.workspaceSymbol(query);
       const filtered = items.filter(item => WORKSPACE_SYMBOL_KINDS.has(item.kind));
-      const results: any[] = [];
+      const results: NormalizedSymbolInformation[] = [];
       let skippedOutsideWorkspace = 0;
       for (const item of filtered) {
         const normalized = normalizeSymbolInformation(item, context);
@@ -472,23 +546,20 @@ export const lspHandler: ToolHandler = async (args, context) => {
     }
 
     if (operation === 'incomingCalls' || operation === 'outgoingCalls') {
-      const legacyItemRaw = (args as any).item;
+      const legacyItemRaw = args.item;
       if (legacyItemRaw) {
         // Legacy retry compatibility: callers used to pass a CallHierarchyItem-like blob.
         const item = createCallHierarchyItemFromArgs(legacyItemRaw);
         if ('error' in item) return { success: false, error: item.error };
-        const calls =
-          operation === 'incomingCalls'
-            ? await adapter.incomingCallsForItem(item)
-            : await adapter.outgoingCallsForItem(item);
         const allResults =
           operation === 'incomingCalls'
-            ? normalizeIncomingCalls(calls as vscode.CallHierarchyIncomingCall[], context)
-            : normalizeOutgoingCalls(calls as vscode.CallHierarchyOutgoingCall[], context);
+            ? normalizeIncomingCalls(await adapter.incomingCallsForItem(item), context)
+            : normalizeOutgoingCalls(await adapter.outgoingCallsForItem(item), context);
         const results = allResults.slice(0, limit);
         return { success: true, data: { operation, results, truncated: allResults.length > results.length } };
       }
 
+      // OpenCode-aligned: position-based incomingCalls/outgoingCalls.
       const docResult = getTargetDocumentUri(args, context, false);
       if ('error' in docResult) return { success: false, error: docResult.error };
       const targetUri = docResult.uri;
@@ -502,14 +573,10 @@ export const lspHandler: ToolHandler = async (args, context) => {
       const positionResult = getPosition(args, context, targetUri);
       if ('error' in positionResult) return { success: false, error: positionResult.error };
 
-      const calls =
-        operation === 'incomingCalls'
-          ? await adapter.incomingCallsAtPosition(targetUri, positionResult.position)
-          : await adapter.outgoingCallsAtPosition(targetUri, positionResult.position);
       const allResults =
         operation === 'incomingCalls'
-          ? normalizeIncomingCalls(calls as vscode.CallHierarchyIncomingCall[], context)
-          : normalizeOutgoingCalls(calls as vscode.CallHierarchyOutgoingCall[], context);
+          ? normalizeIncomingCalls(await adapter.incomingCallsAtPosition(targetUri, positionResult.position), context)
+          : normalizeOutgoingCalls(await adapter.outgoingCallsAtPosition(targetUri, positionResult.position), context);
       const results = allResults.slice(0, limit);
 
       return {
@@ -536,13 +603,14 @@ export const lspHandler: ToolHandler = async (args, context) => {
 
     if (operation === 'documentSymbol') {
       const raw = await adapter.documentSymbol(targetUri);
-      const results: any[] = [];
+      const results: Array<NormalizedDocumentSymbol | NormalizedSymbolInformation> = [];
       let skippedOutsideWorkspace = 0;
       let truncated = false;
 
       if (Array.isArray(raw) && raw.length > 0) {
-        const first = raw[0] as any;
-        if (first && typeof first === 'object' && 'location' in first) {
+        const first = raw[0];
+        const firstRecord = asUnknownRecord(first);
+        if (firstRecord && 'location' in firstRecord) {
           // SymbolInformation[]
           for (const item of raw as vscode.SymbolInformation[]) {
             const normalized = normalizeSymbolInformation(item, context);
@@ -553,7 +621,7 @@ export const lspHandler: ToolHandler = async (args, context) => {
             results.push(normalized);
             if (results.length >= limit) break;
           }
-          truncated = results.length >= limit && (raw as any[]).length > results.length;
+          truncated = results.length >= limit && raw.length > results.length;
         } else {
           // DocumentSymbol[]
           const remaining = { count: Math.min(MAX_SYMBOL_NODES, limit * 10) };
@@ -573,7 +641,7 @@ export const lspHandler: ToolHandler = async (args, context) => {
       const positionResult = getPosition(args, context, targetUri);
       if ('error' in positionResult) return { success: false, error: positionResult.error };
       const items = await adapter.prepareCallHierarchy(targetUri, positionResult.position);
-      const results: any[] = [];
+      const results: NormalizedCallHierarchyItem[] = [];
       let skippedOutsideWorkspace = 0;
       for (const item of items) {
         const normalized = normalizeCallHierarchyItem(item, context);
@@ -620,10 +688,10 @@ export const lspHandler: ToolHandler = async (args, context) => {
         : operation === 'goToImplementation'
           ? await adapter.goToImplementation(targetUri, position)
           : await adapter.findReferences(targetUri, position);
-    const results: any[] = [];
+    const results: NormalizedLocation[] = [];
     let skippedOutsideWorkspace = 0;
     for (const item of items) {
-      const normalized = normalizeLocationLike(item as any, context);
+      const normalized = normalizeLocationLike(item, context);
       if (normalized.skippedOutsideWorkspace) {
         skippedOutsideWorkspace += 1;
         continue;

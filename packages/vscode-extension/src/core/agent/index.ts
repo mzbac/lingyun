@@ -8,7 +8,6 @@ import {
   tool as aiTool,
   wrapLanguageModel,
   type ModelMessage,
-  type TextStreamPart,
 } from 'ai';
 import type {
   ToolDefinition,
@@ -44,8 +43,8 @@ import {
   createUserHistoryMessage,
   listBuiltinSubagents,
   normalizeSessionId,
-  redactFsPathForPrompt,
   renderSkillsSectionForPrompt,
+  redactFsPathForPrompt,
   resolveBuiltinSubagent,
   finalizeStreamingParts,
   getMessageText,
@@ -76,6 +75,14 @@ import { generateSessionTitle as generateSessionTitleInternal } from '../session
 import { getSkillIndex, loadSkillFile } from '../skills';
 
 let cachedSkillsPromptTextPromise: Promise<string | undefined> | undefined;
+
+function asUnknownRecord(value: unknown): Record<string, unknown> | undefined {
+  return isRecord(value) ? value : undefined;
+}
+
+function isToolResult(value: unknown): value is ToolResult {
+  return isRecord(value) && typeof value.success === 'boolean';
+}
 
 async function getCachedSkillsPromptText(options: {
   extensionContext: vscode.ExtensionContext;
@@ -202,7 +209,7 @@ export class AgentLoop {
     return this.config.mode === 'plan' ? 'plan' : 'build';
   }
 
-  private composeSystemPrompt(_mode: 'build' | 'plan'): string[] {
+  private composeSystemPrompt(): string[] {
     const basePrompt = this.config.systemPrompt || DEFAULT_SYSTEM_PROMPT;
     const parts = [basePrompt];
     if (this.instructionsText) {
@@ -264,23 +271,8 @@ export class AgentLoop {
         ? Math.floor(maxInjectSkillsRaw as number)
         : 5;
 
-    const selectedForInject = selected.slice(0, maxInjectSkills);
-    const activeLabel = selectedForInject.map((s) => `$${s.name}`).join(', ');
-
     const blocks: string[] = [];
-    if (activeLabel) {
-      blocks.push(
-        [
-          '<skills>',
-          `<active>${activeLabel}</active>`,
-          'You MUST apply ALL active skills for the next user request.',
-          'Treat skill instructions as additive. If they conflict, call it out and ask the user how to proceed (do not ignore a skill silently).',
-          '</skills>',
-        ].join('\n'),
-      );
-    }
-
-    for (const skill of selectedForInject) {
+    for (const skill of selected.slice(0, maxInjectSkills)) {
       this.mentionedSkills.add(skill.name);
       let body: string;
       try {
@@ -530,7 +522,7 @@ export class AgentLoop {
 
     await this.refreshInstructions();
 
-    const planningSystem = this.composeSystemPrompt(this.getMode());
+    const planningSystem = this.composeSystemPrompt();
     await this.injectSkillsForUserText(task);
     this.history.push(createUserHistoryMessage(task));
     await this.maybeAutoExplore(task, callbacks);
@@ -568,7 +560,7 @@ export class AgentLoop {
       }
 
       await this.refreshInstructions();
-      return await this.loop(this.composeSystemPrompt(this.getMode()), callbacks);
+      return await this.loop(this.composeSystemPrompt(), callbacks);
     } finally {
       this._running = false;
       this.disposeAllCancellations();
@@ -593,7 +585,7 @@ export class AgentLoop {
     await this.maybeAutoExplore(task, callbacks);
 
     try {
-      return await this.loop(this.composeSystemPrompt(this.getMode()), callbacks);
+      return await this.loop(this.composeSystemPrompt(), callbacks);
     } finally {
       this.stripTurnSkillMessages();
       this._running = false;
@@ -616,7 +608,7 @@ export class AgentLoop {
     await this.maybeAutoExplore(message, callbacks);
 
     try {
-      return await this.loop(this.composeSystemPrompt(this.getMode()), callbacks);
+      return await this.loop(this.composeSystemPrompt(), callbacks);
     } finally {
       this.stripTurnSkillMessages();
       this._running = false;
@@ -638,7 +630,7 @@ export class AgentLoop {
 
     try {
       await this.refreshInstructions();
-      return await this.loop(this.composeSystemPrompt(this.getMode()), callbacks);
+      return await this.loop(this.composeSystemPrompt(), callbacks);
     } finally {
       this._running = false;
       this.disposeAllCancellations();
@@ -692,7 +684,7 @@ export class AgentLoop {
 
       const rawModel = await this.llm.getModel(modelId);
       const model = wrapLanguageModel({
-        model: rawModel as any,
+        model: rawModel as unknown as Parameters<typeof wrapLanguageModel>[0]['model'],
         middleware: [extractReasoningMiddleware({ tagName: 'think', startWithReasoning: false })],
       });
 
@@ -720,12 +712,12 @@ export class AgentLoop {
 
       const taskDef = toolNameToDefinition.get('task');
       if (taskDef) {
-        (tools as any).task = aiTool({
-          id: 'task' as any,
+        const toolsRecord = tools as Record<string, unknown>;
+        toolsRecord.task = aiTool({
           description: taskDef.description,
-          inputSchema: jsonSchema(taskDef.parameters as any),
-          execute: async (args: any, options: any) => {
-            const resolvedArgs: any = args ?? {};
+          inputSchema: jsonSchema(taskDef.parameters as unknown as Parameters<typeof jsonSchema>[0]),
+          execute: async (args: unknown, _options: unknown) => {
+            const resolvedArgs = asUnknownRecord(args) ?? {};
 
             if (this.config.parentSessionId || this.config.subagentType) {
               return {
@@ -739,8 +731,7 @@ export class AgentLoop {
 
             const descriptionRaw = typeof resolvedArgs.description === 'string' ? resolvedArgs.description.trim() : '';
             const promptRaw = typeof resolvedArgs.prompt === 'string' ? resolvedArgs.prompt : '';
-            const subagentTypeRaw =
-              typeof resolvedArgs.subagent_type === 'string' ? resolvedArgs.subagent_type.trim() : '';
+            const subagentTypeRaw = typeof resolvedArgs.subagent_type === 'string' ? resolvedArgs.subagent_type.trim() : '';
             const sessionIdRaw = typeof resolvedArgs.session_id === 'string' ? resolvedArgs.session_id.trim() : '';
             const requestedSessionId = normalizeSessionId(sessionIdRaw) || '';
 
@@ -750,7 +741,7 @@ export class AgentLoop {
 
             const subagent = resolveBuiltinSubagent(subagentTypeRaw);
             if (!subagent) {
-              const names = listBuiltinSubagents().map((a) => a.name).join(', ');
+              const names = listBuiltinSubagents().map(a => a.name).join(', ');
               return {
                 success: false,
                 error: `Unknown subagent_type: ${subagentTypeRaw}. Available: ${names || '(none)'}`,
@@ -771,7 +762,7 @@ export class AgentLoop {
             const now = Date.now();
 
             // Best-effort: load existing child session state from persisted sessions when session_id is provided.
-            let existingMessages: any[] = [];
+            let existingMessages: unknown[] = [];
             let existingAgentState: AgentSessionState | undefined;
             let existingCreatedAt: number | undefined;
             let existingCurrentModel: string | undefined;
@@ -782,18 +773,20 @@ export class AgentLoop {
                   const sessionUri = vscode.Uri.joinPath(baseUri, 'sessions', `${childSessionId}.json`);
                   const bytes = await vscode.workspace.fs.readFile(sessionUri);
                   const raw = JSON.parse(new TextDecoder('utf-8').decode(bytes));
-                  if (raw && typeof raw === 'object') {
-                    if (Array.isArray((raw as any).messages)) {
-                      existingMessages = (raw as any).messages;
+                  const rawRecord = asUnknownRecord(raw);
+                  if (rawRecord) {
+                    if (Array.isArray(rawRecord.messages)) {
+                      existingMessages = rawRecord.messages;
                     }
-                    if ((raw as any).agentState && typeof (raw as any).agentState === 'object') {
-                      existingAgentState = (raw as any).agentState as AgentSessionState;
+                    const agentStateRaw = asUnknownRecord(rawRecord.agentState);
+                    if (agentStateRaw) {
+                      existingAgentState = agentStateRaw as unknown as AgentSessionState;
                     }
-                    if (typeof (raw as any).createdAt === 'number') {
-                      existingCreatedAt = (raw as any).createdAt;
+                    if (typeof rawRecord.createdAt === 'number') {
+                      existingCreatedAt = rawRecord.createdAt;
                     }
-                    if (typeof (raw as any).currentModel === 'string' && String((raw as any).currentModel).trim()) {
-                      existingCurrentModel = String((raw as any).currentModel).trim();
+                    if (typeof rawRecord.currentModel === 'string' && String(rawRecord.currentModel).trim()) {
+                      existingCurrentModel = String(rawRecord.currentModel).trim();
                     }
                   }
                 }
@@ -860,7 +853,9 @@ export class AgentLoop {
               }
             }
 
-            const childMessages: any[] = Array.isArray(existingMessages) ? [...existingMessages] : [];
+            const childMessages: Array<Record<string, unknown>> = Array.isArray(existingMessages)
+              ? (existingMessages as Array<Record<string, unknown>>).slice()
+              : [];
             const turnId = crypto.randomUUID();
 
             childMessages.push({
@@ -870,11 +865,8 @@ export class AgentLoop {
               timestamp: now,
             });
 
-            let assistantMsg: any | undefined;
-            const toolSummary = new Map<
-              string,
-              { id: string; tool: string; status: 'running' | 'success' | 'error' }
-            >();
+            let assistantMsg: Record<string, unknown> | undefined;
+            const toolSummary = new Map<string, { id: string; tool: string; status: 'running' | 'success' | 'error' }>();
 
             const childCallbacks: AgentCallbacks = {
               onRequestApproval: async (tc, def) => {
@@ -914,11 +906,13 @@ export class AgentLoop {
                   status: result.success ? 'success' : 'error',
                 });
 
-                const toolMsg = [...childMessages]
-                  .reverse()
-                  .find((m) => m?.role === 'tool' && m?.toolCall?.approvalId === tc.id);
-                if (toolMsg?.toolCall) {
-                  toolMsg.toolCall.status = result.success ? 'success' : 'error';
+                const toolMsg = [...childMessages].reverse().find((m) => {
+                  const toolCall = asUnknownRecord(m.toolCall);
+                  return m.role === 'tool' && toolCall?.approvalId === tc.id;
+                });
+                const toolCall = toolMsg ? asUnknownRecord(toolMsg.toolCall) : undefined;
+                if (toolCall) {
+                  toolCall.status = result.success ? 'success' : 'error';
                   let resultStr = '';
                   if (result.data === undefined || result.data === null) {
                     resultStr = result.error || (result.success ? 'Done' : 'No data');
@@ -927,7 +921,7 @@ export class AgentLoop {
                   } else {
                     resultStr = JSON.stringify(result.data, null, 2);
                   }
-                  toolMsg.toolCall.result = resultStr.substring(0, 4000);
+                  toolCall.result = resultStr.substring(0, 4000);
                 }
               },
               onAssistantToken: (token) => {
@@ -942,7 +936,8 @@ export class AgentLoop {
                   };
                   childMessages.push(assistantMsg);
                 }
-                assistantMsg.content += token;
+                const content = typeof assistantMsg.content === 'string' ? assistantMsg.content : '';
+                assistantMsg.content = content + token;
               },
             };
 
@@ -995,9 +990,7 @@ export class AgentLoop {
                   parent_session_id: parentSessionId,
                   summary,
                   model_id: childModelId,
-                  ...(childModelWarning
-                    ? { model_warning: childModelWarning, requested_model_id: desiredChildModelId }
-                    : {}),
+                  ...(childModelWarning ? { model_warning: childModelWarning, requested_model_id: desiredChildModelId } : {}),
                 },
                 childSession: {
                   id: childSessionId,
@@ -1009,13 +1002,17 @@ export class AgentLoop {
                   currentModel: childModelId,
                   mode: 'build',
                   stepCounter: 0,
+                  parentSessionId,
+                  subagentType: subagent.name,
                 },
               },
             };
           },
-          toModelOutput: async (options: any) => {
-            const output = options.output as ToolResult;
-            const content = await this.formatToolResult(output, taskDef.name);
+          toModelOutput: async (options: unknown) => {
+            const optionsRecord = asUnknownRecord(options);
+            const outputCandidate = optionsRecord?.output;
+            const output = isToolResult(outputCandidate) ? outputCandidate : { success: false };
+            const content = await this.formatToolResult(output);
             return { type: 'text', value: content };
           },
         });
@@ -1045,14 +1042,14 @@ export class AgentLoop {
 
       const modelMessages = await this.toModelMessages(tools, modelId);
       const promptMessages: ModelMessage[] = [
-        ...systemParts.map(text => ({ role: 'system', content: text } as any)),
+        ...systemParts.map(text => ({ role: 'system', content: text }) as ModelMessage),
         ...modelMessages,
       ];
       if (debugLlmEnabled) {
         try {
           const systemHash = sha256Hex(JSON.stringify(systemParts));
           const systemBytes = Buffer.byteLength(systemParts.join('\n'), 'utf8');
-          const { sha256: messagesHash, bytes: messagesBytes } = hashJsonLines(promptMessages as any);
+          const { sha256: messagesHash, bytes: messagesBytes } = hashJsonLines(promptMessages);
 
           const toolSignature = modeAllowed
             .slice()
@@ -1149,19 +1146,21 @@ export class AgentLoop {
 
           try {
             const stream = streamText({
-              model: model as any,
+              model: model as unknown as Parameters<typeof streamText>[0]['model'],
               messages: promptMessages,
-              tools: tools as any,
+              tools: tools as unknown as Parameters<typeof streamText>[0]['tools'],
               maxRetries: this.config.maxRetries ?? 0,
               temperature: callParams.temperature,
               topP: callParams.topP,
               topK: callParams.topK,
-              ...(providerOptions ? { providerOptions: providerOptions as any } : {}),
+              ...(providerOptions
+                ? { providerOptions: providerOptions as unknown as Parameters<typeof streamText>[0]['providerOptions'] }
+                : {}),
               maxOutputTokens: this.getMaxOutputTokens(),
               abortSignal: abortController.signal,
             });
 
-            for await (const part of stream.fullStream as AsyncIterable<TextStreamPart<any>>) {
+            for await (const part of stream.fullStream) {
               if (this.aborted) break;
 
               streamParts += 1;
@@ -1207,15 +1206,15 @@ export class AgentLoop {
                   const toolName = String(part.toolName);
                   const toolCallId = String(part.toolCallId);
                   const def = toolNameToDefinition.get(toolName);
-                  const rawOutput = part.output as any;
-                  let output = await this.pruneToolResultForHistory(rawOutput, def?.name ?? toolName);
+                  const rawOutput = part.output;
+                  let output = await this.pruneToolResultForHistory(rawOutput);
 
                   const isTaskTool = def?.id === 'task' || toolName === 'task';
                   if (isTaskTool && output.metadata && typeof output.metadata === 'object') {
                     // Do not persist child session snapshots inside the main session history.
                     const meta = { ...(output.metadata as Record<string, unknown>) };
-                    delete (meta as any).childSession;
-                    delete (meta as any).task;
+                    delete meta.childSession;
+                    delete meta.task;
                     output = { ...output, metadata: meta };
                   }
 
@@ -1227,8 +1226,8 @@ export class AgentLoop {
                   });
 
                   const tc = toToolCall(toolCallId, toolName, part.input);
-                  if (isTaskTool && rawOutput && typeof rawOutput === 'object' && typeof rawOutput.success === 'boolean') {
-                    callbacks?.onToolResult?.(tc, rawOutput as ToolResult);
+                  if (isTaskTool && isToolResult(rawOutput)) {
+                    callbacks?.onToolResult?.(tc, rawOutput);
                   } else {
                     callbacks?.onToolResult?.(tc, output);
                   }
@@ -1313,10 +1312,10 @@ export class AgentLoop {
               );
             }
 
-	            if (retryable) {
-	              const wrapped = new Error(retryable.message);
-	              (wrapped as any).cause = e;
-	              if (!abortController.signal.aborted && !this.aborted) {
+		            if (retryable) {
+		              const wrapped = new Error(retryable.message);
+		              (wrapped as Error & { cause?: unknown }).cause = e;
+		              if (!abortController.signal.aborted && !this.aborted) {
 	                try {
 	                  this.llm.onRequestError?.(e, { modelId, mode: this.getMode() });
 	                } catch {
@@ -1451,9 +1450,12 @@ export class AgentLoop {
       { messages: [...withoutIds] as unknown[] },
     );
 
-    const messages = Array.isArray(messagesOutput.messages) ? messagesOutput.messages : withoutIds;
-    return convertToModelMessages(messages as any, { tools: tools as any });
-  }
+	    const messages = Array.isArray(messagesOutput.messages) ? messagesOutput.messages : withoutIds;
+	    return convertToModelMessages(
+	      messages as unknown as Parameters<typeof convertToModelMessages>[0],
+	      { tools } as Parameters<typeof convertToModelMessages>[1],
+	    );
+	  }
 
 	  private async compactSessionInternal(params: { auto: boolean; modelId: string }, callbacks?: AgentCallbacks): Promise<void> {
 	    if (this.aborted) return;
@@ -1496,21 +1498,24 @@ export class AgentLoop {
 
 	      const rawModel = await this.llm.getModel(params.modelId);
 	      const compactionModel = wrapLanguageModel({
-	        model: rawModel as any,
+	        model: rawModel as unknown as Parameters<typeof wrapLanguageModel>[0]['model'],
 	        middleware: [extractReasoningMiddleware({ tagName: 'think', startWithReasoning: false })],
 	      });
 
-      const effective = getEffectiveHistory(this.history);
-      const prepared = createHistoryForCompactionPrompt(effective, getCompactionConfig());
-      const withoutIds = prepared.map(({ id: _id, ...rest }) => rest);
+	      const effective = getEffectiveHistory(this.history);
+	      const prepared = createHistoryForCompactionPrompt(effective, getCompactionConfig());
+	      const withoutIds = prepared.map(({ id: _id, ...rest }) => rest);
 
 	      const compactionUser = createUserHistoryMessage(promptText, { synthetic: true });
-	      const compactionModelMessages = await convertToModelMessages([...withoutIds, compactionUser as any], { tools: {} as any });
+	      const compactionModelMessages = await convertToModelMessages(
+	        [...withoutIds, compactionUser] as unknown as Parameters<typeof convertToModelMessages>[0],
+	        { tools: {} } as Parameters<typeof convertToModelMessages>[1],
+	      );
 
-      const stream = streamText({
-        model: compactionModel as any,
-        system: COMPACTION_SYSTEM_PROMPT,
-        messages: compactionModelMessages,
+	      const stream = streamText({
+	        model: compactionModel as unknown as Parameters<typeof streamText>[0]['model'],
+	        system: COMPACTION_SYSTEM_PROMPT,
+	        messages: compactionModelMessages,
         maxRetries: 0,
         temperature: 0.0,
         maxOutputTokens: this.getMaxOutputTokens(),
@@ -1683,7 +1688,7 @@ export class AgentLoop {
     this.activeCancellations = [];
   }
 
-  private async formatToolResult(result: ToolResult, toolName: string): Promise<string> {
+  private async formatToolResult(result: ToolResult): Promise<string> {
     let content: string;
 
     const outputOverride = isRecord(result.metadata) ? result.metadata.outputText : undefined;
@@ -1716,11 +1721,8 @@ export class AgentLoop {
     return content;
   }
 
-  private async pruneToolResultForHistory(output: unknown, toolLabel: string): Promise<ToolResult> {
-    const result: ToolResult =
-      output && typeof output === 'object' && typeof (output as any).success === 'boolean'
-        ? (output as ToolResult)
-        : { success: true, data: output };
+	  private async pruneToolResultForHistory(output: unknown): Promise<ToolResult> {
+	    const result: ToolResult = isToolResult(output) ? output : { success: true, data: output };
 
     if (!result.success) {
       const rawError = typeof result.error === 'string' ? result.error : String(result.error ?? 'Unknown error');
@@ -1735,7 +1737,7 @@ export class AgentLoop {
       };
     }
 
-    const formatted = await this.formatToolResult(result, toolLabel);
+    const formatted = await this.formatToolResult(result);
     return {
       ...result,
       data: formatted,

@@ -2,10 +2,18 @@ import type { ToolContext, ToolDefinition, ToolProvider, ToolResult } from '../t
 import type { LingyunPluginToolEntry } from './pluginManager';
 import { isRecord } from '../utils/guards';
 
+function asUnknownRecord(value: unknown): Record<string, unknown> | undefined {
+  return isRecord(value) ? value : undefined;
+}
+
+function isToolResult(value: unknown): value is ToolResult {
+  return isRecord(value) && typeof value.success === 'boolean';
+}
+
 function isParametersSchema(value: unknown): value is ToolDefinition['parameters'] {
   if (!isRecord(value)) return false;
   if (value.type !== 'object') return false;
-  if (!isRecord((value as any).properties)) return false;
+  if (!isRecord(value.properties)) return false;
   return true;
 }
 
@@ -13,8 +21,9 @@ function normalizePluginTool(entry: LingyunPluginToolEntry): { definition: ToolD
   const toolId = String(entry.toolId || '').trim();
   if (!toolId) return undefined;
 
-  const tool = entry.tool as any;
-  if (!tool || typeof tool !== 'object') return undefined;
+  const tool = entry.tool;
+  const toolRecord = asUnknownRecord(tool);
+  if (!toolRecord) return undefined;
   if (typeof tool.execute !== 'function') return undefined;
 
   const description = typeof tool.description === 'string' ? tool.description.trim() : '';
@@ -25,7 +34,7 @@ function normalizePluginTool(entry: LingyunPluginToolEntry): { definition: ToolD
 
   const name = typeof tool.name === 'string' && tool.name.trim() ? tool.name.trim() : toolId;
 
-  const metadata = isRecord(tool.metadata) ? (tool.metadata as any) : undefined;
+  const metadata = isRecord(tool.metadata) ? (tool.metadata as ToolDefinition['metadata']) : undefined;
   const category = metadata?.category ? metadata.category : 'plugin';
 
   return {
@@ -96,8 +105,8 @@ export class PluginToolProvider implements ToolProvider {
 
     try {
       const result = await tool.execute(args, context);
-      if (result && typeof result === 'object' && typeof (result as any).success === 'boolean') {
-        return result as ToolResult;
+      if (isToolResult(result)) {
+        return result;
       }
       return { success: true, data: result };
     } catch (error) {

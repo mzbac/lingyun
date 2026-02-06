@@ -24,6 +24,10 @@ export type LingyunPluginToolEntry = {
 
 type PluginLogFn = (message: string) => void;
 
+function asUnknownRecord(value: unknown): Record<string, unknown> | undefined {
+  return isRecord(value) ? value : undefined;
+}
+
 function uniqueStrings(items: string[]): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
@@ -129,15 +133,16 @@ function toDebugPluginSpec(spec: string, workspaceRoot?: string): string {
   return trimmed;
 }
 
-async function importPluginModule(spec: string, workspaceRoot?: string): Promise<any> {
+async function importPluginModule(spec: string, workspaceRoot?: string): Promise<unknown> {
   const trimmed = String(spec || '').trim();
   if (!trimmed) return null;
 
   // NOTE: This file is compiled to CommonJS. TypeScript downlevels dynamic `import()`
   // to `require()`, which cannot load `file://...` specifiers. Use a runtime dynamic
   // import so plugins can be loaded from file URLs and ESM/CJS modules.
-  // eslint-disable-next-line @typescript-eslint/no-implied-eval
-  const dynamicImport = new Function('specifier', 'return import(specifier)') as (specifier: string) => Promise<any>;
+  const dynamicImport = new Function('specifier', 'return import(specifier)') as (
+    specifier: string
+  ) => Promise<unknown>;
 
   const isFileUrl = trimmed.startsWith('file://');
   const looksPath = isFileUrl || trimmed.startsWith('.') || trimmed.startsWith('/') || trimmed.includes(path.sep);
@@ -154,28 +159,34 @@ async function importPluginModule(spec: string, workspaceRoot?: string): Promise
 }
 
 function extractHooksFromModule(
-  moduleExports: any,
+  moduleExports: unknown,
   input: LingyunPluginInput
 ): Array<{ id: string; hooks: LingyunHooks }> {
   if (!moduleExports) return [];
   const out: Array<{ id: string; hooks: LingyunHooks }> = [];
+  const seen = new Set<unknown>();
 
-  const entries = Object.entries(moduleExports as Record<string, unknown>);
+  const moduleExportsRecord = asUnknownRecord(moduleExports);
+  const entries = moduleExportsRecord ? Object.entries(moduleExportsRecord) : [];
   for (const [name, value] of entries) {
+    if (seen.has(value)) continue;
     if (typeof value === 'function') {
+      seen.add(value);
+      const pluginFactory = value as LingyunPluginFactory;
       out.push({
         id: name,
-        hooks: value(input) as any,
+        hooks: pluginFactory(input) as LingyunHooks,
       });
       continue;
     }
     if (isRecord(value)) {
+      seen.add(value);
       out.push({ id: name, hooks: value as LingyunHooks });
     }
   }
 
   if (entries.length === 0 && typeof moduleExports === 'function') {
-    out.push({ id: 'default', hooks: (moduleExports as LingyunPluginFactory)(input) as any });
+    out.push({ id: 'default', hooks: (moduleExports as LingyunPluginFactory)(input) as LingyunHooks });
   }
 
   return out;
@@ -244,14 +255,18 @@ export class PluginManager {
   private async loadPluginsIfNeeded(): Promise<void> {
     const { plugins, autoDiscover, workspaceDirName } = this.getConfigSnapshot();
     const roots = await this.getWorkspaceRoots();
+    const trusted = vscode.workspace.isTrusted;
 
-    const discovered = await resolveWorkspacePluginPaths({ enabled: autoDiscover, workspaceDirName });
+    const discovered = trusted
+      ? await resolveWorkspacePluginPaths({ enabled: autoDiscover, workspaceDirName })
+      : [];
     const combined = uniqueStrings([...(plugins || []), ...discovered]);
 
     const cfg = vscode.workspace.getConfiguration('lingyun');
     const debugPluginsEnabled = cfg.get<boolean>('debug.plugins') ?? false;
 
     const key = JSON.stringify({
+      trusted,
       combined,
       workspaceRoot: roots.workspaceRoot || '',
       gitRoot: roots.gitRoot || '',
@@ -262,6 +277,13 @@ export class PluginManager {
 
     this.loadedKey = key;
     this.loadedHooks = [];
+
+    if (!trusted) {
+      if (debugPluginsEnabled) {
+        this.log('[Plugins] skipped loading: workspace is untrusted');
+      }
+      return;
+    }
 
     if (debugPluginsEnabled) {
       const discoveredDebug = discovered.map(spec => toDebugPluginSpec(spec, roots.workspaceRoot));
@@ -323,10 +345,12 @@ export class PluginManager {
 
     const all = [...this.extraHooks, ...this.loadedHooks];
     for (const entry of all) {
-      const fn = (entry.hooks as any)?.[name];
+      const hooksRecord = asUnknownRecord(entry.hooks);
+      const fn = hooksRecord?.[name];
       if (typeof fn !== 'function') continue;
       try {
-        await fn(input, output);
+        const hookFn = fn as (hookInput: unknown, hookOutput: Output) => void | Promise<void>;
+        await hookFn(input, output);
       } catch (error) {
         const cfg = vscode.workspace.getConfiguration('lingyun');
         const debugPluginsEnabled = cfg.get<boolean>('debug.plugins') ?? false;
@@ -350,13 +374,14 @@ export class PluginManager {
     const all = [...this.extraHooks, ...this.loadedHooks];
 
     for (const entry of all) {
-      const toolMap = (entry.hooks as any)?.tool;
+      const hooksRecord = asUnknownRecord(entry.hooks);
+      const toolMap = hooksRecord?.tool;
       if (!isRecord(toolMap)) continue;
 
       for (const [toolId, tool] of Object.entries(toolMap)) {
         if (!toolId || typeof toolId !== 'string') continue;
         if (!tool || typeof tool !== 'object') continue;
-        out.push({ pluginId: entry.id, toolId, tool: tool as any });
+        out.push({ pluginId: entry.id, toolId, tool: tool as LingyunPluginTool });
       }
     }
 

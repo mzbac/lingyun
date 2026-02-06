@@ -133,7 +133,10 @@ export class CopilotProvider implements LLMProvider {
   async getModel(modelId: string): Promise<unknown> {
     await this.ensureProvider();
     const resolvedModel = modelId || MODELS.GPT_4O;
-    return this.provider!.chatModel(resolvedModel);
+    if (!this.provider) {
+      throw new Error('Copilot provider is not initialized');
+    }
+    return this.provider.chatModel(resolvedModel);
   }
 
   async getModels(): Promise<ModelInfo[]> {
