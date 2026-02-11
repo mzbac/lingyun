@@ -3,6 +3,17 @@ import type { ToolDiffView } from './toolDiff';
 
 export type ChatMode = 'build' | 'plan';
 
+export interface ChatImageAttachment {
+  mediaType: string;
+  dataUrl: string;
+  filename?: string;
+}
+
+export interface ChatUserInput {
+  message: string;
+  attachments?: ChatImageAttachment[];
+}
+
 export type ChatMessageRole =
   | 'user'
   | 'assistant'

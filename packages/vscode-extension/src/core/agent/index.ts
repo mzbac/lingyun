@@ -39,6 +39,8 @@ import {
 import {
   extractSkillMentions,
   type AgentHistoryMessage,
+  type UserHistoryInput,
+  applyCopilotImageInputPattern,
   createAssistantHistoryMessage,
   createUserHistoryMessage,
   listBuiltinSubagents,
@@ -48,6 +50,7 @@ import {
   resolveBuiltinSubagent,
   finalizeStreamingParts,
   getMessageText,
+  getUserHistoryInputText,
   selectSkillsForText,
   setDynamicToolError,
   setDynamicToolOutput,
@@ -320,6 +323,7 @@ export class AgentLoop {
   private async maybeAutoExplore(userText: string, callbacks?: AgentCallbacks): Promise<void> {
     const config = this.getAutoExploreConfig();
     if (!config.enabled) return;
+    if (!userText.trim()) return;
 
     // Avoid recursion: a subagent session should not spawn more subagents automatically.
     if (this.config.parentSessionId || this.config.subagentType) return;
@@ -506,7 +510,7 @@ export class AgentLoop {
     return this._running;
   }
 
-  async plan(task: string, callbacks?: AgentCallbacks): Promise<string> {
+  async plan(task: UserHistoryInput, callbacks?: AgentCallbacks): Promise<string> {
     if (this._running) {
       throw new Error('Agent is already running');
     }
@@ -523,9 +527,10 @@ export class AgentLoop {
     await this.refreshInstructions();
 
     const planningSystem = this.composeSystemPrompt();
-    await this.injectSkillsForUserText(task);
+    const userText = getUserHistoryInputText(task).trim();
+    await this.injectSkillsForUserText(userText);
     this.history.push(createUserHistoryMessage(task));
-    await this.maybeAutoExplore(task, callbacks);
+    await this.maybeAutoExplore(userText, callbacks);
 
     try {
       const plan = (await this.loop(planningSystem, callbacks)).trim();
@@ -567,7 +572,7 @@ export class AgentLoop {
     }
   }
 
-  async run(task: string, callbacks?: AgentCallbacks): Promise<string> {
+  async run(task: UserHistoryInput, callbacks?: AgentCallbacks): Promise<string> {
     if (this._running) {
       throw new Error('Agent is already running');
     }
@@ -580,9 +585,10 @@ export class AgentLoop {
 
     await this.refreshInstructions();
 
-    await this.injectSkillsForUserText(task);
+    const userText = getUserHistoryInputText(task).trim();
+    await this.injectSkillsForUserText(userText);
     this.history.push(createUserHistoryMessage(task));
-    await this.maybeAutoExplore(task, callbacks);
+    await this.maybeAutoExplore(userText, callbacks);
 
     try {
       return await this.loop(this.composeSystemPrompt(), callbacks);
@@ -593,7 +599,7 @@ export class AgentLoop {
     }
   }
 
-  async continue(message: string, callbacks?: AgentCallbacks): Promise<string> {
+  async continue(message: UserHistoryInput, callbacks?: AgentCallbacks): Promise<string> {
     if (this._running) {
       throw new Error('Agent is already running');
     }
@@ -603,9 +609,10 @@ export class AgentLoop {
     this.pendingPlan = undefined;
     await this.refreshInstructions();
 
-    await this.injectSkillsForUserText(message);
+    const userText = getUserHistoryInputText(message).trim();
+    await this.injectSkillsForUserText(userText);
     this.history.push(createUserHistoryMessage(message));
-    await this.maybeAutoExplore(message, callbacks);
+    await this.maybeAutoExplore(userText, callbacks);
 
     try {
       return await this.loop(this.composeSystemPrompt(), callbacks);
@@ -1451,10 +1458,11 @@ export class AgentLoop {
     );
 
 	    const messages = Array.isArray(messagesOutput.messages) ? messagesOutput.messages : withoutIds;
-	    return convertToModelMessages(
+      const converted = await convertToModelMessages(
 	      messages as unknown as Parameters<typeof convertToModelMessages>[0],
 	      { tools } as Parameters<typeof convertToModelMessages>[1],
 	    );
+      return this.llm.id === 'copilot' ? applyCopilotImageInputPattern(converted) : converted;
 	  }
 
 	  private async compactSessionInternal(params: { auto: boolean; modelId: string }, callbacks?: AgentCallbacks): Promise<void> {
@@ -1507,10 +1515,14 @@ export class AgentLoop {
 	      const withoutIds = prepared.map(({ id: _id, ...rest }) => rest);
 
 	      const compactionUser = createUserHistoryMessage(promptText, { synthetic: true });
-	      const compactionModelMessages = await convertToModelMessages(
+	      const convertedCompactionModelMessages = await convertToModelMessages(
 	        [...withoutIds, compactionUser] as unknown as Parameters<typeof convertToModelMessages>[0],
 	        { tools: {} } as Parameters<typeof convertToModelMessages>[1],
 	      );
+        const compactionModelMessages =
+          this.llm.id === 'copilot'
+            ? applyCopilotImageInputPattern(convertedCompactionModelMessages)
+            : convertedCompactionModelMessages;
 
 	      const stream = streamText({
 	        model: compactionModel as unknown as Parameters<typeof streamText>[0]['model'],

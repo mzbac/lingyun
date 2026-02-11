@@ -18,6 +18,7 @@ import {
   COMPACTION_PROMPT_TEXT,
   COMPACTION_SYSTEM_PROMPT,
   createAssistantHistoryMessage,
+  applyCopilotImageInputPattern,
   createHistoryForCompactionPrompt,
   createHistoryForModel,
   createUserHistoryMessage,
@@ -466,7 +467,8 @@ export class LingyunAgent {
     );
 
     const messages = Array.isArray((messagesOutput as any).messages) ? (messagesOutput as any).messages : withoutIds;
-    return convertToModelMessages(messages as any, { tools: tools as any });
+    const converted = await convertToModelMessages(messages as any, { tools: tools as any });
+    return this.llm.id === 'copilot' ? applyCopilotImageInputPattern(converted) : converted;
   }
 
   private createToolContext(signal: AbortSignal, session: LingyunSession, callbacks?: AgentCallbacks) {
@@ -1233,7 +1235,14 @@ export class LingyunAgent {
       const withoutIds = prepared.map(({ id: _id, ...rest }: AgentHistoryMessage) => rest);
 
       const compactionUser = createUserHistoryMessage(promptText, { synthetic: true });
-      const compactionModelMessages = await convertToModelMessages([...withoutIds, compactionUser as any], { tools: {} as any });
+      const convertedCompactionModelMessages = await convertToModelMessages(
+        [...withoutIds, compactionUser as any],
+        { tools: {} as any },
+      );
+      const compactionModelMessages =
+        this.llm.id === 'copilot'
+          ? applyCopilotImageInputPattern(convertedCompactionModelMessages)
+          : convertedCompactionModelMessages;
 
       const stream = streamText({
         model: compactionModel as any,

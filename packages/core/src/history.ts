@@ -19,8 +19,76 @@ export type AgentHistoryMetadata = {
 
 export type AgentHistoryMessage = UIMessage<AgentHistoryMetadata>;
 
+export type UserHistoryTextPart = {
+  type: 'text';
+  text: string;
+};
+
+export type UserHistoryFilePart = {
+  type: 'file';
+  mediaType: string;
+  filename?: string;
+  url: string;
+};
+
+export type UserHistoryInputPart = UserHistoryTextPart | UserHistoryFilePart;
+
+export type UserHistoryInput = string | UserHistoryInputPart[];
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function isUserTextPart(part: unknown): part is UserHistoryTextPart {
+  const record = asRecord(part);
+  return !!record && record.type === 'text' && typeof record.text === 'string';
+}
+
+function isUserFilePart(part: unknown): part is UserHistoryFilePart {
+  const record = asRecord(part);
+  return (
+    !!record &&
+    record.type === 'file' &&
+    typeof record.mediaType === 'string' &&
+    typeof record.url === 'string'
+  );
+}
+
+export function normalizeUserHistoryInputParts(input: UserHistoryInput): UserHistoryInputPart[] {
+  if (typeof input === 'string') {
+    return [{ type: 'text', text: input }];
+  }
+
+  const normalized: UserHistoryInputPart[] = [];
+  for (const part of input) {
+    if (isUserTextPart(part)) {
+      normalized.push({ type: 'text', text: part.text });
+      continue;
+    }
+    if (isUserFilePart(part)) {
+      normalized.push({
+        type: 'file',
+        mediaType: part.mediaType,
+        ...(part.filename ? { filename: part.filename } : {}),
+        url: part.url,
+      });
+    }
+  }
+
+  return normalized;
+}
+
+export function getUserHistoryInputText(input: UserHistoryInput): string {
+  return normalizeUserHistoryInputParts(input)
+    .filter((part): part is UserHistoryTextPart => part.type === 'text')
+    .map((part) => part.text)
+    .join('');
+}
+
 export function createUserHistoryMessage(
-  text: string,
+  input: UserHistoryInput,
   options?: { synthetic?: boolean; skill?: boolean; compaction?: { auto: boolean } }
 ): AgentHistoryMessage {
   const metadata: AgentHistoryMetadata = {};
@@ -37,11 +105,17 @@ export function createUserHistoryMessage(
     metadata.compaction = options.compaction;
   }
 
+  const normalizedParts = normalizeUserHistoryInputParts(input);
+  const parts: AgentHistoryMessage['parts'] =
+    normalizedParts.length > 0
+      ? (normalizedParts as AgentHistoryMessage['parts'])
+      : ([{ type: 'text', text: '' }] as AgentHistoryMessage['parts']);
+
   return {
     id: crypto.randomUUID(),
     role: 'user',
     ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
-    parts: [{ type: 'text', text }],
+    parts,
   };
 }
 

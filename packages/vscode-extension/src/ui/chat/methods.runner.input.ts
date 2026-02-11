@@ -1,7 +1,66 @@
 import * as vscode from 'vscode';
-import type { ChatMessage } from './types';
+import type { UserHistoryInputPart } from '@kooka/core';
+import type { ChatMessage, ChatUserInput } from './types';
 import { isDefaultSessionTitle } from './sessionTitle';
 import { ChatViewProvider } from '../chat';
+
+const MAX_USER_IMAGE_ATTACHMENTS = 8;
+const MAX_USER_IMAGE_DATA_URL_LENGTH = 12_000_000;
+
+type NormalizedUserInput = {
+  text: string;
+  agentInput: UserHistoryInputPart[];
+  attachmentCount: number;
+  displayContent: string;
+  hasContent: boolean;
+};
+
+function normalizeUserInput(content: string | ChatUserInput): NormalizedUserInput {
+  const message =
+    typeof content === 'string' ? content : typeof content.message === 'string' ? content.message : '';
+  const text = message.trim();
+
+  const attachmentsRaw = typeof content === 'object' && content ? content.attachments : undefined;
+  const imageParts: UserHistoryInputPart[] = [];
+
+  if (Array.isArray(attachmentsRaw)) {
+    for (const attachment of attachmentsRaw) {
+      if (!attachment || typeof attachment !== 'object') continue;
+
+      const mediaType = typeof attachment.mediaType === 'string' ? attachment.mediaType.trim() : '';
+      const dataUrl = typeof attachment.dataUrl === 'string' ? attachment.dataUrl.trim() : '';
+      const filename = typeof attachment.filename === 'string' ? attachment.filename.trim() : '';
+
+      if (!mediaType.toLowerCase().startsWith('image/')) continue;
+      if (!dataUrl.startsWith('data:image/')) continue;
+      if (dataUrl.length > MAX_USER_IMAGE_DATA_URL_LENGTH) continue;
+
+      imageParts.push({
+        type: 'file',
+        mediaType,
+        ...(filename ? { filename } : {}),
+        url: dataUrl,
+      });
+
+      if (imageParts.length >= MAX_USER_IMAGE_ATTACHMENTS) break;
+    }
+  }
+
+  const textParts: UserHistoryInputPart[] = text ? [{ type: 'text', text }] : [];
+  const agentInput = [...textParts, ...imageParts];
+  const attachmentCount = imageParts.length;
+  const displayContent =
+    text ||
+    (attachmentCount === 1 ? '[Image attached]' : attachmentCount > 1 ? `[${attachmentCount} images attached]` : '');
+
+  return {
+    text,
+    agentInput,
+    attachmentCount,
+    displayContent,
+    hasContent: !!text || attachmentCount > 0,
+  };
+}
 
 Object.assign(ChatViewProvider.prototype, {
   sendMessage(this: ChatViewProvider, content: string): void {
@@ -10,8 +69,11 @@ Object.assign(ChatViewProvider.prototype, {
     }
   },
 
-  async handleUserMessage(this: ChatViewProvider, content: string): Promise<void> {
+  async handleUserMessage(this: ChatViewProvider, content: string | ChatUserInput): Promise<void> {
     if (this.isProcessing || !this.view) return;
+
+    const normalizedInput = normalizeUserInput(content);
+    if (!normalizedInput.hasContent) return;
 
     if (this.pendingPlan) {
       const planMsg = this.messages.find(m => m.id === this.pendingPlan?.planMessageId);
@@ -24,14 +86,15 @@ Object.assign(ChatViewProvider.prototype, {
           planMsg.plan = { status: 'draft', task: this.pendingPlan.task };
           this.postMessage({ type: 'updateMessage', message: planMsg });
         }
-        await this.revisePendingPlan(this.pendingPlan.planMessageId, content);
+        if (!normalizedInput.text) return;
+        await this.revisePendingPlan(this.pendingPlan.planMessageId, normalizedInput.text);
         return;
       }
     }
 
     await this.ensureSessionsLoaded();
 
-    this.recordInputHistory(content);
+    this.recordInputHistory(normalizedInput.text);
 
     this.commitRevertedConversationIfNeeded();
 
@@ -43,7 +106,7 @@ Object.assign(ChatViewProvider.prototype, {
     const userMsg: ChatMessage = {
       id: crypto.randomUUID(),
       role: 'user',
-      content,
+      content: normalizedInput.displayContent,
       timestamp: Date.now(),
       checkpoint: {
         historyLength: checkpointState.history.length,
@@ -55,9 +118,9 @@ Object.assign(ChatViewProvider.prototype, {
 
     const activeSession = this.getActiveSession();
     const userCount = activeSession.messages.filter(m => m.role === 'user').length;
-    if (userCount === 1 && isDefaultSessionTitle(activeSession.title)) {
+    if (normalizedInput.text && userCount === 1 && isDefaultSessionTitle(activeSession.title)) {
       void this.agent
-        .generateSessionTitle(content, { maxChars: 50 })
+        .generateSessionTitle(normalizedInput.text, { maxChars: 50 })
         .then(title => {
           const session = this.sessions.get(activeSession.id);
           if (!session) return;
@@ -73,7 +136,9 @@ Object.assign(ChatViewProvider.prototype, {
     }
 
     this.postMessage({ type: 'message', message: userMsg });
-    void this.postUnknownSkillWarnings(content, userMsg.id);
+    if (normalizedInput.text) {
+      void this.postUnknownSkillWarnings(normalizedInput.text, userMsg.id);
+    }
     if (this.isSessionPersistenceEnabled()) {
       this.persistActiveSession();
     }
@@ -106,12 +171,12 @@ Object.assign(ChatViewProvider.prototype, {
           content: 'Planning...',
           timestamp: Date.now(),
           turnId: this.currentTurnId,
-          plan: { status: 'generating', task: content },
+          plan: { status: 'generating', task: normalizedInput.displayContent },
         };
         this.messages.push(planMsg);
         this.postMessage({ type: 'message', message: planMsg });
 
-        const plan = await this.agent.plan(content, this.createPlanningCallbacks(planMsg));
+        const plan = await this.agent.plan(normalizedInput.agentInput, this.createPlanningCallbacks(planMsg));
 
         const trimmedPlan = (plan || '').trim();
         if (trimmedPlan) {
@@ -122,8 +187,8 @@ Object.assign(ChatViewProvider.prototype, {
           planMsg.content = !placeholder && existing ? planMsg.content : '(No plan generated)';
         }
 
-        planMsg.plan = { status: this.classifyPlanStatus(planMsg.content), task: content };
-        this.pendingPlan = { task: content, planMessageId: planMsg.id };
+        planMsg.plan = { status: this.classifyPlanStatus(planMsg.content), task: normalizedInput.displayContent };
+        this.pendingPlan = { task: normalizedInput.displayContent, planMessageId: planMsg.id };
         this.postMessage({ type: 'updateMessage', message: planMsg });
         this.postMessage({ type: 'planPending', value: true, planMessageId: this.pendingPlan.planMessageId });
         // Plan runs can still produce usage metadata; update the global context indicator now.
@@ -131,7 +196,7 @@ Object.assign(ChatViewProvider.prototype, {
         return;
       }
 
-      await this.agent[isNew ? 'run' : 'continue'](content, this.createAgentCallbacks());
+      await this.agent[isNew ? 'run' : 'continue'](normalizedInput.agentInput, this.createAgentCallbacks());
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.markActiveStepStatus(this.abortRequested || message === 'Agent aborted' ? 'canceled' : 'error');

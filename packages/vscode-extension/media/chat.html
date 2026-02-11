@@ -2359,9 +2359,72 @@
       padding: 8px 12px;
       border-top: 1px solid var(--vscode-widget-border);
       display: flex;
-      align-items: center;
+      align-items: flex-end;
       gap: 8px;
       background: var(--vscode-sideBar-background);
+    }
+
+    .input-composer {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .input-attachments {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+    }
+
+    .input-attachments.hidden {
+      display: none;
+    }
+
+    .input-attachment-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      max-width: 100%;
+      border: 1px solid var(--vscode-widget-border);
+      background: var(--vscode-editor-background);
+      color: var(--vscode-foreground);
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 0.75em;
+      line-height: 1.2;
+    }
+
+    .input-attachment-label {
+      min-width: 0;
+      max-width: 240px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .input-attachment-remove {
+      border: none;
+      background: transparent;
+      color: var(--vscode-descriptionForeground);
+      cursor: pointer;
+      border-radius: 4px;
+      width: 16px;
+      height: 16px;
+      padding: 0;
+      line-height: 1;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0.75;
+    }
+
+    .input-attachment-remove:hover {
+      opacity: 1;
+      background: var(--vscode-toolbar-hoverBackground);
+      color: var(--vscode-foreground);
     }
 
     .operation-banner {
@@ -3082,11 +3145,14 @@
     </div>
   </div>
   <div class="input-area">
-    <div class="input-wrapper">
-      <textarea id="input" placeholder="Describe a task..." rows="1" aria-label="Chat input"></textarea>
-      <div id="skillDropdown" class="skill-dropdown hidden" role="listbox" aria-label="Skill suggestions"></div>
-      <div class="input-actions">
-        <button id="clearInput" class="input-btn" title="Clear input" aria-label="Clear input" disabled>✕</button>
+    <div class="input-composer">
+      <div id="inputAttachments" class="input-attachments hidden" role="list" aria-label="Attached images"></div>
+      <div class="input-wrapper">
+        <textarea id="input" placeholder="Describe a task..." rows="1" aria-label="Chat input"></textarea>
+        <div id="skillDropdown" class="skill-dropdown hidden" role="listbox" aria-label="Skill suggestions"></div>
+        <div class="input-actions">
+          <button id="clearInput" class="input-btn" title="Clear input" aria-label="Clear input" disabled>✕</button>
+        </div>
       </div>
     </div>
     <button id="send" class="send-btn" aria-label="Send message">

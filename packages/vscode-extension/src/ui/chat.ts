@@ -5,7 +5,7 @@ import type { SessionStore } from '../core/sessionStore';
 import type { InputHistoryStore } from '../core/inputHistoryStore';
 import type { AgentCallbacks, LLMProvider, ToolDefinition, ToolCall } from '../core/types';
 import type { ModelInfo } from '../providers/copilot';
-import type { ChatMessage, ChatMode, ChatSessionInfo, RevertBarState } from './chat/types';
+import type { ChatMessage, ChatMode, ChatSessionInfo, ChatUserInput, RevertBarState } from './chat/types';
 
 type LLMProviderWithModels = LLMProvider & {
   getModels?: () => Promise<ModelInfo[]>;
@@ -176,7 +176,7 @@ export interface ChatViewProvider extends vscode.WebviewViewProvider {
   startInitPusher(): void;
   sendInit(force?: boolean): Promise<void>;
 
-  handleUserMessage(content: string): Promise<void>;
+  handleUserMessage(content: string | ChatUserInput): Promise<void>;
   retryToolCall(approvalId: string): Promise<void>;
   isPlanFirstEnabled(): boolean;
   classifyPlanStatus(plan: string): 'draft' | 'needs_input';

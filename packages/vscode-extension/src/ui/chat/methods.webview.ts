@@ -5,6 +5,7 @@ import * as os from 'os';
 import { readTodos } from '../../core/todo';
 import { getNonce } from './utils';
 import { getWorkspaceFolderUrisByPriority, resolveExistingFilePath } from './fileLinks';
+import type { ChatImageAttachment, ChatUserInput } from './types';
 import { ChatViewProvider } from '../chat';
 import { createLingyunDiffUri } from './diffContentProvider';
 
@@ -37,6 +38,37 @@ function normalizeCandidatePath(raw: string): string {
     }
   }
   return value;
+}
+
+const MAX_WEBVIEW_IMAGE_ATTACHMENTS = 8;
+const MAX_WEBVIEW_IMAGE_DATA_URL_LENGTH = 12_000_000;
+
+function parseWebviewImageAttachments(raw: unknown): ChatImageAttachment[] {
+  if (!Array.isArray(raw)) return [];
+
+  const normalized: ChatImageAttachment[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+
+    const record = item as Record<string, unknown>;
+    const mediaType = typeof record.mediaType === 'string' ? record.mediaType.trim() : '';
+    const dataUrl = typeof record.dataUrl === 'string' ? record.dataUrl.trim() : '';
+    const filenameRaw = typeof record.filename === 'string' ? record.filename.trim() : '';
+
+    if (!mediaType.toLowerCase().startsWith('image/')) continue;
+    if (!dataUrl.startsWith('data:image/')) continue;
+    if (dataUrl.length > MAX_WEBVIEW_IMAGE_DATA_URL_LENGTH) continue;
+
+    normalized.push({
+      mediaType,
+      dataUrl,
+      ...(filenameRaw ? { filename: filenameRaw } : {}),
+    });
+
+    if (normalized.length >= MAX_WEBVIEW_IMAGE_ATTACHMENTS) break;
+  }
+
+  return normalized;
 }
 
 Object.assign(ChatViewProvider.prototype, {
@@ -286,7 +318,14 @@ Object.assign(ChatViewProvider.prototype, {
             break;
           case 'send':
             this.abortRequested = false;
-            await this.handleUserMessage(data.message);
+            {
+              const payload = data as Record<string, unknown>;
+              const input: ChatUserInput = {
+                message: typeof payload.message === 'string' ? payload.message : '',
+                attachments: parseWebviewImageAttachments(payload.attachments),
+              };
+              await this.handleUserMessage(input);
+            }
             break;
           case 'abort':
             // If we're blocked waiting for tool approval, resolve those promises so the agent can unwind.

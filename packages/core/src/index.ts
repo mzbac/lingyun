@@ -39,14 +39,23 @@ export {
   removeBackgroundJob,
 } from './backgroundJobs';
 
-export type { AgentHistoryMessage, AgentHistoryMetadata } from './history';
+export type {
+  AgentHistoryMessage,
+  AgentHistoryMetadata,
+  UserHistoryFilePart,
+  UserHistoryInput,
+  UserHistoryInputPart,
+  UserHistoryTextPart,
+} from './history';
 export {
   appendReasoning,
   appendText,
   createAssistantHistoryMessage,
   createUserHistoryMessage,
   finalizeStreamingParts,
+  getUserHistoryInputText,
   getMessageText,
+  normalizeUserHistoryInputParts,
   setDynamicToolError,
   setDynamicToolOutput,
   upsertDynamicToolCall,
@@ -68,3 +77,5 @@ export {
   isOverflow,
   markPrunableToolOutputs,
 } from './compaction';
+
+export { applyCopilotImageInputPattern } from './modelMessages';

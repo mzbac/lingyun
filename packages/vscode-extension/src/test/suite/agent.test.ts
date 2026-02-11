@@ -287,6 +287,119 @@ suite('AgentLoop', () => {
     assert.strictEqual(options?.providerOptions?.copilot?.reasoningEffort, 'xhigh');
   });
 
+  test('run - applies Codex-style image boundaries for Copilot prompts', async () => {
+    const copilotLLM = new MockCopilotProvider();
+    const plugins = new PluginManager(mockContext);
+    plugins.registerHooks('test', {
+      'experimental.chat.messages.transform': async (_input, output) => {
+        output.messages = [
+          {
+            role: 'user',
+            parts: [
+              { type: 'text', text: 'Describe this image:' },
+              {
+                type: 'file',
+                mediaType: 'image/png',
+                filename: 'sample.png',
+                url: 'data:image/png;base64,AAAA',
+              },
+            ],
+          },
+        ];
+      },
+    });
+
+    agent = new AgentLoop(copilotLLM, mockContext, { model: 'gpt-4o', sessionId: 'session-1' }, registry, plugins);
+    copilotLLM.setNextResponse({ kind: 'text', content: 'OK' });
+
+    await agent.run('Describe image');
+
+    const prompt = copilotLLM.lastPrompt as any[];
+    const user = prompt.find((msg) => msg?.role === 'user');
+    assert.ok(user, 'expected user message in prompt');
+    assert.ok(Array.isArray(user.content), 'expected multipart user content');
+
+    const parts = user.content as any[];
+    const openIndex = parts.findIndex((part) => part?.type === 'text' && part?.text === '<image>');
+    const imageIndex = parts.findIndex((part) => part?.type === 'file' && part?.mediaType === 'image/png');
+    const closeIndex = parts.findIndex((part) => part?.type === 'text' && part?.text === '</image>');
+
+    assert.ok(openIndex >= 0, 'expected <image> boundary');
+    assert.ok(imageIndex > openIndex, 'expected image part after open boundary');
+    assert.ok(closeIndex > imageIndex, 'expected </image> boundary');
+    const imageData = parts[imageIndex]?.data;
+    const imageDataText = imageData instanceof URL ? imageData.toString() : String(imageData ?? '');
+    assert.ok(
+      imageDataText === 'AAAA' || imageDataText === 'data:image/png;base64,AAAA',
+      `unexpected serialized image payload: ${imageDataText}`,
+    );
+  });
+
+  test('run - accepts image file parts from user input', async () => {
+    const copilotLLM = new MockCopilotProvider();
+    agent = new AgentLoop(copilotLLM, mockContext, { model: 'gpt-4o', sessionId: 'session-1' }, registry);
+    copilotLLM.setNextResponse({ kind: 'text', content: 'Looks like a screenshot.' });
+
+    await agent.run([
+      { type: 'text', text: 'What does this screenshot show?' },
+      { type: 'file', mediaType: 'image/png', filename: 'clip.png', url: 'data:image/png;base64,BBBB' },
+    ]);
+
+    const prompt = copilotLLM.lastPrompt as any[];
+    const user = prompt.find((msg) => msg?.role === 'user');
+    assert.ok(user, 'expected user message in prompt');
+    assert.ok(Array.isArray(user.content), 'expected multipart user content');
+
+    const parts = user.content as any[];
+    const openIndex = parts.findIndex((part) => part?.type === 'text' && part?.text === '<image>');
+    const imageIndex = parts.findIndex((part) => part?.type === 'file' && part?.mediaType === 'image/png');
+    const closeIndex = parts.findIndex((part) => part?.type === 'text' && part?.text === '</image>');
+
+    assert.ok(openIndex >= 0, 'expected <image> boundary');
+    assert.ok(imageIndex > openIndex, 'expected image part after open boundary');
+    assert.ok(closeIndex > imageIndex, 'expected </image> boundary');
+  });
+
+  test('run - does not add Copilot image boundaries for non-Copilot providers', async () => {
+    const plugins = new PluginManager(mockContext);
+    plugins.registerHooks('test', {
+      'experimental.chat.messages.transform': async (_input, output) => {
+        output.messages = [
+          {
+            role: 'user',
+            parts: [
+              { type: 'text', text: 'Describe this image:' },
+              {
+                type: 'file',
+                mediaType: 'image/png',
+                filename: 'sample.png',
+                url: 'data:image/png;base64,AAAA',
+              },
+            ],
+          },
+        ];
+      },
+    });
+
+    agent = new AgentLoop(mockLLM, mockContext, { model: 'mock-model', sessionId: 'session-1' }, registry, plugins);
+    mockLLM.setNextResponse({ kind: 'text', content: 'OK' });
+
+    await agent.run('Describe image');
+
+    const prompt = mockLLM.lastPrompt as any[];
+    const user = prompt.find((msg) => msg?.role === 'user');
+    assert.ok(user, 'expected user message in prompt');
+    assert.ok(Array.isArray(user.content), 'expected multipart user content');
+
+    const parts = user.content as any[];
+    assert.strictEqual(parts.some((part) => part?.type === 'text' && part?.text === '<image>'), false);
+    assert.strictEqual(parts.some((part) => part?.type === 'text' && part?.text === '</image>'), false);
+
+    const imagePart = parts.find((part) => part?.type === 'file' && part?.mediaType === 'image/png');
+    assert.ok(imagePart, 'expected image file part');
+    assert.strictEqual(typeof imagePart.data, 'string');
+  });
+
   test('run - strips <think> blocks from assistant output', async () => {
     mockLLM.setNextResponse({ kind: 'text', content: '<think>hidden reasoning</think>\nHello' });
 
