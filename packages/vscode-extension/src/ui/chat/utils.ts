@@ -94,8 +94,11 @@ export function formatErrorForUser(error: unknown): string {
 
     const tips: string[] = [];
     if (statusCode === 404) {
+      const usedResponses = urlPath?.includes('/responses');
       tips.push(
-        'Tip: this usually means the server endpoint is wrong. Ensure your base URL ends with `/v1` and the server supports `POST /v1/chat/completions`.',
+        usedResponses
+          ? 'Tip: this usually means the server endpoint is wrong. Ensure your base URL ends with `/v1` and the server supports `POST /v1/responses`.'
+          : 'Tip: this usually means the server endpoint is wrong. Ensure your base URL ends with `/v1` and the server supports `POST /v1/chat/completions`.',
       );
     } else if (statusCode === 401 || statusCode === 403) {
       tips.push(

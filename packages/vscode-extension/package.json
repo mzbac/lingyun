@@ -2,7 +2,7 @@
   "name": "lingyun",
   "displayName": "LingYun",
   "description": "Agentic AI assistant for VS Code",
-  "version": "2.0.14",
+  "version": "2.0.15",
   "publisher": "mzbac",
   "icon": "images/icon.png",
   "license": "MIT",
@@ -498,6 +498,7 @@
   },
   "dependencies": {
     "@kooka/core": "workspace:*",
+    "@ai-sdk/openai": "^2.0.89",
     "@ai-sdk/openai-compatible": "^2.0.2",
     "ai": "^6.0.6",
     "diff": "^7.0.0",

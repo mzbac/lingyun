@@ -4,6 +4,106 @@ import * as vscode from 'vscode';
 import { CopilotProvider } from '../../providers/copilot';
 
 suite('CopilotProvider', () => {
+  test('uses Responses API for GPT-5 models by default', async () => {
+    const provider = new CopilotProvider();
+    let responsesCalls = 0;
+    let chatCalls = 0;
+
+    const fakeResponsesModel = { type: 'responses' };
+    const fakeChatModel = { type: 'chat' };
+
+    (provider as any).ensureProvider = async () => {
+      (provider as any).provider = {
+        chatModel: () => {
+          chatCalls += 1;
+          return fakeChatModel;
+        },
+        responses: () => {
+          responsesCalls += 1;
+          return fakeResponsesModel;
+        },
+      };
+      (provider as any).responsesProvider = {
+        responses: () => {
+          responsesCalls += 1;
+          return fakeResponsesModel;
+        },
+      };
+    };
+
+    try {
+      const model = await provider.getModel('gpt-5');
+
+      assert.strictEqual(model, fakeResponsesModel);
+      assert.strictEqual(responsesCalls, 1);
+      assert.strictEqual(chatCalls, 0);
+    } finally {
+      provider.dispose();
+    }
+  });
+
+  test('does not use Responses API for GPT-5-mini', async () => {
+    const provider = new CopilotProvider();
+    let responsesCalls = 0;
+    let chatCalls = 0;
+
+    const fakeChatModel = { type: 'chat' };
+
+    (provider as any).ensureProvider = async () => {
+      (provider as any).provider = {
+        chatModel: () => {
+          chatCalls += 1;
+          return fakeChatModel;
+        },
+        responses: () => {
+          responsesCalls += 1;
+          return { type: 'responses' };
+        },
+      };
+    };
+
+    try {
+      const model = await provider.getModel('gpt-5-mini');
+
+      assert.strictEqual(model, fakeChatModel);
+      assert.strictEqual(chatCalls, 1);
+      assert.strictEqual(responsesCalls, 0);
+    } finally {
+      provider.dispose();
+    }
+  });
+
+  test('does not use Responses API for non-GPT-5 models', async () => {
+    const provider = new CopilotProvider();
+    let responsesCalls = 0;
+    let chatCalls = 0;
+
+    const fakeChatModel = { type: 'chat' };
+
+    (provider as any).ensureProvider = async () => {
+      (provider as any).provider = {
+        chatModel: () => {
+          chatCalls += 1;
+          return fakeChatModel;
+        },
+        responses: () => {
+          responsesCalls += 1;
+          return { type: 'responses' };
+        },
+      };
+    };
+
+    try {
+      const model = await provider.getModel('gpt-4o');
+
+      assert.strictEqual(model, fakeChatModel);
+      assert.strictEqual(chatCalls, 1);
+      assert.strictEqual(responsesCalls, 0);
+    } finally {
+      provider.dispose();
+    }
+  });
+
   test('uses dynamic VS Code + extension version headers', async () => {
     const provider = new CopilotProvider();
 
@@ -35,4 +135,3 @@ suite('CopilotProvider', () => {
     assert.strictEqual((provider as any).tokenExpiry, 0);
   });
 });
-
