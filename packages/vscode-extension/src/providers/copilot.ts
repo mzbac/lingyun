@@ -24,7 +24,7 @@ function shouldUseResponsesApi(modelID: string): boolean {
 }
 
 function hasResponsesMethod(provider: unknown): provider is { responses: (modelId: string) => unknown } {
-  return provider != null && typeof (provider as { responses?: unknown }).responses === 'function';
+  return provider !== null && provider !== undefined && typeof (provider as { responses?: unknown }).responses === 'function';
 }
 
 export interface ModelInfo {
