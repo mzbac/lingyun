@@ -498,7 +498,6 @@
   },
   "dependencies": {
     "@kooka/core": "workspace:*",
-    "@ai-sdk/openai": "^3.0.29",
     "@ai-sdk/openai-compatible": "^2.0.30",
     "ai": "^6.0.86",
     "diff": "^7.0.0",

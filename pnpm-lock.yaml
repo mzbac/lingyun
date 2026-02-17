@@ -76,9 +76,6 @@ importers:
 
   packages/vscode-extension:
     dependencies:
-      '@ai-sdk/openai':
-        specifier: ^3.0.29
-        version: 3.0.29(zod@4.3.5)
       '@ai-sdk/openai-compatible':
         specifier: ^2.0.30
         version: 2.0.30(zod@4.3.5)
@@ -172,12 +169,6 @@ packages:
 
   '@ai-sdk/openai-compatible@2.0.9':
     resolution: {integrity: sha512-FsiuFgLWs3tTjGno0s9vrjOzJaR7W7YUGJ45kYrHc7U0mqRSMf2eU0VEdfEA4Aff1X0mcfB4MT+WfCwoNIYJpA==}
-    engines: {node: '>=18'}
-    peerDependencies:
-      zod: ^3.25.76 || ^4.1.8
-
-  '@ai-sdk/openai@3.0.29':
-    resolution: {integrity: sha512-ugVTIVpuSLKTjzSPe1F1DWiblJT/lwrrHx0OZEKjpMk/EYP6j6VD/F7SJqM1dsqOJryeBCJWFbUzLNqc99PrMA==}
     engines: {node: '>=18'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
@@ -1875,12 +1866,6 @@ snapshots:
     dependencies:
       '@ai-sdk/provider': 3.0.2
       '@ai-sdk/provider-utils': 4.0.5(zod@4.3.5)
-      zod: 4.3.5
-
-  '@ai-sdk/openai@3.0.29(zod@4.3.5)':
-    dependencies:
-      '@ai-sdk/provider': 3.0.8
-      '@ai-sdk/provider-utils': 4.0.15(zod@4.3.5)
       zod: 4.3.5
 
   '@ai-sdk/provider-utils@4.0.15(zod@4.3.5)':

@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
-import { createOpenAI } from '@ai-sdk/openai';
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import type { LLMProvider } from '../core/types';
+import { createCopilotResponsesModel } from './copilotResponsesModel';
 
 const COPILOT_TOKEN_URL = 'https://api.github.com/copilot_internal/v2/token';
 const COPILOT_BASE_URL = 'https://api.githubcopilot.com';
@@ -17,10 +17,6 @@ function shouldUseResponsesApi(modelID: string): boolean {
   // Minimize impact: only route the known Copilot-only model to `/responses`.
   // Copilot rejects `gpt-5.3-codex` on `/chat/completions`.
   return modelID.toLowerCase() === 'gpt-5.3-codex';
-}
-
-function hasResponsesMethod(provider: unknown): provider is { responses: (modelId: string) => unknown } {
-  return provider !== null && provider !== undefined && typeof (provider as { responses?: unknown }).responses === 'function';
 }
 
 export interface ModelInfo {
@@ -45,7 +41,6 @@ export class CopilotProvider implements LLMProvider {
   private provider:
     | ReturnType<typeof createOpenAICompatible>
     | null = null;
-  private responsesProvider: ReturnType<typeof createOpenAI> | null = null;
 
   private getEditorVersionHeader(): string {
     const version = typeof vscode.version === 'string' && vscode.version.trim() ? vscode.version.trim() : '0.0.0';
@@ -109,7 +104,6 @@ export class CopilotProvider implements LLMProvider {
     };
     if (
       this.provider &&
-      this.responsesProvider &&
       this.cachedProviderToken === token &&
       this.cachedProviderEditorVersion === editorVersion &&
       this.cachedProviderPluginVersion === pluginVersion
@@ -127,17 +121,11 @@ export class CopilotProvider implements LLMProvider {
       headers,
       includeUsage: true,
     });
-    this.responsesProvider = createOpenAI({
-      baseURL: COPILOT_BASE_URL,
-      apiKey: token,
-      headers,
-    });
   }
 
   onRequestError(error: unknown, _context?: { modelId: string; mode: 'plan' | 'build' }): void {
     // Ensure the next request uses a fresh client instance and re-evaluated headers.
     this.provider = null;
-    this.responsesProvider = null;
     this.cachedProviderToken = null;
     this.cachedProviderEditorVersion = null;
     this.cachedProviderPluginVersion = null;
@@ -153,11 +141,23 @@ export class CopilotProvider implements LLMProvider {
   async getModel(modelId: string): Promise<unknown> {
     await this.ensureProvider();
     const resolvedModel = modelId || MODELS.GPT_4O;
+    if (shouldUseResponsesApi(resolvedModel)) {
+      const token = this.cachedProviderToken ?? (await this.getCopilotToken());
+      return createCopilotResponsesModel({
+        baseURL: COPILOT_BASE_URL,
+        apiKey: token,
+        modelId: resolvedModel,
+        headers: {
+          'Editor-Version': this.cachedProviderEditorVersion ?? this.getEditorVersionHeader(),
+          'Editor-Plugin-Version': this.cachedProviderPluginVersion ?? this.getPluginVersionHeader(),
+          'Openai-Organization': 'github-copilot',
+          'Copilot-Integration-Id': 'vscode-chat',
+        },
+      });
+    }
+
     if (!this.provider) {
       throw new Error('Copilot provider is not initialized');
-    }
-    if (shouldUseResponsesApi(resolvedModel) && hasResponsesMethod(this.responsesProvider)) {
-      return this.responsesProvider.responses(resolvedModel);
     }
     return this.provider.chatModel(resolvedModel);
   }
@@ -201,7 +201,6 @@ export class CopilotProvider implements LLMProvider {
     this.tokenExpiry = 0;
     this.cachedModels = null;
     this.provider = null;
-    this.responsesProvider = null;
     this.cachedProviderToken = null;
     this.cachedProviderEditorVersion = null;
     this.cachedProviderPluginVersion = null;

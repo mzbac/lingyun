@@ -6,10 +6,7 @@ import { CopilotProvider } from '../../providers/copilot';
 suite('CopilotProvider', () => {
   test('uses Responses API only for gpt-5.3-codex', async () => {
     const provider = new CopilotProvider();
-    let responsesCalls = 0;
     let chatCalls = 0;
-
-    const fakeResponsesModel = { type: 'responses' };
     const fakeChatModel = { type: 'chat' };
 
     (provider as any).ensureProvider = async () => {
@@ -19,19 +16,18 @@ suite('CopilotProvider', () => {
           return fakeChatModel;
         },
       };
-      (provider as any).responsesProvider = {
-        responses: () => {
-          responsesCalls += 1;
-          return fakeResponsesModel;
-        },
-      };
+      (provider as any).cachedProviderToken = 'test-token';
+      (provider as any).cachedProviderEditorVersion = `vscode/${vscode.version}`;
+      const ext = vscode.extensions.getExtension('mzbac.lingyun');
+      (provider as any).cachedProviderPluginVersion = `lingyun/${ext?.packageJSON?.version ?? '0.0.0'}`;
     };
 
     try {
-      const model = await provider.getModel('gpt-5.3-codex');
+      const model = (await provider.getModel('gpt-5.3-codex')) as any;
 
-      assert.strictEqual(model, fakeResponsesModel);
-      assert.strictEqual(responsesCalls, 1);
+      assert.strictEqual(model?.specificationVersion, 'v3');
+      assert.strictEqual(model?.modelId, 'gpt-5.3-codex');
+      assert.strictEqual(typeof model?.doStream, 'function');
       assert.strictEqual(chatCalls, 0);
     } finally {
       provider.dispose();
@@ -41,7 +37,6 @@ suite('CopilotProvider', () => {
   test('uses chat model path for other GPT-5 models', async () => {
     const provider = new CopilotProvider();
     let chatCalls = 0;
-    let responsesCalls = 0;
 
     const fakeChatModel = { type: 'chat' };
 
@@ -52,12 +47,7 @@ suite('CopilotProvider', () => {
           return fakeChatModel;
         },
       };
-      (provider as any).responsesProvider = {
-        responses: () => {
-          responsesCalls += 1;
-          return { type: 'responses' };
-        },
-      };
+      (provider as any).cachedProviderToken = 'test-token';
     };
 
     try {
@@ -65,7 +55,6 @@ suite('CopilotProvider', () => {
 
       assert.strictEqual(model, fakeChatModel);
       assert.strictEqual(chatCalls, 1);
-      assert.strictEqual(responsesCalls, 0);
     } finally {
       provider.dispose();
     }

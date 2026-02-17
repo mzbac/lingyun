@@ -74,7 +74,7 @@ import { insertModeReminders } from './reminders';
 import { DEFAULT_SYSTEM_PROMPT } from './prompts';
 import { extractPlanFromReasoning } from './planExtract';
 import { PluginManager } from '../hooks/pluginManager';
-import { delay as getRetryDelayMs, retryable as getRetryableLlmError, sleep as retrySleep } from './retry';
+import { delay as getRetryDelayMs, retryable as getRetryableLlmError, sleep as retrySleep, type RetryableReason } from './retry';
 import { generateSessionTitle as generateSessionTitleInternal } from '../sessionTitle';
 import { getSkillIndex, loadSkillFile } from '../skills';
 
@@ -148,6 +148,30 @@ function stripToolBlocks(content: string): string {
   return content.replace(TOOL_BLOCK_REGEX, '');
 }
 
+function stringifyErrorForParserState(error: unknown): string {
+  if (!error) return '';
+  if (typeof error === 'string') return error;
+  if (error instanceof Error) {
+    const name = typeof error.name === 'string' ? error.name : '';
+    const message = typeof error.message === 'string' ? error.message : '';
+    if (name && message) return `${name}: ${message}`;
+    return message || name;
+  }
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
+  }
+}
+
+function isResponsesParserStateError(error: unknown): boolean {
+  const lower = stringifyErrorForParserState(error).toLowerCase();
+  if (!lower) return false;
+  if (lower.includes('summaryparts') && lower.includes('undefined')) return true;
+  if (lower.includes('text part') && lower.includes('not found')) return true;
+  return false;
+}
+
 export type AgentSessionState = {
   history: AgentHistoryMessage[];
   pendingPlan?: string;
@@ -186,10 +210,10 @@ export class AgentLoop {
   private buildProviderOptions(options: Record<string, unknown> | undefined, modelId: string): Record<string, unknown> | undefined {
     let resolved = options;
 
-    // Copilot (OpenAI-compatible) supports `reasoning_effort` / `text_verbosity` via providerOptions.
+    // Copilot supports `reasoning_effort` / `text_verbosity` via providerOptions.
     // Only apply to GPT-5 family models by default, and only when not explicitly set by plugins.
-    // Note: gpt-5.3-codex is routed to OpenAI Responses (`@ai-sdk/openai`) and reads options from
-    // `providerOptions.openai`, while Copilot chat models read from `providerOptions.copilot`.
+    // Note: gpt-5.3-codex is routed to Copilot Responses and keeps reading
+    // `providerOptions.openai` for compatibility, while chat models use `providerOptions.copilot`.
     if (this.llm.id === 'copilot') {
       const configuredEffortRaw =
         vscode.workspace.getConfiguration('lingyun').get<string>('copilot.reasoningEffort', 'xhigh') ?? '';
@@ -1176,6 +1200,7 @@ export class AgentLoop {
 
           let sawToolCall = false;
           let streamError: unknown;
+          let sawFinishPart = false;
           const streamStartedAt = Date.now();
           let lastStreamPartAt = streamStartedAt;
           let firstStreamPartAt: number | undefined;
@@ -1294,7 +1319,22 @@ export class AgentLoop {
                   break;
                 }
                 case 'error':
+                  if (
+                    isCopilotResponsesModel &&
+                    sawFinishPart &&
+                    isResponsesParserStateError(part.error)
+                  ) {
+                    if (debugLlmEnabled) {
+                      callbacks?.onDebug?.(
+                        `[LLM] ignore post-finish responses parser error ${summarizeErrorForDebug(part.error)}`.trim(),
+                      );
+                    }
+                    break;
+                  }
                   streamError = part.error;
+                  break;
+                case 'finish':
+                  sawFinishPart = true;
                   break;
                 default:
                   break;
@@ -1315,7 +1355,11 @@ export class AgentLoop {
             streamUsage = await stream.usage;
             break; // success
 	          } catch (e) {
-	            const retryable = getRetryableLlmError(e);
+              const parserStateRetryable: RetryableReason | undefined =
+                isCopilotResponsesModel && isResponsesParserStateError(e)
+                  ? { message: 'Responses parser state mismatch' }
+                  : undefined;
+	            const retryable = parserStateRetryable ?? getRetryableLlmError(e);
 	            const canRetry =
 	              !!retryable &&
 	              retryAttempt < maxRetries &&

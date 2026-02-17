@@ -738,6 +738,59 @@ suite('AgentLoop', () => {
     assert.strictEqual(getMessageText(history[history.length - 1]), 'Hello');
   });
 
+  test('run - retries copilot codex responses parser-state errors before finish', async () => {
+    const copilotLLM = new MockCopilotProvider();
+    agent = new AgentLoop(copilotLLM, mockContext, { model: 'gpt-5.3-codex', maxRetries: 1 }, registry);
+
+    copilotLLM.setNextResponse({
+      kind: 'stream',
+      chunks: [
+        {
+          type: 'error' as const,
+          error: {
+            name: 'TypeError',
+            message: "Cannot read properties of undefined (reading 'summaryParts')",
+          },
+        },
+      ],
+    });
+    copilotLLM.queueResponse({ kind: 'text', content: 'Hello' });
+
+    const result = await agent.run('Hi');
+    assert.strictEqual(result, 'Hello');
+    assert.strictEqual(copilotLLM.callCount, 2);
+  });
+
+  test('run - ignores post-finish copilot codex responses parser-state errors', async () => {
+    const copilotLLM = new MockCopilotProvider();
+    agent = new AgentLoop(copilotLLM, mockContext, { model: 'gpt-5.3-codex', maxRetries: 0 }, registry);
+
+    copilotLLM.setNextResponse({
+      kind: 'stream',
+      chunks: [
+        { type: 'text-start' as const, id: 't0' },
+        { type: 'text-delta' as const, id: 't0', delta: 'Hello' },
+        { type: 'text-end' as const, id: 't0' },
+        {
+          type: 'finish' as const,
+          usage: usage(),
+          finishReason: { unified: 'stop', raw: 'stop' },
+        },
+        {
+          type: 'error' as const,
+          error: {
+            name: 'TypeError',
+            message: "Cannot read properties of undefined (reading 'summaryParts')",
+          },
+        },
+      ],
+    });
+
+    const result = await agent.run('Hi');
+    assert.strictEqual(result, 'Hello');
+    assert.strictEqual(copilotLLM.callCount, 1);
+  });
+
   test('external paths disabled - blocks tool calls even with autoApprove', async () => {
     const cfg = vscode.workspace.getConfiguration('lingyun');
     const prev = cfg.get('security.allowExternalPaths');
