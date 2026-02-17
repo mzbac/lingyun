@@ -36,9 +36,7 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 }
 
 function asString(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const trimmed = value.trim();
-  return trimmed ? trimmed : undefined;
+  return typeof value === 'string' ? value : undefined;
 }
 
 function asNumber(value: unknown): number | undefined {
