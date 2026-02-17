@@ -40,6 +40,34 @@ function makeModel(chunks: LanguageModelV3StreamPart[]): LanguageModelV3 {
   };
 }
 
+function makeModelThatErrorsAfter(
+  chunksBeforeError: LanguageModelV3StreamPart[],
+  error: Error,
+): LanguageModelV3 {
+  const base = makeModel([]);
+  let index = 0;
+  return {
+    ...base,
+    doStream: async () => ({
+      stream: new ReadableStream<LanguageModelV3StreamPart>({
+        pull(controller) {
+          if (index < chunksBeforeError.length) {
+            controller.enqueue(chunksBeforeError[index]!);
+            index += 1;
+            return;
+          }
+          if (index === chunksBeforeError.length) {
+            index += 1;
+            controller.error(error);
+            return;
+          }
+          controller.close();
+        },
+      }),
+    }),
+  };
+}
+
 async function readAll(stream: ReadableStream<LanguageModelV3StreamPart>): Promise<LanguageModelV3StreamPart[]> {
   const reader = stream.getReader();
   const parts: LanguageModelV3StreamPart[] = [];
@@ -104,5 +132,34 @@ suite('normalizeResponsesStreamModel', () => {
       ['text-start', 'text-delta', 'text-end', 'finish'],
     );
   });
-});
 
+  test('recovers summaryParts parser error before finish', async () => {
+    const raw = makeModelThatErrorsAfter(
+      [{ type: 'text-delta', id: 't0', delta: 'A' }],
+      new TypeError("Cannot read properties of undefined (reading 'summaryParts')"),
+    );
+    const normalized = normalizeResponsesStreamModel(raw);
+    const result = await normalized.doStream({} as any);
+    const parts = await readAll(result.stream);
+
+    assert.deepStrictEqual(
+      parts.map(p => p.type),
+      ['text-start', 'text-delta', 'text-end', 'finish'],
+    );
+  });
+
+  test('swallows parser error emitted after finish', async () => {
+    const raw = makeModelThatErrorsAfter(
+      [{ type: 'text-delta', id: 't0', delta: 'A' }, finishPart()],
+      new TypeError("Cannot read properties of undefined (reading 'summaryParts')"),
+    );
+    const normalized = normalizeResponsesStreamModel(raw);
+    const result = await normalized.doStream({} as any);
+    const parts = await readAll(result.stream);
+
+    assert.deepStrictEqual(
+      parts.map(p => p.type),
+      ['text-start', 'text-delta', 'text-end', 'finish'],
+    );
+  });
+});

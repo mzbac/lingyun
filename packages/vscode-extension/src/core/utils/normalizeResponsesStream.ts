@@ -1,4 +1,4 @@
-import type { LanguageModelV3, LanguageModelV3StreamPart, LanguageModelV3StreamResult } from '@ai-sdk/provider';
+import type { LanguageModelV3, LanguageModelV3StreamPart, LanguageModelV3StreamResult, LanguageModelV3Usage } from '@ai-sdk/provider';
 
 type LanguageModelV3Like = Pick<LanguageModelV3, 'specificationVersion' | 'doStream'> & Record<string, unknown>;
 
@@ -31,6 +31,45 @@ function isLanguageModelV3Like(value: unknown): value is LanguageModelV3Like {
 
 function isReadableStream(value: unknown): value is ReadableStream<unknown> {
   return !!value && typeof value === 'object' && typeof (value as { getReader?: unknown }).getReader === 'function';
+}
+
+const RECOVERED_FINISH_USAGE: LanguageModelV3Usage = {
+  inputTokens: { total: 0, noCache: 0, cacheRead: 0, cacheWrite: 0 },
+  outputTokens: { total: 0, text: 0, reasoning: 0 },
+  raw: {},
+};
+
+function stringifyError(error: unknown): string {
+  if (error instanceof Error) {
+    const message = typeof error.message === 'string' ? error.message.trim() : '';
+    const name = typeof error.name === 'string' ? error.name.trim() : '';
+    if (message && name) return `${name}: ${message}`;
+    return message || name || 'Unknown error';
+  }
+  if (typeof error === 'string') return error;
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
+  }
+}
+
+function truncateForLog(value: string, max = 240): string {
+  if (value.length <= max) return value;
+  return `${value.slice(0, max)}…`;
+}
+
+function isSummaryPartsUndefinedError(error: unknown): boolean {
+  const msg = stringifyError(error).toLowerCase();
+  return msg.includes('summaryparts') && msg.includes('undefined');
+}
+
+function createRecoveredFinishPart(): LanguageModelV3StreamPart {
+  return {
+    type: 'finish',
+    usage: RECOVERED_FINISH_USAGE,
+    finishReason: { unified: 'error', raw: 'recovered-stream-error' },
+  } as LanguageModelV3StreamPart;
 }
 
 /**
@@ -115,6 +154,8 @@ function normalizeTextPartsStream(
   let invalidTextPartIds = 0;
   let droppedAfterFinish = 0;
   let rewrittenTextParts = 0;
+  let recoveredSummaryPartsErrors = 0;
+  let recoveredPostFinishErrors = 0;
   let finished = false;
   let loggedEnd = false;
 
@@ -128,7 +169,11 @@ function normalizeTextPartsStream(
         flushedTextEnds,
       )} invalidTextStartId=${String(invalidTextStartIds)} invalidTextPartId=${String(
         invalidTextPartIds,
-      )} droppedAfterFinish=${String(droppedAfterFinish)} rewrittenTextParts=${String(rewrittenTextParts)}`,
+      )} droppedAfterFinish=${String(droppedAfterFinish)} rewrittenTextParts=${String(
+        rewrittenTextParts,
+      )} recoveredSummaryPartsErrors=${String(
+        recoveredSummaryPartsErrors,
+      )} recoveredPostFinishErrors=${String(recoveredPostFinishErrors)}`,
     );
   };
 
@@ -153,157 +198,187 @@ function normalizeTextPartsStream(
   return new ReadableStream<LanguageModelV3StreamPart>({
     async pull(controller) {
       try {
-        const { value, done } = await reader.read();
+        while (true) {
+          const { value, done } = await reader.read();
 
-        if (done) {
-          flushOpenTextParts(controller, 'eof');
-          logEnd('eof');
-          controller.close();
-          return;
-        }
-
-        if (!value) return;
-        partsIn += 1;
-
-        if (finished) {
-          droppedAfterFinish += 1;
-          if (droppedAfterFinish <= 5) {
-            log(`drop post-finish part type=${value.type}`);
-          } else if (droppedAfterFinish === 6) {
-            log('drop post-finish part ... (suppressed)');
-          }
-          return;
-        }
-
-        if (value.type === 'text-start') {
-          const id = (value as { id?: unknown }).id;
-          if (typeof id !== 'string') {
-            invalidTextStartIds += 1;
-            if (invalidTextStartIds <= 5) {
-              log(`pass-through text-start with non-string id type=${typeof id}`);
-            } else if (invalidTextStartIds === 6) {
-              log('pass-through text-start ... (suppressed)');
-            }
-            controller.enqueue(value);
-            partsOut += 1;
+          if (done) {
+            flushOpenTextParts(controller, 'eof');
+            logEnd('eof');
+            controller.close();
             return;
           }
 
-          // Drop duplicate starts (common when deltas arrive before starts).
-          if (openTextPartIds.has(id)) {
-            droppedDuplicateTextStarts += 1;
-            if (droppedDuplicateTextStarts <= 5) {
-              log(`drop duplicate text-start id=${id}`);
+          if (!value) continue;
+          partsIn += 1;
+
+          if (finished) {
+            droppedAfterFinish += 1;
+            if (droppedAfterFinish <= 5) {
+              log(`drop post-finish part type=${value.type}`);
+            } else if (droppedAfterFinish === 6) {
+              log('drop post-finish part ... (suppressed)');
             }
-            return;
+            continue;
           }
 
-          if (canonicalizeTextPartIds) {
-            if (!canonicalTextId) {
-              canonicalTextId = id;
-            }
-            if (!canonicalStartEmitted) {
-              canonicalStartEmitted = true;
-              openTextPartIds.add(canonicalTextId);
-              controller.enqueue({ ...value, id: canonicalTextId });
-              partsOut += 1;
-            }
-            // Ignore provider-specific text-start ids after canonical stream is open.
-            return;
-          }
-
-          openTextPartIds.add(id);
-          controller.enqueue(value);
-          partsOut += 1;
-          return;
-        }
-
-        if (value.type === 'text-delta' || value.type === 'text-end') {
-          const id = (value as { id?: unknown }).id;
-          if (typeof id !== 'string') {
-            invalidTextPartIds += 1;
-            if (invalidTextPartIds <= 5) {
-              log(`pass-through ${value.type} with non-string id type=${typeof id}`);
-            } else if (invalidTextPartIds === 6) {
-              log(`pass-through ${value.type} ... (suppressed)`);
-            }
-            controller.enqueue(value);
-            partsOut += 1;
-            return;
-          }
-
-          if (canonicalizeTextPartIds) {
-            const targetId = canonicalTextId ?? id;
-            if (!canonicalTextId) {
-              canonicalTextId = targetId;
-            }
-            if (!canonicalStartEmitted) {
-              canonicalStartEmitted = true;
-              openTextPartIds.add(targetId);
-              controller.enqueue({ type: 'text-start', id: targetId } as LanguageModelV3StreamPart);
-              partsOut += 1;
-              insertedTextStarts += 1;
-              if (insertedTextStarts <= 10) {
-                log(`synthesize canonical text-start id=${targetId} sourceId=${id} before=${value.type}`);
-              } else if (insertedTextStarts === 11) {
-                log('synthesize canonical text-start ... (suppressed)');
+          if (value.type === 'text-start') {
+            const id = (value as { id?: unknown }).id;
+            if (typeof id !== 'string') {
+              invalidTextStartIds += 1;
+              if (invalidTextStartIds <= 5) {
+                log(`pass-through text-start with non-string id type=${typeof id}`);
+              } else if (invalidTextStartIds === 6) {
+                log('pass-through text-start ... (suppressed)');
               }
-            }
-
-            if (value.type === 'text-delta') {
-              if (id !== targetId) {
-                rewrittenTextParts += 1;
-              }
-              controller.enqueue({ ...value, id: targetId });
+              controller.enqueue(value);
               partsOut += 1;
               return;
             }
 
-            // For canonical mode, tolerate provider text-end id churn and close only canonical id.
-            if (openTextPartIds.has(targetId)) {
-              if (id !== targetId) {
-                rewrittenTextParts += 1;
+            // Drop duplicate starts (common when deltas arrive before starts).
+            if (openTextPartIds.has(id)) {
+              droppedDuplicateTextStarts += 1;
+              if (droppedDuplicateTextStarts <= 5) {
+                log(`drop duplicate text-start id=${id}`);
               }
-              controller.enqueue({ ...value, id: targetId });
+              continue;
+            }
+
+            if (canonicalizeTextPartIds) {
+              if (!canonicalTextId) {
+                canonicalTextId = id;
+              }
+              if (!canonicalStartEmitted) {
+                canonicalStartEmitted = true;
+                openTextPartIds.add(canonicalTextId);
+                controller.enqueue({ ...value, id: canonicalTextId });
+                partsOut += 1;
+                return;
+              }
+              // Ignore provider-specific text-start ids after canonical stream is open.
+              continue;
+            }
+
+            openTextPartIds.add(id);
+            controller.enqueue(value);
+            partsOut += 1;
+            return;
+          }
+
+          if (value.type === 'text-delta' || value.type === 'text-end') {
+            const id = (value as { id?: unknown }).id;
+            if (typeof id !== 'string') {
+              invalidTextPartIds += 1;
+              if (invalidTextPartIds <= 5) {
+                log(`pass-through ${value.type} with non-string id type=${typeof id}`);
+              } else if (invalidTextPartIds === 6) {
+                log(`pass-through ${value.type} ... (suppressed)`);
+              }
+              controller.enqueue(value);
               partsOut += 1;
-              openTextPartIds.delete(targetId);
+              return;
+            }
+
+            if (canonicalizeTextPartIds) {
+              const targetId = canonicalTextId ?? id;
+              if (!canonicalTextId) {
+                canonicalTextId = targetId;
+              }
+              if (!canonicalStartEmitted) {
+                canonicalStartEmitted = true;
+                openTextPartIds.add(targetId);
+                controller.enqueue({ type: 'text-start', id: targetId } as LanguageModelV3StreamPart);
+                partsOut += 1;
+                insertedTextStarts += 1;
+                if (insertedTextStarts <= 10) {
+                  log(`synthesize canonical text-start id=${targetId} sourceId=${id} before=${value.type}`);
+                } else if (insertedTextStarts === 11) {
+                  log('synthesize canonical text-start ... (suppressed)');
+                }
+              }
+
+              if (value.type === 'text-delta') {
+                if (id !== targetId) {
+                  rewrittenTextParts += 1;
+                }
+                controller.enqueue({ ...value, id: targetId });
+                partsOut += 1;
+                return;
+              }
+
+              // For canonical mode, tolerate provider text-end id churn and close only canonical id.
+              if (openTextPartIds.has(targetId)) {
+                if (id !== targetId) {
+                  rewrittenTextParts += 1;
+                }
+                controller.enqueue({ ...value, id: targetId });
+                partsOut += 1;
+                openTextPartIds.delete(targetId);
+                return;
+              }
+              continue;
+            }
+
+            if (!openTextPartIds.has(id)) {
+              openTextPartIds.add(id);
+              controller.enqueue({ type: 'text-start', id } as LanguageModelV3StreamPart);
+              partsOut += 1;
+              insertedTextStarts += 1;
+              if (insertedTextStarts <= 10) {
+                log(`synthesize text-start id=${id} before=${value.type}`);
+              } else if (insertedTextStarts === 11) {
+                log('synthesize text-start ... (suppressed)');
+              }
+            }
+
+            controller.enqueue(value);
+            partsOut += 1;
+
+            if (value.type === 'text-end') {
+              openTextPartIds.delete(id);
             }
             return;
           }
 
-          if (!openTextPartIds.has(id)) {
-            openTextPartIds.add(id);
-            controller.enqueue({ type: 'text-start', id } as LanguageModelV3StreamPart);
+          if (value.type === 'finish') {
+            flushOpenTextParts(controller, 'finish');
+            controller.enqueue(value);
             partsOut += 1;
-            insertedTextStarts += 1;
-            if (insertedTextStarts <= 10) {
-              log(`synthesize text-start id=${id} before=${value.type}`);
-            } else if (insertedTextStarts === 11) {
-              log('synthesize text-start ... (suppressed)');
-            }
+            finished = true;
+            logEnd('finish');
+            return;
           }
 
           controller.enqueue(value);
           partsOut += 1;
+          return;
+        }
+      } catch (error) {
+        const errorText = truncateForLog(stringifyError(error));
 
-          if (value.type === 'text-end') {
-            openTextPartIds.delete(id);
+        if (finished) {
+          recoveredPostFinishErrors += 1;
+          if (recoveredPostFinishErrors <= 5) {
+            log(`recover post-finish stream-error message=${errorText}`);
+          } else if (recoveredPostFinishErrors === 6) {
+            log('recover post-finish stream-error ... (suppressed)');
           }
+          controller.close();
           return;
         }
 
-        if (value.type === 'finish') {
+        if (isSummaryPartsUndefinedError(error)) {
+          recoveredSummaryPartsErrors += 1;
+          log(`recover stream-error kind=summaryPartsUndefined message=${errorText}`);
           flushOpenTextParts(controller, 'finish');
-          controller.enqueue(value);
+          controller.enqueue(createRecoveredFinishPart());
           partsOut += 1;
           finished = true;
           logEnd('finish');
+          controller.close();
           return;
         }
 
-        controller.enqueue(value);
-        partsOut += 1;
-      } catch (error) {
         controller.error(error);
       }
     },
