@@ -57,6 +57,7 @@ import {
   upsertDynamicToolCall,
 } from '@kooka/core';
 import { isRecord } from '../utils/guards';
+import { normalizeResponsesStreamModel } from '../utils/normalizeResponsesStream';
 import { FileHandleRegistry, type FileHandlesState } from './fileHandles';
 import { SemanticHandleRegistry, type SemanticHandlesState } from './semanticHandles';
 import { toToolCall } from './toolCall';
@@ -690,8 +691,22 @@ export class AgentLoop {
       }
 
       const rawModel = await this.llm.getModel(modelId);
+      const isCopilotResponsesModel =
+        this.llm.id === 'copilot' && modelId.trim().toLowerCase() === 'gpt-5.3-codex';
+      if (debugLlmEnabled && isCopilotResponsesModel) {
+        callbacks?.onDebug?.(
+          `[LLM] route provider=copilot model=${modelId} endpoint=/responses normalizeResponsesStream=on`,
+        );
+      }
+      const routedModel = isCopilotResponsesModel
+        ? normalizeResponsesStreamModel(rawModel, {
+          debugEnabled: debugLlmEnabled,
+          onDebug: callbacks?.onDebug,
+          prefix: '[CopilotResponses]',
+        })
+        : rawModel;
       const model = wrapLanguageModel({
-        model: rawModel as unknown as Parameters<typeof wrapLanguageModel>[0]['model'],
+        model: routedModel as unknown as Parameters<typeof wrapLanguageModel>[0]['model'],
         middleware: [extractReasoningMiddleware({ tagName: 'think', startWithReasoning: false })],
       });
 
@@ -1505,8 +1520,24 @@ export class AgentLoop {
 	          : [COMPACTION_PROMPT_TEXT, ...extraContext].join('\n\n');
 
 	      const rawModel = await this.llm.getModel(params.modelId);
+        const lingyunConfig = vscode.workspace.getConfiguration('lingyun');
+        const debugLlmEnabled = lingyunConfig.get<boolean>('debug.llm') ?? false;
+        const isCopilotResponsesModel =
+          this.llm.id === 'copilot' && params.modelId.trim().toLowerCase() === 'gpt-5.3-codex';
+        if (debugLlmEnabled && isCopilotResponsesModel) {
+          callbacks?.onDebug?.(
+            `[LLM] route provider=copilot model=${params.modelId} endpoint=/responses normalizeResponsesStream=on (compaction)`,
+          );
+        }
+        const routedModel = isCopilotResponsesModel
+          ? normalizeResponsesStreamModel(rawModel, {
+            debugEnabled: debugLlmEnabled,
+            onDebug: callbacks?.onDebug,
+            prefix: '[CopilotResponses]',
+          })
+          : rawModel;
 	      const compactionModel = wrapLanguageModel({
-	        model: rawModel as unknown as Parameters<typeof wrapLanguageModel>[0]['model'],
+	        model: routedModel as unknown as Parameters<typeof wrapLanguageModel>[0]['model'],
 	        middleware: [extractReasoningMiddleware({ tagName: 'think', startWithReasoning: false })],
 	      });
 

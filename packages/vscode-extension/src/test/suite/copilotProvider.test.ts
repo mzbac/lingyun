@@ -4,7 +4,7 @@ import * as vscode from 'vscode';
 import { CopilotProvider } from '../../providers/copilot';
 
 suite('CopilotProvider', () => {
-  test('uses Responses API for GPT-5 models by default', async () => {
+  test('uses Responses API only for gpt-5.3-codex', async () => {
     const provider = new CopilotProvider();
     let responsesCalls = 0;
     let chatCalls = 0;
@@ -18,10 +18,6 @@ suite('CopilotProvider', () => {
           chatCalls += 1;
           return fakeChatModel;
         },
-        responses: () => {
-          responsesCalls += 1;
-          return fakeResponsesModel;
-        },
       };
       (provider as any).responsesProvider = {
         responses: () => {
@@ -32,7 +28,7 @@ suite('CopilotProvider', () => {
     };
 
     try {
-      const model = await provider.getModel('gpt-5');
+      const model = await provider.getModel('gpt-5.3-codex');
 
       assert.strictEqual(model, fakeResponsesModel);
       assert.strictEqual(responsesCalls, 1);
@@ -42,10 +38,10 @@ suite('CopilotProvider', () => {
     }
   });
 
-  test('does not use Responses API for GPT-5-mini', async () => {
+  test('uses chat model path for other GPT-5 models', async () => {
     const provider = new CopilotProvider();
-    let responsesCalls = 0;
     let chatCalls = 0;
+    let responsesCalls = 0;
 
     const fakeChatModel = { type: 'chat' };
 
@@ -55,6 +51,8 @@ suite('CopilotProvider', () => {
           chatCalls += 1;
           return fakeChatModel;
         },
+      };
+      (provider as any).responsesProvider = {
         responses: () => {
           responsesCalls += 1;
           return { type: 'responses' };
@@ -63,7 +61,7 @@ suite('CopilotProvider', () => {
     };
 
     try {
-      const model = await provider.getModel('gpt-5-mini');
+      const model = await provider.getModel('gpt-5');
 
       assert.strictEqual(model, fakeChatModel);
       assert.strictEqual(chatCalls, 1);
@@ -73,9 +71,8 @@ suite('CopilotProvider', () => {
     }
   });
 
-  test('does not use Responses API for non-GPT-5 models', async () => {
+  test('uses chat model path for non-GPT-5 models', async () => {
     const provider = new CopilotProvider();
-    let responsesCalls = 0;
     let chatCalls = 0;
 
     const fakeChatModel = { type: 'chat' };
@@ -86,10 +83,6 @@ suite('CopilotProvider', () => {
           chatCalls += 1;
           return fakeChatModel;
         },
-        responses: () => {
-          responsesCalls += 1;
-          return { type: 'responses' };
-        },
       };
     };
 
@@ -98,7 +91,6 @@ suite('CopilotProvider', () => {
 
       assert.strictEqual(model, fakeChatModel);
       assert.strictEqual(chatCalls, 1);
-      assert.strictEqual(responsesCalls, 0);
     } finally {
       provider.dispose();
     }

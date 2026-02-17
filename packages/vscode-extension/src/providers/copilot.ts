@@ -13,14 +13,10 @@ export const FALLBACK_MODELS = {
 
 export const MODELS = FALLBACK_MODELS;
 
-function isGpt5OrLater(modelID: string): boolean {
-  const match = /^gpt-(\d+)/i.exec(modelID);
-  if (!match) return false;
-  return Number(match[1]) >= 5;
-}
-
 function shouldUseResponsesApi(modelID: string): boolean {
-  return isGpt5OrLater(modelID) && !modelID.startsWith('gpt-5-mini');
+  // Minimize impact: only route the known Copilot-only model to `/responses`.
+  // Copilot rejects `gpt-5.3-codex` on `/chat/completions`.
+  return modelID.toLowerCase() === 'gpt-5.3-codex';
 }
 
 function hasResponsesMethod(provider: unknown): provider is { responses: (modelId: string) => unknown } {
@@ -162,9 +158,6 @@ export class CopilotProvider implements LLMProvider {
     }
     if (shouldUseResponsesApi(resolvedModel) && hasResponsesMethod(this.responsesProvider)) {
       return this.responsesProvider.responses(resolvedModel);
-    }
-    if (shouldUseResponsesApi(resolvedModel) && hasResponsesMethod(this.provider)) {
-      return this.provider.responses(resolvedModel);
     }
     return this.provider.chatModel(resolvedModel);
   }

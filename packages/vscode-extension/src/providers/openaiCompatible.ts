@@ -1,5 +1,4 @@
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
-import { createOpenAI } from '@ai-sdk/openai';
 import type { FetchFunction } from '@ai-sdk/provider-utils';
 import type { LLMProvider } from '../core/types';
 import type { ModelInfo } from './copilot';
@@ -63,20 +62,6 @@ function combineAbortSignals(signals: AbortSignal[]): AbortSignal {
   return controller.signal;
 }
 
-function isGpt5OrLater(modelID: string): boolean {
-  const match = /^gpt-(\d+)/i.exec(modelID);
-  if (!match) return false;
-  return Number(match[1]) >= 5;
-}
-
-function shouldUseResponsesApi(modelID: string): boolean {
-  return isGpt5OrLater(modelID) && !modelID.startsWith('gpt-5-mini');
-}
-
-function hasResponsesMethod(provider: unknown): provider is { responses: (modelId: string) => unknown } {
-  return provider !== null && provider !== undefined && typeof (provider as { responses?: unknown }).responses === 'function';
-}
-
 type FetchWithDefaults = { fetch: FetchFunction; dispose: () => void };
 
 function createFetchWithStreamingDefaults(timeoutMs?: number): FetchWithDefaults {
@@ -131,7 +116,6 @@ export class OpenAICompatibleProvider implements LLMProvider {
   private readonly modelDisplayNames: Record<string, string>;
   private readonly timeoutMs?: number;
   private readonly provider;
-  private readonly responsesProvider;
   private readonly fetchFn: FetchFunction;
   private readonly disposeFetch: () => void;
 
@@ -159,21 +143,12 @@ export class OpenAICompatibleProvider implements LLMProvider {
       fetch: this.fetchFn,
       includeUsage: true,
     });
-    this.responsesProvider = createOpenAI({
-      baseURL: this.baseURL,
-      apiKey: this.apiKey,
-      fetch: this.fetchFn,
-    });
   }
 
   async getModel(modelId: string): Promise<unknown> {
     const resolved = modelId || this.defaultModelId;
     if (!resolved) {
       throw new Error('No model configured. Set lingyun.model or lingyun.openaiCompatible.defaultModelId.');
-    }
-
-    if (shouldUseResponsesApi(resolved) && hasResponsesMethod(this.responsesProvider)) {
-      return this.responsesProvider.responses(resolved);
     }
 
     return this.provider.chatModel(resolved);

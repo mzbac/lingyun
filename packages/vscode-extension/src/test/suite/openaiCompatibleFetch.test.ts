@@ -5,67 +5,43 @@ import { Agent, fetch as undiciFetch } from 'undici';
 import { OpenAICompatibleProvider } from '../../providers/openaiCompatible';
 
 suite('OpenAICompatibleProvider fetch', () => {
-  test('uses Responses API for GPT-5 models', async () => {
+  test('uses chat model path for GPT-5 models', async () => {
     const provider = new OpenAICompatibleProvider({
       baseURL: 'http://127.0.0.1:0',
     });
 
-    let responsesCalls = 0;
     let chatCalls = 0;
-    const responsesModel = { type: 'responses' };
     const chatModel = { type: 'chat' };
 
-    (provider as any).responsesProvider = {
-      responses: () => {
-        responsesCalls += 1;
-        return responsesModel;
-      },
-    };
     (provider as any).provider = {
       chatModel: () => {
         chatCalls += 1;
         return chatModel;
-      },
-      responses: () => {
-        responsesCalls += 1;
-        return responsesModel;
       },
     };
 
     try {
       const model = await provider.getModel('gpt-5');
 
-      assert.strictEqual(model, responsesModel);
-      assert.strictEqual(responsesCalls, 1);
-      assert.strictEqual(chatCalls, 0);
+      assert.strictEqual(model, chatModel);
+      assert.strictEqual(chatCalls, 1);
     } finally {
       provider.dispose();
     }
   });
 
-  test('does not use Responses API for GPT-5-mini', async () => {
+  test('uses chat model path for GPT-5-mini', async () => {
     const provider = new OpenAICompatibleProvider({
       baseURL: 'http://127.0.0.1:0',
     });
 
-    let responsesCalls = 0;
     let chatCalls = 0;
     const chatModel = { type: 'chat' };
 
-    (provider as any).responsesProvider = {
-      responses: () => {
-        responsesCalls += 1;
-        return { type: 'responses' };
-      },
-    };
     (provider as any).provider = {
       chatModel: () => {
         chatCalls += 1;
         return chatModel;
-      },
-      responses: () => {
-        responsesCalls += 1;
-        return { type: 'responses' };
       },
     };
 
@@ -74,35 +50,23 @@ suite('OpenAICompatibleProvider fetch', () => {
 
       assert.strictEqual(model, chatModel);
       assert.strictEqual(chatCalls, 1);
-      assert.strictEqual(responsesCalls, 0);
     } finally {
       provider.dispose();
     }
   });
 
-  test('does not use Responses API for non-GPT-5 models', async () => {
+  test('uses chat model path for non-GPT-5 models', async () => {
     const provider = new OpenAICompatibleProvider({
       baseURL: 'http://127.0.0.1:0',
     });
 
-    let responsesCalls = 0;
     let chatCalls = 0;
     const chatModel = { type: 'chat' };
 
-    (provider as any).responsesProvider = {
-      responses: () => {
-        responsesCalls += 1;
-        return { type: 'responses' };
-      },
-    };
     (provider as any).provider = {
       chatModel: () => {
         chatCalls += 1;
         return chatModel;
-      },
-      responses: () => {
-        responsesCalls += 1;
-        return { type: 'responses' };
       },
     };
 
@@ -111,7 +75,6 @@ suite('OpenAICompatibleProvider fetch', () => {
 
       assert.strictEqual(model, chatModel);
       assert.strictEqual(chatCalls, 1);
-      assert.strictEqual(responsesCalls, 0);
     } finally {
       provider.dispose();
     }
