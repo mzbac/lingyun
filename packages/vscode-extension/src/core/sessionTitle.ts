@@ -1,6 +1,7 @@
 import { convertToModelMessages, extractReasoningMiddleware, streamText, wrapLanguageModel } from 'ai';
 import type { LLMProvider } from './types';
 import { createUserHistoryMessage } from '@kooka/core';
+import { normalizeResponsesStreamModel } from './utils/normalizeResponsesStream';
 
 const TITLE_SYSTEM_PROMPT = `You are a title generator. You output ONLY a thread title. Nothing else.
 
@@ -60,8 +61,13 @@ export async function generateSessionTitle(params: {
   const maxRetries = Math.max(0, Math.floor(params.maxRetries ?? 0));
 
   const rawModel = await params.llm.getModel(params.modelId);
+  const isCopilotResponsesModel =
+    params.llm.id === 'copilot' && params.modelId.trim().toLowerCase() === 'gpt-5.3-codex';
+  const routedModel = isCopilotResponsesModel
+    ? normalizeResponsesStreamModel(rawModel, { canonicalizeTextPartIds: true })
+    : rawModel;
   const model = wrapLanguageModel({
-    model: rawModel as unknown as Parameters<typeof wrapLanguageModel>[0]['model'],
+    model: routedModel as unknown as Parameters<typeof wrapLanguageModel>[0]['model'],
     middleware: [extractReasoningMiddleware({ tagName: 'think', startWithReasoning: false })],
   });
 

@@ -17,6 +17,12 @@ export type NormalizeResponsesStreamOptions = {
    * Log prefix (e.g. "[CopilotResponses]").
    */
   prefix?: string;
+  /**
+   * When true, rewrite all text parts to a single canonical text id per stream.
+   * This mirrors Copilot Chat's delta-accumulation behavior and avoids provider
+   * text-part id churn causing downstream "text part not found" errors.
+   */
+  canonicalizeTextPartIds?: boolean;
 };
 
 function isLanguageModelV3Like(value: unknown): value is LanguageModelV3Like {
@@ -43,6 +49,7 @@ export function normalizeResponsesStreamModel<T>(model: T, options?: NormalizeRe
   const debugEnabled = options?.debugEnabled === true;
   const onDebug = options?.onDebug;
   const prefix = options?.prefix?.trim() ? options.prefix.trim() : '[ResponsesStream]';
+  const canonicalizeTextPartIds = options?.canonicalizeTextPartIds === true;
 
   const wrapped: LanguageModelV3Like = {
     ...original,
@@ -64,9 +71,11 @@ export function normalizeResponsesStreamModel<T>(model: T, options?: NormalizeRe
           ? ((original as { modelId?: unknown }).modelId as string)
           : '';
       if (provider || modelId) {
-        log(`start provider=${provider || '(unknown)'} model=${modelId || '(unknown)'}`);
+        log(
+          `start provider=${provider || '(unknown)'} model=${modelId || '(unknown)'} canonicalizeTextPartIds=${canonicalizeTextPartIds ? 'on' : 'off'}`,
+        );
       } else {
-        log('start');
+        log(`start canonicalizeTextPartIds=${canonicalizeTextPartIds ? 'on' : 'off'}`);
       }
 
       const result = await originalDoStream(options as any);
@@ -78,7 +87,7 @@ export function normalizeResponsesStreamModel<T>(model: T, options?: NormalizeRe
       const stream = (result as { stream: ReadableStream<LanguageModelV3StreamPart> }).stream;
       return {
         ...result,
-        stream: normalizeTextPartsStream(stream, log),
+        stream: normalizeTextPartsStream(stream, log, { canonicalizeTextPartIds }),
       };
     },
   };
@@ -88,10 +97,14 @@ export function normalizeResponsesStreamModel<T>(model: T, options?: NormalizeRe
 
 function normalizeTextPartsStream(
   stream: ReadableStream<LanguageModelV3StreamPart>,
-  log: (message: string) => void
+  log: (message: string) => void,
+  options?: { canonicalizeTextPartIds?: boolean }
 ): ReadableStream<LanguageModelV3StreamPart> {
   const reader = stream.getReader();
   const openTextPartIds = new Set<string>();
+  const canonicalizeTextPartIds = options?.canonicalizeTextPartIds === true;
+  let canonicalTextId: string | null = null;
+  let canonicalStartEmitted = false;
 
   let partsIn = 0;
   let partsOut = 0;
@@ -100,6 +113,9 @@ function normalizeTextPartsStream(
   let flushedTextEnds = 0;
   let invalidTextStartIds = 0;
   let invalidTextPartIds = 0;
+  let droppedAfterFinish = 0;
+  let rewrittenTextParts = 0;
+  let finished = false;
   let loggedEnd = false;
 
   const logEnd = (reason: 'finish' | 'eof') => {
@@ -110,7 +126,9 @@ function normalizeTextPartsStream(
         insertedTextStarts,
       )} droppedTextStart=${String(droppedDuplicateTextStarts)} flushedTextEnd=${String(
         flushedTextEnds,
-      )} invalidTextStartId=${String(invalidTextStartIds)} invalidTextPartId=${String(invalidTextPartIds)}`,
+      )} invalidTextStartId=${String(invalidTextStartIds)} invalidTextPartId=${String(
+        invalidTextPartIds,
+      )} droppedAfterFinish=${String(droppedAfterFinish)} rewrittenTextParts=${String(rewrittenTextParts)}`,
     );
   };
 
@@ -147,6 +165,16 @@ function normalizeTextPartsStream(
         if (!value) return;
         partsIn += 1;
 
+        if (finished) {
+          droppedAfterFinish += 1;
+          if (droppedAfterFinish <= 5) {
+            log(`drop post-finish part type=${value.type}`);
+          } else if (droppedAfterFinish === 6) {
+            log('drop post-finish part ... (suppressed)');
+          }
+          return;
+        }
+
         if (value.type === 'text-start') {
           const id = (value as { id?: unknown }).id;
           if (typeof id !== 'string') {
@@ -170,6 +198,20 @@ function normalizeTextPartsStream(
             return;
           }
 
+          if (canonicalizeTextPartIds) {
+            if (!canonicalTextId) {
+              canonicalTextId = id;
+            }
+            if (!canonicalStartEmitted) {
+              canonicalStartEmitted = true;
+              openTextPartIds.add(canonicalTextId);
+              controller.enqueue({ ...value, id: canonicalTextId });
+              partsOut += 1;
+            }
+            // Ignore provider-specific text-start ids after canonical stream is open.
+            return;
+          }
+
           openTextPartIds.add(id);
           controller.enqueue(value);
           partsOut += 1;
@@ -187,6 +229,45 @@ function normalizeTextPartsStream(
             }
             controller.enqueue(value);
             partsOut += 1;
+            return;
+          }
+
+          if (canonicalizeTextPartIds) {
+            const targetId = canonicalTextId ?? id;
+            if (!canonicalTextId) {
+              canonicalTextId = targetId;
+            }
+            if (!canonicalStartEmitted) {
+              canonicalStartEmitted = true;
+              openTextPartIds.add(targetId);
+              controller.enqueue({ type: 'text-start', id: targetId } as LanguageModelV3StreamPart);
+              partsOut += 1;
+              insertedTextStarts += 1;
+              if (insertedTextStarts <= 10) {
+                log(`synthesize canonical text-start id=${targetId} sourceId=${id} before=${value.type}`);
+              } else if (insertedTextStarts === 11) {
+                log('synthesize canonical text-start ... (suppressed)');
+              }
+            }
+
+            if (value.type === 'text-delta') {
+              if (id !== targetId) {
+                rewrittenTextParts += 1;
+              }
+              controller.enqueue({ ...value, id: targetId });
+              partsOut += 1;
+              return;
+            }
+
+            // For canonical mode, tolerate provider text-end id churn and close only canonical id.
+            if (openTextPartIds.has(targetId)) {
+              if (id !== targetId) {
+                rewrittenTextParts += 1;
+              }
+              controller.enqueue({ ...value, id: targetId });
+              partsOut += 1;
+              openTextPartIds.delete(targetId);
+            }
             return;
           }
 
@@ -215,6 +296,7 @@ function normalizeTextPartsStream(
           flushOpenTextParts(controller, 'finish');
           controller.enqueue(value);
           partsOut += 1;
+          finished = true;
           logEnd('finish');
           return;
         }

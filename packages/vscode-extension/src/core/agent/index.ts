@@ -695,7 +695,7 @@ export class AgentLoop {
         this.llm.id === 'copilot' && modelId.trim().toLowerCase() === 'gpt-5.3-codex';
       if (debugLlmEnabled && isCopilotResponsesModel) {
         callbacks?.onDebug?.(
-          `[LLM] route provider=copilot model=${modelId} endpoint=/responses normalizeResponsesStream=on`,
+          `[LLM] route provider=copilot model=${modelId} endpoint=/responses normalizeResponsesStream=on canonicalizeTextPartIds=on`,
         );
       }
       const routedModel = isCopilotResponsesModel
@@ -703,6 +703,7 @@ export class AgentLoop {
           debugEnabled: debugLlmEnabled,
           onDebug: callbacks?.onDebug,
           prefix: '[CopilotResponses]',
+          canonicalizeTextPartIds: true,
         })
         : rawModel;
       const model = wrapLanguageModel({
@@ -1526,7 +1527,7 @@ export class AgentLoop {
           this.llm.id === 'copilot' && params.modelId.trim().toLowerCase() === 'gpt-5.3-codex';
         if (debugLlmEnabled && isCopilotResponsesModel) {
           callbacks?.onDebug?.(
-            `[LLM] route provider=copilot model=${params.modelId} endpoint=/responses normalizeResponsesStream=on (compaction)`,
+            `[LLM] route provider=copilot model=${params.modelId} endpoint=/responses normalizeResponsesStream=on canonicalizeTextPartIds=on (compaction)`,
           );
         }
         const routedModel = isCopilotResponsesModel
@@ -1534,6 +1535,7 @@ export class AgentLoop {
             debugEnabled: debugLlmEnabled,
             onDebug: callbacks?.onDebug,
             prefix: '[CopilotResponses]',
+            canonicalizeTextPartIds: true,
           })
           : rawModel;
 	      const compactionModel = wrapLanguageModel({
