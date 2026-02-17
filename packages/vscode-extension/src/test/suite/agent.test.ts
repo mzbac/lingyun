@@ -287,6 +287,18 @@ suite('AgentLoop', () => {
     assert.strictEqual(options?.providerOptions?.copilot?.reasoningEffort, 'xhigh');
   });
 
+  test('run - injects OpenAI reasoningEffort for Copilot gpt-5.3-codex responses path', async () => {
+    const copilotLLM = new MockCopilotProvider();
+    agent = new AgentLoop(copilotLLM, mockContext, { model: 'gpt-5.3-codex' }, registry);
+    copilotLLM.setNextResponse({ kind: 'text', content: 'OK' });
+
+    await agent.run('Hi');
+
+    const options = copilotLLM.lastCallOptions as any;
+    assert.strictEqual(options?.providerOptions?.openai?.reasoningEffort, 'xhigh');
+    assert.strictEqual(options?.providerOptions?.copilot?.reasoningEffort, 'xhigh');
+  });
+
   test('run - applies Codex-style image boundaries for Copilot prompts', async () => {
     const copilotLLM = new MockCopilotProvider();
     const plugins = new PluginManager(mockContext);

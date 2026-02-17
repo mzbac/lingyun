@@ -188,20 +188,34 @@ export class AgentLoop {
 
     // Copilot (OpenAI-compatible) supports `reasoning_effort` / `text_verbosity` via providerOptions.
     // Only apply to GPT-5 family models by default, and only when not explicitly set by plugins.
+    // Note: gpt-5.3-codex is routed to OpenAI Responses (`@ai-sdk/openai`) and reads options from
+    // `providerOptions.openai`, while Copilot chat models read from `providerOptions.copilot`.
     if (this.llm.id === 'copilot') {
       const configuredEffortRaw =
         vscode.workspace.getConfiguration('lingyun').get<string>('copilot.reasoningEffort', 'xhigh') ?? '';
       const configuredEffort = configuredEffortRaw.trim();
       const isGpt5 = /^gpt-5([.-]|$)/i.test(modelId);
+      const isCopilotResponsesModel = modelId.trim().toLowerCase() === 'gpt-5.3-codex';
 
       if (configuredEffort && isGpt5) {
         const merged: Record<string, unknown> = { ...(resolved ?? {}) };
+
         const existingCopilot = merged['copilot'];
         const copilotOptions: Record<string, unknown> = isRecord(existingCopilot) ? { ...existingCopilot } : {};
         if (copilotOptions['reasoningEffort'] === undefined) {
           copilotOptions['reasoningEffort'] = configuredEffort;
         }
         merged['copilot'] = copilotOptions;
+
+        if (isCopilotResponsesModel) {
+          const existingOpenAI = merged['openai'];
+          const openaiOptions: Record<string, unknown> = isRecord(existingOpenAI) ? { ...existingOpenAI } : {};
+          if (openaiOptions['reasoningEffort'] === undefined) {
+            openaiOptions['reasoningEffort'] = configuredEffort;
+          }
+          merged['openai'] = openaiOptions;
+        }
+
         resolved = merged;
       }
     }
