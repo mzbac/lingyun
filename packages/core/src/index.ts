@@ -78,4 +78,9 @@ export {
   markPrunableToolOutputs,
 } from './compaction';
 
-export { applyCopilotImageInputPattern } from './modelMessages';
+export {
+  applyAssistantReplayForPrompt,
+  applyCopilotImageInputPattern,
+  applyCopilotReasoningFields,
+  applyOpenAICompatibleReasoningField,
+} from './modelMessages';

@@ -132,8 +132,8 @@ function generateResultForResponse(response: ScriptedResponse): LanguageModelV3G
 }
 
 class MockLLMProvider implements LLMProvider {
-  readonly id = 'mock';
-  readonly name = 'Mock LLM';
+  readonly id: string = 'mock';
+  readonly name: string = 'Mock LLM';
 
   private responses: ScriptedResponse[] = [];
   private unavailableModels = new Set<string>();
@@ -190,6 +190,11 @@ class MockLLMProvider implements LLMProvider {
 
     return model;
   }
+}
+
+class MockOpenAICompatibleProvider extends MockLLMProvider {
+  override readonly id = 'openaiCompatible';
+  override readonly name = 'OpenAI-Compatible';
 }
 
 suite('LingYun Agent SDK', () => {
@@ -272,6 +277,41 @@ suite('LingYun Agent SDK', () => {
     const prompt = JSON.stringify(llm.lastPrompt ?? '');
     assert.ok(prompt.includes('<system-reminder>'), 'system-reminder tag should be present in prompt');
     assert.ok(prompt.includes('External paths are enabled'), 'external path reminder should reflect setting');
+  });
+
+  test('prompt - replays reasoning_content + raw assistant text for openaiCompatible providers', async () => {
+    const llm = new MockOpenAICompatibleProvider();
+    const registry = new ToolRegistry();
+
+    llm.queueResponse({
+      kind: 'text',
+      content: '<think>hidden reasoning</think> Hello<tool_call>{}</tool_call>World',
+    });
+    llm.queueResponse({ kind: 'text', content: 'ok' });
+
+    const agent = new LingyunAgent(llm, { model: 'mock-model' }, registry, { allowExternalPaths: false });
+    const session = new LingyunSession();
+
+    for await (const _event of agent.run({ session, input: 'hi' }).events) {
+      // drain
+    }
+    await agent.run({ session, input: 'follow up' }).done;
+
+    const prompt = llm.lastPrompt as any[];
+    const assistant = prompt.find((msg) => msg?.role === 'assistant');
+    assert.ok(assistant, 'expected assistant message in prompt');
+    assert.strictEqual(assistant.providerOptions?.openaiCompatible?.reasoning_content, 'hidden reasoning');
+    assert.ok(Array.isArray(assistant.content), 'expected multipart assistant content');
+    assert.strictEqual(
+      (assistant.content as any[]).some((part) => part?.type === 'reasoning'),
+      false,
+      'reasoning parts should be lifted to reasoning_content',
+    );
+    const assistantText = (assistant.content as any[])
+      .filter((part) => part?.type === 'text')
+      .map((part) => part.text)
+      .join('');
+    assert.strictEqual(assistantText, ' Hello<tool_call>{}</tool_call>World');
   });
 
   test('file handles - glob assigns fileId and read resolves it', async () => {

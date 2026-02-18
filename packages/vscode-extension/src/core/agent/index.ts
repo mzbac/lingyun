@@ -40,7 +40,10 @@ import {
   extractSkillMentions,
   type AgentHistoryMessage,
   type UserHistoryInput,
+  applyAssistantReplayForPrompt,
   applyCopilotImageInputPattern,
+  applyCopilotReasoningFields,
+  applyOpenAICompatibleReasoningField,
   createAssistantHistoryMessage,
   createUserHistoryMessage,
   listBuiltinSubagents,
@@ -1183,6 +1186,7 @@ export class AgentLoop {
       let sawThinkTagInTextDelta = false;
       let streamFinishReason: string | undefined;
       let streamUsage: unknown;
+      let streamProviderMetadata: unknown;
 
       const maxRetries = Math.max(0, Math.floor(this.config.maxRetries ?? 0));
       let retryAttempt = 0;
@@ -1353,6 +1357,7 @@ export class AgentLoop {
 
             streamFinishReason = await stream.finishReason;
             streamUsage = await stream.usage;
+            streamProviderMetadata = await stream.providerMetadata;
             break; // success
 	          } catch (e) {
               const parserStateRetryable: RetryableReason | undefined =
@@ -1420,9 +1425,29 @@ export class AgentLoop {
       }
 
       const tokens = extractUsageTokens(streamUsage);
+      const copilotReplay = (() => {
+        if (!isCopilotResponsesModel) return undefined;
+        const providerMetadata = asUnknownRecord(streamProviderMetadata);
+        const copilot = asUnknownRecord(providerMetadata?.copilot);
+        if (!copilot) return undefined;
+        const reasoningOpaque =
+          typeof copilot.reasoningOpaque === 'string' && copilot.reasoningOpaque.trim()
+            ? copilot.reasoningOpaque.trim()
+            : undefined;
+        const reasoningEncryptedContent =
+          typeof copilot.reasoningEncryptedContent === 'string' && copilot.reasoningEncryptedContent.trim()
+            ? copilot.reasoningEncryptedContent
+            : undefined;
+        if (!reasoningOpaque && !reasoningEncryptedContent) return undefined;
+        return {
+          ...(reasoningOpaque ? { reasoningOpaque } : {}),
+          ...(reasoningEncryptedContent ? { reasoningEncryptedContent } : {}),
+        };
+      })();
       assistantMessage.metadata = {
         mode: this.getMode(),
         finishReason: streamFinishReason,
+        replay: { text: attemptText, reasoning: attemptReasoning, ...(copilotReplay ? { copilot: copilotReplay } : {}) },
         ...(tokens ? { tokens } : {}),
       };
       if (debugLlmEnabled) {
@@ -1456,6 +1481,9 @@ export class AgentLoop {
 
       if (finalText) {
         assistantMessage.parts.unshift({ type: 'text', text: finalText, state: 'streaming' });
+      }
+      if (attemptReasoning.trim()) {
+        assistantMessage.parts.unshift({ type: 'reasoning', text: attemptReasoning, state: 'streaming' });
       }
 
       finalizeStreamingParts(assistantMessage);
@@ -1531,13 +1559,25 @@ export class AgentLoop {
       { messages: [...withoutIds] as unknown[] },
     );
 
-	    const messages = Array.isArray(messagesOutput.messages) ? messagesOutput.messages : withoutIds;
-      const converted = await convertToModelMessages(
-	      messages as unknown as Parameters<typeof convertToModelMessages>[0],
-	      { tools } as Parameters<typeof convertToModelMessages>[1],
-	    );
-      return this.llm.id === 'copilot' ? applyCopilotImageInputPattern(converted) : converted;
-	  }
+    const messages = Array.isArray(messagesOutput.messages) ? messagesOutput.messages : withoutIds;
+    const isCopilotResponsesModel =
+      this.llm.id === 'copilot' && modelId.trim().toLowerCase() === 'gpt-5.3-codex';
+    const replayed =
+      this.llm.id === 'openaiCompatible' || this.llm.id === 'copilot'
+        ? applyAssistantReplayForPrompt(messages as unknown as AgentHistoryMessage[])
+        : (messages as unknown as Parameters<typeof convertToModelMessages>[0]);
+    const converted = await convertToModelMessages(
+      replayed as unknown as Parameters<typeof convertToModelMessages>[0],
+      { tools } as Parameters<typeof convertToModelMessages>[1],
+    );
+    const withReasoning =
+      this.llm.id === 'openaiCompatible'
+        ? applyOpenAICompatibleReasoningField(converted)
+        : this.llm.id === 'copilot' && !isCopilotResponsesModel
+          ? applyCopilotReasoningFields(converted)
+          : converted;
+    return this.llm.id === 'copilot' ? applyCopilotImageInputPattern(withReasoning) : withReasoning;
+  }
 
 	  private async compactSessionInternal(params: { auto: boolean; modelId: string }, callbacks?: AgentCallbacks): Promise<void> {
 	    if (this.aborted) return;

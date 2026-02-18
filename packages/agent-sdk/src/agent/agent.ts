@@ -18,7 +18,9 @@ import {
   COMPACTION_PROMPT_TEXT,
   COMPACTION_SYSTEM_PROMPT,
   createAssistantHistoryMessage,
+  applyAssistantReplayForPrompt,
   applyCopilotImageInputPattern,
+  applyOpenAICompatibleReasoningField,
   createHistoryForCompactionPrompt,
   createHistoryForModel,
   createUserHistoryMessage,
@@ -467,8 +469,14 @@ export class LingyunAgent {
     );
 
     const messages = Array.isArray((messagesOutput as any).messages) ? (messagesOutput as any).messages : withoutIds;
-    const converted = await convertToModelMessages(messages as any, { tools: tools as any });
-    return this.llm.id === 'copilot' ? applyCopilotImageInputPattern(converted) : converted;
+    const replayed =
+      this.llm.id === 'openaiCompatible'
+        ? applyAssistantReplayForPrompt(messages as unknown as AgentHistoryMessage[])
+        : (messages as unknown as Parameters<typeof convertToModelMessages>[0]);
+    const converted = await convertToModelMessages(replayed as any, { tools: tools as any });
+    const withReasoning =
+      this.llm.id === 'openaiCompatible' ? applyOpenAICompatibleReasoningField(converted) : converted;
+    return this.llm.id === 'copilot' ? applyCopilotImageInputPattern(withReasoning) : withReasoning;
   }
 
   private createToolContext(signal: AbortSignal, session: LingyunSession, callbacks?: AgentCallbacks) {
@@ -1518,6 +1526,7 @@ export class LingyunAgent {
       assistantMessage.metadata = {
         mode: this.getMode(),
         finishReason: streamFinishReason,
+        replay: { text: attemptText, reasoning: attemptReasoning },
         ...(tokens ? { tokens } : {}),
       };
 
@@ -1536,6 +1545,9 @@ export class LingyunAgent {
 
       if (finalText) {
         assistantMessage.parts.unshift({ type: 'text', text: finalText, state: 'streaming' });
+      }
+      if (attemptReasoning.trim()) {
+        assistantMessage.parts.unshift({ type: 'reasoning', text: attemptReasoning, state: 'streaming' });
       }
 
       finalizeStreamingParts(assistantMessage);

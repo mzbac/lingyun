@@ -141,6 +141,16 @@ function serializeToolOutput(output: unknown): string {
   return safeJsonStringify(output);
 }
 
+function getCopilotReasoningReplay(providerOptions: unknown): { id?: string; encryptedContent?: string } | undefined {
+  const root = asRecord(providerOptions);
+  const copilot = asRecord(root?.['copilot']);
+  if (!copilot) return undefined;
+  const id = asString(copilot['reasoningOpaque']);
+  const encryptedContent = asString(copilot['reasoningEncryptedContent']);
+  if (!id && !encryptedContent) return undefined;
+  return { id, encryptedContent };
+}
+
 function promptToResponsesInput(prompt: LanguageModelV3Prompt): unknown[] {
   const input: unknown[] = [];
 
@@ -183,6 +193,19 @@ function promptToResponsesInput(prompt: LanguageModelV3Prompt): unknown[] {
       const assistantContent: unknown[] = [];
 
       for (const part of message.content) {
+        if (part.type === 'reasoning') {
+          const replay = getCopilotReasoningReplay(part.providerOptions);
+          if (replay?.id && replay.encryptedContent) {
+            input.push({
+              type: 'reasoning',
+              id: replay.id,
+              summary: [],
+              encrypted_content: replay.encryptedContent,
+            });
+          }
+          continue;
+        }
+
         if (part.type === 'text') {
           assistantContent.push({ type: 'output_text', text: part.text, annotations: [] });
           continue;
@@ -338,6 +361,7 @@ function createResponsesStream(
         const openTextIds = new Set<string>();
         const openReasoningIds = new Set<string>();
         const pendingToolCalls = new Map<number, PendingToolCall>();
+        let lastReasoningReplay: { id: string; encryptedContent?: string } | undefined;
 
         const closeOpenParts = () => {
           for (const id of Array.from(openTextIds)) {
@@ -509,6 +533,13 @@ function createResponsesStream(
                   }
                 } else if (itemType === 'reasoning') {
                   const reasoningIdBase = asString(item?.['id']);
+                  const encryptedContent = asString(item?.['encrypted_content']);
+                  if (reasoningIdBase) {
+                    lastReasoningReplay = {
+                      id: reasoningIdBase,
+                      ...(encryptedContent ? { encryptedContent } : {}),
+                    };
+                  }
                   if (reasoningIdBase) {
                     const summary = Array.isArray(item?.['summary']) ? item?.['summary'] : [];
                     if (summary.length > 0) {
@@ -577,6 +608,16 @@ function createResponsesStream(
                   type: 'finish',
                   usage,
                   finishReason,
+                  providerMetadata: lastReasoningReplay
+                    ? {
+                      copilot: {
+                        reasoningOpaque: lastReasoningReplay.id,
+                        ...(lastReasoningReplay.encryptedContent
+                          ? { reasoningEncryptedContent: lastReasoningReplay.encryptedContent }
+                          : {}),
+                      },
+                    }
+                    : undefined,
                 });
                 finished = true;
                 continue;
@@ -598,6 +639,16 @@ function createResponsesStream(
               type: 'finish',
               usage,
               finishReason,
+              providerMetadata: lastReasoningReplay
+                ? {
+                  copilot: {
+                    reasoningOpaque: lastReasoningReplay.id,
+                    ...(lastReasoningReplay.encryptedContent
+                      ? { reasoningEncryptedContent: lastReasoningReplay.encryptedContent }
+                      : {}),
+                  },
+                }
+                : undefined,
             });
           }
           controller.close();

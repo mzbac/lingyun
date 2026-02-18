@@ -7,6 +7,14 @@ export type AgentHistoryMetadata = {
   skill?: boolean;
   summary?: boolean;
   compaction?: { auto: boolean };
+  replay?: {
+    text?: string;
+    reasoning?: string;
+    copilot?: {
+      reasoningOpaque?: string;
+      reasoningEncryptedContent?: string;
+    };
+  };
   tokens?: {
     input?: number;
     output?: number;

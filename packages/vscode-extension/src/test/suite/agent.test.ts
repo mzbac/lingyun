@@ -230,6 +230,11 @@ class MockCopilotProvider extends MockLLMProvider {
   }
 }
 
+class MockOpenAICompatibleProvider extends MockLLMProvider {
+  override readonly id: string = 'openaiCompatible';
+  override readonly name: string = 'OpenAI-Compatible';
+}
+
 suite('AgentLoop', () => {
   let mockLLM: MockLLMProvider;
   let registry: ToolRegistry;
@@ -444,6 +449,122 @@ suite('AgentLoop', () => {
     assert.strictEqual(getMessageText(history[2]), 'Follow up');
     assert.strictEqual(history[3].role, 'assistant');
     assert.strictEqual(getMessageText(history[3]), 'Second');
+  });
+
+  test('continue - replays reasoning_content + raw assistant text for openaiCompatible prompts', async () => {
+    const openaiCompatible = new MockOpenAICompatibleProvider();
+    agent = new AgentLoop(
+      openaiCompatible,
+      mockContext,
+      { model: 'mock-model', sessionId: 'session-1' },
+      registry,
+    );
+
+    openaiCompatible.setNextResponse({
+      kind: 'text',
+      content: '<think>hidden reasoning</think> Hello<tool_call>{}</tool_call>World',
+    });
+    await agent.run('Hi');
+
+    openaiCompatible.setNextResponse({ kind: 'text', content: 'Ok' });
+    await agent.continue('Follow up');
+
+    const prompt = openaiCompatible.lastPrompt as any[];
+    const assistant = prompt.find((msg) => msg?.role === 'assistant');
+    assert.ok(assistant, 'expected assistant message in prompt');
+    assert.strictEqual(assistant.providerOptions?.openaiCompatible?.reasoning_content, 'hidden reasoning');
+    assert.ok(Array.isArray(assistant.content), 'expected multipart assistant content');
+    assert.strictEqual(
+      (assistant.content as any[]).some((part) => part?.type === 'reasoning'),
+      false,
+      'reasoning parts should be lifted to reasoning_content',
+    );
+    const assistantText = (assistant.content as any[])
+      .filter((part) => part?.type === 'text')
+      .map((part) => part.text)
+      .join('');
+    assert.strictEqual(assistantText, ' Hello<tool_call>{}</tool_call>World');
+  });
+
+  test('continue - replays reasoning_text + raw assistant text for Copilot prompts', async () => {
+    const copilotLLM = new MockCopilotProvider();
+    agent = new AgentLoop(
+      copilotLLM,
+      mockContext,
+      { model: 'gpt-4o', sessionId: 'session-1' },
+      registry,
+    );
+
+    copilotLLM.setNextResponse({
+      kind: 'text',
+      content: '<think>hidden reasoning</think> Hello<tool_call>{}</tool_call>World',
+    });
+    await agent.run('Hi');
+
+    copilotLLM.setNextResponse({ kind: 'text', content: 'Ok' });
+    await agent.continue('Follow up');
+
+    const prompt = copilotLLM.lastPrompt as any[];
+    const assistant = prompt.find((msg) => msg?.role === 'assistant');
+    assert.ok(assistant, 'expected assistant message in prompt');
+    assert.strictEqual(assistant.providerOptions?.openaiCompatible?.reasoning_text, 'hidden reasoning');
+    assert.ok(Array.isArray(assistant.content), 'expected multipart assistant content');
+    assert.strictEqual(
+      (assistant.content as any[]).some((part) => part?.type === 'reasoning'),
+      false,
+      'reasoning parts should be lifted to reasoning_text',
+    );
+    const assistantText = (assistant.content as any[])
+      .filter((part) => part?.type === 'text')
+      .map((part) => part.text)
+      .join('');
+    assert.strictEqual(assistantText, ' Hello<tool_call>{}</tool_call>World');
+  });
+
+  test('continue - replays Copilot /responses reasoning replay metadata in prompt parts', async () => {
+    const copilotLLM = new MockCopilotProvider();
+    agent = new AgentLoop(
+      copilotLLM,
+      mockContext,
+      { model: 'gpt-5.3-codex', sessionId: 'session-1' },
+      registry,
+    );
+
+    copilotLLM.setNextResponse({
+      kind: 'stream',
+      chunks: [
+        { type: 'text-start' as const, id: 'text_0' },
+        { type: 'text-delta' as const, id: 'text_0', delta: 'H' },
+        { type: 'text-delta' as const, id: 'text_0', delta: 'i' },
+        { type: 'text-end' as const, id: 'text_0' },
+        {
+          type: 'finish' as const,
+          usage: usage(),
+          finishReason: { unified: 'stop', raw: 'stop' },
+          providerMetadata: {
+            copilot: {
+              reasoningOpaque: 'rsn_123',
+              reasoningEncryptedContent: 'enc_abc',
+            },
+          },
+        },
+      ],
+    });
+    await agent.run('Hi');
+
+    copilotLLM.setNextResponse({ kind: 'text', content: 'Ok' });
+    await agent.continue('Follow up');
+
+    const prompt = copilotLLM.lastPrompt as any[];
+    const assistant = prompt.find((msg) => msg?.role === 'assistant');
+    assert.ok(assistant, 'expected assistant message in prompt');
+    assert.strictEqual(assistant.providerOptions?.openaiCompatible?.reasoning_text, undefined);
+
+    const parts = Array.isArray(assistant.content) ? (assistant.content as any[]) : [];
+    const reasoningPart = parts.find((part) => part?.type === 'reasoning');
+    assert.ok(reasoningPart, 'expected reasoning part for /responses replay');
+    assert.strictEqual(reasoningPart.providerOptions?.copilot?.reasoningOpaque, 'rsn_123');
+    assert.strictEqual(reasoningPart.providerOptions?.copilot?.reasoningEncryptedContent, 'enc_abc');
   });
 
   test('run - executes tool calls', async () => {
