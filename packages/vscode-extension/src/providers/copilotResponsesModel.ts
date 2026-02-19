@@ -362,6 +362,8 @@ function createResponsesStream(
         const openReasoningIds = new Set<string>();
         const pendingToolCalls = new Map<number, PendingToolCall>();
         let lastReasoningReplay: { id: string; encryptedContent?: string } | undefined;
+        const textIdByOutputIndex = new Map<number, string>();
+        let sawOutputTextDelta = false;
 
         const closeOpenParts = () => {
           for (const id of Array.from(openTextIds)) {
@@ -422,7 +424,12 @@ function createResponsesStream(
               }
 
               if (eventType === 'response.output_text.delta') {
+                sawOutputTextDelta = true;
                 const itemId = asString(event['item_id']) ?? 'text_0';
+                const outputIndex = asNumber(event['output_index']);
+                if (outputIndex !== undefined && !textIdByOutputIndex.has(outputIndex)) {
+                  textIdByOutputIndex.set(outputIndex, itemId);
+                }
                 const delta = asString(event['delta']) ?? '';
                 if (!openTextIds.has(itemId)) {
                   openTextIds.add(itemId);
@@ -492,10 +499,13 @@ function createResponsesStream(
 
                 if (itemType === 'message') {
                   const messageId = asString(item?.['id']);
-                  if (messageId && openTextIds.has(messageId)) {
-                    controller.enqueue({ type: 'text-end', id: messageId });
-                    openTextIds.delete(messageId);
-                  } else if (messageId) {
+                  const textIdFromIndex = outputIndex === undefined ? undefined : textIdByOutputIndex.get(outputIndex);
+                  const textIdToClose = textIdFromIndex ?? messageId;
+                  if (textIdToClose && openTextIds.has(textIdToClose)) {
+                    controller.enqueue({ type: 'text-end', id: textIdToClose });
+                    openTextIds.delete(textIdToClose);
+                  } else if (!sawOutputTextDelta && messageId) {
+                    // Fallback for providers that don't stream `response.output_text.delta`.
                     const content = Array.isArray(item?.['content']) ? item?.['content'] : [];
                     const textValue = content
                       .map((entry) => {
