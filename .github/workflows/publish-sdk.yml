@@ -50,6 +50,8 @@ jobs:
           set -euo pipefail
           VERSION_CORE="$(node -p "require('./packages/core/package.json').version")"
           VERSION_SDK="$(node -p "require('./packages/agent-sdk/package.json').version")"
+          VERSION_KOOKABURRA="$(node -p "require('./packages/kookaburra/package.json').version")"
+          VERSION_PLUGIN_GOOGLE="$(node -p "require('./packages/plugin-google/package.json').version")"
           TAG="${GITHUB_REF_NAME#sdk-v}"
           if [ "${VERSION_CORE}" != "${TAG}" ]; then
             echo "Tag version (${TAG}) does not match packages/core version (${VERSION_CORE})."
@@ -59,8 +61,24 @@ jobs:
             echo "Tag version (${TAG}) does not match packages/agent-sdk version (${VERSION_SDK})."
             exit 1
           fi
+          if [ "${VERSION_KOOKABURRA}" != "${TAG}" ]; then
+            echo "Tag version (${TAG}) does not match packages/kookaburra version (${VERSION_KOOKABURRA})."
+            exit 1
+          fi
+          if [ "${VERSION_PLUGIN_GOOGLE}" != "${TAG}" ]; then
+            echo "Tag version (${TAG}) does not match packages/plugin-google version (${VERSION_PLUGIN_GOOGLE})."
+            exit 1
+          fi
           if [ "${VERSION_CORE}" != "${VERSION_SDK}" ]; then
             echo "Package versions do not match: core=${VERSION_CORE} agent-sdk=${VERSION_SDK}."
+            exit 1
+          fi
+          if [ "${VERSION_CORE}" != "${VERSION_KOOKABURRA}" ]; then
+            echo "Package versions do not match: core=${VERSION_CORE} kookaburra=${VERSION_KOOKABURRA}."
+            exit 1
+          fi
+          if [ "${VERSION_CORE}" != "${VERSION_PLUGIN_GOOGLE}" ]; then
+            echo "Package versions do not match: core=${VERSION_CORE} plugin-google=${VERSION_PLUGIN_GOOGLE}."
             exit 1
           fi
 
@@ -76,6 +94,8 @@ jobs:
           const packageJsonPaths = [
             './packages/core/package.json',
             './packages/agent-sdk/package.json',
+            './packages/kookaburra/package.json',
+            './packages/plugin-google/package.json',
           ];
           const depFields = ['dependencies', 'optionalDependencies', 'peerDependencies'];
           const bad = [];
@@ -102,9 +122,13 @@ jobs:
         run: |
           pnpm --filter @kooka/core exec npm pack
           pnpm --filter @kooka/agent-sdk exec npm pack
+          pnpm --filter @kooka/plugin-google exec npm pack
+          pnpm --filter @kooka/kookaburra exec npm pack
 
       - name: Publish to npm
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.dry_run != true }}
         run: |
           pnpm --filter @kooka/core exec npm publish --access public
           pnpm --filter @kooka/agent-sdk exec npm publish --access public
+          pnpm --filter @kooka/plugin-google exec npm publish --access public
+          pnpm --filter @kooka/kookaburra exec npm publish --access public

@@ -77,7 +77,7 @@ importers:
   packages/kookaburra:
     dependencies:
       '@kooka/agent-sdk':
-        specifier: workspace:*
+        specifier: ^0.1.4
         version: link:../agent-sdk
       croner:
         specifier: ^10.0.1
