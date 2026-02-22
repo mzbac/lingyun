@@ -1,0 +1,29 @@
+{
+  "name": "@kooka/kookaburra",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Kookaburra: agent orchestration CLI for agentic workflows (@kooka/agent-sdk).",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mzbac/lingyun",
+    "directory": "packages/kookaburra"
+  },
+  "license": "Apache-2.0",
+  "main": "./dist/cli.js",
+  "types": "./dist/cli.d.ts",
+  "scripts": {
+    "clean": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build": "pnpm run clean && node scripts/ensure-agent-sdk-build.cjs && tsc -p tsconfig.json",
+    "typecheck": "node scripts/ensure-agent-sdk-build.cjs && tsc -p tsconfig.json --noEmit",
+    "kookaburra": "node dist/cli.js"
+  },
+  "dependencies": {
+    "@kooka/agent-sdk": "workspace:*",
+    "croner": "^10.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.16",
+    "typescript": "^5.3.3"
+  }
+}

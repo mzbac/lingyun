@@ -5,6 +5,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import {
   DEFAULT_BACKGROUND_TTL_MS,
+  buildSafeChildProcessEnv,
   cleanupDeadBackgroundJobs,
   createBackgroundJobKey,
   getBackgroundJob,
@@ -32,6 +33,25 @@ type BackgroundTerminalRecord = {
   expiresAt?: number;
   ttlTimer?: NodeJS.Timeout;
 };
+
+function buildSandboxedTerminalEnv(): Record<string, string | null> {
+  // Best-effort "env_clear" behavior for VS Code terminals: unset everything
+  // except a small allowlist so we don't leak host secrets (API keys, tokens).
+  const allow = buildSafeChildProcessEnv({ baseEnv: process.env });
+  const out: Record<string, string | null> = {};
+
+  for (const key of Object.keys(process.env)) {
+    out[key] = null;
+  }
+
+  for (const [key, value] of Object.entries(allow)) {
+    if (typeof value === 'string') {
+      out[key] = value;
+    }
+  }
+
+  return out;
+}
 
 function hashForLabel(input: string): string {
   return crypto.createHash('sha1').update(input).digest('hex').slice(0, 8);
@@ -365,6 +385,7 @@ class BackgroundTerminalManager {
       name: terminalName,
       cwd: args.cwd,
       isTransient: true,
+      env: buildSandboxedTerminalEnv(),
     });
     terminal.show(true);
     await new Promise<void>((resolve) => setTimeout(resolve, 50));

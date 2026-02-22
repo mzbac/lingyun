@@ -642,6 +642,40 @@ suite('LingYun Agent SDK', () => {
     }
   });
 
+  test('plugin module specifiers resolve from workspaceRoot node_modules', async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'lingyun-sdk-test-plugin-module-'));
+    try {
+      const pkgDir = path.join(tmp, 'node_modules', 'workspace-plugin');
+      await fs.mkdir(pkgDir, { recursive: true });
+      await fs.writeFile(
+        path.join(pkgDir, 'package.json'),
+        JSON.stringify({ name: 'workspace-plugin', version: '0.0.0', main: 'index.js' }, null, 2) + '\n'
+      );
+      await fs.writeFile(
+        path.join(pkgDir, 'index.js'),
+        [
+          "module.exports = {",
+          "  tool: {",
+          "    workspace_hello: {",
+          "      description: 'workspace hello tool',",
+          "      parameters: { type: 'object', properties: {}, required: [] },",
+          "      execute: async () => ({ success: true, data: 'ok' }),",
+          "    }",
+          "  }",
+          "};",
+          "",
+        ].join('\n')
+      );
+
+      const plugins = new PluginManager({ workspaceRoot: tmp, plugins: ['workspace-plugin'], autoDiscover: false });
+      const tools = await plugins.getPluginTools();
+      assert.strictEqual(tools.length, 1);
+      assert.strictEqual(tools[0]!.toolId, 'workspace_hello');
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
   test('rejects plugin tool id collisions across plugins', async () => {
     const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'lingyun-sdk-test-plugin-collision-'));
     try {

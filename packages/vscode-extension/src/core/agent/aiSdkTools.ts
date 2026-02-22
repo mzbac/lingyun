@@ -67,6 +67,87 @@ function getShellCwd(execution: ToolDefinition['execution']): string | undefined
   return asString(executionRecord?.cwd);
 }
 
+const DOTENV_ALLOWLIST_SUFFIXES = ['.env.sample', '.env.example', '.example', '.env.template'];
+const DOTENV_TOKEN_REGEX = /(^|[^A-Za-z0-9_])(\.env(?:\.[A-Za-z0-9_.-]+)?)(?=$|[^A-Za-z0-9_.-])/g;
+
+function stripShellToken(token: string): string {
+  return token.replace(/^[`"'()[\]{}<>,;|&]+|[`"'()[\]{}<>,;|&]+$/g, '');
+}
+
+function isProtectedDotEnvBasename(value: string): boolean {
+  const basename = path.basename(value).toLowerCase();
+  return (
+    /^\.env(\.|$)/.test(basename) &&
+    !DOTENV_ALLOWLIST_SUFFIXES.some(allowed => basename.endsWith(allowed))
+  );
+}
+
+function findProtectedDotEnvMentions(text: string): string[] {
+  const out = new Set<string>();
+  for (const match of text.matchAll(DOTENV_TOKEN_REGEX)) {
+    const candidate = match[2];
+    if (candidate && isProtectedDotEnvBasename(candidate)) {
+      out.add(candidate);
+    }
+  }
+  return [...out];
+}
+
+function collectDotEnvApprovalTargets(
+  def: ToolDefinition,
+  args: Record<string, unknown>,
+): string[] {
+  const out = new Set<string>();
+
+  const filePath = asString(args.filePath);
+  if (filePath && isProtectedDotEnvBasename(filePath)) {
+    out.add(filePath);
+  }
+
+  if (def.id === 'grep') {
+    const searchPath = asString(args.path);
+    if (searchPath && isProtectedDotEnvBasename(searchPath)) {
+      out.add(searchPath);
+    }
+    const include = asString(args.include);
+    if (include) {
+      for (const token of include.split(/\s+/).map(stripShellToken).filter(Boolean)) {
+        if (isProtectedDotEnvBasename(token)) {
+          out.add(token);
+        }
+      }
+      for (const token of findProtectedDotEnvMentions(include)) {
+        out.add(token);
+      }
+    }
+  }
+
+  const isShellExecutionTool =
+    def.id === 'bash' ||
+    def.id === 'shell.run' ||
+    def.id === 'shell.terminal' ||
+    def.execution?.type === 'shell';
+
+  if (isShellExecutionTool) {
+    const commandText =
+      asString(args.command) ||
+      (def.execution?.type === 'shell' ? asString((def.execution as unknown as Record<string, unknown>).script) : undefined);
+    if (commandText) {
+      for (const token of commandText.split(/\s+/).map(stripShellToken).filter(Boolean)) {
+        const rhs = token.includes('=') ? token.slice(token.lastIndexOf('=') + 1) : token;
+        if (rhs && isProtectedDotEnvBasename(rhs)) {
+          out.add(rhs);
+        }
+      }
+      for (const token of findProtectedDotEnvMentions(commandText)) {
+        out.add(token);
+      }
+    }
+  }
+
+  return [...out];
+}
+
 export function createAISDKTools(params: CreateAISDKToolsParams): Record<string, unknown> {
   const out: Record<string, unknown> = {};
 
@@ -263,6 +344,18 @@ export function createAISDKTools(params: CreateAISDKToolsParams): Record<string,
         }
 
         let requiresApproval = permissionAction === 'ask' || !!def.metadata?.requiresApproval;
+        const dotEnvApprovalTargets = collectDotEnvApprovalTargets(def, resolvedArgs);
+        const requiresManualDotEnvApproval = dotEnvApprovalTargets.length > 0;
+        if (requiresManualDotEnvApproval) {
+          requiresApproval = true;
+          if (debugToolsEnabled) {
+            params.callbacks?.onDebug?.(
+              `[Tool] approval-required tool=${toolName} call=${tc.id} reason=dotenv-access paths=${dotEnvApprovalTargets
+                .map(p => truncateForDebug(p, 200))
+                .join(',')}`,
+            );
+          }
+        }
 
         const isShellExecutionTool =
           def.id === 'bash' ||
@@ -421,7 +514,8 @@ export function createAISDKTools(params: CreateAISDKToolsParams): Record<string,
           }
         }
 
-        const allowAutoApprove = params.mode !== 'plan' && !!config.autoApprove;
+        const allowAutoApprove =
+          params.mode !== 'plan' && !!config.autoApprove && !requiresManualDotEnvApproval;
         if (requiresApproval && !allowAutoApprove) {
           const approved = (await params.callbacks?.onRequestApproval?.(tc, def)) ?? false;
           if (!approved) {

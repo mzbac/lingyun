@@ -6,6 +6,7 @@ import type { ToolDefinition, ToolHandler } from '../../types.js';
 import {
   DEFAULT_BACKGROUND_KILL_GRACE_MS,
   DEFAULT_BACKGROUND_TTL_MS,
+  buildSafeChildProcessEnv,
   cleanupDeadBackgroundJobs,
   createBackgroundJobKey,
   evaluateShellCommand,
@@ -188,6 +189,8 @@ export const bashHandler: ToolHandler = async (args, context) => {
   const backgroundKey = runInBackground ? createBackgroundJobKey({ cwd, command: commandToRun }) : '';
   const backgroundTtlMs = ttlMsArg ?? DEFAULT_BACKGROUND_TTL_MS;
 
+  const env = buildSafeChildProcessEnv({ baseEnv: process.env });
+
   if (runInBackground) {
     cleanupDeadBackgroundJobs(backgroundScope);
     const existing = getBackgroundJob(backgroundScope, backgroundKey);
@@ -221,7 +224,7 @@ export const bashHandler: ToolHandler = async (args, context) => {
       cwd,
       shell: true,
       detached: process.platform !== 'win32',
-      env: process.env,
+      env,
       stdio: runInBackground ? ['ignore', 'ignore', 'ignore'] : ['ignore', 'pipe', 'pipe'],
     });
 

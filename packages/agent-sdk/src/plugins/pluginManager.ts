@@ -1,5 +1,6 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { createRequire } from 'node:module';
 import { pathToFileURL } from 'url';
 
 import type { LingyunHookName, LingyunHooks, LingyunPluginFactory, LingyunPluginInput, LingyunPluginToolEntry } from './types.js';
@@ -65,13 +66,28 @@ async function importPluginModule(spec: string, workspaceRoot?: string): Promise
     return import(trimmed);
   }
 
-  const looksPath = trimmed.startsWith('.') || trimmed.startsWith('/') || trimmed.includes(path.sep);
+  // Treat as a file path only when it is explicitly path-like.
+  // Note: module specifiers can contain "/" (scoped packages, subpath imports),
+  // so we must not use `includes(path.sep)` as a heuristic.
+  const looksPath = trimmed.startsWith('.') || path.isAbsolute(trimmed);
   if (looksPath) {
     const resolvedPath = path.resolve(workspaceRoot || process.cwd(), trimmed);
     return import(pathToFileURL(resolvedPath).href);
   }
 
   // treat as module specifier resolvable by Node
+  // Important: resolve relative to the workspace root (not the runtime install path)
+  // so repos can install their own plugins in their local node_modules.
+  if (workspaceRoot) {
+    try {
+      const req = createRequire(import.meta.url);
+      const resolved = req.resolve(trimmed, { paths: [workspaceRoot] });
+      return import(pathToFileURL(resolved).href);
+    } catch {
+      // fall through
+    }
+  }
+
   return import(trimmed);
 }
 
@@ -167,7 +183,7 @@ export class PluginManager {
           }
         }
       } catch (error) {
-        this.options.logger?.(`LingYun SDK: Failed to load plugin ${spec}: ${error instanceof Error ? error.message : String(error)}`);
+        this.options.logger?.(`agent-sdk: failed to load plugin ${spec}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
   }
@@ -187,7 +203,7 @@ export class PluginManager {
       try {
         await fn(input, output);
       } catch (error) {
-        this.options.logger?.(`LingYun SDK: plugin hook error ${entry.id}.${name}: ${error instanceof Error ? error.message : String(error)}`);
+        this.options.logger?.(`agent-sdk: plugin hook error ${entry.id}.${name}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
     return output;

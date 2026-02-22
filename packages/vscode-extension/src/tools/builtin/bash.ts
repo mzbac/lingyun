@@ -6,6 +6,7 @@ import * as vscode from 'vscode';
 import type { ToolDefinition, ToolHandler } from '../../core/types';
 import {
   DEFAULT_BACKGROUND_TTL_MS,
+  buildSafeChildProcessEnv,
   cleanupDeadBackgroundJobs,
   createBackgroundJobKey,
   evaluateShellCommand,
@@ -142,10 +143,11 @@ async function runBackgroundSpawn(args: {
     removeBackgroundJob(args.scope, key);
   }
 
+  const env = buildSafeChildProcessEnv({ baseEnv: process.env });
   const proc = cp.spawn(args.command, {
     cwd: args.cwd,
     shell: true,
-    env: process.env,
+    env,
     detached: process.platform !== 'win32',
     stdio: 'ignore',
   });
@@ -390,10 +392,11 @@ export const bashHandler: ToolHandler = async (args, context) => {
   }
 
   return new Promise((resolve) => {
+    const env = buildSafeChildProcessEnv({ baseEnv: process.env });
     const proc = cp.spawn(commandToRun, {
       cwd,
       shell: true,
-      env: process.env,
+      env,
       detached: process.platform !== 'win32',
       stdio: ['ignore', 'pipe', 'pipe'],
     });

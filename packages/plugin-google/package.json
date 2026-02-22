@@ -1,0 +1,45 @@
+{
+  "name": "@kooka/plugin-google",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Gmail + Google Calendar tools plugin for @kooka/agent-sdk runtimes.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mzbac/lingyun",
+    "directory": "packages/plugin-google"
+  },
+  "license": "Apache-2.0",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "publishConfig": {
+    "access": "public"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "clean": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build": "pnpm run clean && tsc -p tsconfig.json",
+    "prepack": "pnpm run build",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "google-auth-library": "^10.3.0",
+    "googleapis": "^156.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.16",
+    "typescript": "^5.3.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

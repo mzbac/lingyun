@@ -33,6 +33,16 @@ export type { SkillInfo, SkillIndex } from './skills.js';
 export { getSkillIndex, loadSkillFile } from './skills.js';
 export * from './persistence/index.js';
 
+// Neutral API aliases for hosts that don't want product-specific naming.
+export { LingyunAgent as Agent, LingyunSession as AgentSession, type LingyunAgentRuntimeOptions as AgentRuntimeOptions } from './agent/agent.js';
+export type {
+  LingyunEvent as AgentEvent,
+  LingyunNotice as AgentNotice,
+  LingyunRun as AgentRun,
+  LingyunRunResult as AgentRunResult,
+} from './types.js';
+export type { LingyunSessionSnapshot as SessionSnapshot, LingyunSessionSnapshotV1 as SessionSnapshotV1 } from './persistence/sessionSnapshot.js';
+
 import type { AgentConfig, LLMProvider } from './types.js';
 import type { CompactionConfig, ModelLimit } from '@kooka/core';
 import { OpenAICompatibleProvider, type OpenAICompatibleProviderOptions } from './llm/openaiCompatible.js';
@@ -50,7 +60,7 @@ export type CreateLingyunAgentOptions = {
   allowExternalPaths?: boolean;
   toolTimeoutMs?: number;
   tools?: { builtin?: boolean; builtinOptions?: BuiltinToolsOptions };
-  plugins?: { modules?: string[]; autoDiscover?: boolean; workspaceDirName?: string };
+  plugins?: { modules?: string[]; autoDiscover?: boolean; workspaceDirName?: string; logger?: (message: string) => void };
   modelLimits?: Record<string, ModelLimit>;
   compaction?: Partial<CompactionConfig>;
 };
@@ -87,6 +97,7 @@ export function createLingyunAgent(options: CreateLingyunAgentOptions): {
     autoDiscover: options.plugins?.autoDiscover,
     workspaceDirName: options.plugins?.workspaceDirName,
     workspaceRoot: options.workspaceRoot,
+    logger: options.plugins?.logger,
   });
 
   const config: AgentConfig = {
@@ -115,4 +126,9 @@ export function createLingyunAgent(options: CreateLingyunAgentOptions): {
 
   const agent = new LingyunAgent(llm, config, registry, runtime);
   return { agent, registry, plugins, llm };
+}
+
+export type CreateAgentOptions = CreateLingyunAgentOptions;
+export function createAgent(options: CreateAgentOptions): ReturnType<typeof createLingyunAgent> {
+  return createLingyunAgent(options);
 }

@@ -1,5 +1,6 @@
 import * as assert from 'assert';
 
+import { evaluateShellCommand } from '@kooka/core';
 import { getBuiltinTools, type ToolContext } from '@kooka/agent-sdk';
 
 function isPidAlive(pid: number): boolean {
@@ -35,6 +36,25 @@ function createToolContext(): ToolContext {
 
 suite('Bash Tool', () => {
   const bashHandler = getBuiltinTools().find((t) => t.tool.id === 'bash')!.handler;
+
+  test('evaluateShellCommand ignores operators inside quotes', () => {
+    assert.strictEqual(evaluateShellCommand('echo "a|b"').verdict, 'allow');
+    assert.strictEqual(evaluateShellCommand("echo 'a;b'").verdict, 'allow');
+  });
+
+  test('evaluateShellCommand requires approval for redirection', () => {
+    assert.strictEqual(evaluateShellCommand('echo hi > out.txt').verdict, 'needs_approval');
+    assert.strictEqual(evaluateShellCommand('echo hi < in.txt').verdict, 'needs_approval');
+  });
+
+  test('evaluateShellCommand requires approval for background chaining and substitution', () => {
+    assert.strictEqual(evaluateShellCommand('echo hi &').verdict, 'needs_approval');
+    assert.strictEqual(evaluateShellCommand('echo "$(pwd)"').verdict, 'needs_approval');
+  });
+
+  test('evaluateShellCommand denies dangerous patterns', () => {
+    assert.strictEqual(evaluateShellCommand('rm -rf /').verdict, 'deny');
+  });
 
   test('rejects likely long-running server commands without background or timeout', async () => {
     const context = createToolContext();

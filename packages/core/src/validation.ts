@@ -262,17 +262,104 @@ const BLOCKED_SHELL_PATTERNS = [
   />[>&]\s*\/dev\//i,
 ];
 
-const SHELL_META_PATTERNS = [
-  /;/,
-  /&&/,
-  /\|\|/,
-  /\|(?!\|)/,
-  /`/,
-  /\$\(/,
-  /\$\{/,
-  /\n/,
-  /\r/,
-];
+type ShellMetaHit =
+  | { kind: 'separator'; token: ';' | '&&' | '||' | '|' }
+  | { kind: 'redirection'; token: '<' | '>' }
+  | { kind: 'background'; token: '&' }
+  | { kind: 'subshell'; token: '`' | '$(' }
+  | { kind: 'newline'; token: '\\n' | '\\r' };
+
+type QuoteState = 'none' | 'single' | 'double';
+
+function findFirstShellMeta(command: string): ShellMetaHit | undefined {
+  let quote: QuoteState = 'none';
+  let escaped = false;
+
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+
+    if (quote === 'single') {
+      if (ch === "'") quote = 'none';
+      continue;
+    }
+
+    // Outside single quotes, backslash escapes the next character.
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+
+    if (ch === '\\') {
+      escaped = true;
+      continue;
+    }
+
+    if (quote === 'double') {
+      if (ch === '"') {
+        quote = 'none';
+        continue;
+      }
+
+      // Command substitution still executes inside double quotes.
+      if (ch === '`') return { kind: 'subshell', token: '`' };
+      if (ch === '$' && command[i + 1] === '(') return { kind: 'subshell', token: '$(' };
+
+      continue;
+    }
+
+    // quote === 'none'
+    if (ch === "'") {
+      quote = 'single';
+      continue;
+    }
+    if (ch === '"') {
+      quote = 'double';
+      continue;
+    }
+
+    if (ch === '\n') return { kind: 'newline', token: '\\n' };
+    if (ch === '\r') return { kind: 'newline', token: '\\r' };
+
+    if (ch === '<' || ch === '>') return { kind: 'redirection', token: ch };
+
+    if (ch === ';') return { kind: 'separator', token: ';' };
+
+    if (ch === '&') {
+      if (command[i + 1] === '&') {
+        i++;
+        return { kind: 'separator', token: '&&' };
+      }
+      return { kind: 'background', token: '&' };
+    }
+
+    if (ch === '|') {
+      if (command[i + 1] === '|') {
+        i++;
+        return { kind: 'separator', token: '||' };
+      }
+      return { kind: 'separator', token: '|' };
+    }
+
+    if (ch === '`') return { kind: 'subshell', token: '`' };
+    if (ch === '$' && command[i + 1] === '(') return { kind: 'subshell', token: '$(' };
+  }
+
+  return undefined;
+}
+
+function stripLeadingEnvAssignments(command: string): string {
+  const words = command.trim().split(/\s+/);
+  let i = 0;
+  while (i < words.length) {
+    const word = words[i] || '';
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(word)) {
+      i++;
+      continue;
+    }
+    break;
+  }
+  return words.slice(i).join(' ');
+}
 
 export function evaluateShellCommand(command: string): ShellCommandDecision {
   for (const pattern of BLOCKED_SHELL_PATTERNS) {
@@ -281,16 +368,23 @@ export function evaluateShellCommand(command: string): ShellCommandDecision {
     }
   }
 
-  for (const pattern of SHELL_META_PATTERNS) {
-    if (pattern.test(command)) {
-      return {
-        verdict: 'needs_approval',
-        reason: 'Command contains shell metacharacters (;, &&, ||, |, `, $()) and requires approval',
-      };
-    }
+  const meta = findFirstShellMeta(command);
+  if (meta) {
+    const reason =
+      meta.kind === 'separator'
+        ? 'Command contains shell operators (;, &&, ||, |) and requires approval'
+        : meta.kind === 'redirection'
+          ? 'Command contains shell redirection (<, >) and requires approval'
+          : meta.kind === 'background'
+            ? 'Command contains background chaining (&) and requires approval'
+            : meta.kind === 'subshell'
+              ? 'Command contains command substitution (` or $()) and requires approval'
+              : 'Command contains newlines and requires approval';
+    return { verdict: 'needs_approval', reason };
   }
 
-  const baseCommand = command.trim().split(/\s+/)[0]?.split('/').pop() || '';
+  const normalized = stripLeadingEnvAssignments(command);
+  const baseCommand = normalized.trim().split(/\s+/)[0]?.split('/').pop() || '';
   if (SAFE_SHELL_COMMANDS.has(baseCommand)) {
     return { verdict: 'allow' };
   }

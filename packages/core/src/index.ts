@@ -7,6 +7,9 @@ export { evaluatePermission, mergeRulesets, wildcardMatch } from './permission';
 
 export { findExternalPathReferencesInShellCommand, isPathInsideWorkspace } from './shellPaths';
 
+export type { SafeChildProcessEnvOptions } from './shellEnv';
+export { buildSafeChildProcessEnv } from './shellEnv';
+
 export type { SkillListEntry } from './skills';
 export { extractSkillMentions, renderSkillsSectionForPrompt, selectSkillsForText } from './skills';
 

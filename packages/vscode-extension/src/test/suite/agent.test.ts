@@ -1355,6 +1355,180 @@ suite('AgentLoop', () => {
     }
   });
 
+  test('dotenv read requires manual approval even when autoApprove is enabled', async () => {
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const prevAutoApprove = cfg.get('autoApprove');
+    await cfg.update('autoApprove', true, true);
+
+    try {
+      let executed = false;
+      let approvalRequested = false;
+
+      registry.registerTool(
+        {
+          id: 'read',
+          name: 'Read File',
+          description: 'Reads a file',
+          parameters: {
+            type: 'object',
+            properties: {
+              filePath: { type: 'string' },
+            },
+            required: ['filePath'],
+          },
+          execution: { type: 'function', handler: 'test.read' },
+          metadata: {
+            permission: 'read',
+            readOnly: true,
+            requiresApproval: false,
+            permissionPatterns: [{ arg: 'filePath', kind: 'path' }],
+          },
+        },
+        async () => {
+          executed = true;
+          return { success: true, data: 'ok' };
+        }
+      );
+
+      mockLLM.setNextResponse({
+        kind: 'tool-call',
+        toolCallId: 'call_dotenv_read',
+        toolName: 'read',
+        input: { filePath: '.env' },
+      });
+      mockLLM.queueResponse({ kind: 'text', content: 'Done' });
+
+      const result = await agent.run('Read dotenv file', {
+        onRequestApproval: async () => {
+          approvalRequested = true;
+          return true;
+        },
+      });
+
+      assert.strictEqual(result, 'Done');
+      assert.strictEqual(approvalRequested, true);
+      assert.strictEqual(executed, true);
+    } finally {
+      await cfg.update('autoApprove', prevAutoApprove as any, true);
+    }
+  });
+
+  test('dotenv sample files do not require manual approval', async () => {
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const prevAutoApprove = cfg.get('autoApprove');
+    await cfg.update('autoApprove', true, true);
+
+    try {
+      let executed = false;
+      let approvalRequested = false;
+
+      registry.registerTool(
+        {
+          id: 'read',
+          name: 'Read File',
+          description: 'Reads a file',
+          parameters: {
+            type: 'object',
+            properties: {
+              filePath: { type: 'string' },
+            },
+            required: ['filePath'],
+          },
+          execution: { type: 'function', handler: 'test.read.sample' },
+          metadata: {
+            permission: 'read',
+            readOnly: true,
+            requiresApproval: false,
+            permissionPatterns: [{ arg: 'filePath', kind: 'path' }],
+          },
+        },
+        async () => {
+          executed = true;
+          return { success: true, data: 'ok' };
+        }
+      );
+
+      mockLLM.setNextResponse({
+        kind: 'tool-call',
+        toolCallId: 'call_dotenv_sample',
+        toolName: 'read',
+        input: { filePath: '.env.example' },
+      });
+      mockLLM.queueResponse({ kind: 'text', content: 'Done' });
+
+      const result = await agent.run('Read dotenv sample file', {
+        onRequestApproval: async () => {
+          approvalRequested = true;
+          return true;
+        },
+      });
+
+      assert.strictEqual(result, 'Done');
+      assert.strictEqual(approvalRequested, false);
+      assert.strictEqual(executed, true);
+    } finally {
+      await cfg.update('autoApprove', prevAutoApprove as any, true);
+    }
+  });
+
+  test('dotenv shell reads require manual approval even when autoApprove is enabled', async () => {
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const prevAutoApprove = cfg.get('autoApprove');
+    await cfg.update('autoApprove', true, true);
+
+    try {
+      let executed = false;
+      let approvalRequested = false;
+
+      registry.registerTool(
+        {
+          id: 'bash',
+          name: 'Run Command',
+          description: 'Executes a shell command',
+          parameters: {
+            type: 'object',
+            properties: {
+              command: { type: 'string' },
+            },
+            required: ['command'],
+          },
+          execution: { type: 'function', handler: 'test.bash.dotenv' },
+          metadata: {
+            permission: 'bash',
+            readOnly: false,
+            requiresApproval: false,
+            permissionPatterns: [{ arg: 'command', kind: 'command' }],
+          },
+        },
+        async () => {
+          executed = true;
+          return { success: true, data: 'ok' };
+        }
+      );
+
+      mockLLM.setNextResponse({
+        kind: 'tool-call',
+        toolCallId: 'call_dotenv_shell',
+        toolName: 'bash',
+        input: { command: 'python -c "print(open(\'.env\').read())"' },
+      });
+      mockLLM.queueResponse({ kind: 'text', content: 'Done' });
+
+      const result = await agent.run('Read dotenv through shell', {
+        onRequestApproval: async () => {
+          approvalRequested = true;
+          return true;
+        },
+      });
+
+      assert.strictEqual(result, 'Done');
+      assert.strictEqual(approvalRequested, true);
+      assert.strictEqual(executed, true);
+    } finally {
+      await cfg.update('autoApprove', prevAutoApprove as any, true);
+    }
+  });
+
   test('auto compaction - triggers after tool-call overflow', async () => {
     const cfg = vscode.workspace.getConfiguration('lingyun');
     const previousLimits = cfg.get('modelLimits');
