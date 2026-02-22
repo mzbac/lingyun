@@ -1,11 +1,12 @@
 import * as vscode from 'vscode';
 import { getMessageText } from '@kooka/core';
 import { EDIT_TOOL_IDS } from '../../core/agent/constants';
-import type { AgentCallbacks, ToolDefinition, ToolCall } from '../../core/types';
+import type { AgentCallbacks, ToolDefinition, ToolCall, ToolResult } from '../../core/types';
 import { cleanAssistantPreamble, formatErrorForUser, formatWorkspacePathForUI } from './utils';
 import type { ChatMessage } from './types';
 import { buildToolDiffView, createUnifiedDiff, computeUnifiedDiffStats, trimUnifiedDiff } from './toolDiff';
 import { resolveToolPath } from '../../tools/builtin/workspace';
+import { summarizeErrorForDebug } from '../../core/agent/debug';
 import { ChatViewProvider } from '../chat';
 
 const MAX_TOOL_DIFF_FILE_BYTES = 400_000;
@@ -106,6 +107,173 @@ async function readTextFileForDiff(
   }
 }
 
+type AgentStatusEvent = Parameters<NonNullable<AgentCallbacks['onStatusChange']>>[0];
+type ToolCallView = NonNullable<ChatMessage['toolCall']>;
+
+function appendDebugLog(view: ChatViewProvider, message: string): void {
+  const config = vscode.workspace.getConfiguration('lingyun');
+  const debugLlm = config.get<boolean>('debug.llm') ?? false;
+  const debugTools = config.get<boolean>('debug.tools') ?? false;
+  if (!debugLlm && !debugTools) return;
+
+  const isTool = typeof message === 'string' && message.startsWith('[Tool]');
+  if (isTool && !debugTools) return;
+  if (!isTool && !debugLlm) return;
+  if (!message) return;
+
+  const timestamp = new Date().toLocaleTimeString();
+  view.outputChannel?.appendLine(`[${timestamp}] ${message}`);
+}
+
+function postTurnStatus(view: ChatViewProvider, turnId: string | undefined, status: AgentStatusEvent): void {
+  if (!turnId) return;
+
+  if (status.type === 'retry') {
+    view.postMessage({
+      type: 'turnStatus',
+      turnId,
+      status: {
+        type: 'retry',
+        attempt: status.attempt,
+        nextRetryTime: status.nextRetryTime,
+        message: status.message,
+      },
+    });
+    return;
+  }
+
+  if (status.type === 'running') {
+    view.postMessage({
+      type: 'turnStatus',
+      turnId,
+      status: { type: 'running', message: status.message || '' },
+    });
+    return;
+  }
+
+  if (status.type === 'error') {
+    view.postMessage({
+      type: 'turnStatus',
+      turnId,
+      status: { type: 'error', message: status.message || 'unknown error' },
+    });
+    return;
+  }
+
+  if (status.type === 'done') {
+    view.postMessage({
+      type: 'turnStatus',
+      turnId,
+      status: { type: 'done' },
+    });
+  }
+}
+
+function resolveToolCallUiPath(
+  view: ChatViewProvider,
+  tc: ToolCall,
+  options?: { includeWorkdir?: boolean },
+): { path: string | undefined; filePathRaw: string | undefined } {
+  let filePathRaw: string | undefined;
+  try {
+    const args = JSON.parse(tc.function.arguments || '{}');
+    filePathRaw = (args as any).filePath || (args as any).path;
+    if (!filePathRaw && options?.includeWorkdir) {
+      filePathRaw = (args as any).workdir;
+    }
+    if (!filePathRaw && typeof (args as any).fileId === 'string') {
+      filePathRaw = view.agent.resolveFileId(String((args as any).fileId)) || undefined;
+    }
+  } catch {
+    // Ignore parse errors
+  }
+
+  return {
+    path: formatWorkspacePathForUI(filePathRaw),
+    filePathRaw,
+  };
+}
+
+function formatToolResultText(result: ToolResult): string {
+  if (result.data === undefined || result.data === null) {
+    return result.error || (result.success ? 'Done' : 'No data');
+  }
+  if (typeof result.data === 'string') {
+    return result.data;
+  }
+  return JSON.stringify(result.data, null, 2);
+}
+
+function applyCommonToolResultFields(
+  toolCall: ToolCallView,
+  result: ToolResult,
+): {
+  resultStr: string;
+  isTaskTool: boolean;
+  hasDiff: boolean;
+  maybeTodos: unknown[] | undefined;
+} {
+  const previousStatus = toolCall.status;
+  toolCall.status = result.success
+    ? 'success'
+    : previousStatus === 'rejected'
+      ? 'rejected'
+      : 'error';
+
+  const resultStr = formatToolResultText(result);
+
+  if (result.data && typeof result.data === 'object') {
+    const data = result.data as Record<string, unknown>;
+    if (data.diff && typeof data.diff === 'string') {
+      toolCall.diff = data.diff;
+    }
+    if (data.isProtected) {
+      toolCall.isProtected = true;
+    }
+    if (data.isOutsideWorkspace) {
+      toolCall.isOutsideWorkspace = true;
+    }
+  }
+
+  const meta = (result.metadata || {}) as Record<string, unknown>;
+  if (!result.success) {
+    const errorType = typeof meta.errorType === 'string' ? meta.errorType : '';
+    if (errorType === 'external_paths_disabled') {
+      toolCall.blockedReason = 'external_paths_disabled';
+      toolCall.blockedSettingKey =
+        typeof meta.blockedSettingKey === 'string'
+          ? meta.blockedSettingKey
+          : 'lingyun.security.allowExternalPaths';
+      toolCall.isOutsideWorkspace = true;
+    }
+    if (meta.isOutsideWorkspace) {
+      toolCall.isOutsideWorkspace = true;
+    }
+  }
+
+  if (toolCall.id === 'lsp' && result.success) {
+    try {
+      toolCall.lsp = JSON.parse(resultStr);
+    } catch {
+      // ignore parse errors
+    }
+  }
+
+  const maybeTodos = (result.metadata as any)?.todos;
+  if (Array.isArray(maybeTodos)) {
+    toolCall.todos = maybeTodos;
+  }
+
+  const hasDiff = typeof toolCall.diff === 'string' && toolCall.diff.length > 0;
+  const isTaskTool = toolCall.id === 'task';
+  return {
+    resultStr,
+    isTaskTool,
+    hasDiff,
+    maybeTodos: Array.isArray(maybeTodos) ? maybeTodos : undefined,
+  };
+}
+
 Object.assign(ChatViewProvider.prototype, {
   createPlanningCallbacks(this: ChatViewProvider, planMsg: ChatMessage): AgentCallbacks {
     const persistSessions = this.isSessionPersistenceEnabled();
@@ -138,16 +306,7 @@ Object.assign(ChatViewProvider.prototype, {
         existing.toolCall.result = reason;
         this.postMessage({ type: 'updateTool', message: existing });
       } else {
-        let path: string | undefined;
-        try {
-          const args = JSON.parse(tc.function.arguments || '{}');
-          path = (args as any).filePath || (args as any).path || (args as any).workdir;
-          if (!path && typeof (args as any).fileId === 'string') {
-            path = this.agent.resolveFileId(String((args as any).fileId)) || undefined;
-          }
-        } catch {
-          // Ignore parse errors
-        }
+        const { path } = resolveToolCallUiPath(this, tc, { includeWorkdir: true });
 
         const toolMsg: ChatMessage = {
           id: crypto.randomUUID(),
@@ -180,60 +339,10 @@ Object.assign(ChatViewProvider.prototype, {
         this.postMessage({ type: 'context', context: this.getContextForUI() });
       },
       onDebug: (message) => {
-        const config = vscode.workspace.getConfiguration('lingyun');
-        const debugLlm = config.get<boolean>('debug.llm') ?? false;
-        const debugTools = config.get<boolean>('debug.tools') ?? false;
-        if (!debugLlm && !debugTools) return;
-
-        const isTool = typeof message === 'string' && message.startsWith('[Tool]');
-        if (isTool && !debugTools) return;
-        if (!isTool && !debugLlm) return;
-        if (!message) return;
-        const timestamp = new Date().toLocaleTimeString();
-        this.outputChannel?.appendLine(`[${timestamp}] ${message}`);
+        appendDebugLog(this, message);
       },
       onStatusChange: (status) => {
-        if (!planTurnId) return;
-
-        if (status.type === 'retry') {
-          this.postMessage({
-            type: 'turnStatus',
-            turnId: planTurnId,
-            status: {
-              type: 'retry',
-              attempt: status.attempt,
-              nextRetryTime: status.nextRetryTime,
-              message: status.message,
-            },
-          });
-          return;
-        }
-
-        if (status.type === 'running') {
-          this.postMessage({
-            type: 'turnStatus',
-            turnId: planTurnId,
-            status: { type: 'running', message: status.message || '' },
-          });
-          return;
-        }
-
-        if (status.type === 'error') {
-          this.postMessage({
-            type: 'turnStatus',
-            turnId: planTurnId,
-            status: { type: 'error', message: status.message || 'unknown error' },
-          });
-          return;
-        }
-
-        if (status.type === 'done') {
-          this.postMessage({
-            type: 'turnStatus',
-            turnId: planTurnId,
-            status: { type: 'done' },
-          });
-        }
+        postTurnStatus(this, planTurnId, status);
       },
       onAssistantToken: (token) => {
         buffered += token;
@@ -241,17 +350,7 @@ Object.assign(ChatViewProvider.prototype, {
         scheduleFlush();
       },
       onToolCall: (tc: ToolCall, def: ToolDefinition) => {
-        let path: string | undefined;
-        try {
-          const args = JSON.parse(tc.function.arguments || '{}');
-          path = (args as any).filePath || (args as any).path;
-          if (!path && typeof (args as any).fileId === 'string') {
-            path = this.agent.resolveFileId(String((args as any).fileId)) || undefined;
-          }
-        } catch {
-          // Ignore parse errors
-        }
-        path = formatWorkspacePathForUI(path);
+        const { path } = resolveToolCallUiPath(this, tc);
 
         const existing = [...this.messages].reverse().find(m => {
           if (m.role !== 'tool') return false;
@@ -303,76 +402,22 @@ Object.assign(ChatViewProvider.prototype, {
           .reverse()
           .find(m => m.toolCall?.approvalId === tc.id && m.stepId === planContainerId);
         if (toolMsg?.toolCall) {
-          const isTaskTool = toolMsg.toolCall.id === 'task';
-          const previousStatus = toolMsg.toolCall.status;
-          toolMsg.toolCall.status = result.success
-            ? 'success'
-            : previousStatus === 'rejected'
-              ? 'rejected'
-              : 'error';
-          let resultStr: string;
-          if (result.data === undefined || result.data === null) {
-            resultStr = result.error || (result.success ? 'Done' : 'No data');
-          } else if (typeof result.data === 'string') {
-            resultStr = result.data;
-          } else {
-            resultStr = JSON.stringify(result.data, null, 2);
-          }
-
-          if (result.data && typeof result.data === 'object') {
-            const data = result.data as Record<string, unknown>;
-            if (data.diff && typeof data.diff === 'string') {
-              toolMsg.toolCall.diff = data.diff;
-            }
-            if (data.isProtected) {
-              toolMsg.toolCall.isProtected = true;
-            }
-            if (data.isOutsideWorkspace) {
-              toolMsg.toolCall.isOutsideWorkspace = true;
-            }
-          }
-
-          const meta = (result.metadata || {}) as Record<string, unknown>;
-          if (!result.success) {
-            const errorType = typeof meta.errorType === 'string' ? meta.errorType : '';
-            if (errorType === 'external_paths_disabled') {
-              toolMsg.toolCall.blockedReason = 'external_paths_disabled';
-              toolMsg.toolCall.blockedSettingKey =
-                typeof meta.blockedSettingKey === 'string'
-                  ? meta.blockedSettingKey
-                  : 'lingyun.security.allowExternalPaths';
-              toolMsg.toolCall.isOutsideWorkspace = true;
-            }
-            if (meta.isOutsideWorkspace) {
-              toolMsg.toolCall.isOutsideWorkspace = true;
-            }
-          }
-
-          if (toolMsg.toolCall.id === 'lsp' && result.success) {
-            try {
-              toolMsg.toolCall.lsp = JSON.parse(resultStr);
-            } catch {
-              // ignore parse errors
-            }
-          }
+          const { resultStr, isTaskTool, hasDiff, maybeTodos } = applyCommonToolResultFields(
+            toolMsg.toolCall,
+            result,
+          );
 
           if (isTaskTool && result.success) {
             const childId = upsertTaskChildSession(this, result);
             if (childId) toolMsg.toolCall.taskSessionId = childId;
           }
 
-          const hasDiff = typeof toolMsg.toolCall.diff === 'string' && toolMsg.toolCall.diff.length > 0;
           let storeOutput = !result.success || (!!resultStr.trim() && !hasDiff);
           if (toolMsg.toolCall.id === 'todowrite' || toolMsg.toolCall.id === 'todoread') {
             // Todo output is already surfaced in the header popover; avoid spamming the chat with raw JSON.
             storeOutput = false;
           }
           toolMsg.toolCall.result = storeOutput ? resultStr.substring(0, 4000) : undefined;
-
-          const maybeTodos = (result.metadata as any)?.todos;
-          if (Array.isArray(maybeTodos)) {
-            toolMsg.toolCall.todos = maybeTodos;
-          }
 
           this.postMessage({ type: 'updateTool', message: toolMsg });
 
@@ -668,19 +713,7 @@ Object.assign(ChatViewProvider.prototype, {
         postStepMsgIfNeeded();
         reconcileAssistantForToolCall();
 
-        let path: string | undefined;
-        let filePathRaw: string | undefined;
-        try {
-          const args = JSON.parse(tc.function.arguments || '{}');
-          filePathRaw = (args as any).filePath || (args as any).path;
-          if (!filePathRaw && typeof (args as any).fileId === 'string') {
-            filePathRaw = this.agent.resolveFileId(String((args as any).fileId)) || undefined;
-          }
-          path = filePathRaw;
-        } catch {
-          // Ignore parse errors
-        }
-        path = formatWorkspacePathForUI(path);
+        const { path, filePathRaw } = resolveToolCallUiPath(this, tc);
 
         const existing = [...this.messages].reverse().find(m => {
           if (m.role !== 'tool') return false;
@@ -767,13 +800,7 @@ Object.assign(ChatViewProvider.prototype, {
           existing.toolCall.result = reason;
           this.postMessage({ type: 'updateTool', message: existing });
         } else {
-          let path: string | undefined;
-          try {
-            const args = JSON.parse(tc.function.arguments || '{}');
-            path = (args as any).filePath || (args as any).path || (args as any).workdir;
-          } catch {
-            // Ignore parse errors
-          }
+          const { path } = resolveToolCallUiPath(this, tc, { includeWorkdir: true });
 
           const toolMsg: ChatMessage = {
             id: crypto.randomUUID(),
@@ -788,7 +815,7 @@ Object.assign(ChatViewProvider.prototype, {
               args: tc.function.arguments,
               status: 'error',
               approvalId: tc.id,
-              path: formatWorkspacePathForUI(path),
+              path,
               result: reason,
             },
           };
@@ -807,22 +834,8 @@ Object.assign(ChatViewProvider.prototype, {
           return true;
         });
         if (toolMsg?.toolCall) {
-          const isTaskTool = toolMsg.toolCall.id === 'task';
           const toolCall = toolMsg.toolCall;
-          const previousStatus = toolMsg.toolCall.status;
-          toolMsg.toolCall.status = result.success
-            ? 'success'
-            : previousStatus === 'rejected'
-              ? 'rejected'
-              : 'error';
-          let resultStr: string;
-          if (result.data === undefined || result.data === null) {
-            resultStr = result.error || (result.success ? 'Done' : 'No data');
-          } else if (typeof result.data === 'string') {
-            resultStr = result.data;
-          } else {
-            resultStr = JSON.stringify(result.data, null, 2);
-          }
+          const { resultStr, isTaskTool, hasDiff, maybeTodos } = applyCommonToolResultFields(toolCall, result);
 
           const toolId = toolMsg.toolCall.id;
           if (result.success && (toolId === 'glob' || toolId === 'file.list') && typeof resultStr === 'string') {
@@ -904,49 +917,11 @@ Object.assign(ChatViewProvider.prototype, {
             this.toolDiffBeforeByToolCallId.delete(tc.id);
           }
 
-          if (result.data && typeof result.data === 'object') {
-            const data = result.data as Record<string, unknown>;
-            if (data.diff && typeof data.diff === 'string') {
-              toolMsg.toolCall.diff = data.diff;
-            }
-            if (data.isProtected) {
-              toolMsg.toolCall.isProtected = true;
-            }
-            if (data.isOutsideWorkspace) {
-              toolMsg.toolCall.isOutsideWorkspace = true;
-            }
-          }
-
-          const meta = (result.metadata || {}) as Record<string, unknown>;
-          if (!result.success) {
-            const errorType = typeof meta.errorType === 'string' ? meta.errorType : '';
-            if (errorType === 'external_paths_disabled') {
-              toolMsg.toolCall.blockedReason = 'external_paths_disabled';
-              toolMsg.toolCall.blockedSettingKey =
-                typeof meta.blockedSettingKey === 'string'
-                  ? meta.blockedSettingKey
-                  : 'lingyun.security.allowExternalPaths';
-              toolMsg.toolCall.isOutsideWorkspace = true;
-            }
-            if (meta.isOutsideWorkspace) {
-              toolMsg.toolCall.isOutsideWorkspace = true;
-            }
-          }
-
-          if (toolMsg.toolCall.id === 'lsp' && result.success) {
-            try {
-              toolMsg.toolCall.lsp = JSON.parse(resultStr);
-            } catch {
-              // ignore parse errors
-            }
-          }
-
           if (isTaskTool && result.success) {
             const childId = upsertTaskChildSession(this, result);
             if (childId) toolCall.taskSessionId = childId;
           }
 
-          const hasDiff = typeof toolMsg.toolCall.diff === 'string' && toolMsg.toolCall.diff.length > 0;
           let storeOutput = !result.success || (!!resultStr.trim() && !hasDiff);
           if (hasDiff && result.success && (toolId === 'edit' || toolId === 'write')) {
             // Edit/write output may include diagnostics; keep it alongside the diff.
@@ -957,11 +932,6 @@ Object.assign(ChatViewProvider.prototype, {
             storeOutput = false;
           }
           toolMsg.toolCall.result = storeOutput ? resultStr.substring(0, 4000) : undefined;
-
-          const maybeTodos = (result.metadata as any)?.todos;
-          if (Array.isArray(maybeTodos)) {
-            toolMsg.toolCall.todos = maybeTodos;
-          }
 
           this.postMessage({ type: 'updateTool', message: toolMsg });
 
@@ -1083,60 +1053,10 @@ Object.assign(ChatViewProvider.prototype, {
         compactionMsg = undefined;
       },
       onStatusChange: (status) => {
-        if (!this.currentTurnId) return;
-
-        if (status.type === 'retry') {
-          this.postMessage({
-            type: 'turnStatus',
-            turnId: this.currentTurnId,
-            status: {
-              type: 'retry',
-              attempt: status.attempt,
-              nextRetryTime: status.nextRetryTime,
-              message: status.message,
-            },
-          });
-          return;
-        }
-
-        if (status.type === 'running') {
-          this.postMessage({
-            type: 'turnStatus',
-            turnId: this.currentTurnId,
-            status: { type: 'running', message: status.message || '' },
-          });
-          return;
-        }
-
-        if (status.type === 'error') {
-          this.postMessage({
-            type: 'turnStatus',
-            turnId: this.currentTurnId,
-            status: { type: 'error', message: status.message || 'unknown error' },
-          });
-          return;
-        }
-
-        if (status.type === 'done') {
-          this.postMessage({
-            type: 'turnStatus',
-            turnId: this.currentTurnId,
-            status: { type: 'done' },
-          });
-        }
+        postTurnStatus(this, this.currentTurnId, status);
       },
       onDebug: (message) => {
-        const config = vscode.workspace.getConfiguration('lingyun');
-        const debugLlm = config.get<boolean>('debug.llm') ?? false;
-        const debugTools = config.get<boolean>('debug.tools') ?? false;
-        if (!debugLlm && !debugTools) return;
-
-        const isTool = typeof message === 'string' && message.startsWith('[Tool]');
-        if (isTool && !debugTools) return;
-        if (!isTool && !debugLlm) return;
-        if (!message) return;
-        const timestamp = new Date().toLocaleTimeString();
-        this.outputChannel?.appendLine(`[${timestamp}] ${message}`);
+        appendDebugLog(this, message);
       },
       onComplete: (response) => {
         finalizeAssistantForStepEnd();
@@ -1161,21 +1081,9 @@ Object.assign(ChatViewProvider.prototype, {
           vscode.workspace.getConfiguration('lingyun').get<boolean>('debug.llm') ?? false;
         if (debugEnabled) {
           try {
-            const err = error instanceof Error ? error : new Error(String(error));
-            const anyErr = err as any;
-            const lines = [
-              `[Agent] Error: ${err.name}: ${err.message}`,
-              anyErr?.code ? `code=${String(anyErr.code)}` : '',
-              anyErr?.cause
-                ? `cause=${
-                    typeof anyErr.cause === 'object'
-                      ? JSON.stringify(anyErr.cause)
-                      : String(anyErr.cause)
-                  }`
-                : '',
-              err.stack ? `stack=${err.stack}` : '',
-            ].filter(Boolean);
-            this.outputChannel?.appendLine(lines.join('\n'));
+            const timestamp = new Date().toLocaleTimeString();
+            const summary = summarizeErrorForDebug(error);
+            this.outputChannel?.appendLine(`[${timestamp}] [Agent] Error ${summary}`);
           } catch {
             // ignore logging failures
           }

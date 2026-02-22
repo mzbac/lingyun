@@ -37,18 +37,84 @@
 		      maybeAutoScroll(wasNearBottom);
 		    }
 
-		    function rerenderPlanCards() {
-		      messageDataById.forEach((msg) => {
-		        if (msg && msg.role === 'plan') {
-		          rerenderPlanMessage(msg);
-		        }
-		      });
-		    }
+			    function rerenderPlanCards() {
+			      messageDataById.forEach((msg) => {
+			        if (msg && msg.role === 'plan') {
+			          rerenderPlanMessage(msg);
+			        }
+			      });
+			    }
 
-		    window.addEventListener('message', (e) => {
-		      try {
-		        const data = e.data || {};
-		      switch (data.type) {
+			    const MARKDOWN_RENDER_DEBOUNCE_MS = 40;
+			    const assistantMarkdownRenderQueue = new Map();
+
+			    function clearAssistantMarkdownRenderQueue() {
+			      assistantMarkdownRenderQueue.forEach((state) => {
+			        if (state && state.timer) clearTimeout(state.timer);
+			      });
+			      assistantMarkdownRenderQueue.clear();
+			    }
+
+			    function flushAssistantMarkdownRender(messageId) {
+			      const state = assistantMarkdownRenderQueue.get(messageId);
+			      if (!state) return;
+			      if (state.timer) {
+			        clearTimeout(state.timer);
+			        state.timer = null;
+			      }
+
+			      const pending = state.pending || '';
+			      const shouldScroll = !!state.wasNearBottom;
+			      assistantMarkdownRenderQueue.delete(messageId);
+			      if (!pending) return;
+
+			      const el = messageEls.get(messageId);
+			      if (!el) {
+			        pendingTokens.set(messageId, (pendingTokens.get(messageId) || '') + pending);
+			        return;
+			      }
+
+			      const contentEl = el.querySelector('.message-content');
+			      if (!contentEl || !el.classList.contains('assistant') || !contentEl.classList.contains('md')) {
+			        if (contentEl) {
+			          contentEl.textContent = (contentEl.textContent === '…' ? '' : contentEl.textContent) + pending;
+			        } else {
+			          pendingTokens.set(messageId, (pendingTokens.get(messageId) || '') + pending);
+			        }
+			        maybeAutoScroll(shouldScroll);
+			        return;
+			      }
+
+			      const raw = (contentEl.dataset.raw || '') + pending;
+			      contentEl.dataset.raw = raw;
+			      contentEl.innerHTML = renderMarkdown(raw);
+			      if (typeof scheduleFileLinkify === 'function') {
+			        try { scheduleFileLinkify(el); } catch {}
+			      }
+			      maybeAutoScroll(shouldScroll);
+			    }
+
+			    function queueAssistantMarkdownToken(messageId, token, wasNearBottom) {
+			      if (!messageId || !token) return;
+			      const state = assistantMarkdownRenderQueue.get(messageId) || {
+			        pending: '',
+			        timer: null,
+			        wasNearBottom: false,
+			      };
+			      state.pending += token;
+			      state.wasNearBottom = state.wasNearBottom || !!wasNearBottom;
+			      if (!state.timer) {
+			        state.timer = setTimeout(() => {
+			          flushAssistantMarkdownRender(messageId);
+			        }, MARKDOWN_RENDER_DEBOUNCE_MS);
+			      }
+			      assistantMarkdownRenderQueue.set(messageId, state);
+			    }
+
+			    window.addEventListener('message', (e) => {
+			      try {
+			        const data = e.data || {};
+			      switch (data.type) {
 	        case 'init':
 			          initReceived = true;
 			          clearInterval(readyInterval);
@@ -57,13 +123,14 @@
 			          turnEls.clear();
 			          activeTurnId = '';
 			          messageEls.clear();
-			          messageDataById.clear();
-			          stepBodies.clear();
-			          pendingTokens.clear();
-			          lastToolMsg = null;
-			          currentOperation = null;
-			          stopOperationTimer();
-			          updateOperationBanner();
+				          messageDataById.clear();
+				          stepBodies.clear();
+				          pendingTokens.clear();
+				          clearAssistantMarkdownRenderQueue();
+				          lastToolMsg = null;
+				          currentOperation = null;
+				          stopOperationTimer();
+				          updateOperationBanner();
 		          currentRevertState = null;
 		          updateRevertBar(null);
 		          activePlanMessageId = typeof data.activePlanMessageId === 'string' ? data.activePlanMessageId : '';
@@ -154,24 +221,26 @@
                 }
                 maybeAutoScroll(wasNearBottom);
                 break;
-              }
-		            const contentEl = el.querySelector('.message-content');
-		            if (contentEl) {
-	                if (el.classList.contains('assistant') && contentEl.classList.contains('md')) {
-	                  const raw = (contentEl.dataset.raw || '') + data.token;
-	                  contentEl.dataset.raw = raw;
-	                  contentEl.innerHTML = renderMarkdown(raw);
-	                } else {
-	                  contentEl.textContent = (contentEl.textContent === '…' ? '' : contentEl.textContent) + data.token;
-	                }
 		            }
-		            if (typeof scheduleFileLinkify === 'function') {
-		              try { scheduleFileLinkify(el); } catch {}
-		            }
-		            maybeAutoScroll(wasNearBottom);
-		          } else {
-		            pendingTokens.set(
-		              data.messageId,
+			            const contentEl = el.querySelector('.message-content');
+			            let deferredAssistantMarkdown = false;
+			            if (contentEl) {
+		                if (el.classList.contains('assistant') && contentEl.classList.contains('md')) {
+		                  queueAssistantMarkdownToken(data.messageId, data.token, wasNearBottom);
+		                  deferredAssistantMarkdown = true;
+		                } else {
+		                  contentEl.textContent = (contentEl.textContent === '…' ? '' : contentEl.textContent) + data.token;
+		                }
+			            }
+			            if (!deferredAssistantMarkdown && typeof scheduleFileLinkify === 'function') {
+			              try { scheduleFileLinkify(el); } catch {}
+			            }
+			            if (!deferredAssistantMarkdown) {
+			              maybeAutoScroll(wasNearBottom);
+			            }
+			          } else {
+			            pendingTokens.set(
+			              data.messageId,
 		              (pendingTokens.get(data.messageId) || '') + data.token
 	            );
 	          }
@@ -215,6 +284,9 @@
 		          }
 		          break;
 				        case 'updateMessage':
+				          if (data.message && typeof data.message.id === 'string') {
+				            flushAssistantMarkdownRender(data.message.id);
+				          }
 				          if (data.message && typeof data.message.id === 'string') {
 				            messageDataById.set(data.message.id, data.message);
 				          }
@@ -277,14 +349,12 @@
                         if (thinkingEl) {
                           thinkingEl.textContent = (thinkingEl.textContent || '') + pending;
                         }
-                      } else
-                    if (newEl.classList.contains('assistant') && contentEl.classList.contains('md')) {
-                      const raw = (contentEl.dataset.raw || '') + pending;
-                      contentEl.dataset.raw = raw;
-                      contentEl.innerHTML = renderMarkdown(raw);
-                    } else {
-                      contentEl.textContent = (contentEl.textContent === '…' ? '' : contentEl.textContent) + pending;
-                    }
+	                      } else
+	                    if (newEl.classList.contains('assistant') && contentEl.classList.contains('md')) {
+	                      queueAssistantMarkdownToken(data.message.id, pending, isNearBottom());
+	                    } else {
+	                      contentEl.textContent = (contentEl.textContent === '…' ? '' : contentEl.textContent) + pending;
+	                    }
 		              }
 		              pendingTokens.delete(data.message.id);
 		            }
@@ -332,13 +402,14 @@
 		          messages.appendChild(empty);
 		          empty.style.display = 'flex';
 		          turnEls.clear();
-		          activeTurnId = '';
-		          messageEls.clear();
-		          stepBodies.clear();
-		          pendingTokens.clear();
-		          lastToolMsg = null;
-		          activePlanMessageId = '';
-		          currentOperation = null;
+			          activeTurnId = '';
+			          messageEls.clear();
+			          stepBodies.clear();
+			          pendingTokens.clear();
+			          clearAssistantMarkdownRenderQueue();
+			          lastToolMsg = null;
+			          activePlanMessageId = '';
+			          currentOperation = null;
 		          stopOperationTimer();
 		          updateOperationBanner();
 		          pendingApprovalsCount = 0;
