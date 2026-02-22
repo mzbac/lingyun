@@ -1,6 +1,6 @@
 {
   "name": "@kooka/kookaburra",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "type": "module",
   "description": "Kookaburra: agent orchestration CLI for agentic workflows (@kooka/agent-sdk).",
   "repository": {
@@ -29,7 +29,7 @@
     "kookaburra": "node dist/cli.js"
   },
   "dependencies": {
-    "@kooka/agent-sdk": "^0.1.4",
+    "@kooka/agent-sdk": "^0.1.5",
     "croner": "^10.0.1"
   },
   "devDependencies": {

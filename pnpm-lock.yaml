@@ -24,7 +24,7 @@ importers:
         specifier: ^2.0.2
         version: 2.0.9(zod@4.3.5)
       '@kooka/core':
-        specifier: ^0.1.4
+        specifier: ^0.1.5
         version: link:../core
       ai:
         specifier: ^6.0.6
@@ -77,7 +77,7 @@ importers:
   packages/kookaburra:
     dependencies:
       '@kooka/agent-sdk':
-        specifier: ^0.1.4
+        specifier: ^0.1.5
         version: link:../agent-sdk
       croner:
         specifier: ^10.0.1
