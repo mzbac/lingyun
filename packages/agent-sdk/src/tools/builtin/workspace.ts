@@ -1,4 +1,5 @@
 import * as path from 'path';
+import * as fs from 'fs';
 import { normalizeFsPath } from '@kooka/core';
 import type { ToolContext } from '../../types.js';
 
@@ -56,21 +57,64 @@ export function resolveToolPath(
   context?: Pick<ToolContext, 'workspaceRoot' | 'allowExternalPaths'>
 ): { absPath: string; relPath: string; isExternal: boolean } {
   const rootPath = getWorkspaceRoot(context);
-  const normalizedRoot = normalizeFsPath(rootPath);
-
+  const allowExternalPaths = !!context?.allowExternalPaths;
   const absPath = path.isAbsolute(inputPath) ? path.resolve(inputPath) : path.resolve(rootPath, inputPath);
-  const normalizedAbs = normalizeFsPath(absPath);
 
-  const isExternal = normalizedAbs !== normalizedRoot && !normalizedAbs.startsWith(normalizedRoot + path.sep);
+  const normalizedRoot = normalizeFsPath(rootPath);
+  const normalizedAbs = normalizeFsPath(absPath);
+  const lexicalExternal = normalizedAbs !== normalizedRoot && !normalizedAbs.startsWith(normalizedRoot + path.sep);
+
+  const canonicalRoot = canonicalizePathForContainment(rootPath);
+  const canonicalAbs = canonicalizePathForContainment(absPath);
+  const canonicalKnown = !!canonicalRoot && !!canonicalAbs;
+  const canonicalExternal =
+    canonicalKnown &&
+    canonicalAbs !== canonicalRoot &&
+    !canonicalAbs.startsWith(canonicalRoot + path.sep);
+
+  if (!allowExternalPaths && !canonicalKnown) {
+    throw new Error(
+      'External paths are disabled. Unable to verify workspace boundary because canonical path resolution failed.'
+    );
+  }
+
+  const isExternal = canonicalKnown ? canonicalExternal : lexicalExternal;
   const relPath = isExternal ? absPath : path.relative(rootPath, absPath) || '.';
 
-  if (isExternal && !context?.allowExternalPaths) {
+  if (isExternal && !allowExternalPaths) {
     throw new Error(
       'External paths are disabled. Enable allowExternalPaths to allow access outside the current workspace.'
     );
   }
 
   return { absPath, relPath, isExternal };
+}
+
+function canonicalizePathForContainment(targetPath: string): string | undefined {
+  const resolved = path.resolve(targetPath);
+  const nearestExisting = findNearestExistingAncestor(resolved);
+  if (!nearestExisting) return undefined;
+
+  let canonicalAncestor: string;
+  try {
+    canonicalAncestor = fs.realpathSync(nearestExisting);
+  } catch {
+    return undefined;
+  }
+
+  const suffix = path.relative(nearestExisting, resolved);
+  const joined = suffix ? path.resolve(canonicalAncestor, suffix) : canonicalAncestor;
+  return normalizeFsPath(joined);
+}
+
+function findNearestExistingAncestor(targetPath: string): string | undefined {
+  let current = path.resolve(targetPath);
+  while (true) {
+    if (fs.existsSync(current)) return current;
+    const parent = path.dirname(current);
+    if (parent === current) return undefined;
+    current = parent;
+  }
 }
 
 export function containsBinaryData(buffer: Uint8Array): boolean {

@@ -33,6 +33,11 @@ function getMessageText(message: AgentHistoryMessage): string {
     .join('');
 }
 
+function isSymlinkUnsupportedError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  return code === 'EPERM' || code === 'EACCES' || code === 'ENOSYS' || code === 'UNKNOWN';
+}
+
 const bashTool = getBuiltinTools().find((t) => t.tool.id === 'bash')!.tool;
 
 function registerTaskTool(registry: ToolRegistry): void {
@@ -460,6 +465,145 @@ suite('LingYun Agent SDK', () => {
       assert.ok(String(toolPart.output?.error || toolPart.output?.data || '').includes('External paths are disabled'));
     } finally {
       await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('blocks shell tool when allowExternalPaths=false and command references env-expanded external path', async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'lingyun-sdk-test-'));
+    try {
+      const llm = new MockLLMProvider();
+      const registry = new ToolRegistry();
+
+      let called = false;
+      const bash: ToolDefinition = {
+        id: 'bash',
+        name: 'Run Command',
+        description: 'Run a shell command',
+        parameters: {
+          type: 'object',
+          properties: {
+            command: { type: 'string' },
+            workdir: { type: 'string' },
+          },
+          required: ['command'],
+        },
+        execution: { type: 'function', handler: 'test.bash.env' },
+        metadata: {
+          permission: 'bash',
+          supportsExternalPaths: true,
+          permissionPatterns: [
+            { arg: 'command', kind: 'command' },
+            { arg: 'workdir', kind: 'path' },
+          ],
+        },
+      };
+
+      registry.registerTool(bash, async () => {
+        called = true;
+        return { success: true, data: 'should-not-run' };
+      });
+
+      llm.queueResponse({
+        kind: 'tool-call',
+        toolCallId: 'call_home_env',
+        toolName: 'bash',
+        input: { command: 'cat $HOME/.ssh/id_rsa' },
+        finishReason: 'tool-calls',
+      });
+      llm.queueResponse({ kind: 'text', content: 'ok' });
+
+      const agent = new LingyunAgent(llm, { model: 'mock-model' }, registry, {
+        workspaceRoot: tmp,
+        allowExternalPaths: false,
+      });
+      const session = new LingyunSession();
+
+      const run = agent.run({ session, input: 'try env path' });
+      for await (const _event of run.events) {
+        // drain
+      }
+      const result = await run.done;
+
+      assert.strictEqual(result.text, 'ok');
+      assert.strictEqual(called, false, 'bash handler should not be invoked when blocked');
+
+      const history = session.getHistory();
+      const assistant = history.find((m) => m.role === 'assistant');
+      assert.ok(assistant, 'expected assistant message');
+
+      const toolPart = assistant!.parts.find((p: any) => p.type === 'dynamic-tool' && p.toolCallId === 'call_home_env') as any;
+      assert.ok(toolPart, 'expected dynamic-tool part for blocked call');
+      assert.strictEqual(toolPart.output?.success, false);
+      assert.ok(String(toolPart.output?.error || toolPart.output?.data || '').includes('External paths are disabled'));
+      const blockedPaths = Array.isArray(toolPart.output?.metadata?.blockedPaths)
+        ? (toolPart.output?.metadata?.blockedPaths as unknown[])
+        : [];
+      assert.ok(
+        blockedPaths.some((p: unknown) => {
+          const value = String(p || '');
+          return value.includes('$HOME/.ssh/id_rsa') || value.endsWith('/.ssh/id_rsa') || value.endsWith('\\.ssh\\id_rsa');
+        }),
+        'blocked paths should include the env-expanded sensitive path',
+      );
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('blocks read tool when allowExternalPaths=false and filePath traverses a workspace symlink', async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'lingyun-sdk-workspace-'));
+    const outsideRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'lingyun-sdk-outside-'));
+    const linkPath = path.join(workspaceRoot, 'linked-outside');
+    try {
+      await fs.writeFile(path.join(outsideRoot, 'secret.txt'), 'secret');
+      try {
+        await fs.symlink(outsideRoot, linkPath, process.platform === 'win32' ? 'junction' : 'dir');
+      } catch (error) {
+        if (isSymlinkUnsupportedError(error)) {
+          assert.ok(true, `symlink unsupported in this environment: ${String(error)}`);
+          return;
+        }
+        throw error;
+      }
+
+      const llm = new MockLLMProvider();
+      const registry = new ToolRegistry();
+      const readBuiltin = getBuiltinTools().find((t) => t.tool.id === 'read');
+      assert.ok(readBuiltin, 'expected builtin read tool');
+      registry.registerTool(readBuiltin!.tool, readBuiltin!.handler);
+
+      llm.queueResponse({
+        kind: 'tool-call',
+        toolCallId: 'call_symlink_read',
+        toolName: 'read',
+        input: { filePath: path.join(linkPath, 'secret.txt') },
+        finishReason: 'tool-calls',
+      });
+      llm.queueResponse({ kind: 'text', content: 'ok' });
+
+      const agent = new LingyunAgent(llm, { model: 'mock-model' }, registry, {
+        workspaceRoot,
+        allowExternalPaths: false,
+      });
+      const session = new LingyunSession();
+      const run = agent.run({ session, input: 'read through symlink' });
+      for await (const _event of run.events) {
+        // drain
+      }
+      const result = await run.done;
+      assert.strictEqual(result.text, 'ok');
+
+      const history = session.getHistory();
+      const assistant = history.find((m) => m.role === 'assistant');
+      assert.ok(assistant, 'expected assistant message');
+      const toolPart = assistant!.parts.find((p: any) => p.type === 'dynamic-tool' && p.toolCallId === 'call_symlink_read') as any;
+      assert.ok(toolPart, 'expected dynamic-tool part for blocked symlink call');
+      assert.strictEqual(toolPart.output?.success, false);
+      assert.ok(String(toolPart.output?.error || toolPart.output?.data || '').includes('External paths are disabled'));
+    } finally {
+      await fs.rm(linkPath, { recursive: true, force: true });
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+      await fs.rm(outsideRoot, { recursive: true, force: true });
     }
   });
 

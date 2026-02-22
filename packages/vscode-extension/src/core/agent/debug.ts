@@ -10,10 +10,44 @@ export function truncateForDebug(value: string, max = 500): string {
 const URL_REGEX = /\bhttps?:\/\/[^\s"'<>]+/gi;
 const IPV4_REGEX = /\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b/g;
 const BEARER_REGEX = /Bearer\s+[A-Za-z0-9._-]+/gi;
+const BASIC_AUTH_REGEX = /Basic\s+[A-Za-z0-9+/=]+/gi;
+const JSON_SECRET_KV_REGEX =
+  /("(?:authorization|proxy-authorization|proxyauthorization|apikey|api_key|x-api-key|token|access_token|accesstoken|refresh_token|refreshtoken|secret|client_secret|clientsecret|password|passwd|cookie|set-cookie|private_key|privatekey)"\s*:\s*)"[^"]*"/gi;
+const INLINE_SECRET_KV_REGEX =
+  /\b(authorization|proxy-authorization|proxyauthorization|x-api-key|api[-_]?key|access[-_]?token|refresh[-_]?token|token|secret|password|passwd|cookie|set-cookie|private[-_]?key)\b(\s*[:=]\s*)([^\s,;]+)/gi;
+
+const SENSITIVE_TOOL_ARG_KEYS = new Set([
+  'content',
+  'patch',
+  'patchtext',
+  'diff',
+  'oldstring',
+  'newstring',
+  'authorization',
+  'proxyauthorization',
+  'apikey',
+  'xapikey',
+  'token',
+  'accesstoken',
+  'refreshtoken',
+  'secret',
+  'clientsecret',
+  'password',
+  'passwd',
+  'cookie',
+  'setcookie',
+  'privatekey',
+  'headers',
+  'credentials',
+  'credential',
+]);
 
 export function redactSensitive(text: string): string {
   let out = String(text ?? '');
   out = out.replace(BEARER_REGEX, 'Bearer <redacted>');
+  out = out.replace(BASIC_AUTH_REGEX, 'Basic <redacted>');
+  out = out.replace(JSON_SECRET_KV_REGEX, '$1"<redacted>"');
+  out = out.replace(INLINE_SECRET_KV_REGEX, '$1$2<redacted>');
   out = out.replace(URL_REGEX, '<url>');
   out = out.replace(IPV4_REGEX, '<ip>');
   return out;
@@ -138,22 +172,20 @@ export function formatToolFailureForDebug(result: ToolResult): string {
 }
 
 export function summarizeToolArgsForDebug(args: unknown): string {
-  const redactKeys = new Set(['content', 'patch', 'patchText', 'diff', 'oldString', 'newString']);
-
   if (!args || typeof args !== 'object') {
-    return truncateForDebug(JSON.stringify(args ?? null), 500);
+    return truncateForDebug(redactSensitive(safeJsonStringify(args ?? null)), 500);
   }
 
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(args as Record<string, unknown>)) {
-    if (redactKeys.has(key)) {
+    if (isSensitiveArgKey(key)) {
       const len = typeof value === 'string' ? value.length : 0;
-      out[key] = `<${len} chars>`;
+      out[key] = len > 0 ? `<redacted:${len} chars>` : '<redacted>';
       continue;
     }
 
     if (typeof value === 'string') {
-      out[key] = truncateForDebug(value, 200);
+      out[key] = truncateForDebug(redactSensitive(value), 200);
       continue;
     }
 
@@ -175,7 +207,32 @@ export function summarizeToolArgsForDebug(args: unknown): string {
     out[key] = value ?? null;
   }
 
-  return truncateForDebug(JSON.stringify(out), 800);
+  return truncateForDebug(redactSensitive(safeJsonStringify(out)), 800);
+}
+
+function isSensitiveArgKey(key: string): boolean {
+  const normalized = String(key ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
+  if (!normalized) return false;
+  if (SENSITIVE_TOOL_ARG_KEYS.has(normalized)) return true;
+  if (normalized.endsWith('token')) return true;
+  if (normalized.endsWith('secret')) return true;
+  if (normalized.endsWith('password')) return true;
+  if (normalized.endsWith('cookie')) return true;
+  if (normalized.endsWith('apikey')) return true;
+  if (normalized.endsWith('authorization')) return true;
+  if (normalized.endsWith('privatekey')) return true;
+  if (normalized.endsWith('headers')) return true;
+  return false;
+}
+
+function safeJsonStringify(value: unknown): string {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
 }
 
 export function sha256Hex(value: string): string {

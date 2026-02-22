@@ -1,4 +1,5 @@
 import * as path from 'path';
+import * as fs from 'fs';
 import * as vscode from 'vscode';
 import { normalizeFsPath } from '@kooka/core';
 
@@ -36,18 +37,33 @@ export function resolveToolPath(
 ): { uri: vscode.Uri; absPath: string; relPath: string; isExternal: boolean } {
   const rootUri = getWorkspaceRootUri(context);
   const rootPath = normalizeFsPath(rootUri.fsPath);
+  const allowExternalPaths =
+    vscode.workspace.getConfiguration('lingyun').get<boolean>('security.allowExternalPaths', false) ?? false;
 
   const absPath = path.isAbsolute(inputPath)
     ? path.resolve(inputPath)
     : path.resolve(rootUri.fsPath, inputPath);
   const normalizedAbs = normalizeFsPath(absPath);
 
-  const isExternal = normalizedAbs !== rootPath && !normalizedAbs.startsWith(rootPath + path.sep);
+  const lexicalExternal = normalizedAbs !== rootPath && !normalizedAbs.startsWith(rootPath + path.sep);
+  const canonicalRoot = canonicalizePathForContainment(rootUri.fsPath);
+  const canonicalAbs = canonicalizePathForContainment(absPath);
+  const canonicalKnown = !!canonicalRoot && !!canonicalAbs;
+  const canonicalExternal =
+    canonicalKnown &&
+    canonicalAbs !== canonicalRoot &&
+    !canonicalAbs.startsWith(canonicalRoot + path.sep);
+
+  if (!allowExternalPaths && !canonicalKnown) {
+    throw new Error(
+      'External paths are disabled. Unable to verify workspace boundary because canonical path resolution failed.'
+    );
+  }
+
+  const isExternal = canonicalKnown ? canonicalExternal : lexicalExternal;
   const relPath = isExternal ? absPath : path.relative(rootUri.fsPath, absPath) || '.';
 
   if (isExternal) {
-    const allowExternalPaths =
-      vscode.workspace.getConfiguration('lingyun').get<boolean>('security.allowExternalPaths', false) ?? false;
     if (!allowExternalPaths) {
       throw new Error(
         'External paths are disabled. Enable lingyun.security.allowExternalPaths to allow access outside the current workspace.'
@@ -55,6 +71,33 @@ export function resolveToolPath(
     }
   }
   return { uri: vscode.Uri.file(absPath), absPath, relPath, isExternal };
+}
+
+function canonicalizePathForContainment(targetPath: string): string | undefined {
+  const resolved = path.resolve(targetPath);
+  const nearestExisting = findNearestExistingAncestor(resolved);
+  if (!nearestExisting) return undefined;
+
+  let canonicalAncestor: string;
+  try {
+    canonicalAncestor = fs.realpathSync(nearestExisting);
+  } catch {
+    return undefined;
+  }
+
+  const suffix = path.relative(nearestExisting, resolved);
+  const joined = suffix ? path.resolve(canonicalAncestor, suffix) : canonicalAncestor;
+  return normalizeFsPath(joined);
+}
+
+function findNearestExistingAncestor(targetPath: string): string | undefined {
+  let current = path.resolve(targetPath);
+  while (true) {
+    if (fs.existsSync(current)) return current;
+    const parent = path.dirname(current);
+    if (parent === current) return undefined;
+    current = parent;
+  }
 }
 
 export function containsBinaryData(buffer: Uint8Array): boolean {

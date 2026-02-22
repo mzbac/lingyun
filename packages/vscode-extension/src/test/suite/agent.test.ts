@@ -1047,6 +1047,73 @@ suite('AgentLoop', () => {
     }
   });
 
+  test('external paths disabled - blocks shell commands that reference env-expanded paths (bash)', async () => {
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const prev = cfg.get('security.allowExternalPaths');
+
+    await cfg.update('security.allowExternalPaths', false, true);
+
+    try {
+      let executed = false;
+
+      registry.registerTool(
+        {
+          id: 'bash',
+          name: 'Test Bash',
+          description: 'Simulates the bash tool',
+          parameters: {
+            type: 'object',
+            properties: {
+              command: { type: 'string' },
+            },
+            required: ['command'],
+          },
+          execution: { type: 'function', handler: 'test.bash.env' },
+          metadata: {
+            permission: 'bash',
+            readOnly: false,
+            requiresApproval: false,
+            permissionPatterns: [{ arg: 'command', kind: 'command' }],
+          },
+        },
+        async () => {
+          executed = true;
+          return { success: true, data: 'ok' };
+        }
+      );
+
+      mockLLM.setNextResponse({
+        kind: 'tool-call',
+        toolCallId: 'call_shell_env_disabled',
+        toolName: 'bash',
+        input: { command: 'cat $HOME/.ssh/id_rsa' },
+      });
+      mockLLM.queueResponse({ kind: 'text', content: '' });
+
+      const result = await agent.run('Try running an env-expanded shell path');
+      assert.strictEqual(result, '');
+      assert.strictEqual(executed, false);
+
+      const toolResult = findDynamicToolResult(agent.getHistory(), 'call_shell_env_disabled');
+      assert.ok(toolResult);
+      assert.strictEqual(toolResult?.success, false);
+      assert.ok(String(toolResult?.error || '').includes('references paths outside'));
+      const meta = (toolResult as any)?.metadata || {};
+      assert.strictEqual(meta.errorType, 'external_paths_disabled');
+      assert.strictEqual(meta.blockedSettingKey, 'lingyun.security.allowExternalPaths');
+      assert.ok(Array.isArray(meta.blockedPaths));
+      const blockedPaths = meta.blockedPaths as any[];
+      assert.ok(
+        blockedPaths.some((p: any) => {
+          const value = String(p || '');
+          return value.includes('$HOME/.ssh/id_rsa') || value.endsWith('/.ssh/id_rsa') || value.endsWith('\\.ssh\\id_rsa');
+        })
+      );
+    } finally {
+      await cfg.update('security.allowExternalPaths', prev as any, true);
+    }
+  });
+
   test('external paths disabled - allows workspace-safe shell commands (bash)', async () => {
     const cfg = vscode.workspace.getConfiguration('lingyun');
     const prev = cfg.get('security.allowExternalPaths');

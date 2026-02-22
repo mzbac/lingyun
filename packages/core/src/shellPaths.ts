@@ -96,6 +96,94 @@ function isPathLikeToken(token: string): boolean {
   return false;
 }
 
+const POSIX_ENV_VAR_REGEX = /\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))/g;
+const WINDOWS_ENV_VAR_REGEX = /%([A-Za-z_][A-Za-z0-9_]*)%/g;
+const POSIX_BARE_ENV_REF_REGEX = /^\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)$/;
+const WINDOWS_BARE_ENV_REF_REGEX = /^%[A-Za-z_][A-Za-z0-9_]*%$/;
+const SAFE_PATH_ENV_VARS = new Set(['PWD', 'OLDPWD', 'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'TMPDIR', 'TMP', 'TEMP']);
+const PATH_HINT_ENV_VARS = new Set([...SAFE_PATH_ENV_VARS, 'WORKSPACE_ROOT', 'WORKDIR']);
+
+function hasCommandSubstitution(token: string): boolean {
+  return token.includes('$(') || token.includes('`');
+}
+
+function extractEnvVarNames(token: string): string[] {
+  const names = new Set<string>();
+  POSIX_ENV_VAR_REGEX.lastIndex = 0;
+  for (const match of token.matchAll(POSIX_ENV_VAR_REGEX)) {
+    const name = match[1] || match[2];
+    if (name) names.add(name);
+  }
+  WINDOWS_ENV_VAR_REGEX.lastIndex = 0;
+  for (const match of token.matchAll(WINDOWS_ENV_VAR_REGEX)) {
+    if (match[1]) names.add(match[1]);
+  }
+  return [...names];
+}
+
+function isDynamicPathToken(token: string): boolean {
+  if (!token || isUrlLike(token)) return false;
+  if (hasCommandSubstitution(token)) return true;
+  const vars = extractEnvVarNames(token);
+  if (vars.length === 0) return false;
+  if (token.includes('/') || token.includes('\\')) return true;
+  if (POSIX_BARE_ENV_REF_REGEX.test(token) || WINDOWS_BARE_ENV_REF_REGEX.test(token)) return true;
+  return vars.some(name => PATH_HINT_ENV_VARS.has(name.toUpperCase()));
+}
+
+function resolveSafeEnvValue(name: string, cwd: string): string | undefined {
+  const upper = name.toUpperCase();
+  if (!SAFE_PATH_ENV_VARS.has(upper)) return undefined;
+  if (upper === 'PWD') return cwd;
+
+  if (upper === 'HOMEPATH') {
+    const homePath = process.env.HOMEPATH;
+    if (!homePath) return undefined;
+    const homeDrive = process.env.HOMEDRIVE;
+    if (homeDrive && homePath.startsWith('\\')) {
+      return `${homeDrive}${homePath}`;
+    }
+    return homePath;
+  }
+
+  const value = process.env[upper] ?? process.env[name];
+  if (!value || !String(value).trim()) return undefined;
+  return value;
+}
+
+function resolveDynamicPathCandidate(
+  candidate: string,
+  cwd: string
+): { candidate: string; unresolvedDynamic: boolean } {
+  if (hasCommandSubstitution(candidate)) {
+    return { candidate, unresolvedDynamic: true };
+  }
+
+  let unresolvedDynamic = false;
+  POSIX_ENV_VAR_REGEX.lastIndex = 0;
+  let expanded = candidate.replace(POSIX_ENV_VAR_REGEX, (match, braced: string, plain: string) => {
+    const varName = braced || plain;
+    const resolved = resolveSafeEnvValue(varName, cwd);
+    if (!resolved) {
+      unresolvedDynamic = true;
+      return match;
+    }
+    return resolved;
+  });
+
+  WINDOWS_ENV_VAR_REGEX.lastIndex = 0;
+  expanded = expanded.replace(WINDOWS_ENV_VAR_REGEX, (match, name: string) => {
+    const resolved = resolveSafeEnvValue(name, cwd);
+    if (!resolved) {
+      unresolvedDynamic = true;
+      return match;
+    }
+    return resolved;
+  });
+
+  return { candidate: expanded, unresolvedDynamic };
+}
+
 /**
  * Best-effort detection of file-system path references in a shell command.
  * Used to enforce "no external paths" without blocking all shell usage.
@@ -131,7 +219,7 @@ export function findExternalPathReferencesInShellCommand(
       continue;
     }
 
-    if (isPathLikeToken(token)) {
+    if (isPathLikeToken(token) || isDynamicPathToken(token)) {
       candidates.push(token);
     }
   }
@@ -139,7 +227,12 @@ export function findExternalPathReferencesInShellCommand(
   const out = new Set<string>();
   for (const candidate of candidates) {
     try {
-      const abs = resolveCandidatePath(candidate, cwd);
+      const dynamic = resolveDynamicPathCandidate(candidate, cwd);
+      if (dynamic.unresolvedDynamic) {
+        out.add(candidate);
+        continue;
+      }
+      const abs = resolveCandidatePath(dynamic.candidate, cwd);
       if (!isSubPath(abs, workspaceRoot)) {
         out.add(abs);
       }
@@ -158,4 +251,3 @@ export function isPathInsideWorkspace(targetPath: string, workspaceRoot: string)
     return false;
   }
 }
-
