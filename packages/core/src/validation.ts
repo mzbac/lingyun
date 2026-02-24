@@ -258,7 +258,6 @@ const BLOCKED_SHELL_PATTERNS = [
   /\b(shutdown|reboot|halt)\b/i,
   /\bdd\s+if=/i,
   /\bmkfs/i,
-  /\bformat\b/i,
   />[>&]\s*\/dev\//i,
 ];
 
@@ -362,6 +361,16 @@ function stripLeadingEnvAssignments(command: string): string {
 }
 
 export function evaluateShellCommand(command: string): ShellCommandDecision {
+  const normalized = stripLeadingEnvAssignments(command);
+  const firstToken = normalized.trim().split(/\s+/)[0] || '';
+  const baseCommand = firstToken.split(/[\\/]/).pop()?.toLowerCase() || '';
+
+  // Block Windows disk format only when it is the executable, not when "format"
+  // appears as an argument (e.g. git --pretty=format).
+  if (baseCommand === 'format' || baseCommand === 'format.com' || baseCommand === 'format.exe') {
+    return { verdict: 'deny', reason: 'Command matches blocked pattern' };
+  }
+
   for (const pattern of BLOCKED_SHELL_PATTERNS) {
     if (pattern.test(command)) {
       return { verdict: 'deny', reason: 'Command matches blocked pattern' };
@@ -383,8 +392,6 @@ export function evaluateShellCommand(command: string): ShellCommandDecision {
     return { verdict: 'needs_approval', reason };
   }
 
-  const normalized = stripLeadingEnvAssignments(command);
-  const baseCommand = normalized.trim().split(/\s+/)[0]?.split('/').pop() || '';
   if (SAFE_SHELL_COMMANDS.has(baseCommand)) {
     return { verdict: 'allow' };
   }

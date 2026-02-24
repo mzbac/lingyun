@@ -56,6 +56,21 @@ suite('Bash Tool', () => {
     assert.strictEqual(evaluateShellCommand('rm -rf /').verdict, 'deny');
   });
 
+  test('evaluateShellCommand allows git pretty=format argument', () => {
+    assert.strictEqual(
+      evaluateShellCommand("git log -n 30 --date=short --pretty=format:'%h %ad %s'").verdict,
+      'allow'
+    );
+    assert.strictEqual(
+      evaluateShellCommand("FOO=1 git log -n 1 --pretty=format:'%h %s'").verdict,
+      'allow'
+    );
+  });
+
+  test('evaluateShellCommand still denies format executable', () => {
+    assert.strictEqual(evaluateShellCommand('format C:').verdict, 'deny');
+  });
+
   test('rejects likely long-running server commands without background or timeout', async () => {
     const context = createToolContext();
     const res = await bashHandler({ command: 'python -m http.server' }, context);
