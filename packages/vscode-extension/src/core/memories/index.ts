@@ -1,3 +1,4 @@
+import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 
@@ -128,6 +129,35 @@ function getStringConfig(key: string, fallback: string): string {
   return trimmed || fallback;
 }
 
+function expandTilde(input: string): string {
+  const value = input.trim();
+  if (!value) return value;
+  if (value === '~') return os.homedir();
+  if (value.startsWith('~/') || value.startsWith('~\\')) {
+    return path.join(os.homedir(), value.slice(2));
+  }
+  return value;
+}
+
+function resolveMemoriesRootUri(context: vscode.ExtensionContext): vscode.Uri | undefined {
+  const overrideRaw = process.env.LINGYUN_MEMORIES_DIR;
+  const override = typeof overrideRaw === 'string' ? overrideRaw.trim() : '';
+  if (override) {
+    const resolved = expandTilde(override);
+    if (resolved && path.isAbsolute(resolved)) {
+      return vscode.Uri.file(resolved);
+    }
+  }
+
+  const home = os.homedir();
+  if (home && path.isAbsolute(home)) {
+    return vscode.Uri.file(path.join(home, '.lingyun', STORAGE_DIR_NAME));
+  }
+
+  const fallback = context.storageUri ?? context.globalStorageUri;
+  return fallback ? vscode.Uri.joinPath(fallback, STORAGE_DIR_NAME) : undefined;
+}
+
 export function isMemoriesEnabled(): boolean {
   return vscode.workspace.getConfiguration('lingyun').get<boolean>('features.memories', true) ?? true;
 }
@@ -160,10 +190,10 @@ export function getMemoriesConfig(): MemoriesConfig {
   };
 }
 
-function getMemoryArtifacts(storageRootUri?: vscode.Uri): MemoryArtifacts | undefined {
-  if (!storageRootUri) return undefined;
+function getMemoryArtifacts(memoriesRootUri?: vscode.Uri): MemoryArtifacts | undefined {
+  if (!memoriesRootUri) return undefined;
 
-  const memoryRoot = vscode.Uri.joinPath(storageRootUri, STORAGE_DIR_NAME);
+  const memoryRoot = memoriesRootUri;
   return {
     memoryRoot,
     rolloutSummariesDir: vscode.Uri.joinPath(memoryRoot, ROLLOUT_SUMMARIES_DIR_NAME),
@@ -527,9 +557,7 @@ export class WorkspaceMemories {
 
   constructor(private readonly context: vscode.ExtensionContext) {
     this.storageRootUri = context.storageUri ?? context.globalStorageUri;
-    this.memoriesRootUri = this.storageRootUri
-      ? vscode.Uri.joinPath(this.storageRootUri, STORAGE_DIR_NAME)
-      : undefined;
+    this.memoriesRootUri = resolveMemoriesRootUri(context);
     this.stateUri = this.memoriesRootUri
       ? vscode.Uri.joinPath(this.memoriesRootUri, STAGE1_OUTPUTS_FILE)
       : undefined;
@@ -547,7 +575,7 @@ export class WorkspaceMemories {
 
   private async updateFromSessionsInternal(workspaceFolder?: vscode.Uri): Promise<MemoryUpdateResult> {
     const config = getMemoriesConfig();
-    const artifacts = getMemoryArtifacts(this.storageRootUri);
+    const artifacts = getMemoryArtifacts(this.memoriesRootUri);
 
     if (!config.enabled) {
       return {
@@ -700,14 +728,14 @@ export class WorkspaceMemories {
   }
 
   async listRolloutSummaries(workspaceFolder?: vscode.Uri): Promise<string[]> {
-    const artifacts = getMemoryArtifacts(this.storageRootUri);
+    const artifacts = getMemoryArtifacts(this.memoriesRootUri);
     if (!artifacts) return [];
     const names = await listMarkdownFiles(artifacts.rolloutSummariesDir);
     return names.sort((a, b) => b.localeCompare(a));
   }
 
   async readMemoryFile(kind: 'summary' | 'memory' | 'raw' | 'rollout', rolloutFile?: string, workspaceFolder?: vscode.Uri): Promise<string | undefined> {
-    const artifacts = getMemoryArtifacts(this.storageRootUri);
+    const artifacts = getMemoryArtifacts(this.memoriesRootUri);
     if (!artifacts) return undefined;
 
     if (kind === 'summary') return readTextIfExists(artifacts.memorySummaryFile);
@@ -894,8 +922,8 @@ export async function readMemoryArtifacts(extensionContext: vscode.ExtensionCont
   raw?: string;
   rollouts: string[];
 }> {
-  const storageRootUri = extensionContext.storageUri ?? extensionContext.globalStorageUri;
-  const artifacts = getMemoryArtifacts(storageRootUri);
+  const rootUri = resolveMemoriesRootUri(extensionContext);
+  const artifacts = getMemoryArtifacts(rootUri);
   if (!artifacts) return { rollouts: [] };
 
   const [summary, memory, raw, rollouts] = await Promise.all([

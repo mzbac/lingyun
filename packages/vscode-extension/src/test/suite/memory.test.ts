@@ -23,6 +23,7 @@ suite('Memory Tool', () => {
     const root = vscode.workspace.workspaceFolders?.[0]?.uri;
     assert.ok(root, 'Workspace folder must be available for memory tests');
 
+    const prevMemoryRoot = process.env.LINGYUN_MEMORIES_DIR;
     const cfg = vscode.workspace.getConfiguration('lingyun');
     const prevEnabled = cfg.get('features.memories');
 
@@ -38,6 +39,7 @@ suite('Memory Tool', () => {
     await vscode.workspace.fs.createDirectory(rolloutDir);
 
     try {
+      process.env.LINGYUN_MEMORIES_DIR = memoriesDir.fsPath;
       await cfg.update('features.memories', true, true);
 
       await vscode.workspace.fs.writeFile(summaryFile, Buffer.from('# Memory Summary\n\n- Focus item\n', 'utf8'));
@@ -75,6 +77,11 @@ suite('Memory Tool', () => {
       assert.strictEqual(missingRollout.success, false);
       assert.strictEqual((missingRollout.metadata as any)?.errorType, 'memory_rollout_missing');
     } finally {
+      if (prevMemoryRoot === undefined) {
+        delete process.env.LINGYUN_MEMORIES_DIR;
+      } else {
+        process.env.LINGYUN_MEMORIES_DIR = prevMemoryRoot;
+      }
       try {
         await cfg.update('features.memories', prevEnabled, true);
       } catch {
