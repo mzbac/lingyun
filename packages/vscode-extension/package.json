@@ -426,6 +426,7 @@
             ".opencode/skill",
             ".opencode/skills",
             "~/.config/lingyun/skills",
+            "~/.agent/skills",
             "~/.codex/skills",
             "~/.claude/skills"
           ],

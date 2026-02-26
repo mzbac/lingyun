@@ -1184,7 +1184,8 @@ export class LingyunAgent {
   private async composeSystemPrompt(modelId: string): Promise<string[]> {
     const basePrompt = this.config.systemPrompt || DEFAULT_SYSTEM_PROMPT;
     const skillsPromptText = await this.getSkillsPromptText();
-    const system = [basePrompt, skillsPromptText].filter(Boolean) as string[];
+    let system = [[basePrompt, skillsPromptText].filter(Boolean).join('\n')].filter(Boolean) as string[];
+    const header = system[0] ?? '';
 
     const out = await this.plugins.trigger(
       'experimental.chat.system.transform',
@@ -1192,7 +1193,20 @@ export class LingyunAgent {
       { system },
     );
 
-    return Array.isArray((out as any).system) ? (out as any).system.filter(Boolean) : system;
+    system = Array.isArray((out as any).system) ? (out as any).system.filter(Boolean) : system;
+    if (system.length === 0) {
+      system = [header];
+    }
+    if (system.length > 2 && system[0] === header) {
+      const rest = system.slice(1);
+      system = [header, rest.join('\n')];
+    }
+    // Ensure we never send multiple `system` messages to OpenAI-compatible servers.
+    // Some HF chat templates error with: "System message must be at the beginning."
+    if (this.llm.id === 'openaiCompatible' && system.length > 1) {
+      system = [system.filter(Boolean).join('\n')];
+    }
+    return system;
   }
 
   private async compactSessionInternal(

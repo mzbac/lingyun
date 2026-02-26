@@ -1085,7 +1085,7 @@ export class AgentLoop {
       this.activeAbortController = abortController;
 
       // Let plugins customize the system prompt in a way that preserves caching.
-      let systemParts = [...baseSystem];
+      let systemParts = [baseSystem.filter(Boolean).join('\n')];
       const systemHeader = systemParts[0];
       const originalSystem = [...systemParts];
       const systemOutput = await this.plugins.trigger(
@@ -1098,6 +1098,11 @@ export class AgentLoop {
       if (systemParts.length > 2 && systemParts[0] === systemHeader) {
         const rest = systemParts.slice(1);
         systemParts = [systemHeader, rest.join('\n')];
+      }
+      // Ensure we never send multiple `system` messages to OpenAI-compatible servers.
+      // Some HF chat templates error with: "System message must be at the beginning."
+      if (this.llm.id === 'openaiCompatible' && systemParts.length > 1) {
+        systemParts = [systemParts.filter(Boolean).join('\n')];
       }
       if (systemParts.length === 0) {
         systemParts = [''];

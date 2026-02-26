@@ -745,6 +745,7 @@
     function applyInputHistoryValue(value, position) {
       input.value = typeof value === 'string' ? value : '';
       updateInputLayout();
+      syncInputState();
       const pos = position === 'start' ? 0 : input.value.length;
       try { input.setSelectionRange(pos, pos); } catch {}
       try { input.focus(); } catch {}
@@ -790,6 +791,7 @@
 
     input.addEventListener('input', () => {
       updateInputLayout();
+      syncInputState();
       if (inputHistoryIndex >= 0) {
         inputHistoryIndex = -1;
         inputHistorySavedDraft = null;
@@ -958,6 +960,7 @@
           inputHistorySavedDraft = null;
           input.value = cmd;
           updateInputLayout();
+          syncInputState();
           input.focus();
         }
       }
