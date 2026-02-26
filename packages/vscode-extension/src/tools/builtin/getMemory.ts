@@ -37,7 +37,7 @@ export const getMemoryTool: ToolDefinition = {
       },
       rolloutFile: {
         type: 'string',
-        description: 'When view=rollout, the rollout summary filename under memory/rollout_summaries/*.md',
+        description: 'When view=rollout, the rollout summary filename under rollout_summaries/*.md',
       },
       maxChars: {
         type: 'number',
@@ -88,7 +88,7 @@ export const getMemoryHandler: ToolHandler = async (args, context) => {
     const maxChars = getMaxChars(args);
 
     if (view === 'list') {
-      const artifacts = await readMemoryArtifacts(context.workspaceFolder);
+      const artifacts = await readMemoryArtifacts(context.extensionContext);
       return {
         success: true,
         data: {

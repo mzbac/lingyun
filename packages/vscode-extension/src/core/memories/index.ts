@@ -6,7 +6,6 @@ import { SessionStore } from '../sessionStore';
 const STATE_VERSION = 1;
 const STORAGE_DIR_NAME = 'memories';
 const STAGE1_OUTPUTS_FILE = 'stage1_outputs.json';
-const MEMORY_DIR_NAME = 'memory';
 const ROLLOUT_SUMMARIES_DIR_NAME = 'rollout_summaries';
 const RAW_MEMORIES_FILENAME = 'raw_memories.md';
 const MEMORY_SUMMARY_FILENAME = 'memory_summary.md';
@@ -161,17 +160,16 @@ export function getMemoriesConfig(): MemoriesConfig {
   };
 }
 
-function getMemoryArtifacts(workspaceFolder?: vscode.Uri): MemoryArtifacts | undefined {
-  const root = workspaceFolder ?? vscode.workspace.workspaceFolders?.[0]?.uri;
-  if (!root) return undefined;
+function getMemoryArtifacts(storageRootUri?: vscode.Uri): MemoryArtifacts | undefined {
+  if (!storageRootUri) return undefined;
 
-  const memoryRoot = vscode.Uri.joinPath(root, MEMORY_DIR_NAME);
+  const memoryRoot = vscode.Uri.joinPath(storageRootUri, STORAGE_DIR_NAME);
   return {
     memoryRoot,
     rolloutSummariesDir: vscode.Uri.joinPath(memoryRoot, ROLLOUT_SUMMARIES_DIR_NAME),
     rawMemoriesFile: vscode.Uri.joinPath(memoryRoot, RAW_MEMORIES_FILENAME),
     memorySummaryFile: vscode.Uri.joinPath(memoryRoot, MEMORY_SUMMARY_FILENAME),
-    memoryFile: vscode.Uri.joinPath(root, MEMORY_MD_FILENAME),
+    memoryFile: vscode.Uri.joinPath(memoryRoot, MEMORY_MD_FILENAME),
   };
 }
 
@@ -452,7 +450,7 @@ function renderMemoryFile(outputs: Stage1Output[]): string {
     lines.push(`- session_id: ${output.sessionId}`);
     lines.push(`- key_intent: ${output.userIntents[0] ?? '(none captured)'}`);
     lines.push(`- key_outcome: ${output.assistantOutcomes[0] ?? '(none captured)'}`);
-    lines.push(`- rollout_summary: memory/${ROLLOUT_SUMMARIES_DIR_NAME}/${output.rolloutFile}`);
+    lines.push(`- rollout_summary: ${ROLLOUT_SUMMARIES_DIR_NAME}/${output.rolloutFile}`);
     lines.push('');
   }
 
@@ -491,14 +489,14 @@ function renderMemorySummary(outputs: Stage1Output[]): string {
 
   lines.push('');
   lines.push('## Progressive Read Path');
-  lines.push('- Step 1: Read this file (`memory/memory_summary.md`).');
+  lines.push('- Step 1: Read this file (`memory_summary.md`).');
   lines.push('- Step 2: Read `MEMORY.md` for consolidated durable context.');
-  lines.push('- Step 3: Open 1-2 relevant rollout summaries from `memory/rollout_summaries/*.md` only when needed.');
+  lines.push(`- Step 3: Open 1-2 relevant rollout summaries from \`${ROLLOUT_SUMMARIES_DIR_NAME}/*.md\` only when needed.`);
   lines.push('');
 
   lines.push('## Latest Rollouts');
   for (const output of outputs.slice(0, 12)) {
-    lines.push(`- ${toIso(output.sourceUpdatedAt)} | ${output.title} | memory/${ROLLOUT_SUMMARIES_DIR_NAME}/${output.rolloutFile}`);
+    lines.push(`- ${toIso(output.sourceUpdatedAt)} | ${output.title} | ${ROLLOUT_SUMMARIES_DIR_NAME}/${output.rolloutFile}`);
   }
 
   lines.push('');
@@ -523,13 +521,17 @@ function sortOutputs(outputs: Stage1Output[]): Stage1Output[] {
 
 export class WorkspaceMemories {
   private readonly storageRootUri: vscode.Uri | undefined;
+  private readonly memoriesRootUri: vscode.Uri | undefined;
   private readonly stateUri: vscode.Uri | undefined;
   private updateInFlight?: Promise<MemoryUpdateResult>;
 
   constructor(private readonly context: vscode.ExtensionContext) {
     this.storageRootUri = context.storageUri ?? context.globalStorageUri;
-    this.stateUri = this.storageRootUri
-      ? vscode.Uri.joinPath(this.storageRootUri, STORAGE_DIR_NAME, STAGE1_OUTPUTS_FILE)
+    this.memoriesRootUri = this.storageRootUri
+      ? vscode.Uri.joinPath(this.storageRootUri, STORAGE_DIR_NAME)
+      : undefined;
+    this.stateUri = this.memoriesRootUri
+      ? vscode.Uri.joinPath(this.memoriesRootUri, STAGE1_OUTPUTS_FILE)
       : undefined;
   }
 
@@ -545,7 +547,7 @@ export class WorkspaceMemories {
 
   private async updateFromSessionsInternal(workspaceFolder?: vscode.Uri): Promise<MemoryUpdateResult> {
     const config = getMemoriesConfig();
-    const artifacts = getMemoryArtifacts(workspaceFolder);
+    const artifacts = getMemoryArtifacts(this.storageRootUri);
 
     if (!config.enabled) {
       return {
@@ -580,7 +582,8 @@ export class WorkspaceMemories {
     const sessions = await this.loadPersistedSessions();
     const prev = await this.readState();
     const prevBySession = new Map(prev.outputs.map(output => [output.sessionId, output]));
-    const workspaceRootPath = path.dirname(artifacts.memoryFile.fsPath);
+    const workspaceRootPath =
+      workspaceFolder?.fsPath ?? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
 
     let skippedRecentSessions = 0;
     let skippedPlanOrSubagentSessions = 0;
@@ -679,39 +682,14 @@ export class WorkspaceMemories {
   }
 
   async dropMemories(workspaceFolder?: vscode.Uri): Promise<MemoryDropResult> {
-    const artifacts = getMemoryArtifacts(workspaceFolder);
     const state = await this.readState();
-
-    if (this.stateUri) {
-      try {
-        await vscode.workspace.fs.delete(this.stateUri, { recursive: false, useTrash: false });
-      } catch {
-        // Ignore missing state file.
-      }
-
-      if (this.storageRootUri) {
-        const dir = vscode.Uri.joinPath(this.storageRootUri, STORAGE_DIR_NAME);
-        try {
-          await vscode.workspace.fs.delete(dir, { recursive: true, useTrash: false });
-        } catch {
-          // Ignore if the directory does not exist.
-        }
-      }
-    }
-
     let removedArtifacts = false;
-    if (artifacts) {
+    if (this.memoriesRootUri) {
       try {
-        await vscode.workspace.fs.delete(artifacts.memoryRoot, { recursive: true, useTrash: false });
+        await vscode.workspace.fs.delete(this.memoriesRootUri, { recursive: true, useTrash: false });
         removedArtifacts = true;
       } catch {
-        // Ignore missing memory directory.
-      }
-      try {
-        await vscode.workspace.fs.delete(artifacts.memoryFile, { recursive: false, useTrash: false });
-        removedArtifacts = true;
-      } catch {
-        // Ignore missing MEMORY.md.
+        // Ignore missing memories directory.
       }
     }
 
@@ -722,14 +700,14 @@ export class WorkspaceMemories {
   }
 
   async listRolloutSummaries(workspaceFolder?: vscode.Uri): Promise<string[]> {
-    const artifacts = getMemoryArtifacts(workspaceFolder);
+    const artifacts = getMemoryArtifacts(this.storageRootUri);
     if (!artifacts) return [];
     const names = await listMarkdownFiles(artifacts.rolloutSummariesDir);
     return names.sort((a, b) => b.localeCompare(a));
   }
 
   async readMemoryFile(kind: 'summary' | 'memory' | 'raw' | 'rollout', rolloutFile?: string, workspaceFolder?: vscode.Uri): Promise<string | undefined> {
-    const artifacts = getMemoryArtifacts(workspaceFolder);
+    const artifacts = getMemoryArtifacts(this.storageRootUri);
     if (!artifacts) return undefined;
 
     if (kind === 'summary') return readTextIfExists(artifacts.memorySummaryFile);
@@ -832,12 +810,11 @@ export class WorkspaceMemories {
   }
 
   private async writeState(state: MemoriesState): Promise<void> {
-    if (!this.stateUri || !this.storageRootUri) return;
+    if (!this.stateUri || !this.memoriesRootUri) return;
 
-    const dir = vscode.Uri.joinPath(this.storageRootUri, STORAGE_DIR_NAME);
-    await vscode.workspace.fs.createDirectory(dir);
+    await vscode.workspace.fs.createDirectory(this.memoriesRootUri);
 
-    const tmp = vscode.Uri.joinPath(dir, `${STAGE1_OUTPUTS_FILE}.tmp-${crypto.randomUUID()}`);
+    const tmp = vscode.Uri.joinPath(this.memoriesRootUri, `${STAGE1_OUTPUTS_FILE}.tmp-${crypto.randomUUID()}`);
     const bytes = new TextEncoder().encode(JSON.stringify(state, null, 2));
     await vscode.workspace.fs.writeFile(tmp, bytes);
     await vscode.workspace.fs.rename(tmp, this.stateUri, { overwrite: true });
@@ -889,25 +866,36 @@ export class WorkspaceMemories {
 
   private async clearArtifacts(artifacts: MemoryArtifacts): Promise<void> {
     try {
-      await vscode.workspace.fs.delete(artifacts.memoryRoot, { recursive: true, useTrash: false });
+      await vscode.workspace.fs.delete(artifacts.rolloutSummariesDir, { recursive: true, useTrash: false });
     } catch {
-      // Ignore missing memory directory.
+      // Ignore missing rollout summaries directory.
     }
     try {
       await vscode.workspace.fs.delete(artifacts.memoryFile, { recursive: false, useTrash: false });
     } catch {
       // Ignore missing MEMORY.md.
     }
+    try {
+      await vscode.workspace.fs.delete(artifacts.memorySummaryFile, { recursive: false, useTrash: false });
+    } catch {
+      // Ignore missing memory_summary.md.
+    }
+    try {
+      await vscode.workspace.fs.delete(artifacts.rawMemoriesFile, { recursive: false, useTrash: false });
+    } catch {
+      // Ignore missing raw_memories.md.
+    }
   }
 }
 
-export async function readMemoryArtifacts(workspaceFolder?: vscode.Uri): Promise<{
+export async function readMemoryArtifacts(extensionContext: vscode.ExtensionContext): Promise<{
   summary?: string;
   memory?: string;
   raw?: string;
   rollouts: string[];
 }> {
-  const artifacts = getMemoryArtifacts(workspaceFolder);
+  const storageRootUri = extensionContext.storageUri ?? extensionContext.globalStorageUri;
+  const artifacts = getMemoryArtifacts(storageRootUri);
   if (!artifacts) return { rollouts: [] };
 
   const [summary, memory, raw, rollouts] = await Promise.all([

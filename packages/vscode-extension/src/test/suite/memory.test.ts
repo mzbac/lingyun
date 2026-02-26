@@ -4,11 +4,14 @@ import * as vscode from 'vscode';
 import type { ToolContext } from '../../core/types';
 import { getMemoryHandler } from '../../tools/builtin/getMemory';
 
-function createToolContext(): ToolContext {
+function createToolContext(params: { storageRoot: vscode.Uri }): ToolContext {
   return {
     workspaceFolder: vscode.workspace.workspaceFolders?.[0]?.uri,
     activeEditor: vscode.window.activeTextEditor,
-    extensionContext: {} as unknown as vscode.ExtensionContext,
+    extensionContext: {
+      storageUri: params.storageRoot,
+      globalStorageUri: params.storageRoot,
+    } as unknown as vscode.ExtensionContext,
     cancellationToken: new vscode.CancellationTokenSource().token,
     progress: { report: () => {} },
     log: () => {},
@@ -23,11 +26,12 @@ suite('Memory Tool', () => {
     const cfg = vscode.workspace.getConfiguration('lingyun');
     const prevEnabled = cfg.get('features.memories');
 
-    const memoryDir = vscode.Uri.joinPath(root, 'memory');
-    const rolloutDir = vscode.Uri.joinPath(memoryDir, 'rollout_summaries');
-    const summaryFile = vscode.Uri.joinPath(memoryDir, 'memory_summary.md');
-    const rawFile = vscode.Uri.joinPath(memoryDir, 'raw_memories.md');
-    const memoryFile = vscode.Uri.joinPath(root, 'MEMORY.md');
+    const storageRoot = vscode.Uri.joinPath(root, '.lingyun-test-storage');
+    const memoriesDir = vscode.Uri.joinPath(storageRoot, 'memories');
+    const rolloutDir = vscode.Uri.joinPath(memoriesDir, 'rollout_summaries');
+    const summaryFile = vscode.Uri.joinPath(memoriesDir, 'memory_summary.md');
+    const rawFile = vscode.Uri.joinPath(memoriesDir, 'raw_memories.md');
+    const memoryFile = vscode.Uri.joinPath(memoriesDir, 'MEMORY.md');
     const rolloutFileName = '2026-01-01T10-00-00-000Z-ab12-session.md';
     const rolloutFile = vscode.Uri.joinPath(rolloutDir, rolloutFileName);
 
@@ -44,7 +48,7 @@ suite('Memory Tool', () => {
         Buffer.from('# Session Memory\n\n- rollout detail\n', 'utf8'),
       );
 
-      const context = createToolContext();
+      const context = createToolContext({ storageRoot });
 
       const listResult = await getMemoryHandler({ view: 'list' }, context);
       assert.strictEqual(listResult.success, true);
@@ -77,12 +81,7 @@ suite('Memory Tool', () => {
         // ignore
       }
       try {
-        await vscode.workspace.fs.delete(memoryFile, { recursive: false, useTrash: false });
-      } catch {
-        // ignore
-      }
-      try {
-        await vscode.workspace.fs.delete(memoryDir, { recursive: true, useTrash: false });
+        await vscode.workspace.fs.delete(storageRoot, { recursive: true, useTrash: false });
       } catch {
         // ignore
       }

@@ -542,7 +542,7 @@ async function cmdDropMemories(): Promise<void> {
   if (!extensionState?.memories) return;
 
   const choice = await vscode.window.showWarningMessage(
-    'Delete generated memories (MEMORY.md, memory/*, and stored stage-1 outputs)?',
+    'Delete generated memories (stored memory artifacts and stage-1 outputs)?',
     { modal: true },
     'Delete'
   );
