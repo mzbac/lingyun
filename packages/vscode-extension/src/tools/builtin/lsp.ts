@@ -124,7 +124,7 @@ Prefer higher-level tools for common navigation:
 - symbols_search -> find a symbol by name (no file/position needed)
 - symbols_peek -> hover + definition + snippet in one call
 
-Supported operations (OpenCode-aligned; line/character are 1-based):
+Supported operations (line/character are 1-based):
 - goToDefinition
 - findReferences
 - hover
@@ -559,7 +559,7 @@ export const lspHandler: ToolHandler = async (args, context) => {
         return { success: true, data: { operation, results, truncated: allResults.length > results.length } };
       }
 
-      // OpenCode-aligned: position-based incomingCalls/outgoingCalls.
+      // Keep symbol call hierarchy position-based (incomingCalls/outgoingCalls).
       const docResult = getTargetDocumentUri(args, context, false);
       if ('error' in docResult) return { success: false, error: docResult.error };
       const targetUri = docResult.uri;

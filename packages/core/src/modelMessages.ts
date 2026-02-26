@@ -243,7 +243,7 @@ function getModelMessageProviderOptions(message: ModelMessage): UnknownRecord | 
 
 /**
  * OpenAI-compatible request encoding ignores `reasoning` parts. To replay reasoning we lift reasoning parts
- * onto the assistant message as `providerOptions.openaiCompatible.reasoning_content` (OpenCode pattern),
+ * onto the assistant message as `providerOptions.openaiCompatible.reasoning_content`,
  * while keeping tool calls and assistant text unchanged.
  */
 export function applyOpenAICompatibleReasoningField(
