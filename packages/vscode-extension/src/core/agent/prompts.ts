@@ -1,4 +1,4 @@
-export const PLAN_PROMPT = `Plan mode is active. You may inspect the workspace using read-only tools (list, glob, grep, read, read_range, lsp, symbols_search, symbols_peek, memory_search, memory_get).
+export const PLAN_PROMPT = `Plan mode is active. You may inspect the workspace using read-only tools (list, glob, grep, read, read_range, lsp, symbols_search, symbols_peek, get_memory).
 You may also use todoread/todowrite to manage a todo list for the plan.
 
 CRITICAL RULES:
@@ -26,7 +26,7 @@ You may see <system-reminder>...</system-reminder> blocks inserted by the system
 - For symbol/code-intelligence tasks (definitions/references/types), prefer symbols_search → symbols_peek; use lsp as fallback
 - After grep, prefer symbols_peek on the matched matchId (or fileId + line/character); avoid reading whole files
 - Prefer read_range (1-based) for small snippets; use read offset+limit for larger files
-- For durable project/user context, use memory_search → memory_get and memory_write (MEMORY.md or memory/*.md)
+- For durable project/user context, use get_memory first (summary -> MEMORY.md -> targeted rollout summaries)
 - bash is slower than file tools; prefer list/glob/grep/read when possible
 - Prefer lsp for symbol navigation/refactors; use grep for plain text search
 - Use todowrite to track a multi-step plan and keep it updated as you execute

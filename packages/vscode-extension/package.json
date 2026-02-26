@@ -58,6 +58,14 @@
         "title": "LingYun: Compact Session"
       },
       {
+        "command": "lingyun.updateMemories",
+        "title": "LingYun: Update Memories"
+      },
+      {
+        "command": "lingyun.dropMemories",
+        "title": "LingYun: Drop Memories"
+      },
+      {
         "command": "lingyun.showLogs",
         "title": "LingYun: Show Logs"
       },
@@ -303,35 +311,50 @@
           ],
           "description": "When to compact tool outputs in the model prompt. onCompaction only prunes outputs during session compaction; afterToolCall prunes tool outputs after the model has seen them once."
         },
-        "lingyun.compaction.memoryFlush.enabled": {
+        "lingyun.features.memories": {
           "type": "boolean",
-          "default": false,
-          "description": "Before compaction, write a durable memory snapshot to MEMORY.md or memory/*.md"
+          "default": true,
+          "description": "Enable the memory pipeline and get_memory tool."
         },
-        "lingyun.compaction.memoryFlush.filePath": {
+        "lingyun.memories.maxRawMemoriesForGlobal": {
+          "type": "number",
+          "default": 120,
+          "minimum": 1,
+          "description": "Maximum number of latest rollout memories retained in generated artifacts."
+        },
+        "lingyun.memories.maxRolloutAgeDays": {
+          "type": "number",
+          "default": 30,
+          "minimum": 1,
+          "description": "Ignore persisted sessions older than this when extracting memories."
+        },
+        "lingyun.memories.maxRolloutsPerStartup": {
+          "type": "number",
+          "default": 24,
+          "minimum": 1,
+          "description": "Maximum persisted sessions scanned for memory extraction per startup/update run."
+        },
+        "lingyun.memories.minRolloutIdleHours": {
+          "type": "number",
+          "default": 2,
+          "minimum": 0,
+          "description": "Only extract memory from sessions idle for at least this many hours."
+        },
+        "lingyun.memories.maxStateOutputs": {
+          "type": "number",
+          "default": 500,
+          "minimum": 10,
+          "description": "Maximum number of stage-1 memory outputs retained in extension storage."
+        },
+        "lingyun.memories.phase1Model": {
           "type": "string",
-          "default": "MEMORY.md",
-          "description": "Target memory file for compaction-time memory flush (MEMORY.md or memory/*.md)"
+          "default": "gpt-5.1-codex-mini",
+          "description": "Model identifier reserved for phase-1 rollout extraction."
         },
-        "lingyun.compaction.memoryFlush.maxChars": {
-          "type": "number",
-          "default": 8000,
-          "description": "Maximum characters to write during compaction memory flush"
-        },
-        "lingyun.memory.cache.maxEntries": {
-          "type": "number",
-          "default": 200,
-          "description": "Maximum number of cached memory files kept in-memory for faster memory_search/memory_get"
-        },
-        "lingyun.memory.cache.maxSnippetChars": {
-          "type": "number",
-          "default": 1200,
-          "description": "Maximum snippet length returned by memory_search"
-        },
-        "lingyun.memory.get.maxLines": {
-          "type": "number",
-          "default": 80,
-          "description": "Maximum number of lines returned by memory_get"
+        "lingyun.memories.phase2Model": {
+          "type": "string",
+          "default": "gpt-5.3-codex",
+          "description": "Model identifier reserved for phase-2 memory consolidation."
         },
         "lingyun.autoApprove": {
           "type": "boolean",

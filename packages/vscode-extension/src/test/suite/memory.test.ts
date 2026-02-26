@@ -2,8 +2,7 @@ import * as assert from 'assert';
 import * as vscode from 'vscode';
 
 import type { ToolContext } from '../../core/types';
-import { memorySearchHandler } from '../../tools/builtin/memorySearch';
-import { memoryGetHandler } from '../../tools/builtin/memoryGet';
+import { getMemoryHandler } from '../../tools/builtin/getMemory';
 
 function createToolContext(): ToolContext {
   return {
@@ -16,52 +15,69 @@ function createToolContext(): ToolContext {
   };
 }
 
-suite('Memory Tools', () => {
-  test('memory_search finds hits and memory_get enforces max lines', async () => {
+suite('Memory Tool', () => {
+  test('get_memory lists and reads generated memory artifacts', async () => {
     const root = vscode.workspace.workspaceFolders?.[0]?.uri;
-    assert.ok(root, 'Workspace folder must be available for Memory tool tests');
+    assert.ok(root, 'Workspace folder must be available for memory tests');
 
     const cfg = vscode.workspace.getConfiguration('lingyun');
-    const prevMaxLines = cfg.get('memory.get.maxLines');
+    const prevEnabled = cfg.get('features.memories');
 
     const memoryDir = vscode.Uri.joinPath(root, 'memory');
-    const memoryRel = 'memory/test.md';
-    const memoryUri = vscode.Uri.joinPath(root, memoryRel);
+    const rolloutDir = vscode.Uri.joinPath(memoryDir, 'rollout_summaries');
+    const summaryFile = vscode.Uri.joinPath(memoryDir, 'memory_summary.md');
+    const rawFile = vscode.Uri.joinPath(memoryDir, 'raw_memories.md');
+    const memoryFile = vscode.Uri.joinPath(root, 'MEMORY.md');
+    const rolloutFileName = '2026-01-01T10-00-00-000Z-ab12-session.md';
+    const rolloutFile = vscode.Uri.joinPath(rolloutDir, rolloutFileName);
 
-    await vscode.workspace.fs.createDirectory(memoryDir);
+    await vscode.workspace.fs.createDirectory(rolloutDir);
 
     try {
-      await cfg.update('memory.get.maxLines', 2, true);
+      await cfg.update('features.memories', true, true);
 
-      const content = ['alpha note', 'beta note', 'gamma alpha'].join('\n');
-      await vscode.workspace.fs.writeFile(memoryUri, Buffer.from(content, 'utf8'));
+      await vscode.workspace.fs.writeFile(summaryFile, Buffer.from('# Memory Summary\n\n- Focus item\n', 'utf8'));
+      await vscode.workspace.fs.writeFile(memoryFile, Buffer.from('# MEMORY\n\n- Durable context\n', 'utf8'));
+      await vscode.workspace.fs.writeFile(rawFile, Buffer.from('# Raw Memories\n\n- Raw item\n', 'utf8'));
+      await vscode.workspace.fs.writeFile(
+        rolloutFile,
+        Buffer.from('# Session Memory\n\n- rollout detail\n', 'utf8'),
+      );
 
       const context = createToolContext();
 
-      const searchResult = await memorySearchHandler({ query: 'alpha' }, context);
-      assert.strictEqual(searchResult.success, true);
-      assert.ok(Array.isArray(searchResult.data));
-      assert.ok((searchResult.data as any[]).length >= 1);
+      const listResult = await getMemoryHandler({ view: 'list' }, context);
+      assert.strictEqual(listResult.success, true);
+      assert.ok(Array.isArray((listResult.data as any)?.rolloutSummaries));
+      assert.ok(((listResult.data as any)?.rolloutSummaries as string[]).includes(rolloutFileName));
 
-      const tooLarge = await memoryGetHandler(
-        { filePath: memoryRel, startLine: 1, endLine: 3 },
+      const summaryResult = await getMemoryHandler({}, context);
+      assert.strictEqual(summaryResult.success, true);
+      assert.strictEqual(typeof summaryResult.data, 'string');
+      assert.ok((summaryResult.data as string).includes('Focus item'));
+
+      const rolloutResult = await getMemoryHandler(
+        { view: 'rollout', rolloutFile: rolloutFileName },
         context,
       );
-      assert.strictEqual(tooLarge.success, false);
-      assert.strictEqual((tooLarge.metadata as any)?.errorType, 'memory_get_limit_exceeded');
+      assert.strictEqual(rolloutResult.success, true);
+      assert.strictEqual(typeof rolloutResult.data, 'string');
+      assert.ok((rolloutResult.data as string).includes('rollout detail'));
 
-      const ok = await memoryGetHandler({ filePath: memoryRel, startLine: 1, endLine: 2 }, context);
-      assert.strictEqual(ok.success, true);
-      assert.strictEqual(typeof ok.data, 'string');
-      assert.ok((ok.data as string).includes('00001| alpha note'));
+      const missingRollout = await getMemoryHandler(
+        { view: 'rollout', rolloutFile: 'missing.md' },
+        context,
+      );
+      assert.strictEqual(missingRollout.success, false);
+      assert.strictEqual((missingRollout.metadata as any)?.errorType, 'memory_rollout_missing');
     } finally {
       try {
-        await cfg.update('memory.get.maxLines', prevMaxLines, true);
+        await cfg.update('features.memories', prevEnabled, true);
       } catch {
         // ignore
       }
       try {
-        await vscode.workspace.fs.delete(memoryUri, { recursive: false, useTrash: false });
+        await vscode.workspace.fs.delete(memoryFile, { recursive: false, useTrash: false });
       } catch {
         // ignore
       }

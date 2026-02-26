@@ -29,7 +29,6 @@ import {
   createHistoryForModel,
   extractUsageTokens,
   getCompactionConfig,
-  getMemoryFlushConfig,
   getEffectiveHistory,
   getModelLimit,
   getReservedOutputTokens,
@@ -1669,34 +1668,6 @@ export class AgentLoop {
       const summaryUsage = await stream.usage;
       const finishReason = await stream.finishReason;
       const summaryText = stripThinkBlocks(String(summaryTextRaw || '')).trim();
-
-      const memoryFlushConfig = getMemoryFlushConfig();
-      if (memoryFlushConfig.enabled && summaryText) {
-        const timestamp = new Date().toISOString();
-        const filePath = memoryFlushConfig.filePath ?? 'MEMORY.md';
-        let body = summaryText;
-        if (body.length > memoryFlushConfig.maxChars) {
-          body = body.slice(0, memoryFlushConfig.maxChars).trimEnd() + '…';
-        }
-        const headerLines = [
-          `## Compaction memory (${timestamp})`,
-          this.config.sessionId ? `Session: ${this.config.sessionId}` : undefined,
-          `Model: ${params.modelId}`,
-          '',
-        ].filter((line) => typeof line === 'string') as string[];
-        const content = `${headerLines.join('\n')}${body}`.trimEnd();
-        try {
-          await this.registry.executeTool(
-            'memory_write',
-            { content, filePath, mode: 'append' },
-            this.createToolContext(abortController.signal),
-          );
-        } catch (error) {
-          callbacks?.onDebug?.(
-            `[Compaction] memory flush failed: ${summarizeErrorForDebug(error)}`,
-          );
-        }
-      }
 
       const summaryMessage = createAssistantHistoryMessage();
       const summaryTokens = extractUsageTokens(summaryUsage);

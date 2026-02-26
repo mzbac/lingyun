@@ -21,6 +21,7 @@ import { registerBuiltinTools } from './tools/builtin';
 import { PluginManager } from './core/hooks/pluginManager';
 import { PluginToolProvider } from './core/hooks/pluginToolProvider';
 import { getSkillIndex } from './core/skills';
+import { WorkspaceMemories, getMemoriesConfig } from './core/memories';
 
 import { ChatViewProvider } from './ui/chat';
 import { LingyunDiffContentProvider, LINGYUN_DIFF_SCHEME } from './ui/chat/diffContentProvider';
@@ -33,6 +34,7 @@ class ExtensionState implements vscode.Disposable {
   outputChannel: vscode.OutputChannel | undefined;
   chatProvider: ChatViewProvider | undefined;
   plugins: PluginManager | undefined;
+  memories: WorkspaceMemories | undefined;
 
   readonly onDidRegisterToolEmitter = new vscode.EventEmitter<ToolDefinition>();
   readonly onDidUnregisterToolEmitter = new vscode.EventEmitter<string>();
@@ -57,6 +59,7 @@ class ExtensionState implements vscode.Disposable {
     this.llmProvider = undefined;
 
     this.plugins = undefined;
+    this.memories = undefined;
 
     toolRegistry.dispose();
 
@@ -198,6 +201,24 @@ async function warmSkillIndexOnStartup(context: vscode.ExtensionContext): Promis
   }
 }
 
+async function refreshMemoriesOnStartup(context: vscode.ExtensionContext): Promise<void> {
+  if (!extensionState) return;
+
+  const config = getMemoriesConfig();
+  if (!config.enabled) return;
+
+  extensionState.memories ??= new WorkspaceMemories(context);
+
+  try {
+    const result = await extensionState.memories.updateFromSessions();
+    log(
+      `Memories refreshed on startup: scanned=${result.scannedSessions} processed=${result.processedSessions} retained=${result.retainedOutputs}`,
+    );
+  } catch (error) {
+    log(`Failed to refresh memories on startup: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 export async function activate(
   context: vscode.ExtensionContext
 ): Promise<LingyunAPI> {
@@ -210,6 +231,8 @@ export async function activate(
 
   await initializeLLMAndAgent(context);
   void warmSkillIndexOnStartup(context);
+  extensionState.memories = new WorkspaceMemories(context);
+  void refreshMemoriesOnStartup(context);
 
   for (const d of registerBuiltinTools()) {
     extensionState.addDisposable(d);
@@ -263,6 +286,12 @@ export async function activate(
   );
   extensionState.addDisposable(
     vscode.commands.registerCommand('lingyun.compactSession', cmdCompactSession)
+  );
+  extensionState.addDisposable(
+    vscode.commands.registerCommand('lingyun.updateMemories', cmdUpdateMemories)
+  );
+  extensionState.addDisposable(
+    vscode.commands.registerCommand('lingyun.dropMemories', cmdDropMemories)
   );
   extensionState.addDisposable(
     vscode.commands.registerCommand('lingyun.showLogs', cmdShowLogs)
@@ -319,6 +348,15 @@ export async function activate(
           e.affectsConfiguration('lingyun.sessions.persist') ||
           e.affectsConfiguration('lingyun.sessions.maxSessions') ||
           e.affectsConfiguration('lingyun.sessions.maxSessionBytes');
+        const memoriesChanged =
+          e.affectsConfiguration('lingyun.features.memories') ||
+          e.affectsConfiguration('lingyun.memories.maxRawMemoriesForGlobal') ||
+          e.affectsConfiguration('lingyun.memories.maxRolloutAgeDays') ||
+          e.affectsConfiguration('lingyun.memories.maxRolloutsPerStartup') ||
+          e.affectsConfiguration('lingyun.memories.minRolloutIdleHours') ||
+          e.affectsConfiguration('lingyun.memories.maxStateOutputs') ||
+          e.affectsConfiguration('lingyun.memories.phase1Model') ||
+          e.affectsConfiguration('lingyun.memories.phase2Model');
 
         if (providerChanged) {
           initializeLLMAndAgent(context).catch(err => {
@@ -341,6 +379,10 @@ export async function activate(
             log(`Failed to update session persistence: ${err instanceof Error ? err.message : String(err)}`);
           });
           void maybeWarnSessionPersistence(context);
+        }
+
+        if (memoriesChanged || sessionsChanged) {
+          void refreshMemoriesOnStartup(context);
         }
       }
     })
@@ -477,6 +519,45 @@ async function cmdCompactSession(): Promise<void> {
     return;
   }
   await extensionState.chatProvider.compactCurrentSession();
+}
+
+async function cmdUpdateMemories(): Promise<void> {
+  if (!extensionState?.memories) return;
+
+  try {
+    const result = await extensionState.memories.updateFromSessions();
+    const message = result.enabled
+      ? `Memories updated: scanned ${result.scannedSessions}, processed ${result.processedSessions}, retained ${result.retainedOutputs}.`
+      : 'Memories feature is disabled.';
+    log(message);
+    void vscode.window.showInformationMessage(`LingYun: ${message}`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    log(`Failed to update memories: ${message}`);
+    void vscode.window.showErrorMessage(`LingYun: Failed to update memories (${message}).`);
+  }
+}
+
+async function cmdDropMemories(): Promise<void> {
+  if (!extensionState?.memories) return;
+
+  const choice = await vscode.window.showWarningMessage(
+    'Delete generated memories (MEMORY.md, memory/*, and stored stage-1 outputs)?',
+    { modal: true },
+    'Delete'
+  );
+  if (choice !== 'Delete') return;
+
+  try {
+    const result = await extensionState.memories.dropMemories();
+    const message = `Dropped memories: removed ${result.removedStateOutputs} stored outputs.`;
+    log(message);
+    void vscode.window.showInformationMessage(`LingYun: ${message}`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    log(`Failed to drop memories: ${message}`);
+    void vscode.window.showErrorMessage(`LingYun: Failed to drop memories (${message}).`);
+  }
 }
 
 function cmdShowLogs(): void {

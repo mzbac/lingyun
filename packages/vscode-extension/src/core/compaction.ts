@@ -39,23 +39,6 @@ export function getCompactionConfig(): CompactionConfig {
   return { auto, prune, pruneProtectTokens, pruneMinimumTokens, toolOutputMode };
 }
 
-export type MemoryFlushConfig = {
-  enabled: boolean;
-  filePath?: string;
-  maxChars: number;
-};
-
-export function getMemoryFlushConfig(): MemoryFlushConfig {
-  const cfg = vscode.workspace.getConfiguration('lingyun');
-  const enabled = cfg.get<boolean>('compaction.memoryFlush.enabled') ?? false;
-  const filePathRaw = cfg.get<string>('compaction.memoryFlush.filePath');
-  const maxCharsRaw = cfg.get<number>('compaction.memoryFlush.maxChars');
-  const maxChars =
-    typeof maxCharsRaw === 'number' && Number.isFinite(maxCharsRaw) ? Math.max(500, Math.floor(maxCharsRaw)) : 8000;
-  const filePath = typeof filePathRaw === 'string' && filePathRaw.trim() ? filePathRaw.trim() : undefined;
-  return { enabled, filePath, maxChars };
-}
-
 export function getModelLimit(modelId: string): ModelLimit | undefined {
   const cfg = vscode.workspace.getConfiguration('lingyun');
   const raw = cfg.get<unknown>('modelLimits');
