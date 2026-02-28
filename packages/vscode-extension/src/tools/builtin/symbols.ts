@@ -167,6 +167,7 @@ export const symbolsSearchTool: ToolDefinition = {
     requiresApproval: false,
     permission: 'lsp',
     readOnly: true,
+    protocol: { output: { symbolsSearch: true } },
     permissionPatterns: [
       { arg: 'query', kind: 'raw' },
       { arg: 'filePath', kind: 'path' },
@@ -275,6 +276,7 @@ export const symbolsPeekTool: ToolDefinition = {
     requiresApproval: false,
     permission: 'lsp',
     readOnly: true,
+    protocol: { input: { fileId: true, semanticHandle: true }, output: { symbolsPeek: true } },
     permissionPatterns: [{ arg: 'filePath', kind: 'path' }],
   },
 };

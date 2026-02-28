@@ -40,6 +40,7 @@ export const readRangeTool: ToolDefinition = {
     permission: 'read',
     supportsExternalPaths: true,
     readOnly: true,
+    protocol: { input: { fileId: true, semanticHandle: true } },
     permissionPatterns: [{ arg: 'filePath', kind: 'path' }],
   },
 };

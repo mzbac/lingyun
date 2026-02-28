@@ -40,6 +40,7 @@ export const readTool: ToolDefinition = {
     permission: 'read',
     supportsExternalPaths: true,
     readOnly: true,
+    protocol: { input: { fileId: true } },
     permissionPatterns: [{ arg: 'filePath', kind: 'path' }],
   },
 };

@@ -18,6 +18,7 @@ import { installRunnerPlanMethods } from './methods.runner.plan';
 import { installSessionsMethods } from './methods.sessions';
 import { installSkillsMethods } from './methods.skills';
 import { installWebviewMethods } from './methods.webview';
+import { RunCoordinator } from './runner/runCoordinator';
 
 export type LLMProviderWithModels = LLMProvider & {
   getModels?: () => Promise<ModelInfo[]>;
@@ -36,6 +37,7 @@ export function installChatControllerMethods(controller: ChatController): void {
   installRunnerPlanMethods(controller);
   installModelsMethods(controller);
   installApprovalsMethods(controller);
+  controller.runner = new RunCoordinator(controller);
 }
 
 // eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging
@@ -103,6 +105,8 @@ export class ChatController {
       truncated: boolean;
     }
   > = new Map();
+
+  runner!: RunCoordinator;
 
   constructor(
     public context: vscode.ExtensionContext,
@@ -241,4 +245,3 @@ export interface ChatController extends vscode.WebviewViewProvider {
   postMessage(message: unknown): void;
   getHtml(webview: vscode.Webview): string;
 }
-

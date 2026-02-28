@@ -681,6 +681,7 @@ suite('AgentLoop', () => {
           required: ['pattern'],
         },
         execution: { type: 'function', handler: 'test.glob' },
+        metadata: { protocol: { output: { glob: true } } } as any,
       },
       async () => ({
         success: true,
@@ -705,6 +706,7 @@ suite('AgentLoop', () => {
           required: [],
         },
         execution: { type: 'function', handler: 'test.read' },
+        metadata: { protocol: { input: { fileId: true } } } as any,
       },
       async (args) => {
         readArgs = args;
@@ -748,6 +750,7 @@ suite('AgentLoop', () => {
           required: ['pattern'],
         },
         execution: { type: 'function', handler: 'test.grep' },
+        metadata: { protocol: { output: { grep: true } } } as any,
       },
       async () => ({
         success: true,
@@ -779,6 +782,7 @@ suite('AgentLoop', () => {
           required: ['operation'],
         },
         execution: { type: 'function', handler: 'test.lsp' },
+        metadata: { protocol: { input: { fileId: true } } } as any,
       },
       async (args) => {
         lspArgs = args;

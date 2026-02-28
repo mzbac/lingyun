@@ -78,12 +78,7 @@ export async function executeToolWithPolicies(params: {
 
   if (
     isRecord(resolvedArgs) &&
-    (def.id === 'read' ||
-      def.id === 'read_range' ||
-      def.id === 'edit' ||
-      def.id === 'write' ||
-      def.id === 'lsp' ||
-      def.id === 'symbols_peek') &&
+    def.metadata?.protocol?.input?.fileId &&
     typeof (resolvedArgs as any).fileId === 'string'
   ) {
     const filePathRaw =
@@ -102,7 +97,7 @@ export async function executeToolWithPolicies(params: {
     }
   }
 
-  if (isRecord(resolvedArgs) && def.id === 'symbols_peek') {
+  if (isRecord(resolvedArgs) && def.metadata?.protocol?.input?.semanticHandle) {
     const symbolId =
       typeof (resolvedArgs as any).symbolId === 'string' ? String((resolvedArgs as any).symbolId) : '';
     const matchId =
@@ -140,16 +135,50 @@ export async function executeToolWithPolicies(params: {
         };
       }
 
-      const line = handle.range.start.line;
-      const character = handle.range.start.character;
+      const props = def.parameters?.properties as Record<string, unknown> | undefined;
+      const supportsLine = !!props && typeof props === 'object' && 'line' in props;
+      const supportsCharacter = !!props && typeof props === 'object' && 'character' in props;
+      const supportsStartLine = !!props && typeof props === 'object' && 'startLine' in props;
+      const supportsEndLine = !!props && typeof props === 'object' && 'endLine' in props;
 
-      resolvedArgs = {
+      const nextArgs: Record<string, unknown> = {
         ...resolvedArgs,
         fileId,
         filePath,
-        line,
-        character,
       };
+
+      const rangeStart = handle.range.start;
+      const rangeEnd = handle.range.end;
+
+      if (
+        supportsLine &&
+        !(typeof (resolvedArgs as any).line === 'number' && Number.isFinite((resolvedArgs as any).line) && (resolvedArgs as any).line > 0)
+      ) {
+        nextArgs.line = rangeStart.line;
+      }
+
+      if (
+        supportsCharacter &&
+        !(typeof (resolvedArgs as any).character === 'number' && Number.isFinite((resolvedArgs as any).character) && (resolvedArgs as any).character > 0)
+      ) {
+        nextArgs.character = rangeStart.character;
+      }
+
+      if (
+        supportsStartLine &&
+        !(typeof (resolvedArgs as any).startLine === 'number' && Number.isFinite((resolvedArgs as any).startLine) && (resolvedArgs as any).startLine > 0)
+      ) {
+        nextArgs.startLine = rangeStart.line;
+      }
+
+      if (
+        supportsEndLine &&
+        !(typeof (resolvedArgs as any).endLine === 'number' && Number.isFinite((resolvedArgs as any).endLine) && (resolvedArgs as any).endLine > 0)
+      ) {
+        nextArgs.endLine = rangeEnd.line;
+      }
+
+      resolvedArgs = nextArgs;
     }
   }
 
@@ -361,16 +390,17 @@ export async function executeToolWithPolicies(params: {
     getOrCreate: (filePath: string): FileHandleLike => host.fileHandles.getOrCreate(session, filePath),
   };
 
-  if (def.id === 'glob') {
+  const protocolOutput = def.metadata?.protocol?.output;
+  if (protocolOutput?.glob) {
     result = host.fileHandles.decorateGlobResult(session, result);
   }
-  if (def.id === 'grep') {
+  if (protocolOutput?.grep) {
     result = host.fileHandles.decorateGrepResult(session, result, semanticHandles);
   }
-  if (def.id === 'symbols_search') {
+  if (protocolOutput?.symbolsSearch) {
     result = semanticHandles.decorateSymbolsSearchResult(result, fileHandleProvider);
   }
-  if (def.id === 'symbols_peek') {
+  if (protocolOutput?.symbolsPeek) {
     result = semanticHandles.decorateSymbolsPeekResult(result, fileHandleProvider);
   }
 

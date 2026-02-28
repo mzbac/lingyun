@@ -400,6 +400,7 @@ suite('LingYun Agent SDK', () => {
           required: ['pattern'],
         },
         execution: { type: 'function', handler: 'test.glob' },
+        metadata: { protocol: { output: { glob: true } } },
       },
       async () => ({
         success: true,
@@ -424,6 +425,7 @@ suite('LingYun Agent SDK', () => {
           required: [],
         },
         execution: { type: 'function', handler: 'test.read' },
+        metadata: { protocol: { input: { fileId: true } } },
       },
       async (args): Promise<ToolResult> => {
         readArgs = args;

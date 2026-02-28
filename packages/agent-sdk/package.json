@@ -33,8 +33,8 @@
     "prepack": "pnpm run build",
     "typecheck": "node scripts/ensure-core-build.cjs && tsc -p tsconfig.json --noEmit",
     "build:test": "node scripts/ensure-core-build.cjs && tsc -p tsconfig.test.json",
-    "test": "pnpm run build && pnpm run build:test && mocha --ui tdd ./dist-test/suite/*.test.js",
-    "test:e2e": "pnpm run build && pnpm run build:test && mocha --ui tdd --timeout 300000 ./dist-test/e2e/*.test.js"
+    "test": "pnpm run build:test && mocha --ui tdd ./dist-test/suite/*.test.js",
+    "test:e2e": "pnpm run build:test && mocha --ui tdd --timeout 300000 ./dist-test/e2e/*.test.js"
   },
   "dependencies": {
     "@kooka/core": "^0.2.0",

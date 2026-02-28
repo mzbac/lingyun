@@ -26,6 +26,7 @@ export const globTool: ToolDefinition = {
     requiresApproval: false,
     permission: 'glob',
     readOnly: true,
+    protocol: { output: { glob: true } },
     permissionPatterns: [
       { arg: 'pattern', kind: 'raw' },
       { arg: 'path', kind: 'path' },

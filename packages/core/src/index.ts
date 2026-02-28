@@ -119,6 +119,9 @@ export {
   markPrunableToolOutputs,
 } from './compaction';
 
+export type { PlanPromptOptions } from './prompts';
+export { BUILD_SWITCH_PROMPT, createPlanPrompt } from './prompts';
+
 export {
   applyAssistantReplayForPrompt,
   applyCopilotImageInputPattern,

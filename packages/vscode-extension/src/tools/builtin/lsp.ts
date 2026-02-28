@@ -196,6 +196,7 @@ Inputs:
     requiresApproval: false,
     permission: 'lsp',
     readOnly: true,
+    protocol: { input: { fileId: true } },
     permissionPatterns: [
       { arg: 'operation', kind: 'raw' },
       { arg: 'filePath', kind: 'path' },

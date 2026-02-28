@@ -53,6 +53,7 @@ export const grepTool: ToolDefinition = {
     requiresApproval: false,
     permission: 'grep',
     readOnly: true,
+    protocol: { output: { grep: true } },
     permissionPatterns: [
       { arg: 'pattern', kind: 'raw' },
       { arg: 'path', kind: 'path' },

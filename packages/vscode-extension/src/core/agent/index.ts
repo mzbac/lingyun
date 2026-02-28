@@ -454,6 +454,25 @@ export class AgentLoop {
     this.activeAbortController = undefined;
   }
 
+  private async withRun<T>(params: { explorePrepassInput?: UserHistoryInput }, fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    const signal = this.startRun();
+    try {
+      await this.refreshInstructions();
+      this.syncAgentConfig();
+      if (params.explorePrepassInput) {
+        await this.maybeRunExplorePrepass(params.explorePrepassInput, signal);
+      }
+      return await fn(signal);
+    } catch (error) {
+      if (isAbortError(error)) {
+        throw new Error('Agent aborted');
+      }
+      throw error;
+    } finally {
+      this.endRun();
+    }
+  }
+
   async plan(task: UserHistoryInput, callbacks?: AgentCallbacks): Promise<string> {
     if (this._running) {
       throw new Error('Agent is already running');
@@ -467,29 +486,21 @@ export class AgentLoop {
 
     this.session.pendingPlan = undefined;
 
-    const signal = this.startRun();
     try {
-      await this.refreshInstructions();
-      this.syncAgentConfig();
-      await this.maybeRunExplorePrepass(task, signal);
-
-      const run = this.agent.run({
-        session: this.session,
-        input: task,
-        callbacks,
-        signal,
+      const plan = await this.withRun({ explorePrepassInput: task }, async (signal) => {
+        const run = this.agent.run({
+          session: this.session,
+          input: task,
+          callbacks,
+          signal,
+        });
+        const result = await run.done;
+        return String(result.text || '').trim();
       });
-      const result = await run.done;
-      const plan = String(result.text || '').trim();
+
       this.session.pendingPlan = plan;
       return plan;
-    } catch (error) {
-      if (isAbortError(error)) {
-        throw new Error('Agent aborted');
-      }
-      throw error;
     } finally {
-      this.endRun();
       if (previousMode !== 'plan') {
         this.config = { ...this.config, mode: previousMode };
         this.agent.setMode(previousMode);
@@ -512,19 +523,9 @@ export class AgentLoop {
       this.session.pendingPlan = undefined;
     }
 
-    const signal = this.startRun();
-    try {
-      await this.refreshInstructions();
-      this.syncAgentConfig();
+    return await this.withRun({}, async (signal) => {
       return await this.agent.resume({ session: this.session, callbacks, signal });
-    } catch (error) {
-      if (isAbortError(error)) {
-        throw new Error('Agent aborted');
-      }
-      throw error;
-    } finally {
-      this.endRun();
-    }
+    });
   }
 
   async run(task: UserHistoryInput, callbacks?: AgentCallbacks): Promise<string> {
@@ -544,12 +545,7 @@ export class AgentLoop {
       semanticHandles: createBlankSemanticHandlesState(),
     });
 
-    const signal = this.startRun();
-    try {
-      await this.refreshInstructions();
-      this.syncAgentConfig();
-      await this.maybeRunExplorePrepass(task, signal);
-
+    return await this.withRun({ explorePrepassInput: task }, async (signal) => {
       const run = this.agent.run({
         session: this.session,
         input: task,
@@ -558,14 +554,7 @@ export class AgentLoop {
       });
       const result = await run.done;
       return result.text;
-    } catch (error) {
-      if (isAbortError(error)) {
-        throw new Error('Agent aborted');
-      }
-      throw error;
-    } finally {
-      this.endRun();
-    }
+    });
   }
 
   async continue(message: UserHistoryInput, callbacks?: AgentCallbacks): Promise<string> {
@@ -575,12 +564,7 @@ export class AgentLoop {
 
     this.session.pendingPlan = undefined;
 
-    const signal = this.startRun();
-    try {
-      await this.refreshInstructions();
-      this.syncAgentConfig();
-      await this.maybeRunExplorePrepass(message, signal);
-
+    return await this.withRun({ explorePrepassInput: message }, async (signal) => {
       const run = this.agent.run({
         session: this.session,
         input: message,
@@ -589,14 +573,7 @@ export class AgentLoop {
       });
       const result = await run.done;
       return result.text;
-    } catch (error) {
-      if (isAbortError(error)) {
-        throw new Error('Agent aborted');
-      }
-      throw error;
-    } finally {
-      this.endRun();
-    }
+    });
   }
 
   async resume(callbacks?: AgentCallbacks): Promise<string> {
@@ -608,19 +585,9 @@ export class AgentLoop {
       throw new Error('No active task to resume. Start a task first.');
     }
 
-    const signal = this.startRun();
-    try {
-      await this.refreshInstructions();
-      this.syncAgentConfig();
+    return await this.withRun({}, async (signal) => {
       return await this.agent.resume({ session: this.session, callbacks, signal });
-    } catch (error) {
-      if (isAbortError(error)) {
-        throw new Error('Agent aborted');
-      }
-      throw error;
-    } finally {
-      this.endRun();
-    }
+    });
   }
 
   async compactSession(): Promise<void> {
@@ -630,19 +597,9 @@ export class AgentLoop {
 
     if (this.session.history.length === 0) return;
 
-    const signal = this.startRun();
-    try {
-      await this.refreshInstructions();
-      this.syncAgentConfig();
+    await this.withRun({}, async () => {
       await this.agent.compactSession(this.session, undefined, { modelId: this.config.model, auto: false });
-    } catch (error) {
-      if (isAbortError(error)) {
-        throw new Error('Agent aborted');
-      }
-      throw error;
-    } finally {
-      this.endRun();
-    }
+    });
   }
 
   abort(): void {

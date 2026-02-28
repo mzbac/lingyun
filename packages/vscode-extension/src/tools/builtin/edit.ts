@@ -45,6 +45,7 @@ Usage:
     permission: 'edit',
     supportsExternalPaths: true,
     readOnly: false,
+    protocol: { input: { fileId: true } },
     permissionPatterns: [{ arg: 'filePath', kind: 'path' }],
   },
 };

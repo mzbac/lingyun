@@ -35,6 +35,29 @@ export interface ToolDefinition {
     timeout?: number;
     tags?: string[];
     /**
+     * Optional protocol hints consumed by the LingYun agent runtime.
+     *
+     * These keep user-facing ergonomics (fileId/matchId/symbolId handles, decorated tool output)
+     * out of the tool implementations themselves, without hard-coding tool ids in the runtime.
+     *
+     * Conventions:
+     * - input.fileId: resolve { fileId } → { filePath } when filePath is missing.
+     * - input.semanticHandle: resolve { symbolId | matchId | locId } → { fileId, filePath, line, character }.
+     * - output.glob/grep/symbolsSearch/symbolsPeek: decorate tool results with handle-friendly outputText.
+     */
+    protocol?: {
+      input?: {
+        fileId?: boolean;
+        semanticHandle?: boolean;
+      };
+      output?: {
+        glob?: boolean;
+        grep?: boolean;
+        symbolsSearch?: boolean;
+        symbolsPeek?: boolean;
+      };
+    };
+    /**
      * Whether this tool can operate on file paths outside the current workspace.
      * If true, external paths should be blocked when allowExternalPaths=false.
      */
