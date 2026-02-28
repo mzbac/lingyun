@@ -3,14 +3,15 @@ import type { AgentLoop, AgentSessionState } from '../../core/agent';
 import { getModelLimit } from '../../core/compaction';
 import { getMessageText } from '@kooka/core';
 import { SessionStore } from '../../core/sessionStore';
+import { createBlankSessionSignals, normalizeSessionSignals } from '../../core/sessionSignals';
 import type { ChatMessage, ChatSessionInfo } from './types';
 import { formatErrorForUser } from './utils';
 import { createDefaultSessionTitle } from './sessionTitle';
-import type { ChatViewProvider } from '../chat';
+import type { ChatController } from './controller';
 
-export function installSessionsMethods(view: ChatViewProvider): void {
-  Object.assign(view, {
-  initializeSessions(this: ChatViewProvider): void {
+export function installSessionsMethods(controller: ChatController): void {
+  Object.assign(controller, {
+  initializeSessions(this: ChatController): void {
     this.sessions.clear();
     const initialId = this.activeSessionId || crypto.randomUUID();
     const session: ChatSessionInfo = {
@@ -18,6 +19,7 @@ export function installSessionsMethods(view: ChatViewProvider): void {
       title: createDefaultSessionTitle(),
       createdAt: Date.now(),
       updatedAt: Date.now(),
+      signals: createBlankSessionSignals(),
       messages: [],
       agentState: this.getBlankAgentState(),
       currentModel: this.currentModel,
@@ -28,13 +30,13 @@ export function installSessionsMethods(view: ChatViewProvider): void {
     this.switchToSessionSync(initialId);
   },
 
-  isSessionPersistenceEnabled(this: ChatViewProvider): boolean {
+  isSessionPersistenceEnabled(this: ChatController): boolean {
     return (
       vscode.workspace.getConfiguration('lingyun').get<boolean>('sessions.persist', false) ?? false
     );
   },
 
-  getSessionPersistenceLimits(this: ChatViewProvider): { maxSessions: number; maxSessionBytes: number } {
+  getSessionPersistenceLimits(this: ChatController): { maxSessions: number; maxSessionBytes: number } {
     const config = vscode.workspace.getConfiguration('lingyun');
     const maxSessions = config.get<number>('sessions.maxSessions', 20) ?? 20;
     const maxSessionBytes = config.get<number>('sessions.maxSessionBytes', 2_000_000) ?? 2_000_000;
@@ -48,7 +50,7 @@ export function installSessionsMethods(view: ChatViewProvider): void {
     };
   },
 
-  getOrCreateSessionStore(this: ChatViewProvider): SessionStore<ChatSessionInfo> | undefined {
+  getOrCreateSessionStore(this: ChatController): SessionStore<ChatSessionInfo> | undefined {
     if (!this.isSessionPersistenceEnabled()) return undefined;
 
     const baseUri = this.context.storageUri ?? this.context.globalStorageUri;
@@ -67,7 +69,7 @@ export function installSessionsMethods(view: ChatViewProvider): void {
   },
 
   pruneSessionForStorage(
-    this: ChatViewProvider,
+    this: ChatController,
     session: ChatSessionInfo,
     maxSessionBytes: number
   ): ChatSessionInfo {
@@ -107,13 +109,13 @@ export function installSessionsMethods(view: ChatViewProvider): void {
     return base;
   },
 
-  markSessionDirty(this: ChatViewProvider, sessionId: string): void {
+  markSessionDirty(this: ChatController, sessionId: string): void {
     if (!this.isSessionPersistenceEnabled()) return;
     this.dirtySessionIds.add(sessionId);
     this.scheduleSessionSave();
   },
 
-  scheduleSessionSave(this: ChatViewProvider): void {
+  scheduleSessionSave(this: ChatController): void {
     if (!this.isSessionPersistenceEnabled()) return;
     if (this.sessionSaveTimer) return;
 
@@ -126,7 +128,7 @@ export function installSessionsMethods(view: ChatViewProvider): void {
     }, delayMs);
   },
 
-  pruneSessionsInMemory(this: ChatViewProvider, maxSessions: number): void {
+  pruneSessionsInMemory(this: ChatController, maxSessions: number): void {
     if (this.sessions.size <= maxSessions) return;
 
     const ids = [...this.sessions.keys()];
@@ -151,7 +153,7 @@ export function installSessionsMethods(view: ChatViewProvider): void {
     }
   },
 
-  async flushSessionSave(this: ChatViewProvider): Promise<void> {
+  async flushSessionSave(this: ChatController): Promise<void> {
     const store = this.getOrCreateSessionStore();
     if (!store) return;
 
@@ -171,7 +173,7 @@ export function installSessionsMethods(view: ChatViewProvider): void {
     });
   },
 
-  normalizeLoadedSession(this: ChatViewProvider, raw: ChatSessionInfo): ChatSessionInfo {
+  normalizeLoadedSession(this: ChatController, raw: ChatSessionInfo): ChatSessionInfo {
     const now = Date.now();
     return {
       id: typeof raw.id === 'string' ? raw.id : crypto.randomUUID(),
@@ -181,6 +183,7 @@ export function installSessionsMethods(view: ChatViewProvider): void {
           : createDefaultSessionTitle(new Date(now)),
       createdAt: typeof raw.createdAt === 'number' ? raw.createdAt : now,
       updatedAt: typeof raw.updatedAt === 'number' ? raw.updatedAt : now,
+      signals: normalizeSessionSignals((raw as any).signals, now),
       messages: Array.isArray(raw.messages) ? raw.messages : [],
       agentState: this.normalizeLoadedAgentState((raw as any).agentState),
       currentModel: typeof raw.currentModel === 'string' ? raw.currentModel : this.currentModel,
@@ -208,7 +211,7 @@ export function installSessionsMethods(view: ChatViewProvider): void {
     };
   },
 
-  normalizeLoadedAgentState(this: ChatViewProvider, raw: unknown): AgentSessionState {
+  normalizeLoadedAgentState(this: ChatController, raw: unknown): AgentSessionState {
     if (!raw || typeof raw !== 'object') return this.getBlankAgentState();
 
     const state = raw as any;
@@ -259,7 +262,7 @@ export function installSessionsMethods(view: ChatViewProvider): void {
     };
   },
 
-  recoverInterruptedSessions(this: ChatViewProvider): void {
+  recoverInterruptedSessions(this: ChatController): void {
     let changed = false;
     const now = Date.now();
 
@@ -309,7 +312,7 @@ export function installSessionsMethods(view: ChatViewProvider): void {
     }
   },
 
-  async ensureSessionsLoaded(this: ChatViewProvider): Promise<void> {
+  async ensureSessionsLoaded(this: ChatController): Promise<void> {
     if (!this.isSessionPersistenceEnabled()) return;
     if (this.sessionsLoadedFromDisk) return;
     if (this.sessionsLoadPromise) return this.sessionsLoadPromise;
@@ -356,7 +359,7 @@ export function installSessionsMethods(view: ChatViewProvider): void {
     return this.sessionsLoadPromise;
   },
 
-  getBlankAgentState(this: ChatViewProvider): AgentSessionState {
+  getBlankAgentState(this: ChatController): AgentSessionState {
     return {
       history: [],
       pendingPlan: undefined,
@@ -372,7 +375,7 @@ export function installSessionsMethods(view: ChatViewProvider): void {
     };
   },
 
-  getActiveSession(this: ChatViewProvider): ChatSessionInfo {
+  getActiveSession(this: ChatController): ChatSessionInfo {
     const session = this.sessions.get(this.activeSessionId);
     if (!session) {
       throw new Error('Active session missing');
@@ -380,7 +383,7 @@ export function installSessionsMethods(view: ChatViewProvider): void {
     return session;
   },
 
-  getContextForUI(this: ChatViewProvider): {
+  getContextForUI(this: ChatController): {
     totalTokens?: number;
     inputTokens?: number;
     outputTokens?: number;
@@ -435,7 +438,7 @@ export function installSessionsMethods(view: ChatViewProvider): void {
     }
   },
 
-  getRenderableMessages(this: ChatViewProvider): ChatMessage[] {
+  getRenderableMessages(this: ChatController): ChatMessage[] {
     const session = this.getActiveSession();
     const boundaryId = session.revert?.messageId;
     if (!boundaryId) return this.messages;
@@ -447,9 +450,10 @@ export function installSessionsMethods(view: ChatViewProvider): void {
     return this.messages.slice(0, boundaryIndex);
   },
 
-  persistActiveSession(this: ChatViewProvider): void {
+  persistActiveSession(this: ChatController): void {
     const session = this.getActiveSession();
     session.updatedAt = Date.now();
+    session.signals = this.signals;
     session.messages = this.messages;
     session.agentState = this.agent.exportState();
     session.currentModel = this.currentModel;
@@ -461,14 +465,14 @@ export function installSessionsMethods(view: ChatViewProvider): void {
     this.markSessionDirty(session.id);
   },
 
-  getSessionsForUI(this: ChatViewProvider): Array<{ id: string; title: string }> {
+  getSessionsForUI(this: ChatController): Array<{ id: string; title: string }> {
     return [...this.sessions.values()].map(s => ({
       id: s.id,
       title: s.parentSessionId ? `↳ ${s.title}` : s.title,
     }));
   },
 
-  postSessions(this: ChatViewProvider): void {
+  postSessions(this: ChatController): void {
     this.postMessage({
       type: 'sessions',
       sessions: this.getSessionsForUI(),
@@ -476,7 +480,7 @@ export function installSessionsMethods(view: ChatViewProvider): void {
     });
   },
 
-  async createNewSession(this: ChatViewProvider): Promise<void> {
+  async createNewSession(this: ChatController): Promise<void> {
     if (this.isProcessing) {
       vscode.window.showInformationMessage(
         'LingYun: Stop the current task before starting a new session.'
@@ -494,6 +498,7 @@ export function installSessionsMethods(view: ChatViewProvider): void {
       title: createDefaultSessionTitle(new Date(now)),
       createdAt: now,
       updatedAt: now,
+      signals: createBlankSessionSignals(now),
       messages: [],
       agentState: this.getBlankAgentState(),
       currentModel: this.currentModel,
@@ -507,7 +512,7 @@ export function installSessionsMethods(view: ChatViewProvider): void {
     await this.sendInit(true);
   },
 
-  async switchToSession(this: ChatViewProvider, sessionId: string): Promise<void> {
+  async switchToSession(this: ChatController, sessionId: string): Promise<void> {
     if (this.isProcessing) {
       vscode.window.showInformationMessage(
         'LingYun: Stop the current task before switching sessions.'
@@ -521,12 +526,13 @@ export function installSessionsMethods(view: ChatViewProvider): void {
     await this.sendInit(true);
   },
 
-  switchToSessionSync(this: ChatViewProvider, sessionId: string): void {
+  switchToSessionSync(this: ChatController, sessionId: string): void {
     const session = this.sessions.get(sessionId);
     if (!session) return;
 
     this.activeSessionId = sessionId;
     this.messages = session.messages;
+    this.signals = session.signals;
     this.pendingPlan = session.pendingPlan;
     this.stepCounter = session.stepCounter;
     this.activeStepId = session.activeStepId;
@@ -544,9 +550,9 @@ export function installSessionsMethods(view: ChatViewProvider): void {
   },
 
   async setBackend(
-    this: ChatViewProvider,
+    this: ChatController,
     agent: AgentLoop,
-    llmProvider?: ChatViewProvider['llmProvider']
+    llmProvider?: ChatController['llmProvider']
   ): Promise<void> {
     this.agent = agent;
     this.llmProvider = llmProvider;
@@ -589,13 +595,14 @@ export function installSessionsMethods(view: ChatViewProvider): void {
     }
   },
 
-  async clearCurrentSession(this: ChatViewProvider): Promise<void> {
+  async clearCurrentSession(this: ChatController): Promise<void> {
     if (this.isProcessing) {
       vscode.window.showInformationMessage('LingYun: Stop the current task before clearing the session.');
       return;
     }
 
     const session = this.getActiveSession();
+    session.signals = createBlankSessionSignals();
     session.messages = [];
     session.pendingPlan = undefined;
     session.stepCounter = 0;
@@ -613,7 +620,7 @@ export function installSessionsMethods(view: ChatViewProvider): void {
     this.persistActiveSession();
   },
 
-  async compactCurrentSession(this: ChatViewProvider): Promise<void> {
+  async compactCurrentSession(this: ChatController): Promise<void> {
     if (this.isProcessing) {
       vscode.window.showInformationMessage('LingYun: Stop the current task before compacting.');
       return;
@@ -741,7 +748,7 @@ export function installSessionsMethods(view: ChatViewProvider): void {
     }
   },
 
-  async onSessionPersistenceConfigChanged(this: ChatViewProvider): Promise<void> {
+  async onSessionPersistenceConfigChanged(this: ChatController): Promise<void> {
     const enabled = this.isSessionPersistenceEnabled();
 
     if (!enabled) {
@@ -779,7 +786,7 @@ export function installSessionsMethods(view: ChatViewProvider): void {
     }
   },
 
-  async clearSavedSessions(this: ChatViewProvider): Promise<void> {
+  async clearSavedSessions(this: ChatController): Promise<void> {
     if (this.isProcessing) {
       vscode.window.showInformationMessage('LingYun: Stop the current task before clearing saved sessions.');
       return;

@@ -7,7 +7,7 @@ export type SessionMeta = {
 };
 
 export type SessionsIndex = {
-  version: 2;
+  version: 3;
   activeSessionId: string;
   order: string[];
   sessionsMeta: Record<string, SessionMeta>;
@@ -39,7 +39,7 @@ export class SessionStore<
 
   async loadAll(): Promise<{ index: SessionsIndex; sessionsById: Map<string, TSession> } | undefined> {
     const index = await this.tryReadJson<SessionsIndex>(this.indexUri);
-    if (!index || index.version !== 2 || !Array.isArray(index.order) || typeof index.activeSessionId !== 'string') {
+    if (!index || index.version !== 3 || !Array.isArray(index.order) || typeof index.activeSessionId !== 'string') {
       return undefined;
     }
 
@@ -105,7 +105,7 @@ export class SessionStore<
     }
 
     const index: SessionsIndex = {
-      version: 2,
+      version: 3,
       activeSessionId: nextActive,
       order: finalOrder,
       sessionsMeta,

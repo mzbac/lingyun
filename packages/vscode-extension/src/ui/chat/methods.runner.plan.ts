@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import type { ChatMessage } from './types';
-import type { ChatViewProvider } from '../chat';
+import type { ChatController } from './controller';
 
 const ASSUMPTIONS_HEADING = '## Assumptions (auto)';
 const ASSUMPTIONS_NOTE =
@@ -16,9 +16,9 @@ function appendAssumptionsToPlan(plan: string): string {
   return `${text}\n\n${ASSUMPTIONS_NOTE.trimEnd()}`;
 }
 
-export function installRunnerPlanMethods(view: ChatViewProvider): void {
-  Object.assign(view, {
-  async executePendingPlan(this: ChatViewProvider, planMessageId?: string): Promise<void> {
+export function installRunnerPlanMethods(controller: ChatController): void {
+  Object.assign(controller, {
+  async executePendingPlan(this: ChatController, planMessageId?: string): Promise<void> {
     if (this.isProcessing || !this.pendingPlan || !this.view) {
       if (!this.view) return;
       if (this.isProcessing) {
@@ -132,7 +132,7 @@ export function installRunnerPlanMethods(view: ChatViewProvider): void {
   },
 
   async regeneratePendingPlan(
-    this: ChatViewProvider,
+    this: ChatController,
     planMessageId: string,
     reason?: string
   ): Promise<void> {
@@ -246,7 +246,7 @@ export function installRunnerPlanMethods(view: ChatViewProvider): void {
     }
   },
 
-  async cancelPendingPlan(this: ChatViewProvider, planMessageId: string): Promise<void> {
+  async cancelPendingPlan(this: ChatController, planMessageId: string): Promise<void> {
     if (!this.pendingPlan || this.pendingPlan.planMessageId !== planMessageId) return;
 
     const planMsg = this.messages.find(m => m.id === planMessageId);
@@ -261,7 +261,7 @@ export function installRunnerPlanMethods(view: ChatViewProvider): void {
     this.persistActiveSession();
   },
 
-  async revisePendingPlan(this: ChatViewProvider, planMessageId: string, instructions: string): Promise<void> {
+  async revisePendingPlan(this: ChatController, planMessageId: string, instructions: string): Promise<void> {
     if (this.isProcessing || !this.pendingPlan || !this.view) return;
     if (this.pendingPlan.planMessageId !== planMessageId) return;
 

@@ -2,18 +2,18 @@ import * as vscode from 'vscode';
 import type { ToolCall, ToolDefinition } from '../../core/types';
 import type { ChatMessage } from './types';
 import { formatWorkspacePathForUI } from './utils';
-import type { ChatViewProvider } from '../chat';
+import type { ChatController } from './controller';
 
-export function installApprovalsMethods(view: ChatViewProvider): void {
-  Object.assign(view, {
-    onAutoApproveEnabled(this: ChatViewProvider): void {
+export function installApprovalsMethods(controller: ChatController): void {
+  Object.assign(controller, {
+    onAutoApproveEnabled(this: ChatController): void {
       if (this.pendingApprovals.size === 0) return;
       // If the user enables global auto-approve while we're blocked waiting for approvals,
       // unblock immediately so the run can continue.
       this.approveAllPendingApprovals();
     },
 
-    postApprovalState(this: ChatViewProvider): void {
+    postApprovalState(this: ChatController): void {
       if (!this.view) return;
       this.postMessage({
         type: 'approvalsChanged',
@@ -22,7 +22,7 @@ export function installApprovalsMethods(view: ChatViewProvider): void {
       });
     },
 
-    handleApprovalResponse(this: ChatViewProvider, approvalId: string, approved: boolean): void {
+    handleApprovalResponse(this: ChatController, approvalId: string, approved: boolean): void {
       const pending = this.pendingApprovals.get(approvalId);
       if (pending) {
         pending.resolve(approved);
@@ -43,7 +43,7 @@ export function installApprovalsMethods(view: ChatViewProvider): void {
       }
     },
 
-    approveAllPendingApprovals(this: ChatViewProvider): void {
+    approveAllPendingApprovals(this: ChatController): void {
       if (this.pendingApprovals.size === 0) return;
       this.autoApproveThisRun = true;
 
@@ -67,7 +67,7 @@ export function installApprovalsMethods(view: ChatViewProvider): void {
       this.persistActiveSession();
     },
 
-    rejectAllPendingApprovals(this: ChatViewProvider, reason: string): void {
+    rejectAllPendingApprovals(this: ChatController, reason: string): void {
       if (this.pendingApprovals.size === 0) return;
 
       const entries = [...this.pendingApprovals.entries()];
@@ -92,7 +92,7 @@ export function installApprovalsMethods(view: ChatViewProvider): void {
     },
 
     requestInlineApproval(
-      this: ChatViewProvider,
+      this: ChatController,
       tc: ToolCall,
       def: ToolDefinition,
       parentMessageId?: string
@@ -160,7 +160,7 @@ export function installApprovalsMethods(view: ChatViewProvider): void {
       });
     },
 
-    markActiveStepStatus(this: ChatViewProvider, status: 'running' | 'done' | 'error' | 'canceled'): void {
+    markActiveStepStatus(this: ChatController, status: 'running' | 'done' | 'error' | 'canceled'): void {
       if (!this.activeStepId) return;
       const stepMsg = this.messages.find(m => m.id === this.activeStepId);
       if (!stepMsg?.step) return;

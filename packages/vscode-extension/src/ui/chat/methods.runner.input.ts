@@ -2,7 +2,8 @@ import * as vscode from 'vscode';
 import type { UserHistoryInputPart } from '@kooka/core';
 import type { ChatMessage, ChatUserInput } from './types';
 import { isDefaultSessionTitle } from './sessionTitle';
-import type { ChatViewProvider } from '../chat';
+import { recordUserIntent } from '../../core/sessionSignals';
+import type { ChatController } from './controller';
 
 const MAX_USER_IMAGE_ATTACHMENTS = 8;
 const MAX_USER_IMAGE_DATA_URL_LENGTH = 12_000_000;
@@ -62,19 +63,23 @@ function normalizeUserInput(content: string | ChatUserInput): NormalizedUserInpu
   };
 }
 
-export function installRunnerInputMethods(view: ChatViewProvider): void {
-  Object.assign(view, {
-  sendMessage(this: ChatViewProvider, content: string): void {
+export function installRunnerInputMethods(controller: ChatController): void {
+  Object.assign(controller, {
+  sendMessage(this: ChatController, content: string): void {
     if (this.view) {
       void this.handleUserMessage(content);
     }
   },
 
-  async handleUserMessage(this: ChatViewProvider, content: string | ChatUserInput): Promise<void> {
+  async handleUserMessage(this: ChatController, content: string | ChatUserInput): Promise<void> {
     if (this.isProcessing || !this.view) return;
 
     const normalizedInput = normalizeUserInput(content);
     if (!normalizedInput.hasContent) return;
+
+    if (normalizedInput.text) {
+      recordUserIntent(this.signals, normalizedInput.text);
+    }
 
     if (this.pendingPlan) {
       const planMsg = this.messages.find(m => m.id === this.pendingPlan?.planMessageId);
@@ -217,7 +222,7 @@ export function installRunnerInputMethods(view: ChatViewProvider): void {
     }
   },
 
-  async retryToolCall(this: ChatViewProvider, approvalId: string): Promise<void> {
+  async retryToolCall(this: ChatController, approvalId: string): Promise<void> {
     if (this.isProcessing || !this.view) return;
     if (!approvalId || typeof approvalId !== 'string') return;
     if (this.pendingPlan) return;
@@ -268,11 +273,11 @@ export function installRunnerInputMethods(view: ChatViewProvider): void {
     }
   },
 
-  isPlanFirstEnabled(this: ChatViewProvider): boolean {
+  isPlanFirstEnabled(this: ChatController): boolean {
     return vscode.workspace.getConfiguration('lingyun').get<boolean>('planFirst', true) ?? true;
   },
 
-  classifyPlanStatus(this: ChatViewProvider, plan: string): 'draft' | 'needs_input' {
+  classifyPlanStatus(this: ChatController, plan: string): 'draft' | 'needs_input' {
     const text = (plan || '').trim();
     if (!text) return 'needs_input';
 

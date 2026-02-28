@@ -6,7 +6,7 @@ import { readTodos } from '../../core/todo';
 import { getNonce } from './utils';
 import { getWorkspaceFolderUrisByPriority, resolveExistingFilePath } from './fileLinks';
 import type { ChatImageAttachment, ChatUserInput } from './types';
-import type { ChatViewProvider } from '../chat';
+import type { ChatController } from './controller';
 import { createLingyunDiffUri } from './diffContentProvider';
 
 function stripWrappingQuotes(value: string): string {
@@ -71,9 +71,9 @@ function parseWebviewImageAttachments(raw: unknown): ChatImageAttachment[] {
   return normalized;
 }
 
-export function installWebviewMethods(view: ChatViewProvider): void {
-  Object.assign(view, {
-  resolveWebviewView(this: ChatViewProvider, webviewView: vscode.WebviewView): void {
+export function installWebviewMethods(controller: ChatController): void {
+  Object.assign(controller, {
+  resolveWebviewView(this: ChatController, webviewView: vscode.WebviewView): void {
     for (const d of this.viewDisposables) {
       d.dispose();
     }
@@ -488,7 +488,7 @@ export function installWebviewMethods(view: ChatViewProvider): void {
     this.startInitPusher();
   },
 
-  startInitPusher(this: ChatViewProvider): void {
+  startInitPusher(this: ChatController): void {
     if (this.initInterval) {
       clearInterval(this.initInterval);
       this.initInterval = undefined;
@@ -501,7 +501,7 @@ export function installWebviewMethods(view: ChatViewProvider): void {
     void this.sendInit();
   },
 
-  async sendInit(this: ChatViewProvider, force = false): Promise<void> {
+  async sendInit(this: ChatController, force = false): Promise<void> {
     if (!this.view) return;
     if (!force && this.initAcked) return;
     if (this.initInFlight) return;
@@ -582,11 +582,11 @@ export function installWebviewMethods(view: ChatViewProvider): void {
     }
   },
 
-  postMessage(this: ChatViewProvider, message: unknown): void {
+  postMessage(this: ChatController, message: unknown): void {
     this.view?.webview.postMessage(message);
   },
 
-  getHtml(this: ChatViewProvider, webview: vscode.Webview): string {
+  getHtml(this: ChatController, webview: vscode.Webview): string {
     const nonce = getNonce();
     const version = String((this.context as any)?.extension?.packageJSON?.version || '');
     const versionSuffix = version ? `(${version})` : '';

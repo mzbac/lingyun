@@ -7,7 +7,8 @@ import type { ChatMessage } from './types';
 import { buildToolDiffView, createUnifiedDiff, computeUnifiedDiffStats, trimUnifiedDiff } from './toolDiff';
 import { resolveToolPath } from '../../tools/builtin/workspace';
 import { summarizeErrorForDebug } from '../../core/agent/debug';
-import type { ChatViewProvider } from '../chat';
+import { recordAssistantOutcome, recordFileTouch, recordToolUse } from '../../core/sessionSignals';
+import type { ChatController } from './controller';
 import {
   appendDebugLog,
   applyCommonToolResultFields,
@@ -21,9 +22,9 @@ import {
 const MAX_TOOL_DIFF_FILE_BYTES = 400_000;
 const TOOL_DIFF_CONTEXT_LINES = 3;
 
-export function installRunnerCallbacksMethods(view: ChatViewProvider): void {
-  Object.assign(view, {
-  createPlanningCallbacks(this: ChatViewProvider, planMsg: ChatMessage): AgentCallbacks {
+export function installRunnerCallbacksMethods(controller: ChatController): void {
+  Object.assign(controller, {
+  createPlanningCallbacks(this: ChatController, planMsg: ChatMessage): AgentCallbacks {
     const persistSessions = this.isSessionPersistenceEnabled();
     const planContainerId = planMsg.id;
     const planTurnId = planMsg.turnId ?? this.currentTurnId;
@@ -203,7 +204,7 @@ export function installRunnerCallbacksMethods(view: ChatViewProvider): void {
     };
   },
 
-  createAgentCallbacks(this: ChatViewProvider): AgentCallbacks {
+  createAgentCallbacks(this: ChatController): AgentCallbacks {
     const showThinking =
       vscode.workspace.getConfiguration('lingyun').get<boolean>('showThinking', false) ?? false;
     const debugLlm = vscode.workspace.getConfiguration('lingyun').get<boolean>('debug.llm') ?? false;
@@ -462,6 +463,8 @@ export function installRunnerCallbacksMethods(view: ChatViewProvider): void {
         reconcileAssistantForToolCall();
 
 	        const { path, filePathRaw } = resolveToolCallUiPath(this, tc, def);
+        recordToolUse(this.signals, def.id);
+        if (path) recordFileTouch(this.signals, path);
 
         const existing = [...this.messages].reverse().find(m => {
           if (m.role !== 'tool') return false;
@@ -586,6 +589,25 @@ export function installRunnerCallbacksMethods(view: ChatViewProvider): void {
           const { resultStr, isTaskTool, hasDiff, maybeTodos } = applyCommonToolResultFields(toolCall, result);
 
           const toolId = toolMsg.toolCall.id;
+          if (result.success && result.data && typeof result.data === 'object') {
+            const data = result.data as Record<string, unknown>;
+            if (toolId === 'glob' && Array.isArray((data as any).files)) {
+              const files = (data as any).files as unknown[];
+              for (const file of files) {
+                if (typeof file !== 'string' || !file.trim()) continue;
+                recordFileTouch(this.signals, formatWorkspacePathForUI(file) ?? file.trim());
+              }
+            }
+            if (toolId === 'grep' && Array.isArray((data as any).matches)) {
+              const matches = (data as any).matches as unknown[];
+              for (const match of matches) {
+                if (!match || typeof match !== 'object') continue;
+                const filePath = (match as any).filePath;
+                if (typeof filePath !== 'string' || !filePath.trim()) continue;
+                recordFileTouch(this.signals, formatWorkspacePathForUI(filePath) ?? filePath.trim());
+              }
+            }
+          }
           if (result.success && (toolId === 'glob' || toolId === 'list') && typeof resultStr === 'string') {
             const trimmed = resultStr.trim();
             if (trimmed && trimmed !== 'No files found matching the criteria' && trimmed !== 'No files found') {
@@ -810,6 +832,9 @@ export function installRunnerCallbacksMethods(view: ChatViewProvider): void {
         finalizeAssistantForStepEnd();
         if (!assistantMsg && response) {
           pushAssistant(response);
+        }
+        if (this.mode === 'build' && response) {
+          recordAssistantOutcome(this.signals, response);
         }
         if (this.currentTurnId) {
           this.postMessage({ type: 'turnStatus', turnId: this.currentTurnId, status: { type: 'done' } });

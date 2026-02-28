@@ -52,6 +52,19 @@ export {
   validateToolArgs,
 } from './validation';
 
+export type { ToolDefinitionLike, ToolMetadataLike, ToolPermissionPattern } from './toolPolicy';
+export {
+  combinePermissionActions,
+  collectDotEnvApprovalTargets,
+  evaluateShellSafetyForTool,
+  evaluateToolPermissionAction,
+  getExternalPathPatterns,
+  getToolPermissionName,
+  getToolPermissionPatterns,
+  isToolAllowedInPlanMode,
+  normalizePermissionPath,
+} from './toolPolicy';
+
 export type { BackgroundJob } from './backgroundJobs';
 export {
   DEFAULT_BACKGROUND_KILL_GRACE_MS,

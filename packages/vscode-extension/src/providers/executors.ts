@@ -123,7 +123,7 @@ async function validateResolvedHost(hostname: string): Promise<{ valid: boolean;
       if (isPrivateIpAddress(record.address)) {
         return {
           valid: false,
-          error: `Requests to hosts resolving to private or loopback addresses are not allowed (${hostname} -> ${record.address})`,
+          error: `Requests to hosts resolving to private or loopback addresses are not allowed (${hostname})`,
         };
       }
     }

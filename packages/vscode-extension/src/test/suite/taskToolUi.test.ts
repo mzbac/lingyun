@@ -1,12 +1,13 @@
 import * as assert from 'assert';
-import { ChatViewProvider, installChatViewProviderMethods } from '../../ui/chat';
+import { ChatController, installChatControllerMethods } from '../../ui/chat';
 import type { ToolCall, ToolResult } from '../../core/types';
 import type { ChatMessage } from '../../ui/chat/types';
+import { createBlankSessionSignals } from '../../core/sessionSignals';
 
 suite('Task tool UI', () => {
   test('renders task tool result text and upserts child session', () => {
-    const provider = Object.create(ChatViewProvider.prototype) as ChatViewProvider;
-    installChatViewProviderMethods(provider);
+    const provider = Object.create(ChatController.prototype) as ChatController;
+    installChatControllerMethods(provider);
 
     provider.mode = 'build';
     provider.currentModel = 'mock-model';
@@ -14,6 +15,7 @@ suite('Task tool UI', () => {
     provider.activeSessionId = 'parent-1';
     provider.currentTurnId = 'turn-1';
     provider.activeStepId = undefined;
+    provider.signals = createBlankSessionSignals();
 
     provider.messages = [];
     provider.sessions = new Map();
@@ -84,6 +86,7 @@ suite('Task tool UI', () => {
           title: 'Child session',
           createdAt: Date.now(),
           updatedAt: Date.now(),
+          signals: createBlankSessionSignals(),
           messages: [],
           agentState: {},
           currentModel: 'mock-model',
@@ -110,8 +113,8 @@ suite('Task tool UI', () => {
   });
 
   test('upserts child session from agent-sdk snapshot metadata', () => {
-    const provider = Object.create(ChatViewProvider.prototype) as ChatViewProvider;
-    installChatViewProviderMethods(provider);
+    const provider = Object.create(ChatController.prototype) as ChatController;
+    installChatControllerMethods(provider);
 
     provider.mode = 'build';
     provider.currentModel = 'mock-model';
@@ -119,6 +122,7 @@ suite('Task tool UI', () => {
     provider.activeSessionId = 'parent-1';
     provider.currentTurnId = 'turn-1';
     provider.activeStepId = undefined;
+    provider.signals = createBlankSessionSignals();
 
     provider.messages = [];
     provider.sessions = new Map();

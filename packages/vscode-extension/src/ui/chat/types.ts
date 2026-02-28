@@ -1,4 +1,5 @@
 import type { AgentSessionState } from '../../core/agent';
+import type { SessionSignals } from '../../core/sessionSignals';
 import type { ToolDiffView } from './toolDiff';
 
 export type ChatMode = 'build' | 'plan';
@@ -97,6 +98,7 @@ export interface ChatSessionInfo {
   title: string;
   createdAt: number;
   updatedAt: number;
+  signals: SessionSignals;
   messages: ChatMessage[];
   agentState: AgentSessionState;
   currentModel: string;

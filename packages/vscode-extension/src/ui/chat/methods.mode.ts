@@ -1,11 +1,11 @@
 import * as vscode from 'vscode';
 import type { ChatMode } from './types';
-import type { ChatViewProvider } from '../chat';
+import type { ChatController } from './controller';
 
-export function installModeMethods(view: ChatViewProvider): void {
-  Object.assign(view, {
+export function installModeMethods(controller: ChatController): void {
+  Object.assign(controller, {
     async setModeAndPersist(
-      this: ChatViewProvider,
+      this: ChatController,
       mode: ChatMode,
       options?: { persistConfig?: boolean; notifyWebview?: boolean; persistSession?: boolean }
     ): Promise<void> {

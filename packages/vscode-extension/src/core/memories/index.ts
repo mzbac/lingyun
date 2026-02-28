@@ -4,6 +4,7 @@ import * as vscode from 'vscode';
 
 import { SessionStore } from '../sessionStore';
 import { getPrimaryWorkspaceRootPath } from '../workspaceContext';
+import { normalizeSessionSignals, type SessionSignals } from '../sessionSignals';
 
 const STATE_VERSION = 1;
 const STORAGE_DIR_NAME = 'memories';
@@ -21,25 +22,12 @@ const DEFAULT_MAX_ROLLOUTS_PER_STARTUP = 24;
 const DEFAULT_MIN_ROLLOUT_IDLE_HOURS = 2;
 const DEFAULT_MAX_STATE_OUTPUTS = 500;
 
-export type PersistedSessionMessage = {
-  role?: string;
-  content?: string;
-  timestamp?: number;
-  toolCall?: {
-    name?: string;
-    status?: string;
-    path?: string;
-    batchFiles?: string[];
-    result?: string;
-  };
-};
-
 export type PersistedSession = {
   id: string;
   title: string;
   createdAt: number;
   updatedAt: number;
-  messages?: PersistedSessionMessage[];
+  signals?: SessionSignals;
   mode?: 'build' | 'plan';
   parentSessionId?: string;
   subagentType?: string;
@@ -272,51 +260,12 @@ function collectSessionSignals(session: PersistedSession): {
   filesTouched: string[];
   toolsUsed: string[];
 } {
-  const messages = Array.isArray(session.messages) ? session.messages : [];
-
-  const userIntents = uniqueLimited(
-    messages
-      .filter(msg => msg.role === 'user')
-      .map(msg => summarizeMessage(msg.content))
-      .filter(Boolean),
-    4,
-  );
-
-  const assistantOutcomes = uniqueLimited(
-    messages
-      .filter(msg => msg.role === 'assistant')
-      .map(msg => summarizeMessage(msg.content))
-      .filter(Boolean),
-    4,
-  );
-
-  const toolsUsed = uniqueLimited(
-    messages
-      .filter(msg => msg.role === 'tool')
-      .map(msg => msg.toolCall?.name?.trim() || '')
-      .filter(Boolean),
-    8,
-  );
-
-  const fileCandidates: string[] = [];
-  for (const msg of messages) {
-    const tc = msg.toolCall;
-    if (!tc) continue;
-    if (typeof tc.path === 'string' && tc.path.trim()) fileCandidates.push(tc.path.trim());
-    if (Array.isArray(tc.batchFiles)) {
-      for (const item of tc.batchFiles) {
-        if (typeof item === 'string' && item.trim()) {
-          fileCandidates.push(item.trim());
-        }
-      }
-    }
-  }
-
+  const normalized = normalizeSessionSignals(session.signals, Date.now());
   return {
-    userIntents,
-    assistantOutcomes,
-    filesTouched: uniqueLimited(fileCandidates, 20),
-    toolsUsed,
+    userIntents: normalized.userIntents.slice(0, 4),
+    assistantOutcomes: normalized.assistantOutcomes.slice(0, 4),
+    filesTouched: normalized.filesTouched.slice(0, 20),
+    toolsUsed: normalized.toolsUsed.slice(0, 8),
   };
 }
 

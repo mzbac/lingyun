@@ -1,15 +1,17 @@
 import * as assert from 'assert';
-import { ChatViewProvider, installChatViewProviderMethods } from '../../ui/chat';
+import { ChatController, installChatControllerMethods } from '../../ui/chat';
 import type { ChatMessage } from '../../ui/chat/types';
+import { createBlankSessionSignals } from '../../core/sessionSignals';
 
 suite('Pending plan send', () => {
   test('handleUserMessage routes to revisePendingPlan in build mode', async () => {
-    const provider = Object.create(ChatViewProvider.prototype) as ChatViewProvider;
-    installChatViewProviderMethods(provider);
+    const provider = Object.create(ChatController.prototype) as ChatController;
+    installChatControllerMethods(provider);
 
     provider.isProcessing = false;
     provider.view = {} as any;
     provider.mode = 'build';
+    provider.signals = createBlankSessionSignals();
 
     const planMsg: ChatMessage = {
       id: 'plan-1',

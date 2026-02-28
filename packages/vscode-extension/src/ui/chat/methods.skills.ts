@@ -1,11 +1,11 @@
 import * as vscode from 'vscode';
 import { getSkillIndex } from '../../core/skills';
 import { getPrimaryWorkspaceRootPath } from '../../core/workspaceContext';
-import type { ChatViewProvider } from '../chat';
+import type { ChatController } from './controller';
 
-export function installSkillsMethods(view: ChatViewProvider): void {
-  Object.assign(view, {
-    async getSkillNamesForUI(this: ChatViewProvider): Promise<string[]> {
+export function installSkillsMethods(controller: ChatController): void {
+  Object.assign(controller, {
+    async getSkillNamesForUI(this: ChatController): Promise<string[]> {
       if (this.skillNamesForUiPromise) return this.skillNamesForUiPromise;
 
       const enabled =
@@ -39,7 +39,7 @@ export function installSkillsMethods(view: ChatViewProvider): void {
       return this.skillNamesForUiPromise;
     },
 
-    async postUnknownSkillWarnings(this: ChatViewProvider, content: string, turnId?: string): Promise<void> {
+    async postUnknownSkillWarnings(this: ChatController, content: string, turnId?: string): Promise<void> {
       // Unknown `$...` tokens are ignored: only discovered skills are applied.
       // This avoids false positives when users paste shell env vars like `$PATH` or `$GITHUB_OUTPUT`.
       void content;

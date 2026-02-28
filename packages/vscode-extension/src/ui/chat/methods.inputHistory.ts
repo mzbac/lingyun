@@ -4,11 +4,11 @@ import {
   DEFAULT_INPUT_HISTORY_MAX_ENTRIES,
   DEFAULT_INPUT_HISTORY_MAX_ENTRY_CHARS,
 } from '../../core/inputHistoryStore';
-import type { ChatViewProvider } from '../chat';
+import type { ChatController } from './controller';
 
-export function installInputHistoryMethods(view: ChatViewProvider): void {
-  Object.assign(view, {
-    getOrCreateInputHistoryStore(this: ChatViewProvider): InputHistoryStore | undefined {
+export function installInputHistoryMethods(controller: ChatController): void {
+  Object.assign(controller, {
+    getOrCreateInputHistoryStore(this: ChatController): InputHistoryStore | undefined {
       if (!this.isSessionPersistenceEnabled()) return undefined;
 
       const baseUri = this.context.storageUri ?? this.context.globalStorageUri;
@@ -31,7 +31,7 @@ export function installInputHistoryMethods(view: ChatViewProvider): void {
       return this.inputHistoryStore;
     },
 
-    async ensureInputHistoryLoaded(this: ChatViewProvider): Promise<void> {
+    async ensureInputHistoryLoaded(this: ChatController): Promise<void> {
       if (this.inputHistoryLoadedFromDisk) return;
 
       const store = this.getOrCreateInputHistoryStore();
@@ -51,7 +51,7 @@ export function installInputHistoryMethods(view: ChatViewProvider): void {
       }
     },
 
-    recordInputHistory(this: ChatViewProvider, content: string): void {
+    recordInputHistory(this: ChatController, content: string): void {
       const next = addInputHistoryEntry(this.inputHistoryEntries, content, {
         maxEntries: DEFAULT_INPUT_HISTORY_MAX_ENTRIES,
         maxEntryChars: DEFAULT_INPUT_HISTORY_MAX_ENTRY_CHARS,
@@ -66,7 +66,7 @@ export function installInputHistoryMethods(view: ChatViewProvider): void {
       void store.save(next);
     },
 
-    postInputHistory(this: ChatViewProvider): void {
+    postInputHistory(this: ChatController): void {
       this.postMessage({ type: 'inputHistory', entries: this.inputHistoryEntries });
     },
   });

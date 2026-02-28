@@ -5,6 +5,7 @@ import type { AgentCallbacks, ToolCall, ToolDefinition, ToolResult } from '../..
 import type { AgentSessionState } from '../../../core/agent';
 import type { ChatMessage, ChatSessionInfo } from '../types';
 import { formatWorkspacePathForUI } from '../utils';
+import { createBlankSessionSignals } from '../../../core/sessionSignals';
 
 export type ToolDiffSnapshot = {
   absPath: string;
@@ -120,6 +121,7 @@ function toChatSessionInfoFromSnapshot(params: {
     title: params.title,
     createdAt: now,
     updatedAt: now,
+    signals: createBlankSessionSignals(now),
     messages: [],
     agentState: toAgentSessionStateFromSnapshot(params.snapshot),
     currentModel: params.snapshot.modelId || '',

@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import type { ModelInfo } from '../../providers/copilot';
-import type { ChatViewProvider } from '../chat';
+import type { ChatController } from './controller';
 
 const MAX_RECENT_MODELS = 10;
 
@@ -11,16 +11,16 @@ type ModelPickItem = vscode.QuickPickItem & {
   modelId?: string;
 };
 
-function getProviderKey(chat: ChatViewProvider): string {
+function getProviderKey(chat: ChatController): string {
   const raw = chat.llmProvider?.id;
   return typeof raw === 'string' && raw.trim() ? raw.trim() : 'unknown';
 }
 
-function favoritesStorageKey(chat: ChatViewProvider): string {
+function favoritesStorageKey(chat: ChatController): string {
   return `modelFavorites:${getProviderKey(chat)}`;
 }
 
-function recentsStorageKey(chat: ChatViewProvider): string {
+function recentsStorageKey(chat: ChatController): string {
   return `modelRecents:${getProviderKey(chat)}`;
 }
 
@@ -71,9 +71,9 @@ function toModelPickItem(params: {
   };
 }
 
-export function installModelsMethods(view: ChatViewProvider): void {
-  Object.assign(view, {
-  async loadModels(this: ChatViewProvider): Promise<void> {
+export function installModelsMethods(controller: ChatController): void {
+  Object.assign(controller, {
+  async loadModels(this: ChatController): Promise<void> {
     const timeoutMs = 5000;
     try {
       if (this.llmProvider?.getModels) {
@@ -117,35 +117,35 @@ export function installModelsMethods(view: ChatViewProvider): void {
     await this.postModelState();
   },
 
-  async getFavoriteModelIds(this: ChatViewProvider): Promise<string[]> {
+  async getFavoriteModelIds(this: ChatController): Promise<string[]> {
     const ids = this.context.globalState.get<string[]>(favoritesStorageKey(this));
     return Array.isArray(ids)
       ? ids.filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
       : [];
   },
 
-  async getRecentModelIds(this: ChatViewProvider): Promise<string[]> {
+  async getRecentModelIds(this: ChatController): Promise<string[]> {
     const ids = this.context.globalState.get<string[]>(recentsStorageKey(this));
     return Array.isArray(ids)
       ? ids.filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
       : [];
   },
 
-  async isModelFavorite(this: ChatViewProvider, modelId: string): Promise<boolean> {
+  async isModelFavorite(this: ChatController, modelId: string): Promise<boolean> {
     const id = normalizeModelId(modelId);
     if (!id) return false;
     const favorites = await this.getFavoriteModelIds();
     return favorites.includes(id);
   },
 
-  getModelLabel(this: ChatViewProvider, modelId: string): string {
+  getModelLabel(this: ChatController, modelId: string): string {
     const id = normalizeModelId(modelId);
     if (!id) return '';
     const match = this.availableModels.find(m => m.id === id);
     return match?.name || id;
   },
 
-  async postModelState(this: ChatViewProvider): Promise<void> {
+  async postModelState(this: ChatController): Promise<void> {
     const model = this.currentModel || '';
     const isFavorite = await this.isModelFavorite(model);
     this.postMessage({
@@ -156,7 +156,7 @@ export function installModelsMethods(view: ChatViewProvider): void {
     });
   },
 
-  async recordRecentModel(this: ChatViewProvider, modelId: string): Promise<void> {
+  async recordRecentModel(this: ChatController, modelId: string): Promise<void> {
     const id = normalizeModelId(modelId);
     if (!id) return;
 
@@ -165,7 +165,7 @@ export function installModelsMethods(view: ChatViewProvider): void {
     await this.context.globalState.update(recentsStorageKey(this), next);
   },
 
-  async toggleFavoriteModel(this: ChatViewProvider, modelId: string): Promise<void> {
+  async toggleFavoriteModel(this: ChatController, modelId: string): Promise<void> {
     const id = normalizeModelId(modelId);
     if (!id) return;
 
@@ -179,7 +179,7 @@ export function installModelsMethods(view: ChatViewProvider): void {
     }
   },
 
-  async setCurrentModel(this: ChatViewProvider, modelId: string): Promise<void> {
+  async setCurrentModel(this: ChatController, modelId: string): Promise<void> {
     const id = normalizeModelId(modelId);
     if (!id) return;
 
@@ -204,7 +204,7 @@ export function installModelsMethods(view: ChatViewProvider): void {
     this.persistActiveSession();
   },
 
-  async pickModel(this: ChatViewProvider): Promise<void> {
+  async pickModel(this: ChatController): Promise<void> {
     if (this.isProcessing) {
       void vscode.window.showInformationMessage('LingYun: Stop the current task before switching models.');
       return;

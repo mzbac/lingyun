@@ -5,7 +5,7 @@ import { findGitRoot } from '../../core/instructions';
 import { getSnapshotProjectId, WorkspaceSnapshot, type SnapshotPatch } from '../../core/snapshot';
 import { getPrimaryWorkspaceFolderUri } from '../../core/workspaceContext';
 import type { ChatMessage, RevertBarState } from './types';
-import type { ChatViewProvider } from '../chat';
+import type { ChatController } from './controller';
 
 function derivePendingPlanFromMessages(
   messages: ChatMessage[],
@@ -43,9 +43,9 @@ function cloneAgentState(state: AgentSessionState): AgentSessionState {
   }
 }
 
-export function installRevertMethods(view: ChatViewProvider): void {
-  Object.assign(view, {
-  async getWorkspaceSnapshot(this: ChatViewProvider): Promise<WorkspaceSnapshot | undefined> {
+export function installRevertMethods(controller: ChatController): void {
+  Object.assign(controller, {
+  async getWorkspaceSnapshot(this: ChatController): Promise<WorkspaceSnapshot | undefined> {
     if (this.snapshot) return this.snapshot;
     if (this.snapshotUnavailableReason) return undefined;
 
@@ -76,7 +76,7 @@ export function installRevertMethods(view: ChatViewProvider): void {
     return this.snapshot;
   },
 
-  getUndoRedoAvailability(this: ChatViewProvider): { canUndo: boolean; canRedo: boolean } {
+  getUndoRedoAvailability(this: ChatController): { canUndo: boolean; canRedo: boolean } {
     const session = this.getActiveSession();
     const boundaryId = session.revert?.messageId;
 
@@ -91,7 +91,7 @@ export function installRevertMethods(view: ChatViewProvider): void {
     return { canUndo, canRedo };
   },
 
-  getRevertBarStateForUI(this: ChatViewProvider): RevertBarState | null {
+  getRevertBarStateForUI(this: ChatController): RevertBarState | null {
     const session = this.getActiveSession();
     const boundaryId = session.revert?.messageId;
     if (!boundaryId) return null;
@@ -109,7 +109,7 @@ export function installRevertMethods(view: ChatViewProvider): void {
     };
   },
 
-  postRevertBarState(this: ChatViewProvider): void {
+  postRevertBarState(this: ChatController): void {
     if (!this.view) return;
     this.postMessage({
       type: 'revertState',
@@ -118,7 +118,7 @@ export function installRevertMethods(view: ChatViewProvider): void {
     });
   },
 
-  async undo(this: ChatViewProvider): Promise<void> {
+  async undo(this: ChatController): Promise<void> {
     if (this.isProcessing) {
       void vscode.window.showInformationMessage('LingYun: Stop the current task before undo.');
       return;
@@ -149,7 +149,7 @@ export function installRevertMethods(view: ChatViewProvider): void {
     this.postMessage({ type: 'setInput', value: target.content || '' });
   },
 
-  async redo(this: ChatViewProvider): Promise<void> {
+  async redo(this: ChatController): Promise<void> {
     if (this.isProcessing) {
       void vscode.window.showInformationMessage('LingYun: Stop the current task before redo.');
       return;
@@ -180,7 +180,7 @@ export function installRevertMethods(view: ChatViewProvider): void {
     await this.clearRevert();
   },
 
-  async redoAll(this: ChatViewProvider): Promise<void> {
+  async redoAll(this: ChatController): Promise<void> {
     if (this.isProcessing) {
       void vscode.window.showInformationMessage('LingYun: Stop the current task before redo.');
       return;
@@ -197,7 +197,7 @@ export function installRevertMethods(view: ChatViewProvider): void {
     await this.clearRevert();
   },
 
-  async discardUndone(this: ChatViewProvider): Promise<void> {
+  async discardUndone(this: ChatController): Promise<void> {
     if (this.isProcessing) {
       void vscode.window.showInformationMessage('LingYun: Stop the current task before discarding.');
       return;
@@ -221,7 +221,7 @@ export function installRevertMethods(view: ChatViewProvider): void {
     this.commitRevertedConversationIfNeeded();
   },
 
-  async viewRevertDiff(this: ChatViewProvider): Promise<void> {
+  async viewRevertDiff(this: ChatController): Promise<void> {
     await this.ensureSessionsLoaded();
 
     const session = this.getActiveSession();
@@ -255,7 +255,7 @@ export function installRevertMethods(view: ChatViewProvider): void {
     }
   },
 
-  commitRevertedConversationIfNeeded(this: ChatViewProvider): void {
+  commitRevertedConversationIfNeeded(this: ChatController): void {
     const session = this.getActiveSession();
     if (!session.revert) return;
 
@@ -278,7 +278,7 @@ export function installRevertMethods(view: ChatViewProvider): void {
     this.postRevertBarState();
   },
 
-  collectPatchesFromIndex(this: ChatViewProvider, startIndex: number): SnapshotPatch[] {
+  collectPatchesFromIndex(this: ChatController, startIndex: number): SnapshotPatch[] {
     const patches: SnapshotPatch[] = [];
     for (const msg of this.messages.slice(Math.max(0, startIndex))) {
       if (msg.role !== 'step') continue;
@@ -290,7 +290,7 @@ export function installRevertMethods(view: ChatViewProvider): void {
   },
 
   deriveAgentStateBeforeUserMessage(
-    this: ChatViewProvider,
+    this: ChatController,
     params: { baseline: AgentSessionState; boundaryIndex: number }
   ): AgentSessionState {
     const { baseline, boundaryIndex } = params;
@@ -334,7 +334,7 @@ export function installRevertMethods(view: ChatViewProvider): void {
     };
   },
 
-  async applyRevert(this: ChatViewProvider, boundaryMessageId: string): Promise<void> {
+  async applyRevert(this: ChatController, boundaryMessageId: string): Promise<void> {
     if (this.isProcessing) return;
 
     await this.ensureSessionsLoaded();
@@ -411,7 +411,7 @@ export function installRevertMethods(view: ChatViewProvider): void {
     }
   },
 
-  async clearRevert(this: ChatViewProvider): Promise<void> {
+  async clearRevert(this: ChatController): Promise<void> {
     const session = this.getActiveSession();
     const revert = session.revert;
     if (!revert) return;
