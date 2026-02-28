@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 
-import { evaluateShellCommand } from '@kooka/core';
+import { evaluateShellCommand, TOOL_ERROR_CODES } from '@kooka/core';
 import { getBuiltinTools, type ToolContext } from '@kooka/agent-sdk';
 
 function isPidAlive(pid: number): boolean {
@@ -75,7 +75,10 @@ suite('Bash Tool', () => {
     const context = createToolContext();
     const res = await bashHandler({ command: 'python -m http.server' }, context);
     assert.strictEqual(res.success, false);
-    assert.strictEqual((res.metadata as any)?.errorType, 'bash_requires_background_or_timeout');
+    assert.strictEqual(
+      (res.metadata as any)?.errorCode,
+      TOOL_ERROR_CODES.bash_requires_background_or_timeout
+    );
   });
 
   test('deduplicates background commands by (workdir + command)', async () => {

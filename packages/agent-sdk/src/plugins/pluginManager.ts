@@ -62,8 +62,13 @@ async function importPluginModule(spec: string, workspaceRoot?: string): Promise
   const trimmed = String(spec || '').trim();
   if (!trimmed) return null;
 
+  // NOTE: Some hosts compile to CommonJS and TypeScript downlevels `import()` to `require()`,
+  // which cannot load `file://...` specifiers. Use a runtime dynamic import so plugins can be
+  // loaded from file URLs and ESM/CJS modules reliably.
+  const dynamicImport = new Function('specifier', 'return import(specifier)') as (specifier: string) => Promise<any>;
+
   if (trimmed.startsWith('file://')) {
-    return import(trimmed);
+    return dynamicImport(trimmed);
   }
 
   // Treat as a file path only when it is explicitly path-like.
@@ -72,7 +77,7 @@ async function importPluginModule(spec: string, workspaceRoot?: string): Promise
   const looksPath = trimmed.startsWith('.') || path.isAbsolute(trimmed);
   if (looksPath) {
     const resolvedPath = path.resolve(workspaceRoot || process.cwd(), trimmed);
-    return import(pathToFileURL(resolvedPath).href);
+    return dynamicImport(pathToFileURL(resolvedPath).href);
   }
 
   // treat as module specifier resolvable by Node
@@ -80,15 +85,15 @@ async function importPluginModule(spec: string, workspaceRoot?: string): Promise
   // so repos can install their own plugins in their local node_modules.
   if (workspaceRoot) {
     try {
-      const req = createRequire(import.meta.url);
+      const req = createRequire(path.join(workspaceRoot, 'package.json'));
       const resolved = req.resolve(trimmed, { paths: [workspaceRoot] });
-      return import(pathToFileURL(resolved).href);
+      return dynamicImport(pathToFileURL(resolved).href);
     } catch {
       // fall through
     }
   }
 
-  return import(trimmed);
+  return dynamicImport(trimmed);
 }
 
 function extractHooksFromModule(moduleExports: any, input: LingyunPluginInput): Array<{ id: string; hooks: LingyunHooks }> {
@@ -124,14 +129,25 @@ export class PluginManager {
   private pluginTools: LingyunPluginToolEntry[] = [];
 
   constructor(
-    private readonly options: {
+    private options: {
       plugins?: string[];
       autoDiscover?: boolean;
       workspaceDirName?: string;
       workspaceRoot?: string;
+      /**
+       * Optional plugin factory input. If omitted, PluginManager provides `workspaceRoot`.
+       */
+      input?: LingyunPluginInput;
+      /**
+       * Optional host logger for plugin loading and hook errors.
+       */
       logger?: (message: string) => void;
     } = {}
   ) {}
+
+  setOptions(next: Partial<PluginManager['options']>): void {
+    this.options = { ...(this.options || {}), ...(next || {}) };
+  }
 
   registerHooks(id: string, hooks: LingyunHooks): { dispose: () => void } {
     const entry: LoadedHooks = { id, hooks };
@@ -153,16 +169,19 @@ export class PluginManager {
     const discovered = await resolveWorkspacePluginPaths({ enabled: autoDiscover, workspaceDirName, workspaceRoot });
     const combined = uniqueStrings([...(plugins || []), ...discovered]);
 
-    const key = JSON.stringify({ combined, workspaceRoot: workspaceRoot || '' });
+    const input = { ...(this.options.input || {}), ...(workspaceRoot ? { workspaceRoot } : {}) } as LingyunPluginInput;
+    const key = JSON.stringify({
+      combined,
+      workspaceRoot: workspaceRoot || '',
+      gitRoot: input.gitRoot || '',
+      projectId: input.projectId || '',
+      storagePath: input.storagePath || '',
+    });
     if (key === this.loadedKey) return;
 
     this.loadedKey = key;
     this.loadedHooks = [];
     this.pluginTools = [];
-
-    const input: LingyunPluginInput = {
-      workspaceRoot,
-    };
 
     for (const spec of combined) {
       try {
@@ -190,7 +209,16 @@ export class PluginManager {
 
   async getPluginTools(): Promise<LingyunPluginToolEntry[]> {
     await this.loadPluginsIfNeeded();
-    return [...this.pluginTools];
+    const out: LingyunPluginToolEntry[] = [...this.pluginTools];
+    for (const entry of this.extraHooks) {
+      const toolMap = (entry.hooks as any)?.tool;
+      if (!isRecord(toolMap)) continue;
+      for (const [toolId, tool] of Object.entries(toolMap)) {
+        if (!toolId || !tool) continue;
+        out.push({ pluginId: entry.id, toolId, tool: tool as any });
+      }
+    }
+    return out;
   }
 
   async trigger<Name extends LingyunHookName, Output>(name: Name, input: unknown, output: Output): Promise<Output> {

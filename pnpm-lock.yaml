@@ -24,7 +24,7 @@ importers:
         specifier: ^2.0.2
         version: 2.0.9(zod@4.3.5)
       '@kooka/core':
-        specifier: ^0.1.5
+        specifier: ^0.2.0
         version: link:../core
       ai:
         specifier: ^6.0.6
@@ -51,6 +51,9 @@ importers:
       '@types/node':
         specifier: ^20.11.16
         version: 20.19.29
+      esbuild:
+        specifier: ^0.25.0
+        version: 0.25.12
       mocha:
         specifier: ^11.7.5
         version: 11.7.5
@@ -77,7 +80,7 @@ importers:
   packages/kookaburra:
     dependencies:
       '@kooka/agent-sdk':
-        specifier: ^0.1.5
+        specifier: ^0.2.0
         version: link:../agent-sdk
       croner:
         specifier: ^10.0.1
@@ -111,6 +114,9 @@ importers:
       '@ai-sdk/openai-compatible':
         specifier: ^2.0.30
         version: 2.0.30(zod@4.3.5)
+      '@kooka/agent-sdk':
+        specifier: workspace:*
+        version: link:../agent-sdk
       '@kooka/core':
         specifier: workspace:*
         version: link:../core

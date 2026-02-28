@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import type { UserHistoryInputPart } from '@kooka/core';
 import type { ChatMessage, ChatUserInput } from './types';
 import { isDefaultSessionTitle } from './sessionTitle';
-import { ChatViewProvider } from '../chat';
+import type { ChatViewProvider } from '../chat';
 
 const MAX_USER_IMAGE_ATTACHMENTS = 8;
 const MAX_USER_IMAGE_DATA_URL_LENGTH = 12_000_000;
@@ -62,7 +62,8 @@ function normalizeUserInput(content: string | ChatUserInput): NormalizedUserInpu
   };
 }
 
-Object.assign(ChatViewProvider.prototype, {
+export function installRunnerInputMethods(view: ChatViewProvider): void {
+  Object.assign(view, {
   sendMessage(this: ChatViewProvider, content: string): void {
     if (this.view) {
       void this.handleUserMessage(content);
@@ -154,16 +155,7 @@ Object.assign(ChatViewProvider.prototype, {
       const planFirst = this.isPlanFirstEnabled();
       const shouldGeneratePlan = this.mode === 'plan' || (planFirst && isNew);
       if (shouldGeneratePlan) {
-        if (this.mode !== 'plan') {
-          this.mode = 'plan';
-          this.agent.setMode('plan');
-          try {
-            await vscode.workspace.getConfiguration('lingyun').update('mode', 'plan', true);
-          } catch {
-            // Ignore persistence errors; still run in Plan mode.
-          }
-          this.postMessage({ type: 'modeChanged', mode: 'plan' });
-        }
+        await this.setModeAndPersist('plan');
 
         const planMsg: ChatMessage = {
           id: crypto.randomUUID(),
@@ -299,4 +291,5 @@ Object.assign(ChatViewProvider.prototype, {
 
     return 'draft';
   },
-});
+  });
+}

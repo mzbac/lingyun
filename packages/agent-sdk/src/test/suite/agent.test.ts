@@ -12,6 +12,7 @@ import type {
   LanguageModelV3Usage,
 } from '@ai-sdk/provider';
 
+import { TOOL_ERROR_CODES } from '@kooka/core';
 import {
   getBuiltinTools,
   getSkillIndex,
@@ -262,6 +263,69 @@ suite('LingYun Agent SDK', () => {
 
     const finalAssistant = [...history].reverse().find((m) => m.role === 'assistant' && getMessageText(m).trim())!;
     assert.strictEqual(getMessageText(finalAssistant).trim(), 'done');
+  });
+
+  test('callbacks - does not emit unhandledRejection when onToolCall rejects', async () => {
+    const llm = new MockLLMProvider();
+    const registry = new ToolRegistry();
+
+    registry.registerTool(
+      {
+        id: 'test_echo',
+        name: 'Echo',
+        description: 'Echoes back input',
+        parameters: {
+          type: 'object',
+          properties: { message: { type: 'string' } },
+          required: ['message'],
+        },
+        execution: { type: 'function', handler: 'test_echo' },
+      },
+      async (args): Promise<ToolResult> => ({
+        success: true,
+        data: `Echo: ${String(args.message)}`,
+      })
+    );
+
+    llm.queueResponse({
+      kind: 'tool-call',
+      toolCallId: 'call_1',
+      toolName: 'test_echo',
+      input: { message: 'hi' },
+      finishReason: 'tool-calls',
+    });
+    llm.queueResponse({ kind: 'text', content: 'done' });
+
+    const agent = new LingyunAgent(llm, { model: 'mock-model' }, registry, { allowExternalPaths: false });
+    const session = new LingyunSession();
+
+    const unhandled: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown) => {
+      unhandled.push(reason);
+    };
+
+    process.on('unhandledRejection', onUnhandledRejection);
+    try {
+      const run = agent.run({
+        session,
+        input: 'say hi',
+        callbacks: {
+          onToolCall: async () => {
+            throw new Error('boom');
+          },
+        },
+      });
+      for await (const _event of run.events) {
+        // drain
+      }
+      const result = await run.done;
+      assert.strictEqual(result.text, 'done');
+
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.strictEqual(unhandled.length, 0);
+    } finally {
+      process.off('unhandledRejection', onUnhandledRejection);
+    }
   });
 
   test('prompt - injects external path access reminder', async () => {
@@ -1152,6 +1216,63 @@ suite('LingYun Agent SDK', () => {
     assert.ok(notices.some((n) => n.level === 'warning'), 'expected warning notice');
   });
 
+  test('plan mode blocks non-readOnly tools even if permission is spoofed', async () => {
+    const llm = new MockLLMProvider();
+    const registry = new ToolRegistry();
+
+    let called = false;
+    registry.registerTool(
+      {
+        id: 'test_spoof_task_permission',
+        name: 'Spoof Task Permission',
+        description: 'Attempts to bypass plan mode by setting permission=task',
+        parameters: { type: 'object', properties: {} },
+        execution: { type: 'function', handler: 'test_spoof_task_permission' },
+        metadata: {
+          permission: 'task',
+          requiresApproval: false,
+          readOnly: false,
+        },
+      },
+      async (): Promise<ToolResult> => {
+        called = true;
+        return { success: true, data: 'executed' };
+      },
+    );
+
+    llm.queueResponse({
+      kind: 'tool-call',
+      toolCallId: 'call_plan_spoof_1',
+      toolName: 'test_spoof_task_permission',
+      input: {},
+      finishReason: 'tool-calls',
+    });
+    llm.queueResponse({ kind: 'text', content: 'done' });
+
+    const agent = new LingyunAgent(llm, { model: 'mock-model', mode: 'plan' }, registry, { allowExternalPaths: false });
+    const session = new LingyunSession({ sessionId: 'plan-session' });
+
+    const run = agent.run({ session, input: 'plan mode' });
+    for await (const _event of run.events) {
+      // drain
+    }
+    const result = await run.done;
+
+    assert.strictEqual(result.text, 'done');
+    assert.strictEqual(called, false, 'tool handler should not be invoked when blocked in plan mode');
+
+    const history = session.getHistory();
+    const assistant = history.find(
+      (m) => m.role === 'assistant' && m.parts.some((p: any) => p.type === 'dynamic-tool' && p.toolCallId === 'call_plan_spoof_1'),
+    );
+    assert.ok(assistant, 'expected assistant tool message');
+
+    const toolPart = assistant!.parts.find((p: any) => p.type === 'dynamic-tool' && p.toolCallId === 'call_plan_spoof_1') as any;
+    assert.ok(toolPart, 'expected dynamic-tool part');
+    assert.strictEqual(toolPart.output?.success, false);
+    assert.ok(String(toolPart.output?.error || '').toLowerCase().includes('plan mode'));
+  });
+
   test('task tool rejects recursion from subagent sessions and enforces plan-mode subagent restrictions', async () => {
     {
       const llm = new MockLLMProvider();
@@ -1187,7 +1308,7 @@ suite('LingYun Agent SDK', () => {
 
       assert.ok(taskResult, 'expected task tool result');
       assert.strictEqual(taskResult!.success, false);
-      assert.strictEqual(taskResult!.metadata?.errorType, 'task_recursion_denied');
+      assert.strictEqual(taskResult!.metadata?.errorCode, TOOL_ERROR_CODES.task_recursion_denied);
     }
 
     {
@@ -1224,7 +1345,7 @@ suite('LingYun Agent SDK', () => {
 
       assert.ok(taskResult, 'expected task tool result');
       assert.strictEqual(taskResult!.success, false);
-      assert.strictEqual(taskResult!.metadata?.errorType, 'subagent_denied_in_plan');
+      assert.strictEqual(taskResult!.metadata?.errorCode, TOOL_ERROR_CODES.subagent_denied_in_plan);
       assert.strictEqual(taskResult!.metadata?.subagentType, 'general');
     }
   });

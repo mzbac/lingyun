@@ -4,7 +4,7 @@ import * as crypto from 'crypto';
 import type { ToolDefinition, ToolHandler } from '../../core/types';
 import { getLspAdapter } from '../../core/lsp';
 import { formatDiagnosticsBlock } from '../../core/lsp/diagnostics';
-import { requireString } from '@kooka/core';
+import { TOOL_ERROR_CODES, requireString } from '@kooka/core';
 import { resolveToolPath, toPosixPath } from './workspace';
 import { assertFileWasRead, recordFileRead, withFileLock } from './fileTime';
 import { replaceInContent } from './editReplace';
@@ -105,7 +105,7 @@ export const editHandler: ToolHandler = async (args, context) => {
               `Use an anchored edit with a non-empty oldString copied exactly from Read output. ` +
               `If you intentionally want to replace the entire file, set overwrite=true.`,
             metadata: {
-              errorType: 'edit_overwrite_blocked',
+              errorCode: TOOL_ERROR_CODES.edit_overwrite_blocked,
               fileExists: true,
             },
           };
@@ -157,12 +157,12 @@ export const editHandler: ToolHandler = async (args, context) => {
           success: false,
           error: [message, ...hints].filter(Boolean).join('\n'),
           metadata: {
-            errorType:
+            errorCode:
               message === 'oldString not found in content'
-                ? 'edit_oldstring_not_found'
+                ? TOOL_ERROR_CODES.edit_oldstring_not_found
                 : message.startsWith('oldString found multiple times')
-                  ? 'edit_oldstring_multiple_matches'
-                  : 'edit_failed',
+                  ? TOOL_ERROR_CODES.edit_oldstring_multiple_matches
+                  : TOOL_ERROR_CODES.edit_failed,
             oldStringLength: oldString.length,
             oldStringSha256: sha,
             hasLinePrefix,

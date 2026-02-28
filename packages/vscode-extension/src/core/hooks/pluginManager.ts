@@ -1,32 +1,19 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { fileURLToPath, pathToFileURL } from 'url';
+
+import {
+  PluginManager as SdkPluginManager,
+  type LingyunHookName,
+  type LingyunHooks,
+  type LingyunPluginToolEntry as SdkLingyunPluginToolEntry,
+} from '@kooka/agent-sdk';
 
 import { findGitRoot } from '../instructions';
 import { getSnapshotProjectId } from '../snapshot';
-import type {
-  LingyunHookName,
-  LingyunHooks,
-  LingyunPluginFactory,
-  LingyunPluginInput,
-  LingyunPluginTool,
-} from './types';
-import { isRecord } from '../utils/guards';
-
-type LoadedHooks = { id: string; hooks: LingyunHooks };
-
-export type LingyunPluginToolEntry = {
-  pluginId: string;
-  toolId: string;
-  tool: LingyunPluginTool;
-};
+import { getPrimaryWorkspaceFolder } from '../workspaceContext';
 
 type PluginLogFn = (message: string) => void;
-
-function asUnknownRecord(value: unknown): Record<string, unknown> | undefined {
-  return isRecord(value) ? value : undefined;
-}
 
 function uniqueStrings(items: string[]): string[] {
   const out: string[] = [];
@@ -62,41 +49,20 @@ async function listPluginFiles(dir: string): Promise<string[]> {
   }
 }
 
-async function resolveWorkspacePluginPaths(params: {
+async function discoverWorkspacePluginsUp(params: {
   enabled: boolean;
   workspaceDirName: string;
+  startDir: string;
+  stopDir: string;
 }): Promise<string[]> {
   if (!params.enabled) return [];
 
-  const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri;
-  if (!workspaceFolder || workspaceFolder.scheme !== 'file') return [];
-
-  const activeUri = vscode.window.activeTextEditor?.document.uri;
-  const activeWorkspaceFolder = activeUri ? vscode.workspace.getWorkspaceFolder(activeUri)?.uri : undefined;
-  const activeInWorkspace =
-    !!activeUri &&
-    activeUri.scheme === 'file' &&
-    activeWorkspaceFolder?.scheme === 'file' &&
-    activeWorkspaceFolder.fsPath === workspaceFolder.fsPath;
-
-  const startDir = activeInWorkspace ? path.dirname(activeUri.fsPath) : workspaceFolder.fsPath;
-
-  let stopDir = workspaceFolder;
-  try {
-    stopDir = await findGitRoot(activeInWorkspace ? (activeUri ?? workspaceFolder) : workspaceFolder, workspaceFolder);
-  } catch {
-    // Ignore; fall back to workspace root.
-  }
-
-  const stopPath = stopDir.scheme === 'file' ? stopDir.fsPath : workspaceFolder.fsPath;
-
   const discovered: string[] = [];
-  let current = path.resolve(startDir);
-  const stopResolved = path.resolve(stopPath);
+  let current = path.resolve(params.startDir);
+  const stopResolved = path.resolve(params.stopDir);
 
   while (true) {
-    const lingyunDir = path.join(current, params.workspaceDirName);
-    const pluginDir = path.join(lingyunDir, 'plugin');
+    const pluginDir = path.join(current, params.workspaceDirName, 'plugin');
     if (await exists(pluginDir)) {
       discovered.push(...(await listPluginFiles(pluginDir)));
     }
@@ -123,7 +89,7 @@ function toDebugPluginSpec(spec: string, workspaceRoot?: string): string {
     return trimmed;
   }
 
-  const looksPath = trimmed.startsWith('.') || trimmed.startsWith('/') || trimmed.includes(path.sep);
+  const looksPath = trimmed.startsWith('.') || path.isAbsolute(trimmed);
   if (!looksPath) return trimmed;
 
   const resolved = path.resolve(workspaceRoot, trimmed);
@@ -133,83 +99,30 @@ function toDebugPluginSpec(spec: string, workspaceRoot?: string): string {
   return trimmed;
 }
 
-async function importPluginModule(spec: string, workspaceRoot?: string): Promise<unknown> {
-  const trimmed = String(spec || '').trim();
-  if (!trimmed) return null;
-
-  // NOTE: This file is compiled to CommonJS. TypeScript downlevels dynamic `import()`
-  // to `require()`, which cannot load `file://...` specifiers. Use a runtime dynamic
-  // import so plugins can be loaded from file URLs and ESM/CJS modules.
-  const dynamicImport = new Function('specifier', 'return import(specifier)') as (
-    specifier: string
-  ) => Promise<unknown>;
-
-  const isFileUrl = trimmed.startsWith('file://');
-  const looksPath = isFileUrl || trimmed.startsWith('.') || trimmed.startsWith('/') || trimmed.includes(path.sep);
-  if (looksPath) {
-    const resolvedPath = isFileUrl
-      ? fileURLToPath(trimmed)
-      : path.resolve(workspaceRoot || process.cwd(), trimmed);
-    const fileUrl = isFileUrl ? trimmed : pathToFileURL(resolvedPath).href;
-    return dynamicImport(fileUrl);
-  }
-
-  // Fallback: treat as a module specifier resolvable by Node.
-  return dynamicImport(trimmed);
-}
-
-function extractHooksFromModule(
-  moduleExports: unknown,
-  input: LingyunPluginInput
-): Array<{ id: string; hooks: LingyunHooks }> {
-  if (!moduleExports) return [];
-  const out: Array<{ id: string; hooks: LingyunHooks }> = [];
-  const seen = new Set<unknown>();
-
-  const moduleExportsRecord = asUnknownRecord(moduleExports);
-  const entries = moduleExportsRecord ? Object.entries(moduleExportsRecord) : [];
-  for (const [name, value] of entries) {
-    if (seen.has(value)) continue;
-    if (typeof value === 'function') {
-      seen.add(value);
-      const pluginFactory = value as LingyunPluginFactory;
-      out.push({
-        id: name,
-        hooks: pluginFactory(input) as LingyunHooks,
-      });
-      continue;
-    }
-    if (isRecord(value)) {
-      seen.add(value);
-      out.push({ id: name, hooks: value as LingyunHooks });
-    }
-  }
-
-  if (entries.length === 0 && typeof moduleExports === 'function') {
-    out.push({ id: 'default', hooks: (moduleExports as LingyunPluginFactory)(input) as LingyunHooks });
-  }
-
-  return out;
-}
+export type LingyunPluginToolEntry = SdkLingyunPluginToolEntry;
 
 export class PluginManager {
-  private loadedKey = '';
-  private loadedHooks: LoadedHooks[] = [];
-  private extraHooks: LoadedHooks[] = [];
-
+  private readonly sdk = new SdkPluginManager();
   private readonly log: PluginLogFn;
+  private loadedKey = '';
 
   constructor(private readonly context: vscode.ExtensionContext, params?: { log?: PluginLogFn }) {
     this.log = params?.log ?? (() => {});
   }
 
   registerHooks(id: string, hooks: LingyunHooks): vscode.Disposable {
-    const entry: LoadedHooks = { id, hooks };
-    this.extraHooks.push(entry);
-    return new vscode.Disposable(() => {
-      const idx = this.extraHooks.indexOf(entry);
-      if (idx >= 0) this.extraHooks.splice(idx, 1);
-    });
+    const disposable = this.sdk.registerHooks(id, hooks);
+    return new vscode.Disposable(() => disposable.dispose());
+  }
+
+  async trigger<Name extends LingyunHookName, Output>(name: Name, input: unknown, output: Output): Promise<Output> {
+    await this.refreshOptionsIfNeeded();
+    return this.sdk.trigger(name, input, output);
+  }
+
+  async listPluginTools(): Promise<LingyunPluginToolEntry[]> {
+    await this.refreshOptionsIfNeeded();
+    return this.sdk.getPluginTools();
   }
 
   private getConfigSnapshot(): {
@@ -224,23 +137,37 @@ export class PluginManager {
     return { plugins, autoDiscover, workspaceDirName };
   }
 
-  private async getWorkspaceRoots(): Promise<{ workspaceRoot?: string; gitRoot?: string; projectId?: string }> {
-    const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri;
-    if (!workspaceFolder || workspaceFolder.scheme !== 'file') return {};
+  private async getWorkspaceRoots(): Promise<{
+    trusted: boolean;
+    workspaceRoot?: string;
+    gitRoot?: string;
+    projectId?: string;
+    startDir?: string;
+    stopDir?: string;
+    storagePath?: string;
+  }> {
+    const trusted = vscode.workspace.isTrusted;
 
-    const workspaceRoot = workspaceFolder.fsPath;
+    const primaryFolder = getPrimaryWorkspaceFolder();
+    if (!primaryFolder || primaryFolder.uri.scheme !== 'file') {
+      return { trusted };
+    }
+
+    const workspaceRoot = primaryFolder.uri.fsPath;
+    const storagePath = (this.context.storageUri ?? this.context.globalStorageUri)?.fsPath;
+
+    const activeUri = vscode.window.activeTextEditor?.document.uri;
+    const activeInPrimary =
+      !!activeUri &&
+      activeUri.scheme === 'file' &&
+      vscode.workspace.getWorkspaceFolder(activeUri)?.uri.fsPath === primaryFolder.uri.fsPath;
+
+    const startDir = activeInPrimary && activeUri ? path.dirname(activeUri.fsPath) : workspaceRoot;
+
     let gitRootPath = workspaceRoot;
     try {
-      const activeUri = vscode.window.activeTextEditor?.document.uri;
-      const activeWorkspaceFolder = activeUri ? vscode.workspace.getWorkspaceFolder(activeUri)?.uri : undefined;
-      const activeInWorkspace =
-        !!activeUri &&
-        activeUri.scheme === 'file' &&
-        activeWorkspaceFolder?.scheme === 'file' &&
-        activeWorkspaceFolder.fsPath === workspaceFolder.fsPath;
-
-      const seed = activeInWorkspace ? (activeUri ?? workspaceFolder) : workspaceFolder;
-      const gitRoot = await findGitRoot(seed, workspaceFolder);
+      const seed = activeInPrimary ? (activeUri ?? primaryFolder.uri) : primaryFolder.uri;
+      const gitRoot = await findGitRoot(seed, primaryFolder.uri);
       if (gitRoot.scheme === 'file') {
         gitRootPath = gitRoot.fsPath;
       }
@@ -249,39 +176,62 @@ export class PluginManager {
     }
 
     const projectId = await getSnapshotProjectId(gitRootPath);
-    return { workspaceRoot, gitRoot: gitRootPath, projectId };
+
+    return {
+      trusted,
+      workspaceRoot,
+      gitRoot: gitRootPath,
+      projectId,
+      startDir,
+      stopDir: gitRootPath,
+      storagePath,
+    };
   }
 
-  private async loadPluginsIfNeeded(): Promise<void> {
+  private async refreshOptionsIfNeeded(): Promise<void> {
     const { plugins, autoDiscover, workspaceDirName } = this.getConfigSnapshot();
     const roots = await this.getWorkspaceRoots();
-    const trusted = vscode.workspace.isTrusted;
-
-    const discovered = trusted
-      ? await resolveWorkspacePluginPaths({ enabled: autoDiscover, workspaceDirName })
-      : [];
-    const combined = uniqueStrings([...(plugins || []), ...discovered]);
 
     const cfg = vscode.workspace.getConfiguration('lingyun');
     const debugPluginsEnabled = cfg.get<boolean>('debug.plugins') ?? false;
 
+    if (!roots.workspaceRoot) {
+      const key = JSON.stringify({ trusted: roots.trusted, combined: [], workspaceRoot: '', gitRoot: '', projectId: '', storagePath: '' });
+      if (key !== this.loadedKey) {
+        this.loadedKey = key;
+        this.sdk.setOptions({ plugins: [], autoDiscover: false, input: { log: this.log }, logger: this.log });
+      }
+      return;
+    }
+
+    const discovered = roots.trusted
+      ? await discoverWorkspacePluginsUp({
+          enabled: autoDiscover,
+          workspaceDirName,
+          startDir: roots.startDir || roots.workspaceRoot,
+          stopDir: roots.stopDir || roots.workspaceRoot,
+        })
+      : [];
+
+    const combined = roots.trusted ? uniqueStrings([...(plugins || []), ...discovered]) : [];
+
     const key = JSON.stringify({
-      trusted,
+      trusted: roots.trusted,
       combined,
       workspaceRoot: roots.workspaceRoot || '',
       gitRoot: roots.gitRoot || '',
       projectId: roots.projectId || '',
+      storagePath: roots.storagePath || '',
     });
 
     if (key === this.loadedKey) return;
-
     this.loadedKey = key;
-    this.loadedHooks = [];
 
-    if (!trusted) {
+    if (!roots.trusted) {
       if (debugPluginsEnabled) {
         this.log('[Plugins] skipped loading: workspace is untrusted');
       }
+      this.sdk.setOptions({ plugins: [], autoDiscover: false, workspaceRoot: roots.workspaceRoot, input: { workspaceRoot: roots.workspaceRoot, log: this.log }, logger: this.log });
       return;
     }
 
@@ -289,102 +239,23 @@ export class PluginManager {
       const discoveredDebug = discovered.map(spec => toDebugPluginSpec(spec, roots.workspaceRoot));
       const configuredDebug = (plugins || []).map(spec => toDebugPluginSpec(spec, roots.workspaceRoot));
       this.log(
-        `[Plugins] reload autoDiscover=${String(autoDiscover)} configured=${JSON.stringify(configuredDebug)} discovered=${JSON.stringify(discoveredDebug)}`
+        `[Plugins] reload autoDiscover=${String(autoDiscover)} configured=${JSON.stringify(configuredDebug)} discovered=${JSON.stringify(discoveredDebug)}`,
       );
     }
 
-    const input: LingyunPluginInput = {
+    this.sdk.setOptions({
+      plugins: combined,
+      autoDiscover: false,
+      workspaceDirName,
       workspaceRoot: roots.workspaceRoot,
-      gitRoot: roots.gitRoot,
-      projectId: roots.projectId,
-      storagePath: (this.context.storageUri ?? this.context.globalStorageUri)?.fsPath,
-      log: this.log,
-    };
-
-    for (const spec of combined) {
-      try {
-        if (debugPluginsEnabled) {
-          this.log(`[Plugins] loading ${toDebugPluginSpec(spec, roots.workspaceRoot)}`);
-        }
-        const module = await importPluginModule(spec, roots.workspaceRoot);
-        const extracted = extractHooksFromModule(module, input);
-
-        for (const entry of extracted) {
-          const hooks = await Promise.resolve(entry.hooks);
-          if (!hooks) continue;
-          this.loadedHooks.push({ id: `${spec}#${entry.id}`, hooks });
-        }
-
-        if (debugPluginsEnabled) {
-          const hookNames = extracted
-            .map(e => Object.keys(e.hooks ?? {}))
-            .flat()
-            .filter(Boolean)
-            .sort();
-          const uniqueHookNames = [...new Set(hookNames)];
-          this.log(
-            `[Plugins] loaded ${toDebugPluginSpec(spec, roots.workspaceRoot)} hooks=${JSON.stringify(uniqueHookNames)}`
-          );
-        }
-      } catch (error) {
-        // Keep running even if a plugin fails to load.
-        this.log(
-          `[Plugins] failed to load ${toDebugPluginSpec(spec, roots.workspaceRoot)}: ${error instanceof Error ? error.message : String(error)}`
-        );
-        console.error(`LingYun: Failed to load plugin ${spec}:`, error);
-      }
-    }
-  }
-
-  async trigger<Name extends LingyunHookName, Output>(
-    name: Name,
-    input: unknown,
-    output: Output
-  ): Promise<Output> {
-    await this.loadPluginsIfNeeded();
-
-    const all = [...this.extraHooks, ...this.loadedHooks];
-    for (const entry of all) {
-      const hooksRecord = asUnknownRecord(entry.hooks);
-      const fn = hooksRecord?.[name];
-      if (typeof fn !== 'function') continue;
-      try {
-        const hookFn = fn as (hookInput: unknown, hookOutput: Output) => void | Promise<void>;
-        await hookFn(input, output);
-      } catch (error) {
-        const cfg = vscode.workspace.getConfiguration('lingyun');
-        const debugPluginsEnabled = cfg.get<boolean>('debug.plugins') ?? false;
-        this.log(
-          `[Plugins] hook error ${entry.id} -> ${name}: ${error instanceof Error ? error.message : String(error)}`
-        );
-        if (debugPluginsEnabled && error instanceof Error && error.stack) {
-          this.log(error.stack);
-        }
-        console.error(`LingYun: Plugin hook error (${entry.id} -> ${name}):`, error);
-      }
-    }
-
-    return output;
-  }
-
-  async listPluginTools(): Promise<LingyunPluginToolEntry[]> {
-    await this.loadPluginsIfNeeded();
-
-    const out: LingyunPluginToolEntry[] = [];
-    const all = [...this.extraHooks, ...this.loadedHooks];
-
-    for (const entry of all) {
-      const hooksRecord = asUnknownRecord(entry.hooks);
-      const toolMap = hooksRecord?.tool;
-      if (!isRecord(toolMap)) continue;
-
-      for (const [toolId, tool] of Object.entries(toolMap)) {
-        if (!toolId || typeof toolId !== 'string') continue;
-        if (!tool || typeof tool !== 'object') continue;
-        out.push({ pluginId: entry.id, toolId, tool: tool as LingyunPluginTool });
-      }
-    }
-
-    return out;
+      input: {
+        workspaceRoot: roots.workspaceRoot,
+        gitRoot: roots.gitRoot,
+        projectId: roots.projectId,
+        storagePath: roots.storagePath,
+        log: this.log,
+      },
+      logger: this.log,
+    });
   }
 }

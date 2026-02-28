@@ -2,7 +2,7 @@
   "name": "lingyun",
   "displayName": "LingYun",
   "description": "Agentic AI assistant for VS Code",
-  "version": "2.0.26",
+  "version": "2.1.0",
   "publisher": "mzbac",
   "icon": "images/icon.png",
   "license": "MIT",
@@ -346,16 +346,6 @@
           "minimum": 10,
           "description": "Maximum number of stage-1 memory outputs retained in extension storage."
         },
-        "lingyun.memories.phase1Model": {
-          "type": "string",
-          "default": "gpt-5.1-codex-mini",
-          "description": "Model identifier reserved for phase-1 rollout extraction."
-        },
-        "lingyun.memories.phase2Model": {
-          "type": "string",
-          "default": "gpt-5.3-codex",
-          "description": "Model identifier reserved for phase-2 memory consolidation."
-        },
         "lingyun.autoApprove": {
           "type": "boolean",
           "default": false,
@@ -392,7 +382,7 @@
             "type": "string"
           },
           "default": [],
-          "description": "Only use tools matching these patterns (e.g., 'read', 'glob', 'workspace.deploy')"
+          "description": "Only use tools matching these patterns (e.g., 'read', 'glob', 'workspace_*', 'workspace_deploy')"
         },
         "lingyun.env": {
           "type": "object",
@@ -413,7 +403,7 @@
         "lingyun.skills.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Enable skill discovery and the built-in skill tool (skill.list/skill.load)."
+          "description": "Enable skill discovery and the built-in skill tool (skill)."
         },
         "lingyun.skills.paths": {
           "type": "array",
@@ -506,12 +496,12 @@
     "vscode:prepublish": "pnpm run bundle",
     "build": "pnpm run bundle",
     "clean": "node scripts/clean.js",
-    "compile": "pnpm --filter @kooka/core build && pnpm run clean && tsc -p ./",
+    "compile": "pnpm --filter @kooka/agent-sdk build && pnpm run clean && tsc -p ./",
     "bundle": "pnpm run clean && node scripts/bundle.js",
     "watch": "tsc -watch -p ./",
     "lint": "eslint src --ext ts",
     "test": "pnpm run compile && node ./dist/test/runTest.js",
-    "test:unit": "pnpm run compile && mocha ./dist/test/suite/*.test.js",
+    "test:unit": "pnpm run test",
     "test:manual": "pnpm run compile && node scripts/test-manual.js",
     "sdk:build": "pnpm --filter @kooka/agent-sdk build",
     "sdk:test": "pnpm --filter @kooka/agent-sdk test",
@@ -521,6 +511,7 @@
     "publish": "vsce publish --no-dependencies"
   },
   "dependencies": {
+    "@kooka/agent-sdk": "workspace:*",
     "@kooka/core": "workspace:*",
     "@ai-sdk/openai-compatible": "^2.0.30",
     "ai": "^6.0.86",

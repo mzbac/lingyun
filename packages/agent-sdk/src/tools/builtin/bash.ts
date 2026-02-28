@@ -6,6 +6,7 @@ import type { ToolDefinition, ToolHandler } from '../../types.js';
 import {
   DEFAULT_BACKGROUND_KILL_GRACE_MS,
   DEFAULT_BACKGROUND_TTL_MS,
+  TOOL_ERROR_CODES,
   buildSafeChildProcessEnv,
   cleanupDeadBackgroundJobs,
   createBackgroundJobKey,
@@ -150,8 +151,8 @@ export const bashHandler: ToolHandler = async (args, context) => {
           'External paths are disabled. This shell command references paths outside the current workspace. ' +
           'Enable allowExternalPaths to allow external path access.',
         metadata: {
-          errorType: 'external_paths_disabled',
-          blockedSettingKey: 'allowExternalPaths',
+          errorCode: TOOL_ERROR_CODES.external_paths_disabled,
+          blockedSettingKey: 'lingyun.security.allowExternalPaths',
           isOutsideWorkspace: true,
           blockedPaths: blockedPaths.slice(0, blockedPathsMax),
           blockedPathsTruncated,
@@ -179,7 +180,7 @@ export const bashHandler: ToolHandler = async (args, context) => {
         'This command looks like it will start a long-running server and block the agent. ' +
         'Re-run with { background: true } to detach it, or provide { timeout: <ms> } to capture startup output and exit.',
       metadata: {
-        errorType: 'bash_requires_background_or_timeout',
+        errorCode: TOOL_ERROR_CODES.bash_requires_background_or_timeout,
         suggestedArgs: { background: true },
       },
     };

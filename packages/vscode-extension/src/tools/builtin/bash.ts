@@ -6,6 +6,7 @@ import * as vscode from 'vscode';
 import type { ToolDefinition, ToolHandler } from '../../core/types';
 import {
   DEFAULT_BACKGROUND_TTL_MS,
+  TOOL_ERROR_CODES,
   buildSafeChildProcessEnv,
   cleanupDeadBackgroundJobs,
   createBackgroundJobKey,
@@ -157,7 +158,11 @@ async function runBackgroundSpawn(args: {
     return {
       success: false,
       error: 'Failed to start background command (missing pid)',
-      metadata: { background: true, errorType: 'bash_background_pid_unavailable', runner: 'spawn' },
+      metadata: {
+        background: true,
+        errorCode: TOOL_ERROR_CODES.bash_background_pid_unavailable,
+        runner: 'spawn',
+      },
     };
   }
   proc.unref();
@@ -289,7 +294,7 @@ export const bashHandler: ToolHandler = async (args, context) => {
           'External paths are disabled. This shell command references paths outside the current workspace. ' +
           'Enable lingyun.security.allowExternalPaths to allow external path access.',
         metadata: {
-          errorType: 'external_paths_disabled',
+          errorCode: TOOL_ERROR_CODES.external_paths_disabled,
           blockedSettingKey: 'lingyun.security.allowExternalPaths',
           isOutsideWorkspace: true,
           blockedPaths: blockedPaths.slice(0, blockedPathsMax),
@@ -308,7 +313,7 @@ export const bashHandler: ToolHandler = async (args, context) => {
         'Blocked `git push` command (lingyun.security.blockGitPush=true). ' +
         'Run `git push` manually in your terminal, or disable the setting to allow it.',
       metadata: {
-        errorType: 'bash_git_push_blocked',
+        errorCode: TOOL_ERROR_CODES.bash_git_push_blocked,
         blockedSettingKey: 'lingyun.security.blockGitPush',
       },
     };
@@ -341,7 +346,7 @@ export const bashHandler: ToolHandler = async (args, context) => {
         'This command looks like it will start a long-running server and block the agent. ' +
         'Re-run with { background: true } to detach it, or provide { timeout: <ms> } to capture startup output and exit.',
       metadata: {
-        errorType: 'bash_requires_background_or_timeout',
+        errorCode: TOOL_ERROR_CODES.bash_requires_background_or_timeout,
         suggestedArgs: { background: true },
       },
     };

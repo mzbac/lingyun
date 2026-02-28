@@ -1,5 +1,5 @@
 import type { ToolDefinition, ToolHandler } from '../../core/types';
-import { listBuiltinSubagents } from '@kooka/core';
+import { TOOL_ERROR_CODES, listBuiltinSubagents } from '@kooka/core';
 
 const agentsList = listBuiltinSubagents()
   .map((agent) => `- ${agent.name}: ${agent.description}`)
@@ -46,7 +46,6 @@ export const taskHandler: ToolHandler = async () => {
   return {
     success: false,
     error: 'Task tool is only available when invoked by the agent runtime.',
-    metadata: { errorType: 'task_runtime_only' },
+    metadata: { errorCode: TOOL_ERROR_CODES.task_runtime_only },
   };
 };
-

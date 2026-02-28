@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import type { ModelInfo } from '../../providers/copilot';
-import { ChatViewProvider } from '../chat';
+import type { ChatViewProvider } from '../chat';
 
 const MAX_RECENT_MODELS = 10;
 
@@ -71,7 +71,8 @@ function toModelPickItem(params: {
   };
 }
 
-Object.assign(ChatViewProvider.prototype, {
+export function installModelsMethods(view: ChatViewProvider): void {
+  Object.assign(view, {
   async loadModels(this: ChatViewProvider): Promise<void> {
     const timeoutMs = 5000;
     try {
@@ -367,4 +368,5 @@ Object.assign(ChatViewProvider.prototype, {
 
     qp.show();
   },
-});
+  });
+}

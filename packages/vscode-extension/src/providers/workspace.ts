@@ -8,6 +8,7 @@ import type {
   WorkspaceToolDefinition,
 } from '../core/types';
 import { executeShell, executeHttp } from './executors';
+import { getPrimaryWorkspaceFolder, getPrimaryWorkspaceRootPath } from '../core/workspaceContext';
 
 export class WorkspaceToolProvider implements ToolProvider {
   readonly id = 'workspace';
@@ -31,7 +32,7 @@ export class WorkspaceToolProvider implements ToolProvider {
     this.tools.clear();
     this.variables = {};
 
-    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    const workspaceFolder = getPrimaryWorkspaceFolder();
     if (!workspaceFolder) return;
 
     const mainConfig = vscode.Uri.joinPath(workspaceFolder.uri, '.vscode', 'agent-tools.json');
@@ -67,7 +68,8 @@ export class WorkspaceToolProvider implements ToolProvider {
       }
 
       for (const tool of config.tools) {
-        const toolId = tool.id.includes('.') ? tool.id : `workspace.${tool.id}`;
+        const raw = typeof tool.id === 'string' ? tool.id.trim() : '';
+        const toolId = raw.startsWith('workspace_') ? raw : `workspace_${raw}`;
         this.tools.set(toolId, { ...tool, id: toolId });
       }
     } catch (error) {
@@ -78,7 +80,7 @@ export class WorkspaceToolProvider implements ToolProvider {
   }
 
   private startWatching(): void {
-    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    const workspaceFolder = getPrimaryWorkspaceFolder();
     if (!workspaceFolder) return;
 
     this.watcher = vscode.workspace.createFileSystemWatcher(
@@ -146,17 +148,10 @@ export class WorkspaceToolProvider implements ToolProvider {
 
   private async executeCommand(
     execution: { type: 'command'; command: string; args?: unknown[] },
-    args: Record<string, unknown>
+    _args: Record<string, unknown>
   ): Promise<ToolResult> {
     try {
-      const commandArgs = execution.args?.map(arg => {
-        if (typeof arg === 'string' && arg.startsWith('$')) {
-          return args[arg.slice(1)];
-        }
-        return arg;
-      });
-
-      const result = await vscode.commands.executeCommand(execution.command, ...(commandArgs || []));
+      const result = await vscode.commands.executeCommand(execution.command, ...(execution.args || []));
 
       return {
         success: true,
@@ -176,23 +171,23 @@ export class WorkspaceToolProvider implements ToolProvider {
   ): WorkspaceToolDefinition['execution'] {
     const substitute = (str: string): string => {
       const configEnv = vscode.workspace.getConfiguration('lingyun').get<Record<string, string>>('env') || {};
+      const workspaceFolder = getPrimaryWorkspaceRootPath();
       str = str.replace(/\$\{env:(\w+)\}/g, (_, name) => {
         return configEnv[name] || process.env[name] || '';
       });
 
-      str = str.replace(/\$\{(\w+)\}/g, (_, name) => {
-        return this.variables[name] || '';
-      });
-
-      str = str.replace(/\$(\w+)/g, (_, name) => {
+      str = str.replace(/\$\{arg:([A-Za-z0-9_]+)\}/g, (_, name) => {
         const value = args[name];
         return value !== undefined ? String(value) : '';
       });
 
-      const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
       if (workspaceFolder) {
         str = str.replace(/\$\{workspaceFolder\}/g, workspaceFolder);
       }
+
+      str = str.replace(/\$\{(\w+)\}/g, (_, name) => {
+        return this.variables[name] || '';
+      });
 
       return str;
     };
@@ -226,7 +221,7 @@ export class WorkspaceToolProvider implements ToolProvider {
 }
 
 export async function createSampleToolsConfig(): Promise<void> {
-  const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+  const workspaceFolder = getPrimaryWorkspaceFolder();
   if (!workspaceFolder) {
     vscode.window.showErrorMessage('No workspace folder open');
     return;
@@ -312,7 +307,7 @@ export async function createSampleToolsConfig(): Promise<void> {
         },
         execution: {
           type: 'http',
-          url: '${API_BASE}/tasks?status=$status',
+          url: '${API_BASE}/tasks?status=${arg:status}',
           method: 'GET',
         },
         requiresApproval: false,
@@ -334,7 +329,7 @@ export async function createSampleToolsConfig(): Promise<void> {
         },
         execution: {
           type: 'shell',
-          script: 'npm test -- $pattern',
+          script: 'npm test -- ${arg:pattern}',
           cwd: '${workspaceFolder}',
         },
         requiresApproval: true,

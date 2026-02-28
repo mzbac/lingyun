@@ -2,7 +2,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 
 import type { ToolDefinition, ToolHandler } from '../../types.js';
-import { optionalBoolean, requireString } from '@kooka/core';
+import { TOOL_ERROR_CODES, optionalBoolean, requireString } from '@kooka/core';
 import { resolveToolPath } from './workspace.js';
 
 export const writeTool: ToolDefinition = {
@@ -68,7 +68,7 @@ export const writeHandler: ToolHandler = async (args, context) => {
         `Refusing to overwrite an existing file with Write: ${absPath}\n\n` +
         `If you intentionally want to replace the entire file, set overwrite=true.`,
       metadata: {
-        errorType: 'write_overwrite_blocked',
+        errorCode: TOOL_ERROR_CODES.write_overwrite_blocked,
         fileExists: true,
       },
     };

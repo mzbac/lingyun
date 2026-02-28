@@ -50,7 +50,7 @@ export class ToolRegistry {
   private toolToProvider = new Map<string, string>();
   private simpleProvider: SimpleToolProvider;
 
-  constructor(private readonly options?: { defaultTimeoutMs?: number }) {
+  constructor(private readonly options?: { defaultTimeoutMs?: number | (() => number) }) {
     this.simpleProvider = new SimpleToolProvider('builtin', 'Built-in Tools');
     this.providers.set('builtin', this.simpleProvider);
   }
@@ -154,7 +154,9 @@ export class ToolRegistry {
 
     try {
       const tool = await this.getTool(toolId);
-      const defaultTimeout = this.options?.defaultTimeoutMs;
+      const defaultTimeoutRaw = this.options?.defaultTimeoutMs;
+      const defaultTimeout =
+        typeof defaultTimeoutRaw === 'function' ? defaultTimeoutRaw() : defaultTimeoutRaw;
       const timeout = Math.max(0, Math.floor((tool?.metadata?.timeout ?? defaultTimeout) || 0));
 
       let result: ToolResult;

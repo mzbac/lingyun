@@ -2,6 +2,7 @@ import * as assert from 'assert';
 import * as vscode from 'vscode';
 
 import type { ToolContext } from '../../core/types';
+import { TOOL_ERROR_CODES } from '@kooka/core';
 import { readHandler } from '../../tools/builtin/read';
 
 function createToolContext(): ToolContext {
@@ -35,7 +36,10 @@ suite('Read Tool', () => {
       const rejected = await readHandler({ filePath: fileRel }, context);
       assert.strictEqual(rejected.success, false);
       assert.ok(rejected.error?.includes('requires an explicit {offset, limit} range'));
-      assert.strictEqual((rejected.metadata as any)?.errorType, 'read_requires_range');
+      assert.strictEqual(
+        (rejected.metadata as any)?.errorCode,
+        TOOL_ERROR_CODES.read_requires_range
+      );
 
       const ok = await readHandler({ filePath: fileRel, offset: 0, limit: 50 }, context);
       assert.strictEqual(ok.success, true);
@@ -73,7 +77,7 @@ suite('Read Tool', () => {
 
       const res = await readHandler({ filePath: fileRel, offset: 0, limit: 9999 }, context);
       assert.strictEqual(res.success, false);
-      assert.strictEqual((res.metadata as any)?.errorType, 'read_limit_exceeded');
+      assert.strictEqual((res.metadata as any)?.errorCode, TOOL_ERROR_CODES.read_limit_exceeded);
     } finally {
       try {
         await vscode.workspace.fs.delete(fileUri, { recursive: false, useTrash: false });
@@ -88,4 +92,3 @@ suite('Read Tool', () => {
     }
   });
 });
-

@@ -1,280 +1,28 @@
 import * as vscode from 'vscode';
 import { getMessageText } from '@kooka/core';
 import { EDIT_TOOL_IDS } from '../../core/agent/constants';
-import type { AgentCallbacks, ToolDefinition, ToolCall, ToolResult } from '../../core/types';
+import type { AgentCallbacks, ToolDefinition, ToolCall } from '../../core/types';
 import { cleanAssistantPreamble, formatErrorForUser, formatWorkspacePathForUI } from './utils';
 import type { ChatMessage } from './types';
 import { buildToolDiffView, createUnifiedDiff, computeUnifiedDiffStats, trimUnifiedDiff } from './toolDiff';
 import { resolveToolPath } from '../../tools/builtin/workspace';
 import { summarizeErrorForDebug } from '../../core/agent/debug';
-import { ChatViewProvider } from '../chat';
+import type { ChatViewProvider } from '../chat';
+import {
+  appendDebugLog,
+  applyCommonToolResultFields,
+  cacheToolDiffSnapshot,
+  postTurnStatus,
+  readTextFileForDiff,
+  resolveToolCallUiPath,
+  upsertTaskChildSession,
+} from './runner/callbackUtils';
 
 const MAX_TOOL_DIFF_FILE_BYTES = 400_000;
 const TOOL_DIFF_CONTEXT_LINES = 3;
-const MAX_TOOL_DIFF_SNAPSHOTS = 20;
 
-function upsertTaskChildSession(view: ChatViewProvider, result: unknown): string | undefined {
-  if (!result || typeof result !== 'object') return undefined;
-  const meta = (result as any).metadata;
-  if (!meta || typeof meta !== 'object') return undefined;
-  const child = (meta as any).childSession;
-  if (!child || typeof child !== 'object') return undefined;
-
-  const task = (meta as any).task;
-  const modelWarning =
-    task && typeof task === 'object' && typeof (task as any).model_warning === 'string'
-      ? String((task as any).model_warning).trim()
-      : '';
-  if (modelWarning) {
-    const msg: ChatMessage = {
-      id: crypto.randomUUID(),
-      role: 'warning',
-      content: modelWarning,
-      timestamp: Date.now(),
-      turnId: view.currentTurnId,
-    };
-    view.messages.push(msg);
-    view.postMessage({ type: 'message', message: msg });
-  }
-
-  const normalized = view.normalizeLoadedSession(child as any);
-  if (!normalized.parentSessionId) normalized.parentSessionId = view.activeSessionId;
-  if (!normalized.subagentType && typeof (child as any).subagentType === 'string') {
-    normalized.subagentType = String((child as any).subagentType);
-  }
-  view.sessions.set(normalized.id, normalized);
-  view.postSessions();
-
-  view.markSessionDirty(normalized.id);
-  void view.flushSessionSave().catch(error => {
-    console.error('Failed to persist subagent session:', error);
-  });
-
-  return normalized.id;
-}
-
-function cacheToolDiffSnapshot(
-  view: ChatViewProvider,
-  toolCallId: string,
-  snapshot: {
-    absPath: string;
-    displayPath: string;
-    beforeText: string;
-    afterText: string;
-    isExternal: boolean;
-    truncated: boolean;
-  }
-): void {
-  view.toolDiffSnapshotsByToolCallId.delete(toolCallId);
-  view.toolDiffSnapshotsByToolCallId.set(toolCallId, snapshot);
-  while (view.toolDiffSnapshotsByToolCallId.size > MAX_TOOL_DIFF_SNAPSHOTS) {
-    const oldestKey = view.toolDiffSnapshotsByToolCallId.keys().next().value as string | undefined;
-    if (!oldestKey) break;
-    view.toolDiffSnapshotsByToolCallId.delete(oldestKey);
-  }
-}
-
-function containsBinaryData(buffer: Uint8Array): boolean {
-  const checkLength = Math.min(buffer.length, 8192);
-  for (let i = 0; i < checkLength; i++) {
-    if (buffer[i] === 0) return true;
-  }
-  return false;
-}
-
-async function readTextFileForDiff(
-  uri: vscode.Uri,
-  maxBytes: number,
-): Promise<{ text: string; skippedReason?: 'too_large' | 'binary' }> {
-  try {
-    const stat = await vscode.workspace.fs.stat(uri);
-    if (stat.size > maxBytes) {
-      return { text: '', skippedReason: 'too_large' };
-    }
-  } catch {
-    // missing file -> treat as empty file (created by write/edit)
-    return { text: '' };
-  }
-
-  try {
-    const bytes = await vscode.workspace.fs.readFile(uri);
-    if (containsBinaryData(bytes)) {
-      return { text: '', skippedReason: 'binary' };
-    }
-    return { text: new TextDecoder().decode(bytes) };
-  } catch {
-    return { text: '' };
-  }
-}
-
-type AgentStatusEvent = Parameters<NonNullable<AgentCallbacks['onStatusChange']>>[0];
-type ToolCallView = NonNullable<ChatMessage['toolCall']>;
-
-function appendDebugLog(view: ChatViewProvider, message: string): void {
-  const config = vscode.workspace.getConfiguration('lingyun');
-  const debugLlm = config.get<boolean>('debug.llm') ?? false;
-  const debugTools = config.get<boolean>('debug.tools') ?? false;
-  if (!debugLlm && !debugTools) return;
-
-  const isTool = typeof message === 'string' && message.startsWith('[Tool]');
-  if (isTool && !debugTools) return;
-  if (!isTool && !debugLlm) return;
-  if (!message) return;
-
-  const timestamp = new Date().toLocaleTimeString();
-  view.outputChannel?.appendLine(`[${timestamp}] ${message}`);
-}
-
-function postTurnStatus(view: ChatViewProvider, turnId: string | undefined, status: AgentStatusEvent): void {
-  if (!turnId) return;
-
-  if (status.type === 'retry') {
-    view.postMessage({
-      type: 'turnStatus',
-      turnId,
-      status: {
-        type: 'retry',
-        attempt: status.attempt,
-        nextRetryTime: status.nextRetryTime,
-        message: status.message,
-      },
-    });
-    return;
-  }
-
-  if (status.type === 'running') {
-    view.postMessage({
-      type: 'turnStatus',
-      turnId,
-      status: { type: 'running', message: status.message || '' },
-    });
-    return;
-  }
-
-  if (status.type === 'error') {
-    view.postMessage({
-      type: 'turnStatus',
-      turnId,
-      status: { type: 'error', message: status.message || 'unknown error' },
-    });
-    return;
-  }
-
-  if (status.type === 'done') {
-    view.postMessage({
-      type: 'turnStatus',
-      turnId,
-      status: { type: 'done' },
-    });
-  }
-}
-
-function resolveToolCallUiPath(
-  view: ChatViewProvider,
-  tc: ToolCall,
-  options?: { includeWorkdir?: boolean },
-): { path: string | undefined; filePathRaw: string | undefined } {
-  let filePathRaw: string | undefined;
-  try {
-    const args = JSON.parse(tc.function.arguments || '{}');
-    filePathRaw = (args as any).filePath || (args as any).path;
-    if (!filePathRaw && options?.includeWorkdir) {
-      filePathRaw = (args as any).workdir;
-    }
-    if (!filePathRaw && typeof (args as any).fileId === 'string') {
-      filePathRaw = view.agent.resolveFileId(String((args as any).fileId)) || undefined;
-    }
-  } catch {
-    // Ignore parse errors
-  }
-
-  return {
-    path: formatWorkspacePathForUI(filePathRaw),
-    filePathRaw,
-  };
-}
-
-function formatToolResultText(result: ToolResult): string {
-  if (result.data === undefined || result.data === null) {
-    return result.error || (result.success ? 'Done' : 'No data');
-  }
-  if (typeof result.data === 'string') {
-    return result.data;
-  }
-  return JSON.stringify(result.data, null, 2);
-}
-
-function applyCommonToolResultFields(
-  toolCall: ToolCallView,
-  result: ToolResult,
-): {
-  resultStr: string;
-  isTaskTool: boolean;
-  hasDiff: boolean;
-  maybeTodos: unknown[] | undefined;
-} {
-  const previousStatus = toolCall.status;
-  toolCall.status = result.success
-    ? 'success'
-    : previousStatus === 'rejected'
-      ? 'rejected'
-      : 'error';
-
-  const resultStr = formatToolResultText(result);
-
-  if (result.data && typeof result.data === 'object') {
-    const data = result.data as Record<string, unknown>;
-    if (data.diff && typeof data.diff === 'string') {
-      toolCall.diff = data.diff;
-    }
-    if (data.isProtected) {
-      toolCall.isProtected = true;
-    }
-    if (data.isOutsideWorkspace) {
-      toolCall.isOutsideWorkspace = true;
-    }
-  }
-
-  const meta = (result.metadata || {}) as Record<string, unknown>;
-  if (!result.success) {
-    const errorType = typeof meta.errorType === 'string' ? meta.errorType : '';
-    if (errorType === 'external_paths_disabled') {
-      toolCall.blockedReason = 'external_paths_disabled';
-      toolCall.blockedSettingKey =
-        typeof meta.blockedSettingKey === 'string'
-          ? meta.blockedSettingKey
-          : 'lingyun.security.allowExternalPaths';
-      toolCall.isOutsideWorkspace = true;
-    }
-    if (meta.isOutsideWorkspace) {
-      toolCall.isOutsideWorkspace = true;
-    }
-  }
-
-  if (toolCall.id === 'lsp' && result.success) {
-    try {
-      toolCall.lsp = JSON.parse(resultStr);
-    } catch {
-      // ignore parse errors
-    }
-  }
-
-  const maybeTodos = (result.metadata as any)?.todos;
-  if (Array.isArray(maybeTodos)) {
-    toolCall.todos = maybeTodos;
-  }
-
-  const hasDiff = typeof toolCall.diff === 'string' && toolCall.diff.length > 0;
-  const isTaskTool = toolCall.id === 'task';
-  return {
-    resultStr,
-    isTaskTool,
-    hasDiff,
-    maybeTodos: Array.isArray(maybeTodos) ? maybeTodos : undefined,
-  };
-}
-
-Object.assign(ChatViewProvider.prototype, {
+export function installRunnerCallbacksMethods(view: ChatViewProvider): void {
+  Object.assign(view, {
   createPlanningCallbacks(this: ChatViewProvider, planMsg: ChatMessage): AgentCallbacks {
     const persistSessions = this.isSessionPersistenceEnabled();
     const planContainerId = planMsg.id;
@@ -296,34 +44,34 @@ Object.assign(ChatViewProvider.prototype, {
       flushHandle = setTimeout(flush, 60);
     };
 
-    const upsertToolError = (tc: ToolCall, def: ToolDefinition, reason: string) => {
+	    const upsertToolError = (tc: ToolCall, def: ToolDefinition, reason: string) => {
       const existing = [...this.messages]
         .reverse()
         .find(m => m.toolCall?.approvalId === tc.id && m.stepId === planContainerId);
 
-      if (existing?.toolCall) {
+	      if (existing?.toolCall) {
         existing.toolCall.status = 'error';
         existing.toolCall.result = reason;
         this.postMessage({ type: 'updateTool', message: existing });
-      } else {
-        const { path } = resolveToolCallUiPath(this, tc, { includeWorkdir: true });
+	      } else {
+	        const { path } = resolveToolCallUiPath(this, tc, def, { includeWorkdir: true });
 
-        const toolMsg: ChatMessage = {
+	        const toolMsg: ChatMessage = {
           id: crypto.randomUUID(),
           role: 'tool',
           content: '',
           timestamp: Date.now(),
           stepId: planContainerId,
-          toolCall: {
+	          toolCall: {
             id: def.id,
             name: def.name,
             args: tc.function.arguments,
             status: 'error',
-            approvalId: tc.id,
-            path: formatWorkspacePathForUI(path),
-            result: reason,
-          },
-        };
+	            approvalId: tc.id,
+	            path,
+	            result: reason,
+	          },
+	        };
         this.messages.push(toolMsg);
         this.postMessage({ type: 'message', message: toolMsg });
       }
@@ -349,8 +97,8 @@ Object.assign(ChatViewProvider.prototype, {
         planMsg.content = cleanAssistantPreamble(buffered);
         scheduleFlush();
       },
-      onToolCall: (tc: ToolCall, def: ToolDefinition) => {
-        const { path } = resolveToolCallUiPath(this, tc);
+	      onToolCall: (tc: ToolCall, def: ToolDefinition) => {
+	        const { path } = resolveToolCallUiPath(this, tc, def);
 
         const existing = [...this.messages].reverse().find(m => {
           if (m.role !== 'tool') return false;
@@ -709,11 +457,11 @@ Object.assign(ChatViewProvider.prototype, {
       onThoughtToken: (token) => {
         pushThought(token);
       },
-      onToolCall: async (tc: ToolCall, def: ToolDefinition) => {
+	      onToolCall: async (tc: ToolCall, def: ToolDefinition) => {
         postStepMsgIfNeeded();
         reconcileAssistantForToolCall();
 
-        const { path, filePathRaw } = resolveToolCallUiPath(this, tc);
+	        const { path, filePathRaw } = resolveToolCallUiPath(this, tc, def);
 
         const existing = [...this.messages].reverse().find(m => {
           if (m.role !== 'tool') return false;
@@ -782,7 +530,7 @@ Object.assign(ChatViewProvider.prototype, {
           }
         }
       },
-      onToolBlocked: (tc: ToolCall, def: ToolDefinition, reason: string) => {
+	      onToolBlocked: (tc: ToolCall, def: ToolDefinition, reason: string) => {
         postStepMsgIfNeeded();
         reconcileAssistantForToolCall();
         this.toolDiffBeforeByToolCallId.delete(tc.id);
@@ -795,12 +543,12 @@ Object.assign(ChatViewProvider.prototype, {
           return true;
         });
 
-        if (existing?.toolCall) {
+	        if (existing?.toolCall) {
           existing.toolCall.status = 'error';
           existing.toolCall.result = reason;
           this.postMessage({ type: 'updateTool', message: existing });
-        } else {
-          const { path } = resolveToolCallUiPath(this, tc, { includeWorkdir: true });
+	        } else {
+	          const { path } = resolveToolCallUiPath(this, tc, def, { includeWorkdir: true });
 
           const toolMsg: ChatMessage = {
             id: crypto.randomUUID(),
@@ -838,7 +586,7 @@ Object.assign(ChatViewProvider.prototype, {
           const { resultStr, isTaskTool, hasDiff, maybeTodos } = applyCommonToolResultFields(toolCall, result);
 
           const toolId = toolMsg.toolCall.id;
-          if (result.success && (toolId === 'glob' || toolId === 'file.list') && typeof resultStr === 'string') {
+          if (result.success && (toolId === 'glob' || toolId === 'list') && typeof resultStr === 'string') {
             const trimmed = resultStr.trim();
             if (trimmed && trimmed !== 'No files found matching the criteria' && trimmed !== 'No files found') {
               const files = trimmed
@@ -1119,4 +867,5 @@ Object.assign(ChatViewProvider.prototype, {
       },
     };
   },
-});
+  });
+}

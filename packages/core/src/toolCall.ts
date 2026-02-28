@@ -1,4 +1,11 @@
-import type { ToolCall } from '../types';
+export type ToolCall = {
+  id: string;
+  type: 'function';
+  function: {
+    name: string;
+    arguments: string;
+  };
+};
 
 export function toToolCall(toolCallId: string, toolName: string, input: unknown): ToolCall {
   let args = '{}';

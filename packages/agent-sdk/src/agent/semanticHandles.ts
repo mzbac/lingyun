@@ -1,6 +1,4 @@
-import type { ToolResult } from '../types';
-import { isRecord } from '../utils/guards';
-import type { FileHandleRegistry } from './fileHandles';
+import type { ToolResult } from '../types.js';
 
 export type OneBasedPos = { line: number; character: number };
 export type OneBasedRange = { start: OneBasedPos; end: OneBasedPos };
@@ -37,9 +35,16 @@ export type SemanticHandlesState = {
   locations: Record<string, Omit<LocationHandle, 'locId'>>;
 };
 
+export type FileHandleLike = { id: string; filePath: string };
+export type FileHandleProvider = { getOrCreate: (filePath: string) => FileHandleLike };
+
 const MAX_MATCH_HANDLES = 500;
 const MAX_SYMBOL_HANDLES = 500;
 const MAX_LOCATION_HANDLES = 500;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return isRecord(value) ? value : undefined;
@@ -233,7 +238,7 @@ export class SemanticHandleRegistry {
     return { locId: id, ...value };
   }
 
-  decorateSymbolsSearchResult(result: ToolResult, fileHandles: FileHandleRegistry): ToolResult {
+  decorateSymbolsSearchResult(result: ToolResult, fileHandles: FileHandleProvider): ToolResult {
     if (!result.success) return result;
     const data = asRecord(result.data);
     if (!data) return result;
@@ -276,8 +281,7 @@ export class SemanticHandleRegistry {
       if (!name.trim() || !loc) continue;
       const filePath = asString(loc.filePath) ?? '';
       if (!filePath.trim()) continue;
-      const range = loc.range;
-      const parsedRange = parseRange(range);
+      const parsedRange = parseRange(loc.range);
       if (!parsedRange) continue;
 
       const file = fileHandles.getOrCreate(filePath);
@@ -309,7 +313,7 @@ export class SemanticHandleRegistry {
     };
   }
 
-  decorateSymbolsPeekResult(result: ToolResult, fileHandles: FileHandleRegistry): ToolResult {
+  decorateSymbolsPeekResult(result: ToolResult, fileHandles: FileHandleProvider): ToolResult {
     if (!result.success) return result;
     const data = asRecord(result.data);
     if (!data) return result;
@@ -355,9 +359,7 @@ export class SemanticHandleRegistry {
           range,
           label: 'definition',
         });
-        linesOut.push(
-          `${loc.locId}  ${defFile.id}  ${defFile.filePath}  @ ${range.start.line}:${range.start.character}`
-        );
+        linesOut.push(`${loc.locId}  ${defFile.id}  ${defFile.filePath}  @ ${range.start.line}:${range.start.character}`);
       }
       if (skippedDefsOutsideWorkspace > 0) {
         linesOut.push(`(Skipped outside workspace: ${skippedDefsOutsideWorkspace})`);
@@ -384,9 +386,7 @@ export class SemanticHandleRegistry {
           range,
           label: 'reference',
         });
-        linesOut.push(
-          `${loc.locId}  ${refFile.id}  ${refFile.filePath}  @ ${range.start.line}:${range.start.character}`
-        );
+        linesOut.push(`${loc.locId}  ${refFile.id}  ${refFile.filePath}  @ ${range.start.line}:${range.start.character}`);
       }
       if (skippedRefsOutsideWorkspace > 0) {
         linesOut.push(`(Skipped outside workspace: ${skippedRefsOutsideWorkspace})`);
@@ -408,3 +408,4 @@ export class SemanticHandleRegistry {
     };
   }
 }
+

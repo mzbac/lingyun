@@ -3,6 +3,10 @@ import { BUILD_SWITCH_PROMPT, PLAN_PROMPT } from './prompts.js';
 
 type ReminderOptions = {
   allowExternalPaths?: boolean;
+  prompts?: {
+    planPrompt?: string;
+    buildSwitchPrompt?: string;
+  };
 };
 
 function wrapSystemReminder(text: string): string {
@@ -28,12 +32,12 @@ export function insertModeReminders(
 
   const additions: string[] = [];
   if (mode === 'plan') {
-    additions.push(wrapSystemReminder(PLAN_PROMPT));
+    additions.push(wrapSystemReminder(options?.prompts?.planPrompt ?? PLAN_PROMPT));
   }
 
   const wasPlan = history.some((msg) => msg.role === 'assistant' && msg.metadata?.mode === 'plan');
   if (wasPlan && mode === 'build') {
-    additions.push(wrapSystemReminder(BUILD_SWITCH_PROMPT));
+    additions.push(wrapSystemReminder(options?.prompts?.buildSwitchPrompt ?? BUILD_SWITCH_PROMPT));
   }
 
   if (typeof options?.allowExternalPaths === 'boolean') {

@@ -17,10 +17,9 @@ import {
   COMPACTION_MARKER_TEXT,
   COMPACTION_PROMPT_TEXT,
   COMPACTION_SYSTEM_PROMPT,
+  TOOL_ERROR_CODES,
+  extractPlanFromReasoning,
   createAssistantHistoryMessage,
-  applyAssistantReplayForPrompt,
-  applyCopilotImageInputPattern,
-  applyOpenAICompatibleReasoningField,
   createHistoryForCompactionPrompt,
   createHistoryForModel,
   createUserHistoryMessage,
@@ -30,19 +29,25 @@ import {
   extractUsageTokens,
   finalizeStreamingParts,
   findExternalPathReferencesInShellCommand,
+  getSkillIndex,
+  getDefaultLingyunPermissionRuleset,
   getEffectiveHistory,
   getMessageText,
+  getUserHistoryInputText,
   getReservedOutputTokens,
   isOverflow as isContextOverflow,
   isPathInsideWorkspace,
   listBuiltinSubagents,
+  loadSkillFile,
   normalizeSessionId,
   markPreviousAssistantToolOutputs,
   redactFsPathForPrompt,
-  renderSkillsSectionForPrompt,
   requireString,
   resolveBuiltinSubagent,
   selectSkillsForText,
+  toToolCall,
+  stripThinkBlocks,
+  stripToolBlocks,
   setDynamicToolError,
   setDynamicToolOutput,
   upsertDynamicToolCall,
@@ -51,15 +56,23 @@ import {
   type ModelLimit,
   type PermissionAction,
   type PermissionRuleset,
+  type SkillInfo,
+  type UserHistoryInput,
 } from '@kooka/core';
 import { PluginManager } from '../plugins/pluginManager.js';
+import type { LingyunHookName, LingyunPluginToolEntry } from '../plugins/types.js';
 import { insertModeReminders } from './reminders.js';
 import { DEFAULT_SYSTEM_PROMPT } from './prompts.js';
-import { EDIT_TOOL_IDS, MAX_TOOL_RESULT_LENGTH, THINK_BLOCK_REGEX, TOOL_BLOCK_REGEX } from './constants.js';
+import { EDIT_TOOL_IDS, MAX_TOOL_RESULT_LENGTH } from './constants.js';
 import { delay as getRetryDelayMs, retryable as getRetryableLlmError, sleep as retrySleep } from './retry.js';
+import { createProviderBehavior } from './providerBehavior.js';
+import type { ProviderBehavior } from './providerBehavior.js';
+import { buildStreamReplay, type StreamReplayUpdate } from './streamAdapters.js';
 import type { ToolRegistry } from '../tools/registry.js';
 import { DEFAULT_SKILL_PATHS } from '../tools/builtin/index.js';
-import { getSkillIndex, loadSkillFile, type SkillInfo } from '../skills.js';
+import { SemanticHandleRegistry, type SemanticHandlesState, type FileHandleLike } from './semanticHandles.js';
+import { PromptComposer, SkillsPromptProvider } from './promptComposer.js';
+import { FileHandleRegistry } from './fileHandles.js';
 
 type AsyncQueueState<T> = {
   values: T[];
@@ -139,34 +152,113 @@ class AsyncQueue<T> implements AsyncIterable<T> {
   }
 }
 
-function stripThinkBlocks(content: string): string {
-  return content.replace(THINK_BLOCK_REGEX, '');
-}
-
-function stripToolBlocks(content: string): string {
-  return content.replace(TOOL_BLOCK_REGEX, '');
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
-function toToolCall(toolCallId: string, toolName: string, input: unknown): ToolCall {
-  let args = '{}';
+function invokeCallbackSafely<TArgs extends unknown[]>(
+  fn: ((...args: TArgs) => void | Promise<void>) | undefined,
+  params: { label: string; onDebug?: (message: string) => void },
+  ...args: TArgs
+): void | Promise<void> {
+  if (!fn) return;
+
+  const report = (kind: 'rejected' | 'threw', error: unknown) => {
+    try {
+      params.onDebug?.(
+        `[Callbacks] ${params.label} ${kind} (${error instanceof Error ? error.name : typeof error})`,
+      );
+    } catch {
+      // ignore
+    }
+  };
+
   try {
-    args = JSON.stringify(input ?? {});
-  } catch {
-    args = '{}';
+    const result = fn(...args);
+    if (result && typeof (result as Promise<void>).then === 'function') {
+      return Promise.resolve(result)
+        .catch((error) => {
+          report('rejected', error);
+        })
+        .then(() => undefined);
+    }
+  } catch (error) {
+    report('threw', error);
+  }
+}
+
+function asString(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
+const DOTENV_ALLOWLIST_SUFFIXES = ['.env.sample', '.env.example', '.example', '.env.template'];
+const DOTENV_TOKEN_REGEX = /(^|[^A-Za-z0-9_])(\.env(?:\.[A-Za-z0-9_.-]+)?)(?=$|[^A-Za-z0-9_.-])/g;
+
+function stripShellToken(token: string): string {
+  return token.replace(/^[`"'()[\]{}<>,;|&]+|[`"'()[\]{}<>,;|&]+$/g, '');
+}
+
+function isProtectedDotEnvBasename(value: string): boolean {
+  const basename = path.basename(value).toLowerCase();
+  return /^\.env(\.|$)/.test(basename) && !DOTENV_ALLOWLIST_SUFFIXES.some((allowed) => basename.endsWith(allowed));
+}
+
+function findProtectedDotEnvMentions(text: string): string[] {
+  const out = new Set<string>();
+  for (const match of text.matchAll(DOTENV_TOKEN_REGEX)) {
+    const candidate = match[2];
+    if (candidate && isProtectedDotEnvBasename(candidate)) {
+      out.add(candidate);
+    }
+  }
+  return [...out];
+}
+
+function collectDotEnvApprovalTargets(def: ToolDefinition, args: Record<string, unknown>): string[] {
+  const out = new Set<string>();
+
+  const filePath = asString((args as any).filePath);
+  if (filePath && isProtectedDotEnvBasename(filePath)) {
+    out.add(filePath);
   }
 
-  return {
-    id: toolCallId,
-    type: 'function',
-    function: {
-      name: toolName,
-      arguments: args,
-    },
-  };
+  if (def.id === 'grep') {
+    const searchPath = asString((args as any).path);
+    if (searchPath && isProtectedDotEnvBasename(searchPath)) {
+      out.add(searchPath);
+    }
+    const include = asString((args as any).include);
+    if (include) {
+      for (const token of include.split(/\s+/).map(stripShellToken).filter(Boolean)) {
+        if (isProtectedDotEnvBasename(token)) {
+          out.add(token);
+        }
+      }
+      for (const token of findProtectedDotEnvMentions(include)) {
+        out.add(token);
+      }
+    }
+  }
+
+  const isShellExecutionTool = def.id === 'bash' || def.execution?.type === 'shell';
+  if (isShellExecutionTool) {
+    const commandText =
+      asString((args as any).command) ||
+      (def.execution?.type === 'shell' ? asString((def.execution as unknown as Record<string, unknown>).script) : undefined);
+    if (commandText) {
+      for (const token of commandText.split(/\s+/).map(stripShellToken).filter(Boolean)) {
+        const rhs = token.includes('=') ? token.slice(token.lastIndexOf('=') + 1) : token;
+        if (rhs && isProtectedDotEnvBasename(rhs)) {
+          out.add(rhs);
+        }
+      }
+      for (const token of findProtectedDotEnvMentions(commandText)) {
+        out.add(token);
+      }
+    }
+  }
+
+  return [...out];
 }
 
 export class LingyunSession {
@@ -181,12 +273,21 @@ export class LingyunSession {
     nextId: number;
     byId: Record<string, string>;
   };
+  semanticHandles?: SemanticHandlesState;
 
   constructor(
     init?: Partial<
       Pick<
         LingyunSession,
-        'history' | 'pendingPlan' | 'sessionId' | 'parentSessionId' | 'subagentType' | 'modelId' | 'mentionedSkills' | 'fileHandles'
+        | 'history'
+        | 'pendingPlan'
+        | 'sessionId'
+        | 'parentSessionId'
+        | 'subagentType'
+        | 'modelId'
+        | 'mentionedSkills'
+        | 'fileHandles'
+        | 'semanticHandles'
       >
     >,
   ) {
@@ -198,6 +299,7 @@ export class LingyunSession {
     if (init?.modelId) this.modelId = init.modelId;
     if (init?.mentionedSkills) this.mentionedSkills = [...init.mentionedSkills];
     if (init?.fileHandles) this.fileHandles = init.fileHandles;
+    if (init?.semanticHandles) this.semanticHandles = init.semanticHandles;
   }
 
   getHistory(): AgentHistoryMessage[] {
@@ -206,9 +308,16 @@ export class LingyunSession {
 }
 
 export type LingyunAgentRuntimeOptions = {
-  plugins?: PluginManager;
+  plugins?: LingyunPluginManager;
   workspaceRoot?: string;
   allowExternalPaths?: boolean;
+  copilot?: {
+    reasoningEffort?: string;
+  };
+  prompts?: {
+    planPrompt?: string;
+    buildSwitchPrompt?: string;
+  };
   skills?: {
     enabled?: boolean;
     paths?: string[];
@@ -216,14 +325,28 @@ export type LingyunAgentRuntimeOptions = {
     maxInjectSkills?: number;
     maxInjectChars?: number;
   };
+  subagents?: {
+    taskMaxOutputChars?: number;
+  };
   modelLimits?: Record<string, ModelLimit>;
   compaction?: Partial<CompactionConfig>;
 };
 
+export type LingyunPluginManager = {
+  trigger: <Name extends LingyunHookName, Output>(name: Name, input: unknown, output: Output) => Promise<Output>;
+  getPluginTools?: () => Promise<LingyunPluginToolEntry[]>;
+};
+
 export class LingyunAgent {
-  private readonly plugins: PluginManager;
+  private readonly plugins: LingyunPluginManager;
   private readonly workspaceRoot?: string;
+  private readonly fileHandles: FileHandleRegistry;
   private allowExternalPaths: boolean;
+  private copilotReasoningEffort: string;
+  private readonly reminderPrompts?: {
+    planPrompt?: string;
+    buildSwitchPrompt?: string;
+  };
   private readonly skillsConfig: {
     enabled: boolean;
     paths: string[];
@@ -231,12 +354,15 @@ export class LingyunAgent {
     maxInjectSkills: number;
     maxInjectChars: number;
   };
-  private skillsPromptTextPromise?: Promise<string | undefined>;
-  private readonly modelLimits?: Record<string, ModelLimit>;
-  private readonly compactionConfig: CompactionConfig;
+  private readonly skillsPromptProvider: SkillsPromptProvider;
+  private readonly promptComposer: PromptComposer;
+  private taskMaxOutputChars: number;
+  private modelLimits?: Record<string, ModelLimit>;
+  private compactionConfig: CompactionConfig;
   private registeredPluginTools = new Set<string>();
   private readonly taskSessions = new Map<string, LingyunSession>();
   private readonly maxTaskSessions = 50;
+  private readonly providerBehavior: ProviderBehavior;
 
   constructor(
     private readonly llm: LLMProvider,
@@ -246,7 +372,10 @@ export class LingyunAgent {
   ) {
     this.plugins = runtime?.plugins ?? new PluginManager({ workspaceRoot: runtime?.workspaceRoot });
     this.workspaceRoot = runtime?.workspaceRoot ? path.resolve(runtime.workspaceRoot) : undefined;
+    this.fileHandles = new FileHandleRegistry({ workspaceRoot: this.workspaceRoot });
     this.allowExternalPaths = !!runtime?.allowExternalPaths;
+    this.copilotReasoningEffort = typeof runtime?.copilot?.reasoningEffort === 'string' ? runtime.copilot.reasoningEffort.trim() : '';
+    this.reminderPrompts = runtime?.prompts;
 
     const skills = runtime?.skills ?? {};
     const paths = Array.isArray(skills.paths) && skills.paths.length > 0 ? skills.paths : DEFAULT_SKILL_PATHS;
@@ -271,31 +400,107 @@ export class LingyunAgent {
       maxInjectChars,
     };
 
+    const taskMaxOutputCharsRaw = runtime?.subagents?.taskMaxOutputChars;
+    this.taskMaxOutputChars =
+      typeof taskMaxOutputCharsRaw === 'number' && Number.isFinite(taskMaxOutputCharsRaw) && taskMaxOutputCharsRaw > 0
+        ? Math.floor(taskMaxOutputCharsRaw)
+        : 8000;
+
     this.modelLimits = runtime?.modelLimits;
 
-	    const baseCompaction: CompactionConfig = {
-	      auto: true,
-	      prune: true,
-	      pruneProtectTokens: 40_000,
-	      pruneMinimumTokens: 20_000,
-	      toolOutputMode: 'afterToolCall',
-	    };
-	    const c = runtime?.compaction ?? {};
-	    this.compactionConfig = {
-	      auto: c.auto ?? baseCompaction.auto,
-	      prune: c.prune ?? baseCompaction.prune,
-	      pruneProtectTokens: Math.max(0, c.pruneProtectTokens ?? baseCompaction.pruneProtectTokens),
-	      pruneMinimumTokens: Math.max(0, c.pruneMinimumTokens ?? baseCompaction.pruneMinimumTokens),
-	      toolOutputMode: c.toolOutputMode ?? baseCompaction.toolOutputMode,
-	    };
-	  }
+    const baseCompaction: CompactionConfig = {
+      auto: true,
+      prune: true,
+      pruneProtectTokens: 40_000,
+      pruneMinimumTokens: 20_000,
+      toolOutputMode: 'afterToolCall',
+    };
+    const c = runtime?.compaction ?? {};
+    this.compactionConfig = {
+      auto: c.auto ?? baseCompaction.auto,
+      prune: c.prune ?? baseCompaction.prune,
+      pruneProtectTokens: Math.max(0, c.pruneProtectTokens ?? baseCompaction.pruneProtectTokens),
+      pruneMinimumTokens: Math.max(0, c.pruneMinimumTokens ?? baseCompaction.pruneMinimumTokens),
+      toolOutputMode: c.toolOutputMode ?? baseCompaction.toolOutputMode,
+    };
 
-  updateConfig(config: Partial<AgentConfig>): void {
-    this.config = { ...this.config, ...config };
+    this.providerBehavior = createProviderBehavior(this.llm.id);
+
+    this.skillsPromptProvider = new SkillsPromptProvider({
+      getWorkspaceRoot: () => this.workspaceRoot,
+      getAllowExternalPaths: () => this.allowExternalPaths,
+      getEnabled: () => this.skillsConfig.enabled,
+      getPaths: () => this.skillsConfig.paths,
+      getMaxPromptSkills: () => this.skillsConfig.maxPromptSkills,
+    });
+
+    this.promptComposer = new PromptComposer({
+      plugins: this.plugins,
+      providerBehavior: this.providerBehavior,
+      skills: this.skillsPromptProvider,
+      getBasePrompt: () => this.config.systemPrompt || DEFAULT_SYSTEM_PROMPT,
+      getSessionId: () => this.config.sessionId,
+      getMode: () => this.getMode(),
+    });
   }
 
-  setAllowExternalPaths(allow: boolean): void {
-    this.allowExternalPaths = !!allow;
+  updateConfig(next: Partial<AgentConfig>): void {
+    this.config = { ...this.config, ...(next ?? {}) };
+  }
+
+  setMode(mode: 'build' | 'plan'): void {
+    this.config = { ...this.config, mode };
+  }
+
+  setModelLimits(modelLimits?: Record<string, ModelLimit>): void {
+    this.modelLimits = modelLimits;
+  }
+
+  setCompactionConfig(compaction?: Partial<CompactionConfig>): void {
+    if (!compaction) return;
+    const current = this.compactionConfig;
+    const toolOutputMode =
+      compaction.toolOutputMode === 'afterToolCall' || compaction.toolOutputMode === 'onCompaction'
+        ? compaction.toolOutputMode
+        : current.toolOutputMode;
+
+    this.compactionConfig = {
+      auto: typeof compaction.auto === 'boolean' ? compaction.auto : current.auto,
+      prune: typeof compaction.prune === 'boolean' ? compaction.prune : current.prune,
+      pruneProtectTokens:
+        typeof compaction.pruneProtectTokens === 'number' && Number.isFinite(compaction.pruneProtectTokens)
+          ? Math.max(0, Math.floor(compaction.pruneProtectTokens))
+          : current.pruneProtectTokens,
+      pruneMinimumTokens:
+        typeof compaction.pruneMinimumTokens === 'number' && Number.isFinite(compaction.pruneMinimumTokens)
+          ? Math.max(0, Math.floor(compaction.pruneMinimumTokens))
+          : current.pruneMinimumTokens,
+      toolOutputMode,
+    };
+  }
+
+  setTaskMaxOutputChars(maxOutputChars: number): void {
+    if (typeof maxOutputChars !== 'number' || !Number.isFinite(maxOutputChars) || maxOutputChars <= 0) return;
+    this.taskMaxOutputChars = Math.floor(maxOutputChars);
+  }
+
+  setCopilotReasoningEffort(reasoningEffort: string | undefined): void {
+    this.copilotReasoningEffort = typeof reasoningEffort === 'string' ? reasoningEffort.trim() : '';
+  }
+
+  setAllowExternalPaths(allowExternalPaths: boolean): void {
+    const next = !!allowExternalPaths;
+    if (this.allowExternalPaths === next) return;
+    this.allowExternalPaths = next;
+  }
+
+  async compactSession(session: LingyunSession, callbacks?: AgentCallbacks, options?: { modelId?: string; auto?: boolean }): Promise<void> {
+    if (!session.history.length) return;
+    const modelId = (options?.modelId ?? this.config.model ?? '').trim();
+    if (!modelId) {
+      throw new Error('No model configured');
+    }
+    await this.compactSessionInternal(session, { auto: options?.auto === true, modelId }, callbacks);
   }
 
   private getMode(): 'build' | 'plan' {
@@ -307,18 +512,7 @@ export class LingyunAgent {
   }
 
   private getPermissionRuleset(mode: 'build' | 'plan'): PermissionRuleset {
-    if (mode === 'plan') {
-      return [
-        { permission: '*', pattern: '*', action: 'ask' },
-        { permission: 'read', pattern: '*', action: 'allow' },
-        { permission: 'list', pattern: '*', action: 'allow' },
-        { permission: 'glob', pattern: '*', action: 'allow' },
-        { permission: 'grep', pattern: '*', action: 'allow' },
-        { permission: 'edit', pattern: '*', action: 'deny' },
-      ];
-    }
-
-    return [{ permission: '*', pattern: '*', action: 'allow' }];
+    return getDefaultLingyunPermissionRuleset(mode);
   }
 
   private getPermissionName(def: ToolDefinition): string {
@@ -408,7 +602,8 @@ export class LingyunAgent {
   }
 
   private async ensurePluginToolsRegistered(): Promise<void> {
-    const entries = await this.plugins.getPluginTools();
+    const entries = await this.plugins.getPluginTools?.();
+    if (!entries) return;
     if (entries.length === 0) return;
 
     const existing = await this.registry.getTools();
@@ -459,7 +654,10 @@ export class LingyunAgent {
   private async toModelMessages(session: LingyunSession, tools: Record<string, unknown>, modelId: string): Promise<ModelMessage[]> {
     const effective = getEffectiveHistory(session.history);
     const prepared = createHistoryForModel(effective);
-    const reminded = insertModeReminders(prepared, this.getMode(), { allowExternalPaths: this.allowExternalPaths });
+    const reminded = insertModeReminders(prepared, this.getMode(), {
+      allowExternalPaths: this.allowExternalPaths,
+      prompts: this.reminderPrompts,
+    });
     const withoutIds = reminded.map(({ id: _id, ...rest }) => rest);
 
     const messagesOutput = await this.plugins.trigger(
@@ -469,14 +667,9 @@ export class LingyunAgent {
     );
 
     const messages = Array.isArray((messagesOutput as any).messages) ? (messagesOutput as any).messages : withoutIds;
-    const replayed =
-      this.llm.id === 'openaiCompatible'
-        ? applyAssistantReplayForPrompt(messages as unknown as AgentHistoryMessage[])
-        : (messages as unknown as Parameters<typeof convertToModelMessages>[0]);
+    const replayed = this.providerBehavior.prepareHistoryForPrompt(messages as unknown as AgentHistoryMessage[]);
     const converted = await convertToModelMessages(replayed as any, { tools: tools as any });
-    const withReasoning =
-      this.llm.id === 'openaiCompatible' ? applyOpenAICompatibleReasoningField(converted) : converted;
-    return this.llm.id === 'copilot' ? applyCopilotImageInputPattern(withReasoning) : withReasoning;
+    return this.providerBehavior.transformModelMessages(modelId, converted);
   }
 
   private createToolContext(signal: AbortSignal, session: LingyunSession, callbacks?: AgentCallbacks) {
@@ -485,7 +678,13 @@ export class LingyunAgent {
       allowExternalPaths: this.allowExternalPaths,
       sessionId: session.sessionId ?? this.config.sessionId,
       signal,
-      log: (message: string) => callbacks?.onDebug?.(message),
+      log: (message: string) => {
+        try {
+          callbacks?.onDebug?.(message);
+        } catch {
+          // ignore
+        }
+      },
     };
   }
 
@@ -547,121 +746,11 @@ export class LingyunAgent {
     };
   }
 
-  private normalizeFileHandlePath(raw: string): string {
-    const value = raw.trim();
-    if (!value) return '';
-
-    const workspaceRoot = this.workspaceRoot;
-    if (!workspaceRoot) return value;
-
-    try {
-      const abs = path.isAbsolute(value) ? path.resolve(value) : path.resolve(workspaceRoot, value);
-      const rel = path.relative(workspaceRoot, abs);
-      if (rel && rel !== '.' && !rel.startsWith('..') && !path.isAbsolute(rel)) {
-        return rel.replace(/\\/g, '/');
-      }
-      return abs;
-    } catch {
-      return value;
-    }
-  }
-
-  private ensureFileHandles(session: LingyunSession): NonNullable<LingyunSession['fileHandles']> {
-    if (!session.fileHandles) {
-      session.fileHandles = { nextId: 1, byId: {} };
-      return session.fileHandles;
-    }
-
-    const nextId = (session.fileHandles as any).nextId;
-    const byId = (session.fileHandles as any).byId;
-    if (typeof nextId !== 'number' || !Number.isFinite(nextId) || nextId < 1 || !byId || typeof byId !== 'object') {
-      session.fileHandles = { nextId: 1, byId: {} };
-      return session.fileHandles;
-    }
-
-    return session.fileHandles;
-  }
-
-  private resolveFileHandle(session: LingyunSession, fileId: string): string | undefined {
-    const id = fileId.trim();
-    if (!id) return undefined;
-
-    const handles = this.ensureFileHandles(session);
-    const resolved = handles.byId[id];
-    return typeof resolved === 'string' && resolved.trim() ? resolved.trim() : undefined;
-  }
-
-  private getOrCreateFileHandle(session: LingyunSession, filePath: string): { id: string; filePath: string } {
-    const normalizedPath = this.normalizeFileHandlePath(filePath);
-    if (!normalizedPath) {
-      return { id: 'F0', filePath: filePath.trim() };
-    }
-
-    const handles = this.ensureFileHandles(session);
-
-    for (const [existingId, existingPath] of Object.entries(handles.byId)) {
-      if (existingPath === normalizedPath) {
-        return { id: existingId, filePath: normalizedPath };
-      }
-    }
-
-    const id = `F${handles.nextId++}`;
-    handles.byId[id] = normalizedPath;
-    return { id, filePath: normalizedPath };
-  }
-
-  private decorateGlobResultWithFileHandles(session: LingyunSession, result: ToolResult): ToolResult {
-    if (!result.success) return result;
-
-    const data = result.data;
-    if (!isRecord(data)) return result;
-
-    const filesRaw = (data as any).files;
-    if (!Array.isArray(filesRaw)) return result;
-
-    const files = filesRaw
-      .filter((value: unknown): value is string => typeof value === 'string')
-      .map((value: string) => value.trim())
-      .filter(Boolean);
-
-    const notesRaw = (data as any).notes;
-    const notes = Array.isArray(notesRaw)
-      ? notesRaw.filter((value: unknown): value is string => typeof value === 'string').map((value: string) => value.trim()).filter(Boolean)
-      : [];
-
-    const truncated = Boolean((data as any).truncated);
-
-    const lines: string[] = [];
-    if (notes.length > 0) {
-      lines.push(`Note: ${notes.join(' ')}`, '');
-    }
-
-    if (files.length === 0) {
-      lines.push('No files found');
-    } else {
-      lines.push('Use fileId with read/write:', '');
-      for (const filePath of files) {
-        const handle = this.getOrCreateFileHandle(session, filePath);
-        lines.push(`${handle.id}  ${handle.filePath}`);
-      }
-      if (truncated) {
-        lines.push('', '(Results are truncated. Consider using a more specific path or pattern.)');
-      }
-    }
-
-    return {
-      ...result,
-      metadata: {
-        ...(result.metadata || {}),
-        outputText: lines.join('\n').trimEnd(),
-      },
-    };
-  }
-
   private createAISDKTools(
     tools: ToolDefinition[],
     mode: 'build' | 'plan',
     session: LingyunSession,
+    semanticHandles: SemanticHandleRegistry,
     callbacks: AgentCallbacks | undefined,
     toolNameToDefinition: Map<string, ToolDefinition>
   ): Record<string, unknown> {
@@ -683,7 +772,7 @@ export class LingyunAgent {
               return {
                 success: false,
                 error: 'Subagents cannot spawn other subagents via task.',
-                metadata: { errorType: 'task_recursion_denied' },
+                metadata: { errorCode: TOOL_ERROR_CODES.task_recursion_denied },
               };
             }
 
@@ -703,7 +792,7 @@ export class LingyunAgent {
               return {
                 success: false,
                 error: `Unknown subagent_type: ${subagentTypeRaw}. Available: ${names || '(none)'}`,
-                metadata: { errorType: 'unknown_subagent_type', subagentType: subagentTypeRaw },
+                metadata: { errorCode: TOOL_ERROR_CODES.unknown_subagent_type, subagentType: subagentTypeRaw },
               };
             }
 
@@ -711,7 +800,7 @@ export class LingyunAgent {
               return {
                 success: false,
                 error: 'Only the explore subagent is allowed in Plan mode.',
-                metadata: { errorType: 'subagent_denied_in_plan', subagentType: subagent.name },
+                metadata: { errorCode: TOOL_ERROR_CODES.subagent_denied_in_plan, subagentType: subagent.name },
               };
             }
 
@@ -754,7 +843,7 @@ export class LingyunAgent {
               return {
                 success: false,
                 error: 'No model configured. Set AgentConfig.model.',
-                metadata: { errorType: 'missing_model' },
+                metadata: { errorCode: TOOL_ERROR_CODES.missing_model },
               };
             }
 
@@ -772,9 +861,15 @@ export class LingyunAgent {
                 childModelWarning =
                   `Subagent model "${desiredChildModelId}" is unavailable; ` +
                   `using parent model "${parentModelId}".`;
-                callbacks?.onNotice?.({ level: 'warning', message: childModelWarning });
-                callbacks?.onDebug?.(
-                  `[Task] subagent model fallback requested=${desiredChildModelId} using=${parentModelId} error=${error instanceof Error ? error.message : String(error)}`,
+                invokeCallbackSafely(
+                  callbacks?.onNotice,
+                  { label: 'onNotice subagent_model_fallback', onDebug: callbacks?.onDebug },
+                  { level: 'warning', message: childModelWarning },
+                );
+                invokeCallbackSafely(
+                  callbacks?.onDebug,
+                  { label: 'onDebug subagent_model_fallback' },
+                  `[Task] subagent model fallback requested=${desiredChildModelId} using=${parentModelId} error=${error instanceof Error ? error.name : typeof error}`,
                 );
                 childModelId = parentModelId;
               }
@@ -841,10 +936,7 @@ export class LingyunAgent {
               await drain;
               const text = done.text || '';
 
-              const outputText =
-                text.trimEnd() +
-                '\n\n' +
-                ['<task_metadata>', `session_id: ${childSessionId}`, '</task_metadata>'].join('\n');
+              const outputText = this.formatTaskOutputText(text, childSessionId);
 
               const summary = [...toolSummary.values()].sort((a, b) => a.id.localeCompare(b.id));
 
@@ -877,6 +969,7 @@ export class LingyunAgent {
                     history: childSession.getHistory(),
                     pendingPlan: childSession.pendingPlan,
                     fileHandles: childSession.fileHandles,
+                    semanticHandles: childSession.semanticHandles,
                   },
                 },
               };
@@ -884,7 +977,7 @@ export class LingyunAgent {
               return {
                 success: false,
                 error: error instanceof Error ? error.message : String(error),
-                metadata: { errorType: 'task_subagent_failed' },
+                metadata: { errorCode: TOOL_ERROR_CODES.task_subagent_failed },
               };
             } finally {
               // Avoid leaking subagent's temporary skill injection messages to later turns.
@@ -923,27 +1016,93 @@ export class LingyunAgent {
 
           if (
             isRecord(resolvedArgs) &&
-            (def.id === 'read' || def.id === 'write') &&
+            (def.id === 'read' ||
+              def.id === 'read_range' ||
+              def.id === 'edit' ||
+              def.id === 'write' ||
+              def.id === 'lsp' ||
+              def.id === 'symbols_peek') &&
             typeof (resolvedArgs as any).fileId === 'string'
           ) {
             const filePathRaw = typeof (resolvedArgs as any).filePath === 'string' ? String((resolvedArgs as any).filePath) : '';
             if (!filePathRaw.trim()) {
               const fileId = String((resolvedArgs as any).fileId);
-              const resolvedPath = this.resolveFileHandle(session, fileId);
+              const resolvedPath = this.fileHandles.resolveFileId(session, fileId);
               if (!resolvedPath) {
                 return {
                   success: false,
                   error: `Unknown fileId: ${fileId}. Run glob first and use one of the returned fileId values.`,
-                  metadata: { errorType: 'unknown_file_id', fileId },
+                  metadata: { errorCode: TOOL_ERROR_CODES.unknown_file_id, fileId },
                 };
               }
               resolvedArgs = { ...resolvedArgs, filePath: resolvedPath };
             }
           }
 
+          if (isRecord(resolvedArgs) && def.id === 'symbols_peek') {
+            const symbolId = typeof (resolvedArgs as any).symbolId === 'string' ? String((resolvedArgs as any).symbolId) : '';
+            const matchId = typeof (resolvedArgs as any).matchId === 'string' ? String((resolvedArgs as any).matchId) : '';
+            const locId = typeof (resolvedArgs as any).locId === 'string' ? String((resolvedArgs as any).locId) : '';
+
+            const handleId = symbolId.trim() || matchId.trim() || locId.trim();
+            if (handleId) {
+              const handle =
+                symbolId.trim()
+                  ? semanticHandles.resolveSymbol(handleId)
+                  : matchId.trim()
+                    ? semanticHandles.resolveMatch(handleId)
+                    : semanticHandles.resolveLocation(handleId);
+
+              if (!handle) {
+                const errorCode = symbolId.trim()
+                  ? TOOL_ERROR_CODES.unknown_symbol_id
+                  : matchId.trim()
+                    ? TOOL_ERROR_CODES.unknown_match_id
+                    : TOOL_ERROR_CODES.unknown_loc_id;
+                return {
+                  success: false,
+                  error:
+                    `${errorCode}: ${handleId}. Re-run symbols_search (for symbolId) or grep (for matchId) and use the returned handle.`,
+                  metadata: { errorCode, handleId },
+                };
+              }
+
+              const fileId = handle.fileId;
+              const filePath = this.fileHandles.resolveFileId(session, fileId);
+              if (!filePath) {
+                return {
+                  success: false,
+                  error: `Unknown fileId: ${fileId}. Run glob first and use one of the returned fileId values.`,
+                  metadata: { errorCode: TOOL_ERROR_CODES.unknown_file_id, fileId },
+                };
+              }
+
+              const line = handle.range.start.line;
+              const character = handle.range.start.character;
+
+              resolvedArgs = {
+                ...resolvedArgs,
+                fileId,
+                filePath,
+                line,
+                character,
+              };
+            }
+          }
+
           const tc = toToolCall(callId, toolName, resolvedArgs);
 
           const permission = this.getPermissionName(def);
+
+	          if (mode === 'plan') {
+	            const allowNonReadOnlyInPlan = def.id === 'task' || def.id === 'todowrite';
+	            if (!def.metadata?.readOnly && !allowNonReadOnlyInPlan) {
+	              const reason = 'Tool is disabled in Plan mode. Switch to Build mode to use it.';
+	              invokeCallbackSafely(callbacks?.onToolBlocked, { label: `onToolBlocked tool=${def.id}`, onDebug: callbacks?.onDebug }, tc, def, reason);
+	              return { success: false, error: reason };
+	            }
+	          }
+
           const patterns = this.getPermissionPatterns(def, resolvedArgs);
           const ruleset = this.getPermissionRuleset(mode);
 
@@ -954,16 +1113,19 @@ export class LingyunAgent {
             permissionAction = this.combinePermissionActions(permissionAction, action);
           }
 
-          if (permissionAction === 'deny') {
-            const reason = mode === 'plan' ? 'Tool is disabled in Plan mode. Switch to Build mode to use it.' : 'Tool is denied by permissions.';
-            callbacks?.onToolBlocked?.(tc, def, reason);
-            return { success: false, error: reason };
-          }
+	          if (permissionAction === 'deny') {
+	            const reason = mode === 'plan' ? 'Tool is disabled in Plan mode. Switch to Build mode to use it.' : 'Tool is denied by permissions.';
+	            invokeCallbackSafely(callbacks?.onToolBlocked, { label: `onToolBlocked tool=${def.id}`, onDebug: callbacks?.onDebug }, tc, def, reason);
+	            return { success: false, error: reason };
+	          }
 
           let requiresApproval = permissionAction === 'ask' || !!def.metadata?.requiresApproval;
+          const dotEnvApprovalTargets = collectDotEnvApprovalTargets(def, resolvedArgs);
+          if (dotEnvApprovalTargets.length > 0) {
+            requiresApproval = true;
+          }
 
-          const isShellExecutionTool =
-            def.id === 'bash' || def.id === 'shell.run' || def.id === 'shell.terminal' || def.execution?.type === 'shell';
+          const isShellExecutionTool = def.id === 'bash' || def.execution?.type === 'shell';
 
           const workspaceRoot = this.workspaceRoot;
           if (isShellExecutionTool && !this.allowExternalPaths && workspaceRoot) {
@@ -998,18 +1160,18 @@ export class LingyunAgent {
               }
             }
 
-            if (externalRefs.size > 0) {
-              const reason =
-                'External paths are disabled. This shell command references paths outside the current workspace. Enable allowExternalPaths to allow external path access.';
-              callbacks?.onToolBlocked?.(tc, def, reason);
-              const blockedPaths = [...externalRefs];
-              const blockedPathsMax = 20;
+	            if (externalRefs.size > 0) {
+	              const reason =
+	                'External paths are disabled. This shell command references paths outside the current workspace. Enable allowExternalPaths to allow external path access.';
+	              invokeCallbackSafely(callbacks?.onToolBlocked, { label: `onToolBlocked tool=${def.id}`, onDebug: callbacks?.onDebug }, tc, def, reason);
+	              const blockedPaths = [...externalRefs];
+	              const blockedPathsMax = 20;
               return {
                 success: false,
                 error: reason,
                 metadata: {
-                  errorType: 'external_paths_disabled',
-                  blockedSettingKey: 'allowExternalPaths',
+                  errorCode: TOOL_ERROR_CODES.external_paths_disabled,
+                  blockedSettingKey: 'lingyun.security.allowExternalPaths',
                   isOutsideWorkspace: true,
                   blockedPaths: blockedPaths.slice(0, blockedPathsMax),
                   blockedPathsTruncated: blockedPaths.length > blockedPathsMax,
@@ -1025,28 +1187,28 @@ export class LingyunAgent {
                 ? String((def.execution as any).script)
                 : undefined;
 
-          if (isShellExecutionTool && typeof commandForSafety === 'string') {
-            const safety = evaluateShellCommand(commandForSafety);
-            if (safety.verdict === 'deny') {
-              const reason = `Blocked command: ${safety.reason}`;
-              callbacks?.onToolBlocked?.(tc, def, reason);
-              return { success: false, error: reason };
-            }
-            if (safety.verdict === 'needs_approval') {
+	          if (isShellExecutionTool && typeof commandForSafety === 'string') {
+	            const safety = evaluateShellCommand(commandForSafety);
+	            if (safety.verdict === 'deny') {
+	              const reason = `Blocked command: ${safety.reason}`;
+	              invokeCallbackSafely(callbacks?.onToolBlocked, { label: `onToolBlocked tool=${def.id}`, onDebug: callbacks?.onDebug }, tc, def, reason);
+	              return { success: false, error: reason };
+	            }
+	            if (safety.verdict === 'needs_approval') {
               requiresApproval = true;
             }
           }
 
-          const externalPaths = this.getExternalPathPatterns(def, resolvedArgs);
-          if (externalPaths.length > 0 && !this.allowExternalPaths) {
-            const reason = 'External paths are disabled. Enable allowExternalPaths to allow access outside the current workspace.';
-            callbacks?.onToolBlocked?.(tc, def, reason);
+	          const externalPaths = this.getExternalPathPatterns(def, resolvedArgs);
+	          if (externalPaths.length > 0 && !this.allowExternalPaths) {
+	            const reason = 'External paths are disabled. Enable allowExternalPaths to allow access outside the current workspace.';
+	            invokeCallbackSafely(callbacks?.onToolBlocked, { label: `onToolBlocked tool=${def.id}`, onDebug: callbacks?.onDebug }, tc, def, reason);
             return {
-              success: false,
-              error: reason,
+	              success: false,
+	              error: reason,
               metadata: {
-                errorType: 'external_paths_disabled',
-                blockedSettingKey: 'allowExternalPaths',
+                errorCode: TOOL_ERROR_CODES.external_paths_disabled,
+                blockedSettingKey: 'lingyun.security.allowExternalPaths',
                 isOutsideWorkspace: true,
               },
             };
@@ -1070,11 +1232,11 @@ export class LingyunAgent {
               { status: requiresApproval ? 'ask' : 'allow' }
             );
 
-            if ((permissionDecision as any)?.status === 'deny') {
-              const reason = 'Tool is denied by a plugin permission hook.';
-              callbacks?.onToolBlocked?.(tc, def, reason);
-              return { success: false, error: reason };
-            }
+	            if ((permissionDecision as any)?.status === 'deny') {
+	              const reason = 'Tool is denied by a plugin permission hook.';
+	              invokeCallbackSafely(callbacks?.onToolBlocked, { label: `onToolBlocked tool=${def.id}`, onDebug: callbacks?.onDebug }, tc, def, reason);
+	              return { success: false, error: reason };
+	            }
 
             if ((permissionDecision as any)?.status === 'allow') {
               requiresApproval = false;
@@ -1085,19 +1247,42 @@ export class LingyunAgent {
             }
           }
 
-          const allowAutoApprove = mode !== 'plan' && !!this.config.autoApprove;
-          if (requiresApproval && !allowAutoApprove) {
-            const approved = (await callbacks?.onRequestApproval?.(tc, def)) ?? false;
-            if (!approved) {
-              return { success: false, error: 'User rejected this action' };
-            }
-          }
+	          const allowAutoApprove = mode !== 'plan' && !!this.config.autoApprove;
+	          if (requiresApproval && !allowAutoApprove) {
+	            let approved = false;
+	            try {
+	              approved = (await callbacks?.onRequestApproval?.(tc, def)) ?? false;
+	            } catch (error) {
+	              invokeCallbackSafely(
+	                callbacks?.onDebug,
+	                { label: 'onRequestApproval error' },
+	                `[Callbacks] onRequestApproval threw (${error instanceof Error ? error.name : typeof error})`,
+	              );
+	              approved = false;
+	            }
+	            if (!approved) {
+	              return { success: false, error: 'User rejected this action' };
+	            }
+	          }
 
           const ctx = this.createToolContext(options.abortSignal, session, callbacks);
           let result = await this.registry.executeTool(def.id, resolvedArgs ?? {}, ctx);
 
+          const fileHandleProvider = {
+            getOrCreate: (filePath: string): FileHandleLike => this.fileHandles.getOrCreate(session, filePath),
+          };
+
           if (def.id === 'glob') {
-            result = this.decorateGlobResultWithFileHandles(session, result);
+            result = this.fileHandles.decorateGlobResult(session, result);
+          }
+          if (def.id === 'grep') {
+            result = this.fileHandles.decorateGrepResult(session, result, semanticHandles);
+          }
+          if (def.id === 'symbols_search') {
+            result = semanticHandles.decorateSymbolsSearchResult(result, fileHandleProvider);
+          }
+          if (def.id === 'symbols_peek') {
+            result = semanticHandles.decorateSymbolsPeekResult(result, fileHandleProvider);
           }
 
           // tool.execute.after
@@ -1141,6 +1326,31 @@ export class LingyunAgent {
     return out;
   }
 
+  private formatTaskOutputText(text: string, childSessionId: string): string {
+    const baseText = String(text || '').trimEnd();
+    const metadataBlock =
+      '\n\n' + ['<task_metadata>', `session_id: ${childSessionId}`, '</task_metadata>'].join('\n');
+
+    const maxChars = this.taskMaxOutputChars;
+    if (!maxChars || !Number.isFinite(maxChars) || maxChars <= 0) {
+      return baseText + metadataBlock;
+    }
+
+    const full = baseText + metadataBlock;
+    if (full.length <= maxChars) return full;
+
+    const marker = '\n\n... [TRUNCATED]';
+    const reserved = marker.length + metadataBlock.length;
+    if (reserved >= maxChars) {
+      if (metadataBlock.length <= maxChars) return metadataBlock;
+      return metadataBlock.slice(metadataBlock.length - maxChars);
+    }
+
+    const available = maxChars - reserved;
+    const truncatedText = available > 0 ? baseText.slice(0, available).trimEnd() : '';
+    return truncatedText + marker + metadataBlock;
+  }
+
   private filterTools(tools: ToolDefinition[]): ToolDefinition[] {
     const filter = this.config.toolFilter;
     if (!filter || filter.length === 0) {
@@ -1158,55 +1368,8 @@ export class LingyunAgent {
     });
   }
 
-  private getSkillsPromptText(): Promise<string | undefined> {
-    if (!this.skillsConfig.enabled) return Promise.resolve(undefined);
-    if (this.skillsPromptTextPromise) return this.skillsPromptTextPromise;
-
-    const { paths, maxPromptSkills } = this.skillsConfig;
-
-    this.skillsPromptTextPromise = getSkillIndex({
-      workspaceRoot: this.workspaceRoot,
-      searchPaths: paths,
-      allowExternalPaths: this.allowExternalPaths,
-    })
-      .then((index) =>
-        renderSkillsSectionForPrompt({
-          skills: index.skills,
-          maxSkills: maxPromptSkills,
-          workspaceRoot: this.workspaceRoot,
-        }),
-      )
-      .catch(() => undefined);
-
-    return this.skillsPromptTextPromise;
-  }
-
-  private async composeSystemPrompt(modelId: string): Promise<string[]> {
-    const basePrompt = this.config.systemPrompt || DEFAULT_SYSTEM_PROMPT;
-    const skillsPromptText = await this.getSkillsPromptText();
-    let system = [[basePrompt, skillsPromptText].filter(Boolean).join('\n')].filter(Boolean) as string[];
-    const header = system[0] ?? '';
-
-    const out = await this.plugins.trigger(
-      'experimental.chat.system.transform',
-      { sessionId: this.config.sessionId, mode: this.getMode(), modelId },
-      { system },
-    );
-
-    system = Array.isArray((out as any).system) ? (out as any).system.filter(Boolean) : system;
-    if (system.length === 0) {
-      system = [header];
-    }
-    if (system.length > 2 && system[0] === header) {
-      const rest = system.slice(1);
-      system = [header, rest.join('\n')];
-    }
-    // Ensure we never send multiple `system` messages to OpenAI-compatible servers.
-    // Some HF chat templates error with: "System message must be at the beginning."
-    if (this.llm.id === 'openaiCompatible' && system.length > 1) {
-      system = [system.filter(Boolean).join('\n')];
-    }
-    return system;
+  private async composeSystemPrompt(modelId: string, options?: { signal?: AbortSignal }): Promise<string[]> {
+    return this.promptComposer.composeSystemPrompts(modelId, { signal: options?.signal });
   }
 
   private async compactSessionInternal(
@@ -1257,14 +1420,14 @@ export class LingyunAgent {
       const withoutIds = prepared.map(({ id: _id, ...rest }: AgentHistoryMessage) => rest);
 
       const compactionUser = createUserHistoryMessage(promptText, { synthetic: true });
-      const convertedCompactionModelMessages = await convertToModelMessages(
-        [...withoutIds, compactionUser as any],
-        { tools: {} as any },
-      );
-      const compactionModelMessages =
-        this.llm.id === 'copilot'
-          ? applyCopilotImageInputPattern(convertedCompactionModelMessages)
-          : convertedCompactionModelMessages;
+	      const convertedCompactionModelMessages = await convertToModelMessages(
+	        [...withoutIds, compactionUser as any],
+	        { tools: {} as any },
+	      );
+	      const compactionModelMessages = this.providerBehavior.transformModelMessages(
+	        params.modelId,
+	        convertedCompactionModelMessages,
+	      );
 
       const stream = streamText({
         model: compactionModel as any,
@@ -1341,273 +1504,364 @@ export class LingyunAgent {
     const mode = this.getMode();
     const sessionId = session.sessionId ?? this.config.sessionId;
 
-    const rawModel = await this.llm.getModel(modelId);
-    const model = wrapLanguageModel({
-      model: rawModel as any,
-      middleware: [extractReasoningMiddleware({ tagName: 'think', startWithReasoning: false })],
-    });
+    const semanticHandles = new SemanticHandleRegistry();
+    semanticHandles.importState(session.semanticHandles);
 
-    const systemParts = await this.composeSystemPrompt(modelId);
-    const tools = this.filterTools(await this.registry.getTools());
-    const toolNameToDefinition = new Map<string, ToolDefinition>();
+    try {
+      const rawModel = await this.llm.getModel(modelId);
+      const model = wrapLanguageModel({
+        model: rawModel as any,
+        middleware: [extractReasoningMiddleware({ tagName: 'think', startWithReasoning: false })],
+      });
 
-    const callbacksSafe = callbacks;
+      const systemParts = await this.composeSystemPrompt(modelId, { signal });
+      const tools = this.filterTools(await this.registry.getTools());
+      const toolNameToDefinition = new Map<string, ToolDefinition>();
 
-    const callParams = await this.plugins.trigger(
-      'chat.params',
-      {
-        sessionId,
-        mode,
-        modelId,
-        message: (() => {
-          const lastUserMessage = [...session.history].reverse().find((msg) => msg.role === 'user');
-          return lastUserMessage ? getMessageText(lastUserMessage) : undefined;
-        })(),
-      },
-      {
-        temperature: this.config.temperature ?? 0.0,
-        topP: undefined,
-        topK: undefined,
-        options: undefined,
-      }
-    );
+      const callbacksSafe = callbacks;
 
-    let lastResponse = '';
-
-    const maxIterations = 50;
-    for (let iteration = 1; iteration <= maxIterations; iteration++) {
-      await Promise.resolve(callbacksSafe?.onIterationStart?.(iteration));
-
-      const abortController = new AbortController();
-      const combined = signal ? combineAbortSignals([signal, abortController.signal]) : abortController.signal;
-
-      const aiTools = this.createAISDKTools(tools, mode, session, callbacksSafe, toolNameToDefinition);
-      const modelMessages = await this.toModelMessages(session, aiTools, modelId);
-      const promptMessages: ModelMessage[] = [
-        ...systemParts.map((text) => ({ role: 'system', content: text } as any)),
-        ...modelMessages,
-      ];
-
-      let assistantMessage = createAssistantHistoryMessage();
-      let attemptText = '';
-      let attemptReasoning = '';
-      let streamFinishReason: string | undefined;
-      let streamUsage: unknown;
-
-      const maxRetries = Math.max(0, Math.floor(this.config.maxRetries ?? 0));
-      let retryAttempt = 0;
-
-      while (true) {
-        assistantMessage = createAssistantHistoryMessage();
-        attemptText = '';
-        attemptReasoning = '';
-        streamFinishReason = undefined;
-        streamUsage = undefined;
-
-        let sawToolCall = false;
-
-        try {
-          const stream = streamText({
-            model: model as any,
-            messages: promptMessages,
-            tools: aiTools as any,
-            maxRetries: 0,
-            temperature: (callParams as any).temperature,
-            topP: (callParams as any).topP,
-            topK: (callParams as any).topK,
-            ...((callParams as any).options ? { providerOptions: (callParams as any).options } : {}),
-            maxOutputTokens: this.getMaxOutputTokens(),
-            abortSignal: combined,
-          });
-
-          for await (const part of stream.fullStream as AsyncIterable<TextStreamPart<any>>) {
-            switch (part.type) {
-              case 'text-delta': {
-                callbacksSafe?.onToken?.(part.text);
-                attemptText += part.text;
-                callbacksSafe?.onAssistantToken?.(part.text);
-                break;
-              }
-              case 'reasoning-delta': {
-                attemptReasoning += part.text;
-                callbacksSafe?.onThoughtToken?.(part.text);
-                break;
-              }
-              case 'tool-call': {
-                sawToolCall = true;
-                const toolName = String(part.toolName);
-                const toolCallId = String(part.toolCallId);
-
-                const def = toolNameToDefinition.get(toolName);
-                if (def) {
-                  callbacksSafe?.onStatusChange?.({ type: 'running', message: '' });
-                  callbacksSafe?.onToolCall?.(toToolCall(toolCallId, toolName, part.input), def);
-                }
-
-                upsertDynamicToolCall(assistantMessage, {
-                  toolName,
-                  toolCallId,
-                  input: part.input,
-                });
-                break;
-              }
-              case 'tool-result': {
-                const toolName = String(part.toolName);
-                const toolCallId = String(part.toolCallId);
-                const def = toolNameToDefinition.get(toolName);
-                const toolLabel = def?.name || toolName;
-
-                const rawOutput = part.output as any;
-                let output = await this.pruneToolResultForHistory(rawOutput, toolLabel);
-
-                const isTaskTool = def?.id === 'task' || toolName === 'task';
-                if (isTaskTool && output.metadata && typeof output.metadata === 'object') {
-                  // Do not persist child session snapshots inside the parent session history.
-                  const meta = { ...(output.metadata as Record<string, unknown>) };
-                  delete (meta as any).childSession;
-                  delete (meta as any).task;
-                  output = { ...output, metadata: meta };
-                }
-                setDynamicToolOutput(assistantMessage, {
-                  toolName,
-                  toolCallId,
-                  input: part.input,
-                  output,
-                });
-
-                const tc = toToolCall(toolCallId, toolName, part.input);
-                if (isTaskTool && rawOutput && typeof rawOutput === 'object' && typeof rawOutput.success === 'boolean') {
-                  callbacksSafe?.onToolResult?.(tc, rawOutput as ToolResult);
-                } else {
-                  callbacksSafe?.onToolResult?.(tc, output);
-                }
-                callbacksSafe?.onStatusChange?.({ type: 'running', message: '' });
-                break;
-              }
-              case 'tool-error': {
-                const toolName = String(part.toolName);
-                const toolCallId = String(part.toolCallId);
-                const errorText = part.error instanceof Error ? part.error.message : String(part.error);
-
-                setDynamicToolError(assistantMessage, {
-                  toolName,
-                  toolCallId,
-                  input: part.input,
-                  errorText,
-                });
-
-                const tc = toToolCall(toolCallId, toolName, part.input);
-                callbacksSafe?.onToolResult?.(tc, { success: false, error: errorText });
-                break;
-              }
-              case 'error':
-                throw part.error;
-              default:
-                break;
-            }
-          }
-
-          streamFinishReason = await stream.finishReason;
-          streamUsage = await stream.usage;
-          break;
-        } catch (e) {
-          const retryable = getRetryableLlmError(e);
-          const canRetry =
-            !!retryable && retryAttempt < maxRetries && !sawToolCall && !attemptText.trim() && !combined.aborted;
-          if (canRetry) {
-            retryAttempt += 1;
-            const waitMs = getRetryDelayMs(retryAttempt, retryable.retryAfterMs);
-            callbacksSafe?.onStatusChange?.({
-              type: 'retry',
-              attempt: retryAttempt,
-              nextRetryTime: Date.now() + waitMs,
-              message: retryable.message,
-            });
-            await retrySleep(waitMs, combined).catch(() => {});
-            continue;
-          }
-
-          if (retryable) {
-            const wrapped = new Error(retryable.message);
-            (wrapped as any).cause = e;
-            throw wrapped;
-          }
-          throw e;
-        }
-      }
-
-      const tokens = extractUsageTokens(streamUsage);
-      assistantMessage.metadata = {
-        mode: this.getMode(),
-        finishReason: streamFinishReason,
-        replay: { text: attemptText, reasoning: attemptReasoning },
-        ...(tokens ? { tokens } : {}),
-      };
-
-      const cleanedText = stripToolBlocks(stripThinkBlocks(attemptText)).trim();
-      assistantMessage.parts = assistantMessage.parts.filter((p: any) => p.type !== 'text' && p.type !== 'reasoning');
-
-      let finalText = cleanedText;
-      if (finalText) {
-        const textOutput = await this.plugins.trigger(
-          'experimental.text.complete',
-          { sessionId, messageId: assistantMessage.id },
-          { text: finalText }
-        );
-        finalText = typeof (textOutput as any).text === 'string' ? (textOutput as any).text : finalText;
-      }
-
-      if (finalText) {
-        assistantMessage.parts.unshift({ type: 'text', text: finalText, state: 'streaming' });
-      }
-      if (attemptReasoning.trim()) {
-        assistantMessage.parts.unshift({ type: 'reasoning', text: attemptReasoning, state: 'streaming' });
-      }
-
-      finalizeStreamingParts(assistantMessage);
-      session.history.push(assistantMessage);
-
-      const lastAssistantText = getMessageText(assistantMessage).trim();
-      lastResponse = lastAssistantText || lastResponse;
-
-      if (this.compactionConfig.prune && this.compactionConfig.toolOutputMode === 'afterToolCall') {
-        markPreviousAssistantToolOutputs(session.history);
-      }
-      await Promise.resolve(callbacksSafe?.onIterationEnd?.(iteration));
-
-      const modelLimit = this.getModelLimit(modelId);
-      const reservedOutputTokens = getReservedOutputTokens({ modelLimit, maxOutputTokens: this.getMaxOutputTokens() });
-
-      if (
-        streamFinishReason === 'tool-calls' &&
-        isContextOverflow({ lastTokens: assistantMessage.metadata?.tokens, modelLimit, reservedOutputTokens, config: this.compactionConfig })
-      ) {
-        await this.compactSessionInternal(session, { auto: true, modelId }, callbacksSafe);
-        continue;
-      }
-
-      const hasToolParts = assistantMessage.parts.some((part: any) => part.type === 'dynamic-tool');
-      if (streamFinishReason === 'tool-calls' || hasToolParts) continue;
-
-      await this.plugins.trigger(
-        'experimental.chat.complete',
+	      const callParams = await this.plugins.trigger(
+	        'chat.params',
         {
           sessionId,
           mode,
           modelId,
-          messageId: assistantMessage.id,
-          assistantText: lastAssistantText,
-          returnedText: lastResponse,
+          message: (() => {
+            const lastUserMessage = [...session.history].reverse().find((msg) => msg.role === 'user');
+            return lastUserMessage ? getMessageText(lastUserMessage) : undefined;
+          })(),
         },
-        {},
-      );
+	        {
+	          temperature: this.config.temperature ?? 0.0,
+	          topP: undefined,
+	          topK: undefined,
+	          options: this.providerBehavior.getChatProviderOptions(modelId, { copilotReasoningEffort: this.copilotReasoningEffort }),
+	        }
+	      );
 
-      callbacksSafe?.onComplete?.(lastResponse);
+      let lastResponse = '';
+
+      const maxIterations = 50;
+      for (let iteration = 1; iteration <= maxIterations; iteration++) {
+        await invokeCallbackSafely(callbacksSafe?.onIterationStart, {
+          label: `onIterationStart iteration=${iteration}`,
+          onDebug: callbacksSafe?.onDebug,
+        }, iteration);
+        invokeCallbackSafely(callbacksSafe?.onThinking, { label: 'onThinking', onDebug: callbacksSafe?.onDebug });
+
+        const abortController = new AbortController();
+        const combined = signal ? combineAbortSignals([signal, abortController.signal]) : abortController.signal;
+
+        const aiTools = this.createAISDKTools(tools, mode, session, semanticHandles, callbacksSafe, toolNameToDefinition);
+        const modelMessages = await this.toModelMessages(session, aiTools, modelId);
+        const promptMessages: ModelMessage[] = [
+          ...systemParts.map((text) => ({ role: 'system', content: text } as any)),
+          ...modelMessages,
+        ];
+
+        let assistantMessage = createAssistantHistoryMessage();
+	        let attemptText = '';
+	        let attemptReasoning = '';
+	        let streamFinishReason: string | undefined;
+	        let streamUsage: unknown;
+	        let streamReplayUpdates: StreamReplayUpdate[] = [];
+
+	        const maxRetries = Math.max(0, Math.floor(this.config.maxRetries ?? 0));
+	        let retryAttempt = 0;
+
+	        while (true) {
+          assistantMessage = createAssistantHistoryMessage();
+	          attemptText = '';
+	          attemptReasoning = '';
+	          streamFinishReason = undefined;
+	          streamUsage = undefined;
+	          streamReplayUpdates = [];
+
+	          let sawToolCall = false;
+	          let sawFinishPart = false;
+
+	          try {
+	            const streamAdapter = this.providerBehavior.createStreamAdapter(modelId);
+	            const stream = streamText({
+	              model: model as any,
+	              messages: promptMessages,
+	              tools: aiTools as any,
+              maxRetries: 0,
+              temperature: (callParams as any).temperature,
+              topP: (callParams as any).topP,
+              topK: (callParams as any).topK,
+              ...((callParams as any).options ? { providerOptions: (callParams as any).options } : {}),
+              maxOutputTokens: this.getMaxOutputTokens(),
+	              abortSignal: combined,
+	            });
+
+	            for await (const part of stream.fullStream as AsyncIterable<TextStreamPart<any>>) {
+	              streamAdapter.onPart(part);
+	              switch (part.type) {
+                case 'text-delta': {
+	                  invokeCallbackSafely(callbacksSafe?.onToken, { label: 'onToken', onDebug: callbacksSafe?.onDebug }, part.text);
+	                  attemptText += part.text;
+                  invokeCallbackSafely(callbacksSafe?.onAssistantToken, { label: 'onAssistantToken', onDebug: callbacksSafe?.onDebug }, part.text);
+                  break;
+                }
+                case 'reasoning-delta': {
+                  attemptReasoning += part.text;
+                  invokeCallbackSafely(callbacksSafe?.onThoughtToken, { label: 'onThoughtToken', onDebug: callbacksSafe?.onDebug }, part.text);
+                  break;
+                }
+                case 'tool-call': {
+                  sawToolCall = true;
+                  const toolName = String(part.toolName);
+                  const toolCallId = String(part.toolCallId);
+
+		                  const def = toolNameToDefinition.get(toolName);
+		                  if (def) {
+		                    invokeCallbackSafely(
+		                      callbacksSafe?.onStatusChange,
+		                      { label: 'onStatusChange', onDebug: callbacksSafe?.onDebug },
+		                      { type: 'running', message: '' },
+		                    );
+		                    invokeCallbackSafely(
+		                      callbacksSafe?.onToolCall,
+		                      { label: `onToolCall tool=${def.id}`, onDebug: callbacksSafe?.onDebug },
+		                      toToolCall(toolCallId, toolName, part.input),
+	                      def,
+	                    );
+	                  }
+
+                  upsertDynamicToolCall(assistantMessage, {
+                    toolName,
+                    toolCallId,
+                    input: part.input,
+                  });
+                  break;
+                }
+                case 'tool-result': {
+                  const toolName = String(part.toolName);
+                  const toolCallId = String(part.toolCallId);
+                  const def = toolNameToDefinition.get(toolName);
+                  const toolLabel = def?.name || toolName;
+
+                  const rawOutput = part.output as any;
+                  let output = await this.pruneToolResultForHistory(rawOutput, toolLabel);
+
+                  const isTaskTool = def?.id === 'task' || toolName === 'task';
+                  if (isTaskTool && output.metadata && typeof output.metadata === 'object') {
+                    // Do not persist child session snapshots inside the parent session history.
+                    const meta = { ...(output.metadata as Record<string, unknown>) };
+                    delete (meta as any).childSession;
+                    delete (meta as any).task;
+                    output = { ...output, metadata: meta };
+                  }
+                  setDynamicToolOutput(assistantMessage, {
+                    toolName,
+                    toolCallId,
+                    input: part.input,
+                    output,
+                  });
+
+	                  const tc = toToolCall(toolCallId, toolName, part.input);
+	                  if (isTaskTool && rawOutput && typeof rawOutput === 'object' && typeof rawOutput.success === 'boolean') {
+	                    invokeCallbackSafely(
+	                      callbacksSafe?.onToolResult,
+	                      { label: `onToolResult tool=${def?.id || toolName}`, onDebug: callbacksSafe?.onDebug },
+	                      tc,
+	                      rawOutput as ToolResult,
+	                    );
+	                  } else {
+	                    invokeCallbackSafely(
+	                      callbacksSafe?.onToolResult,
+	                      { label: `onToolResult tool=${def?.id || toolName}`, onDebug: callbacksSafe?.onDebug },
+	                      tc,
+	                      output,
+	                    );
+	                  }
+	                  invokeCallbackSafely(
+	                    callbacksSafe?.onStatusChange,
+	                    { label: 'onStatusChange', onDebug: callbacksSafe?.onDebug },
+	                    { type: 'running', message: '' },
+	                  );
+	                  break;
+	                }
+                case 'tool-error': {
+                  const toolName = String(part.toolName);
+                  const toolCallId = String(part.toolCallId);
+                  const def = toolNameToDefinition.get(toolName);
+                  const errorText = part.error instanceof Error ? part.error.message : String(part.error);
+
+                  setDynamicToolError(assistantMessage, {
+                    toolName,
+                    toolCallId,
+                    input: part.input,
+                    errorText,
+                  });
+
+	                  const tc = toToolCall(toolCallId, toolName, part.input);
+	                  invokeCallbackSafely(
+	                    callbacksSafe?.onToolResult,
+	                    { label: `onToolResult tool=${def?.id || toolName}`, onDebug: callbacksSafe?.onDebug },
+	                    tc,
+	                    { success: false, error: errorText },
+	                  );
+	                  break;
+		                }
+	                case 'finish-step': {
+	                  sawFinishPart = true;
+	                  break;
+	                }
+	                case 'finish': {
+	                  sawFinishPart = true;
+	                  break;
+                }
+	                case 'error':
+	                  {
+	                    if (streamAdapter.shouldIgnoreError(part.error, { sawFinishPart, attemptText })) {
+	                      break;
+	                    }
+	                  }
+	                  throw part.error;
+	                default:
+                  break;
+              }
+            }
+
+	            streamFinishReason = await stream.finishReason;
+	            streamUsage = await stream.usage;
+	            streamReplayUpdates = streamAdapter.getReplayUpdates();
+	            break;
+	          } catch (e) {
+	            const retryable = getRetryableLlmError(e);
+	            const canRetry =
+              !!retryable && retryAttempt < maxRetries && !sawToolCall && !attemptText.trim() && !combined.aborted;
+	            if (canRetry) {
+	              retryAttempt += 1;
+	              const waitMs = getRetryDelayMs(retryAttempt, retryable.retryAfterMs);
+	              invokeCallbackSafely(
+	                callbacksSafe?.onStatusChange,
+	                { label: 'onStatusChange', onDebug: callbacksSafe?.onDebug },
+	                {
+	                  type: 'retry',
+	                  attempt: retryAttempt,
+	                  nextRetryTime: Date.now() + waitMs,
+	                  message: retryable.message,
+	                },
+	              );
+	              await retrySleep(waitMs, combined).catch(() => {});
+	              continue;
+	            }
+
+            if (retryable) {
+              const wrapped = new Error(retryable.message);
+              (wrapped as any).cause = e;
+              if (!combined.aborted) {
+                try {
+                  this.llm.onRequestError?.(e, { modelId, mode });
+                } catch {
+                  // ignore
+                }
+              }
+              throw wrapped;
+            }
+
+            if (!combined.aborted) {
+              try {
+                this.llm.onRequestError?.(e, { modelId, mode });
+              } catch {
+                // ignore
+              }
+            }
+            throw e;
+          }
+	        }
+
+		        const tokens = extractUsageTokens(streamUsage);
+		        const replay = buildStreamReplay({ text: attemptText, reasoning: attemptReasoning, updates: streamReplayUpdates });
+
+		        assistantMessage.metadata = {
+		          mode: this.getMode(),
+	          finishReason: streamFinishReason,
+	          replay,
+          ...(tokens ? { tokens } : {}),
+        };
+
+        const cleanedText = stripToolBlocks(stripThinkBlocks(attemptText)).trim();
+        assistantMessage.parts = assistantMessage.parts.filter((p: any) => p.type !== 'text' && p.type !== 'reasoning');
+
+        let finalText = cleanedText;
+        if (!finalText && mode === 'plan' && attemptReasoning.trim()) {
+          finalText = extractPlanFromReasoning(attemptReasoning) ?? '';
+        }
+        if (finalText) {
+          const textOutput = await this.plugins.trigger(
+            'experimental.text.complete',
+            { sessionId, messageId: assistantMessage.id },
+            { text: finalText }
+          );
+          finalText = typeof (textOutput as any).text === 'string' ? (textOutput as any).text : finalText;
+        }
+
+        if (finalText) {
+          assistantMessage.parts.unshift({ type: 'text', text: finalText, state: 'streaming' });
+        }
+        if (attemptReasoning.trim()) {
+          assistantMessage.parts.unshift({ type: 'reasoning', text: attemptReasoning, state: 'streaming' });
+        }
+
+        finalizeStreamingParts(assistantMessage);
+        session.history.push(assistantMessage);
+
+        const lastAssistantText = getMessageText(assistantMessage).trim();
+        lastResponse = lastAssistantText || lastResponse;
+
+        if (this.compactionConfig.prune && this.compactionConfig.toolOutputMode === 'afterToolCall') {
+          markPreviousAssistantToolOutputs(session.history);
+        }
+        await invokeCallbackSafely(callbacksSafe?.onIterationEnd, {
+          label: `onIterationEnd iteration=${iteration}`,
+          onDebug: callbacksSafe?.onDebug,
+        }, iteration);
+
+        const modelLimit = this.getModelLimit(modelId);
+        const reservedOutputTokens = getReservedOutputTokens({ modelLimit, maxOutputTokens: this.getMaxOutputTokens() });
+
+        if (
+          streamFinishReason === 'tool-calls' &&
+          isContextOverflow({
+            lastTokens: assistantMessage.metadata?.tokens,
+            modelLimit,
+            reservedOutputTokens,
+            config: this.compactionConfig,
+          })
+        ) {
+          await this.compactSessionInternal(session, { auto: true, modelId }, callbacksSafe);
+          continue;
+        }
+
+        const hasToolParts = assistantMessage.parts.some((part: any) => part.type === 'dynamic-tool');
+        if (streamFinishReason === 'tool-calls' || hasToolParts) continue;
+
+        await this.plugins.trigger(
+          'experimental.chat.complete',
+          {
+            sessionId,
+            mode,
+            modelId,
+            messageId: assistantMessage.id,
+            assistantText: lastAssistantText,
+            returnedText: lastResponse,
+          },
+          {},
+        );
+
+        invokeCallbackSafely(callbacksSafe?.onComplete, { label: 'onComplete', onDebug: callbacksSafe?.onDebug }, lastResponse);
+        return lastResponse;
+      }
+
+      invokeCallbackSafely(callbacksSafe?.onComplete, { label: 'onComplete', onDebug: callbacksSafe?.onDebug }, lastResponse);
       return lastResponse;
+    } finally {
+      session.semanticHandles = semanticHandles.exportState();
     }
-
-    callbacksSafe?.onComplete?.(lastResponse);
-    return lastResponse;
   }
 
   private async injectSkillsForUserText(
@@ -1689,50 +1943,65 @@ export class LingyunAgent {
     }
   }
 
-  run(params: { session: LingyunSession; input: string; callbacks?: AgentCallbacks; signal?: AbortSignal }): LingyunRun {
+  run(params: { session: LingyunSession; input: UserHistoryInput; callbacks?: AgentCallbacks; signal?: AbortSignal }): LingyunRun {
     const queue = new AsyncQueue<LingyunEvent>();
 
-    const callbacks = params.callbacks;
-    const proxy: AgentCallbacks = {
-      ...callbacks,
+	    const callbacks = params.callbacks;
+	    const proxy: AgentCallbacks = {
+	      ...callbacks,
       onDebug: (message) => {
-        callbacks?.onDebug?.(message);
+        invokeCallbackSafely(callbacks?.onDebug, { label: 'onDebug' }, message);
         queue.push({ type: 'debug', message });
       },
       onNotice: (notice) => {
-        callbacks?.onNotice?.(notice);
+        const result = invokeCallbackSafely(callbacks?.onNotice, { label: 'onNotice', onDebug: callbacks?.onDebug }, notice);
         queue.push({ type: 'notice', notice });
+        return result;
       },
       onStatusChange: (status) => {
-        callbacks?.onStatusChange?.(status);
+        invokeCallbackSafely(callbacks?.onStatusChange, { label: 'onStatusChange', onDebug: callbacks?.onDebug }, status);
         queue.push({ type: 'status', status: status as any });
       },
       onAssistantToken: (token) => {
-        callbacks?.onAssistantToken?.(token);
+        invokeCallbackSafely(callbacks?.onAssistantToken, { label: 'onAssistantToken', onDebug: callbacks?.onDebug }, token);
         queue.push({ type: 'assistant_token', token });
       },
       onThoughtToken: (token) => {
-        callbacks?.onThoughtToken?.(token);
+        invokeCallbackSafely(callbacks?.onThoughtToken, { label: 'onThoughtToken', onDebug: callbacks?.onDebug }, token);
         queue.push({ type: 'thought_token', token });
       },
-      onToolCall: (tool, definition) => {
-        callbacks?.onToolCall?.(tool, definition);
-        queue.push({ type: 'tool_call', tool, definition });
-      },
+	      onToolCall: (tool, definition) => {
+	        invokeCallbackSafely(
+	          callbacks?.onToolCall,
+	          { label: `onToolCall tool=${definition.id}`, onDebug: callbacks?.onDebug },
+	          tool,
+	          definition,
+	        );
+	        queue.push({ type: 'tool_call', tool, definition });
+	      },
       onToolBlocked: (tool, definition, reason) => {
-        callbacks?.onToolBlocked?.(tool, definition, reason);
+        invokeCallbackSafely(callbacks?.onToolBlocked, { label: `onToolBlocked tool=${definition.id}`, onDebug: callbacks?.onDebug }, tool, definition, reason);
         queue.push({ type: 'tool_blocked', tool, definition, reason });
       },
       onToolResult: (tool, result) => {
-        callbacks?.onToolResult?.(tool, result);
+        invokeCallbackSafely(callbacks?.onToolResult, { label: `onToolResult tool=${tool.function.name}`, onDebug: callbacks?.onDebug }, tool, result);
         queue.push({ type: 'tool_result', tool, result });
       },
       onCompactionStart: (event) => {
-        callbacks?.onCompactionStart?.(event);
+        const result = invokeCallbackSafely(
+          callbacks?.onCompactionStart,
+          { label: 'onCompactionStart', onDebug: callbacks?.onDebug },
+          event,
+        );
         queue.push({ type: 'compaction_start', auto: event.auto, markerMessageId: event.markerMessageId });
+        return result;
       },
       onCompactionEnd: (event) => {
-        callbacks?.onCompactionEnd?.(event);
+        const result = invokeCallbackSafely(
+          callbacks?.onCompactionEnd,
+          { label: 'onCompactionEnd', onDebug: callbacks?.onDebug },
+          event,
+        );
         queue.push({
           type: 'compaction_end',
           auto: event.auto,
@@ -1741,12 +2010,13 @@ export class LingyunAgent {
           status: event.status,
           error: event.error,
         });
+        return result;
       },
     };
 
     const done = (async () => {
       try {
-        await this.injectSkillsForUserText(params.session, params.input, proxy, params.signal);
+        await this.injectSkillsForUserText(params.session, getUserHistoryInputText(params.input), proxy, params.signal);
         params.session.history.push(createUserHistoryMessage(params.input));
         const text = await this.runOnce(params.session, proxy, params.signal);
         queue.push({ type: 'status', status: { type: 'done', message: '' } as any });
@@ -1754,7 +2024,7 @@ export class LingyunAgent {
         return { text, session: params.session };
       } catch (error) {
         const err = error instanceof Error ? error : new Error(String(error));
-        callbacks?.onError?.(err);
+        invokeCallbackSafely(callbacks?.onError, { label: 'onError', onDebug: callbacks?.onDebug }, err);
         queue.push({ type: 'status', status: { type: 'error', message: err.message } as any });
         queue.fail(err);
         throw err;
@@ -1764,5 +2034,9 @@ export class LingyunAgent {
     })();
 
     return { events: queue, done };
+  }
+
+  async resume(params: { session: LingyunSession; callbacks?: AgentCallbacks; signal?: AbortSignal }): Promise<string> {
+    return this.runOnce(params.session, params.callbacks, params.signal);
   }
 }

@@ -237,7 +237,7 @@ export default function googlePlugin(input: any) {
             return {
               success: false,
               error: `Attachment too large (${bytes.byteLength} bytes). Increase maxBytes to allow it.`,
-              metadata: { errorType: 'too_large', sizeBytes: bytes.byteLength, maxBytes },
+              metadata: { errorCode: 'too_large', sizeBytes: bytes.byteLength, maxBytes },
             };
           }
 
@@ -585,4 +585,3 @@ export default function googlePlugin(input: any) {
     },
   };
 }
-

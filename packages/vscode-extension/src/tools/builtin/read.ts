@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 
 import type { ToolDefinition, ToolHandler } from '../../core/types';
 import { getLspAdapter } from '../../core/lsp';
-import { requireString, optionalNumber } from '@kooka/core';
+import { TOOL_ERROR_CODES, requireString, optionalNumber } from '@kooka/core';
 import { BINARY_EXTENSIONS, containsBinaryData, resolveToolPath } from './workspace';
 import { recordFileRead } from './fileTime';
 import { suggestSiblingPaths } from './pathSuggestions';
@@ -110,7 +110,7 @@ export const readHandler: ToolHandler = async (args, context) => {
           `Next steps:\n` +
           `- Use lsp (documentSymbol / workspaceSymbol / hover) to navigate semantically.\n` +
           `- Or re-run read with offset (0-based) + limit (<= ${maxLines}), e.g. { offset: 0, limit: 120 }.`,
-        metadata: { errorType: 'read_requires_range', totalLines, maxLines },
+        metadata: { errorCode: TOOL_ERROR_CODES.read_requires_range, totalLines, maxLines },
       };
     }
 
@@ -121,7 +121,7 @@ export const readHandler: ToolHandler = async (args, context) => {
       return {
         success: false,
         error: `Read limit ${limit} exceeds lingyun.tools.read.maxLines (${maxLines}). Use a smaller limit (and iterate with offset).`,
-        metadata: { errorType: 'read_limit_exceeded', limit, maxLines },
+        metadata: { errorCode: TOOL_ERROR_CODES.read_limit_exceeded, limit, maxLines },
       };
     }
 

@@ -79,7 +79,7 @@
 		    const stepBodies = new Map();
 		    const pendingTokens = new Map();
 	    let lastToolMsg = null;
-	    const BATCH_TOOL_TYPES = ['read', 'glob', 'file.read', 'file.list'];
+		    const BATCH_TOOL_TYPES = ['read', 'read_range', 'glob', 'list'];
 	    let suppressAutoScroll = false;
 	    let userScrolledAway = false;
 	    const AUTO_SCROLL_THRESHOLD_PX = 80;
@@ -457,31 +457,24 @@
 	      modelFavoriteToggle.textContent = '☆';
 	    }
 
-	    const toolIcons = {
-	      'read': '📝',
-	      'write': '±',
-	      'edit': '±',
-	      'patch': '🩹',
-	      'glob': '📁',
-	      'list': '📂',
-	      'grep': '🔍',
-	      'lsp': '🧭',
-	      'bash': '⚡',
-	      'todowrite': '☑',
-	      'todoread': '☑',
-
-	      'file.read': '📝',
-	      'file.write': '±',
-	      'file.list': '📁',
-	      'file.search': '🔍',
-	      'file.getCurrent': '📋',
-	      'shell.run': '⚡',
-	      'shell.terminal': '💻',
-	      'shell.which': '❓',
-	      'file.insert': '+',
-	      'file.replace': '⇄',
-	      'file.create': '📄'
-	    };
+		    const toolIcons = {
+		      'read': '📝',
+		      'read_range': '📝',
+		      'write': '±',
+		      'edit': '±',
+		      'glob': '📁',
+		      'list': '📂',
+		      'grep': '🔍',
+		      'lsp': '🧭',
+		      'symbols_search': '🧭',
+		      'symbols_peek': '🧭',
+		      'bash': '⚡',
+		      'task': '🧩',
+		      'skill': '📚',
+		      'get_memory': '📘',
+		      'todowrite': '☑',
+		      'todoread': '☑',
+		    };
 
 	    const avatarColors = {
 	      user: 'U',

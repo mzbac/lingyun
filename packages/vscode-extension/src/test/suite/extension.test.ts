@@ -5,6 +5,8 @@
 import * as assert from 'assert';
 import * as vscode from 'vscode';
 
+import { WorkspaceToolProvider } from '../../providers/workspace';
+
 suite('Extension Integration', () => {
   
   // ===========================================================================
@@ -155,5 +157,26 @@ suite('Workspace Tools Config', () => {
     assert.strictEqual(shellExec.type, 'shell');
     assert.strictEqual(httpExec.type, 'http');
     assert.strictEqual(commandExec.type, 'command');
+  });
+
+  test('substituteVariables resolves ${workspaceFolder} and ${arg:*} without touching $HOME', () => {
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    assert.ok(workspaceRoot, 'expected a workspace root');
+
+    const provider = new WorkspaceToolProvider({} as any);
+    (provider as any).variables = { API_BASE: 'https://api.example.com' };
+
+    const execution = {
+      type: 'shell',
+      script: 'echo ${workspaceFolder} ${API_BASE} ${arg:pattern} $HOME',
+      cwd: '${workspaceFolder}',
+    };
+
+    const substituted = (provider as any).substituteVariables(execution, { pattern: 'needle' });
+    assert.strictEqual(substituted.cwd, workspaceRoot);
+    assert.ok(String(substituted.script).includes(workspaceRoot));
+    assert.ok(String(substituted.script).includes('https://api.example.com'));
+    assert.ok(String(substituted.script).includes('needle'));
+    assert.ok(String(substituted.script).includes('$HOME'));
   });
 });

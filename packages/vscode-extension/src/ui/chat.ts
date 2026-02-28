@@ -6,13 +6,37 @@ import type { InputHistoryStore } from '../core/inputHistoryStore';
 import type { AgentCallbacks, LLMProvider, ToolDefinition, ToolCall } from '../core/types';
 import type { ModelInfo } from '../providers/copilot';
 import type { ChatMessage, ChatMode, ChatSessionInfo, ChatUserInput, RevertBarState } from './chat/types';
+import { installApprovalsMethods } from './chat/methods.approvals';
+import { installInputHistoryMethods } from './chat/methods.inputHistory';
+import { installModeMethods } from './chat/methods.mode';
+import { installModelsMethods } from './chat/methods.models';
+import { installRevertMethods } from './chat/methods.revert';
+import { installRunnerCallbacksMethods } from './chat/methods.runner.callbacks';
+import { installRunnerInputMethods } from './chat/methods.runner.input';
+import { installRunnerPlanMethods } from './chat/methods.runner.plan';
+import { installSessionsMethods } from './chat/methods.sessions';
+import { installSkillsMethods } from './chat/methods.skills';
+import { installWebviewMethods } from './chat/methods.webview';
 
 type LLMProviderWithModels = LLMProvider & {
   getModels?: () => Promise<ModelInfo[]>;
   clearModelCache?: () => void;
 };
 
-// Intentionally uses declaration merging + runtime prototype patching (see the `require()` block at the end).
+export function installChatViewProviderMethods(view: ChatViewProvider): void {
+  installSessionsMethods(view);
+  installInputHistoryMethods(view);
+  installModeMethods(view);
+  installRevertMethods(view);
+  installSkillsMethods(view);
+  installWebviewMethods(view);
+  installRunnerInputMethods(view);
+  installRunnerCallbacksMethods(view);
+  installRunnerPlanMethods(view);
+  installModelsMethods(view);
+  installApprovalsMethods(view);
+}
+
 // eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging
 export class ChatViewProvider {
   public static readonly viewType = 'lingyun.chatView';
@@ -86,6 +110,8 @@ export class ChatViewProvider {
     public llmProvider?: LLMProviderWithModels,
     public outputChannel?: vscode.OutputChannel
   ) {
+    installChatViewProviderMethods(this);
+
     this.currentModel = vscode.workspace.getConfiguration('lingyun').get('model') || 'gpt-4o';
     this.mode =
       (vscode.workspace.getConfiguration('lingyun').get<string>('mode') || 'build') === 'plan'
@@ -101,10 +127,15 @@ export class ChatViewProvider {
   }
 }
 
-// Method signatures (type-only) – implementations are attached at runtime in the method modules.
+// Method signatures (type-only) – implementations are installed from the method modules.
 // eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging
 export interface ChatViewProvider extends vscode.WebviewViewProvider {
   onAutoApproveEnabled(): void;
+
+  setModeAndPersist(
+    mode: ChatMode,
+    options?: { persistConfig?: boolean; notifyWebview?: boolean; persistSession?: boolean }
+  ): Promise<void>;
 
   initializeSessions(): void;
   isSessionPersistenceEnabled(): boolean;
@@ -210,18 +241,3 @@ export interface ChatViewProvider extends vscode.WebviewViewProvider {
   postMessage(message: unknown): void;
   getHtml(webview: vscode.Webview): string;
 }
-
-// NOTE: TS has no partial classes. We attach method bodies in focused modules and `require()`
-// them after the class is defined (CommonJS), keeping `src/ui/chat.ts` small.
-/* eslint-disable @typescript-eslint/no-require-imports */
-require('./chat/methods.sessions');
-require('./chat/methods.inputHistory');
-require('./chat/methods.revert');
-require('./chat/methods.skills');
-require('./chat/methods.webview');
-require('./chat/methods.runner.input');
-require('./chat/methods.runner.callbacks');
-require('./chat/methods.runner.plan');
-require('./chat/methods.models');
-require('./chat/methods.approvals');
-/* eslint-enable @typescript-eslint/no-require-imports */

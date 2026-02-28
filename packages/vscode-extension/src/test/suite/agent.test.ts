@@ -18,7 +18,7 @@ import type {
 import { AgentLoop } from '../../core/agent';
 import { ToolRegistry } from '../../core/registry';
 import type { LLMProvider } from '../../core/types';
-import { getMessageText } from '@kooka/core';
+import { getMessageText, TOOL_ERROR_CODES } from '@kooka/core';
 import { COMPACTED_TOOL_PLACEHOLDER, createHistoryForModel } from '../../core/compaction';
 import { PluginManager } from '../../core/hooks/pluginManager';
 import { taskHandler, taskTool } from '../../tools/builtin/task';
@@ -971,7 +971,7 @@ suite('AgentLoop', () => {
       assert.strictEqual(toolResult?.success, false);
       assert.ok(String(toolResult?.error || '').includes('External paths are disabled'));
       const meta = (toolResult as any)?.metadata || {};
-      assert.strictEqual(meta.errorType, 'external_paths_disabled');
+      assert.strictEqual(meta.errorCode, TOOL_ERROR_CODES.external_paths_disabled);
       assert.strictEqual(meta.blockedSettingKey, 'lingyun.security.allowExternalPaths');
       assert.strictEqual(meta.isOutsideWorkspace, true);
     } finally {
@@ -1038,7 +1038,7 @@ suite('AgentLoop', () => {
       assert.strictEqual(toolResult?.success, false);
       assert.ok(String(toolResult?.error || '').includes('references paths outside'));
       const meta = (toolResult as any)?.metadata || {};
-      assert.strictEqual(meta.errorType, 'external_paths_disabled');
+      assert.strictEqual(meta.errorCode, TOOL_ERROR_CODES.external_paths_disabled);
       assert.strictEqual(meta.blockedSettingKey, 'lingyun.security.allowExternalPaths');
       assert.ok(Array.isArray(meta.blockedPaths));
       assert.ok((meta.blockedPaths as any[]).includes(externalPath));
@@ -1099,7 +1099,7 @@ suite('AgentLoop', () => {
       assert.strictEqual(toolResult?.success, false);
       assert.ok(String(toolResult?.error || '').includes('references paths outside'));
       const meta = (toolResult as any)?.metadata || {};
-      assert.strictEqual(meta.errorType, 'external_paths_disabled');
+      assert.strictEqual(meta.errorCode, TOOL_ERROR_CODES.external_paths_disabled);
       assert.strictEqual(meta.blockedSettingKey, 'lingyun.security.allowExternalPaths');
       assert.ok(Array.isArray(meta.blockedPaths));
       const blockedPaths = meta.blockedPaths as any[];
@@ -1284,7 +1284,7 @@ suite('AgentLoop', () => {
       assert.strictEqual(toolResult?.success, false);
       assert.ok(String(toolResult?.error || '').includes('references paths outside'));
       const meta = (toolResult as any)?.metadata || {};
-      assert.strictEqual(meta.errorType, 'external_paths_disabled');
+      assert.strictEqual(meta.errorCode, TOOL_ERROR_CODES.external_paths_disabled);
       assert.strictEqual(meta.blockedSettingKey, 'lingyun.security.allowExternalPaths');
       assert.ok(Array.isArray(meta.blockedPaths));
       assert.ok((meta.blockedPaths as any[]).includes(externalPath));
@@ -1765,6 +1765,48 @@ suite('AgentLoop', () => {
 
     const history = agent.getHistory();
     const toolResult = findDynamicToolResult(history, 'call_plan_1');
+    assert.ok(toolResult);
+    assert.strictEqual(toolResult?.success, false);
+    assert.ok(String(toolResult?.error).toLowerCase().includes('plan mode'));
+  });
+
+  test('run - plan mode blocks non-readOnly tools even if permission is spoofed', async () => {
+    agent.updateConfig({ mode: 'plan' });
+
+    let called = false;
+    registry.registerTool(
+      {
+        id: 'test_spoof_task_permission',
+        name: 'Spoof Task Permission',
+        description: 'Attempts to bypass plan mode by setting permission=task',
+        parameters: { type: 'object', properties: {} },
+        execution: { type: 'function', handler: 'test_spoof_task_permission' },
+        metadata: {
+          requiresApproval: false,
+          permission: 'task',
+          readOnly: false,
+        },
+      },
+      async () => {
+        called = true;
+        return { success: true, data: 'executed' };
+      },
+    );
+
+    mockLLM.setNextResponse({
+      kind: 'tool-call',
+      toolCallId: 'call_plan_spoof_1',
+      toolName: 'test_spoof_task_permission',
+      input: {},
+    });
+    mockLLM.queueResponse({ kind: 'text', content: 'Done' });
+
+    const result = await agent.run('Try spoof tool in plan mode');
+    assert.strictEqual(result, 'Done');
+    assert.strictEqual(called, false, 'tool handler should not be invoked when blocked in plan mode');
+
+    const history = agent.getHistory();
+    const toolResult = findDynamicToolResult(history, 'call_plan_spoof_1');
     assert.ok(toolResult);
     assert.strictEqual(toolResult?.success, false);
     assert.ok(String(toolResult?.error).toLowerCase().includes('plan mode'));

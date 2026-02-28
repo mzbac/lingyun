@@ -30,7 +30,15 @@ export function delay(attempt: number, retryAfterMs?: number): number {
   return Math.min(computed, RETRY_MAX_DELAY_NO_HEADERS_MS);
 }
 
-export type RetryableReason = { message: string; retryAfterMs?: number };
+export type RetryableKind =
+  | 'rate_limited'
+  | 'provider_overloaded'
+  | 'provider_server_error'
+  | 'network_error'
+  | 'connection_terminated'
+  | 'responses_stream_parser_error';
+
+export type RetryableReason = { kind: RetryableKind; message: string; retryAfterMs?: number };
 
 function getErrorMessage(error: unknown): string {
   if (!error) return '';
@@ -147,11 +155,11 @@ export function retryable(error: unknown): RetryableReason | undefined {
   const msg = getErrorMessage(error);
   const lower = msg.toLowerCase();
 
-  if (status === 429) return { message: 'Too Many Requests', retryAfterMs };
+  if (status === 429) return { kind: 'rate_limited', message: 'Too Many Requests', retryAfterMs };
   if (status === 503 || status === 502 || status === 504 || status === 529) {
-    return { message: 'Provider is overloaded', retryAfterMs };
+    return { kind: 'provider_overloaded', message: 'Provider is overloaded', retryAfterMs };
   }
-  if (status && status >= 500) return { message: 'Provider server error', retryAfterMs };
+  if (status && status >= 500) return { kind: 'provider_server_error', message: 'Provider server error', retryAfterMs };
 
   const transientCodes = new Set([
     'ECONNRESET',
@@ -166,18 +174,24 @@ export function retryable(error: unknown): RetryableReason | undefined {
     'UND_ERR_SOCKET_BUSY',
     'UND_ERR_INFO',
   ]);
-  if (code && transientCodes.has(code)) return { message: 'Network error', retryAfterMs };
+  if (code && transientCodes.has(code)) return { kind: 'network_error', message: 'Network error', retryAfterMs };
 
-  if (lower.includes('terminated')) return { message: 'Connection terminated', retryAfterMs };
-  if (lower.includes('socket hang up')) return { message: 'Network error', retryAfterMs };
+  if (lower.includes('terminated')) return { kind: 'connection_terminated', message: 'Connection terminated', retryAfterMs };
+  if (lower.includes('summaryparts') && lower.includes('undefined')) {
+    return { kind: 'responses_stream_parser_error', message: 'Responses stream parser error', retryAfterMs };
+  }
+  if (lower.includes('text part') && lower.includes('not found')) {
+    return { kind: 'responses_stream_parser_error', message: 'Responses stream parser error', retryAfterMs };
+  }
+  if (lower.includes('socket hang up')) return { kind: 'network_error', message: 'Network error', retryAfterMs };
   if (lower.includes('rate limit') || lower.includes('too many requests')) {
-    return { message: 'Rate limited', retryAfterMs };
+    return { kind: 'rate_limited', message: 'Rate limited', retryAfterMs };
   }
   if (lower.includes('overloaded') || lower.includes('exhausted') || lower.includes('unavailable')) {
-    return { message: 'Provider is overloaded', retryAfterMs };
+    return { kind: 'provider_overloaded', message: 'Provider is overloaded', retryAfterMs };
   }
   if (lower.includes('no_kv_space') || lower.includes('server_error') || lower.includes('internal server error')) {
-    return { message: 'Provider server error', retryAfterMs };
+    return { kind: 'provider_server_error', message: 'Provider server error', retryAfterMs };
   }
 
   if (typeof msg === 'string') {
@@ -189,13 +203,13 @@ export function retryable(error: unknown): RetryableReason | undefined {
       const code = typeof json?.code === 'string' ? json.code : '';
       const message = typeof json?.error?.message === 'string' ? json.error.message : '';
 
-      if (type === 'error' && errorType === 'too_many_requests') return { message: 'Too Many Requests', retryAfterMs };
+      if (type === 'error' && errorType === 'too_many_requests') return { kind: 'rate_limited', message: 'Too Many Requests', retryAfterMs };
       if (type === 'error' && (errorCode.includes('rate_limit') || code.includes('rate_limit'))) {
-        return { message: 'Rate limited', retryAfterMs };
+        return { kind: 'rate_limited', message: 'Rate limited', retryAfterMs };
       }
-      if (code.includes('exhausted') || code.includes('unavailable')) return { message: 'Provider is overloaded', retryAfterMs };
+      if (code.includes('exhausted') || code.includes('unavailable')) return { kind: 'provider_overloaded', message: 'Provider is overloaded', retryAfterMs };
       if (message.includes('no_kv_space') || (type === 'error' && errorType === 'server_error') || !!json?.error) {
-        return { message: 'Provider server error', retryAfterMs };
+        return { kind: 'provider_server_error', message: 'Provider server error', retryAfterMs };
       }
     } catch {
       // ignore
@@ -204,4 +218,3 @@ export function retryable(error: unknown): RetryableReason | undefined {
 
   return undefined;
 }
-

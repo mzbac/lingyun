@@ -48,16 +48,6 @@ export const readHandler: ToolHandler = async (args, context) => {
     return { success: false, error: error instanceof Error ? error.message : String(error) };
   }
 
-  const basename = path.basename(absPath);
-  const whitelist = ['.env.sample', '.env.example', '.example', '.env.template'];
-  const shouldBlockEnv = /^\.env(\.|$)/.test(basename) && !whitelist.some((suffix) => basename.endsWith(suffix));
-  if (shouldBlockEnv) {
-    return {
-      success: false,
-      error: `The user has blocked you from reading ${absPath}, DO NOT make further attempts to read it`,
-    };
-  }
-
   const ext = path.extname(absPath).toLowerCase();
   if (BINARY_EXTENSIONS.has(ext)) {
     return { success: false, error: `Cannot read binary file: ${absPath}` };

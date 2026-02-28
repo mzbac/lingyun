@@ -27,10 +27,19 @@ export {
   type AgentBrowserToolsOptions,
 } from './tools/agentBrowser.js';
 export { PluginManager } from './plugins/pluginManager.js';
+export type {
+  LingyunHookName,
+  LingyunHooks,
+  LingyunPluginFactory,
+  LingyunPluginInput,
+  LingyunPluginTool,
+  LingyunPluginToolEntry,
+} from './plugins/types.js';
 export { LingyunAgent, LingyunSession, type LingyunAgentRuntimeOptions } from './agent/agent.js';
+export { buildStreamReplay, type StreamReplayNamespace, type StreamReplayUpdate } from './agent/streamAdapters.js';
 export { registerBuiltinTools, getBuiltinTools, DEFAULT_SKILL_PATHS, type BuiltinToolsOptions } from './tools/builtin/index.js';
-export type { SkillInfo, SkillIndex } from './skills.js';
-export { getSkillIndex, loadSkillFile } from './skills.js';
+export type { SkillInfo, SkillIndex } from '@kooka/core';
+export { getSkillIndex, loadSkillFile } from '@kooka/core';
 export * from './persistence/index.js';
 
 // Neutral API aliases for hosts that don't want product-specific naming.

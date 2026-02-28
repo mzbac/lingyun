@@ -1,6 +1,10 @@
+import * as vscode from 'vscode';
+
 import type { ToolContext, ToolDefinition, ToolProvider, ToolResult } from '../types';
+import type { ToolContext as SdkToolContext } from '@kooka/agent-sdk';
 import type { LingyunPluginToolEntry } from './pluginManager';
 import { isRecord } from '../utils/guards';
+import { createAbortSignalFromCancellationToken } from '../cancellation';
 
 function asUnknownRecord(value: unknown): Record<string, unknown> | undefined {
   return isRecord(value) ? value : undefined;
@@ -17,7 +21,10 @@ function isParametersSchema(value: unknown): value is ToolDefinition['parameters
   return true;
 }
 
-function normalizePluginTool(entry: LingyunPluginToolEntry): { definition: ToolDefinition; execute: (args: Record<string, unknown>, ctx: ToolContext) => Promise<ToolResult | unknown> } | undefined {
+function normalizePluginTool(entry: LingyunPluginToolEntry): {
+  definition: ToolDefinition;
+  execute: (args: Record<string, unknown>, ctx: SdkToolContext) => Promise<ToolResult | unknown>;
+} | undefined {
   const toolId = String(entry.toolId || '').trim();
   if (!toolId) return undefined;
 
@@ -59,7 +66,7 @@ export class PluginToolProvider implements ToolProvider {
     {
       definition: ToolDefinition;
       pluginId: string;
-      execute: (args: Record<string, unknown>, ctx: ToolContext) => Promise<ToolResult | unknown>;
+      execute: (args: Record<string, unknown>, ctx: SdkToolContext) => Promise<ToolResult | unknown>;
     }
   >();
 
@@ -103,8 +110,23 @@ export class PluginToolProvider implements ToolProvider {
     const tool = this.tools.get(toolId);
     if (!tool) return { success: false, error: `Tool not found: ${toolId}` };
 
+    const allowExternalPaths =
+      vscode.workspace.getConfiguration('lingyun').get<boolean>('security.allowExternalPaths', false) ?? false;
+    const workspaceRoot =
+      context.workspaceFolder?.scheme === 'file' ? context.workspaceFolder.fsPath : undefined;
+
+    const { signal, dispose } = createAbortSignalFromCancellationToken(context.cancellationToken);
+
     try {
-      const result = await tool.execute(args, context);
+      const sdkContext: SdkToolContext = {
+        workspaceRoot,
+        allowExternalPaths,
+        sessionId: context.sessionId,
+        signal,
+        log: context.log,
+      };
+
+      const result = await tool.execute(args, sdkContext);
       if (isToolResult(result)) {
         return result;
       }
@@ -112,6 +134,8 @@ export class PluginToolProvider implements ToolProvider {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return { success: false, error: `Plugin tool error (${tool.pluginId}): ${message}` };
+    } finally {
+      dispose();
     }
   }
 }

@@ -1,6 +1,6 @@
 {
   "name": "@kooka/agent-sdk",
-  "version": "0.1.5",
+  "version": "0.2.0",
   "type": "module",
   "description": "Headless LingYun agent runtime for Node.js (tools + skills + plugins).",
   "repository": {
@@ -18,6 +18,7 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
+      "require": "./dist/index.cjs",
       "default": "./dist/index.js"
     }
   },
@@ -27,7 +28,8 @@
   ],
   "scripts": {
     "clean": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true }); require('fs').rmSync('dist-test', { recursive: true, force: true })\"",
-    "build": "pnpm run clean && node scripts/ensure-core-build.cjs && tsc -p tsconfig.json",
+    "build:cjs": "node scripts/build-cjs.cjs",
+    "build": "pnpm run clean && node scripts/ensure-core-build.cjs && tsc -p tsconfig.json && pnpm run build:cjs",
     "prepack": "pnpm run build",
     "typecheck": "node scripts/ensure-core-build.cjs && tsc -p tsconfig.json --noEmit",
     "build:test": "node scripts/ensure-core-build.cjs && tsc -p tsconfig.test.json",
@@ -35,7 +37,7 @@
     "test:e2e": "pnpm run build && pnpm run build:test && mocha --ui tdd --timeout 300000 ./dist-test/e2e/*.test.js"
   },
   "dependencies": {
-    "@kooka/core": "^0.1.5",
+    "@kooka/core": "^0.2.0",
     "@ai-sdk/openai-compatible": "^2.0.2",
     "ai": "^6.0.6",
     "glob": "^13.0.0",
@@ -47,6 +49,7 @@
     "@ai-sdk/provider-utils": "^4.0.5",
     "@types/mocha": "^10.0.10",
     "@types/node": "^20.11.16",
+    "esbuild": "^0.25.0",
     "mocha": "^11.7.5",
     "typescript": "^5.3.3"
   }

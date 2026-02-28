@@ -202,12 +202,12 @@
 
     function formatToolSummary(toolCall) {
       const toolId = toolCall.id || '';
-      let icon = toolIcons[toolId];
-      if (!icon) {
-        if (toolId.startsWith('kb.') || toolId.includes('search') || toolId.includes('knowledge')) icon = '🧠';
-        else if (toolId.startsWith('workspace.')) icon = '🔧';
-        else icon = '🔧';
-      }
+	      let icon = toolIcons[toolId];
+	      if (!icon) {
+	        if (toolId.includes('search') || toolId.includes('knowledge')) icon = '🧠';
+	        else if (toolId.startsWith('workspace_')) icon = '🔧';
+	        else icon = '🔧';
+	      }
 
       let args = {};
       const rawArgsText = typeof toolCall.args === 'string' ? toolCall.args : '';
@@ -284,17 +284,17 @@
         return html;
       }
 
-      if (batchFiles.length > 0) {
-        const totalCount = batchFiles.length + additionalCount;
-        const toolName =
-          (toolId === 'read' || toolId === 'file.read') ? 'Read Files' :
-          (toolId === 'glob' || toolId === 'file.list') ? 'List Files' :
-          (toolId === 'write' || toolId === 'edit' || toolId === 'file.write') ? 'Edit Files' : 'Files';
-        const title = (toolId === 'glob' || toolId === 'file.list') && args.pattern
-          ? ('Glob ' + truncateText(args.pattern, 50))
-          : toolName;
-        const maxFilesToShow = 10;
-        let html = '<div class="tool-batch">';
+	      if (batchFiles.length > 0) {
+	        const totalCount = batchFiles.length + additionalCount;
+	        const toolName =
+	          (toolId === 'read' || toolId === 'read_range') ? 'Read Files' :
+	          (toolId === 'glob' || toolId === 'list') ? 'List Files' :
+	          (toolId === 'write' || toolId === 'edit') ? 'Edit Files' : 'Files';
+	        const title = toolId === 'glob' && args.pattern
+	          ? ('Glob ' + truncateText(args.pattern, 50))
+	          : toolName;
+	        const maxFilesToShow = 10;
+	        let html = '<div class="tool-batch">';
         html += '<div class="tool-header"><span class="tool-name" title="' + escapeHtml(title) + '">' + icon + ' ' + escapeHtml(title) + ' (' + totalCount + ')</span></div>';
         html += '<div class="tool-file-list">';
         batchFiles.slice(0, maxFilesToShow).forEach(file => {
@@ -313,11 +313,11 @@
       let headerText = '';
       let showDiff = false;
 
-      if (toolId === 'read' || toolId === 'file.read') {
-        headerText = 'Read File';
-      } else if (toolId === 'todowrite') {
-        headerText = 'Todos';
-        icon = '☑';
+	      if (toolId === 'read' || toolId === 'read_range') {
+	        headerText = 'Read File';
+	      } else if (toolId === 'todowrite') {
+	        headerText = 'Todos';
+	        icon = '☑';
       } else if (toolId === 'todoread') {
         headerText = 'Todos';
         icon = '☑';
@@ -326,44 +326,29 @@
         headerText = op ? ('LSP ' + op) : 'LSP';
         if (args.query) headerText += ' "' + truncateText(String(args.query), 30) + '"';
         if (path) headerText += ': ' + formatFilePath(path);
-      } else if (
-        toolId === 'write' ||
-        toolId === 'edit' ||
-        toolId === 'patch' ||
-        toolId === 'multiedit' ||
-        toolId === 'file.write' ||
-        toolId === 'file.edit' ||
-        toolId === 'file.patch' ||
-        toolId === 'file.multiedit'
-      ) {
-        if (toolId === 'patch') {
-          headerText = 'Apply Patch';
-        } else {
-        headerText = path ? 'Edit: ' + formatFilePath(path) : 'Edit File';
-        icon = '±';
-        showDiff = !!diff;
-        }
-      } else if (toolId === 'glob' || toolId === 'file.list') {
-        headerText = args.pattern
-          ? ('Glob ' + truncateText(args.pattern, 50))
-          : (path ? 'List ' + formatFilePath(path) : 'List Files');
-      } else if (toolId === 'list') {
-        headerText = path ? 'List ' + formatFilePath(path) : 'List Files';
-      } else if (toolId === 'grep' || toolId === 'file.search') {
-        const p = args.pattern || args.query;
-        headerText = p ? 'Grep "' + truncateText(p, 30) + '"' : 'Grep';
-      } else if (toolId === 'bash' || toolId === 'shell.run') {
-        headerText = args.description
-          ? truncateText(args.description, 60)
-          : (args.command ? 'Run: ' + truncateText(args.command, 40) : 'Run');
-      } else if (toolId === 'shell.terminal') {
-        headerText = args.command ? 'Run: ' + truncateText(args.command, 40) : 'Run';
-      } else if (toolId === 'shell.which') {
-        headerText = args.command ? 'Which: ' + truncateText(args.command, 40) : 'Which Command';
-      } else if (args.query && (toolId.includes('search') || toolId.startsWith('kb.'))) {
-        headerText = 'Search "' + truncateText(args.query, 30) + '"';
-      } else {
-        headerText = toolCall.name || toolId;
+	      } else if (toolId === 'write' || toolId === 'edit') {
+	        headerText = path ? 'Edit: ' + formatFilePath(path) : 'Edit File';
+	        icon = '±';
+	        showDiff = !!diff;
+	      } else if (toolId === 'glob') {
+	        headerText = args.pattern
+	          ? ('Glob ' + truncateText(args.pattern, 50))
+	          : (path ? 'List ' + formatFilePath(path) : 'List Files');
+	      } else if (toolId === 'list') {
+	        headerText = path ? 'List ' + formatFilePath(path) : 'List Files';
+	      } else if (toolId === 'grep') {
+	        const p = args.pattern || args.query;
+	        headerText = p ? 'Grep "' + truncateText(p, 30) + '"' : 'Grep';
+	      } else if (toolId === 'task') {
+	        headerText = args.description
+	          ? truncateText(args.description, 60)
+	          : 'Task';
+	      } else if (toolId === 'bash') {
+	        headerText = args.command ? 'Run: ' + truncateText(args.command, 40) : 'Run';
+	      } else if (args.query && toolId.includes('search')) {
+	        headerText = 'Search "' + truncateText(args.query, 30) + '"';
+	      } else {
+	        headerText = toolCall.name || toolId;
         if (path) headerText += ': ' + formatFilePath(path);
       }
 
@@ -374,15 +359,15 @@
       if (toolCall.status === 'pending' && toolCall.approvalId) {
         let html = '<div class="tool-card pending">';
         html += '<div class="tool-header"><span class="tool-name" title="' + escapeHtml(headerText) + '">' + icon + ' ' + escapeHtml(headerText) + '</span></div>';
-        if (path && (toolId === 'read' || toolId === 'file.read')) {
-          const title = escapeHtml(path);
-          const label = escapeHtml(formatFilePath(path));
-          html += '<div class="tool-path" title="' + title + '">' + label + '</div>';
-        }
-        if (toolId === 'bash' || toolId === 'shell.terminal' || toolId === 'shell.run') {
-          const preview = args.command || rawArgsText;
-          if (preview) html += renderOutputPreview(preview, 6);
-        }
+	        if (path && (toolId === 'read' || toolId === 'read_range')) {
+	          const title = escapeHtml(path);
+	          const label = escapeHtml(formatFilePath(path));
+	          html += '<div class="tool-path" title="' + title + '">' + label + '</div>';
+	        }
+	        if (toolId === 'bash') {
+	          const preview = args.command || rawArgsText;
+	          if (preview) html += renderOutputPreview(preview, 6);
+	        }
         html += '<div class="tool-actions">' +
           '<button class="tool-btn approve" data-action="approve" data-approval="' + escapeHtml(toolCall.approvalId) + '">Allow</button>' +
           '<button class="tool-btn always" data-action="always" data-approval="' + escapeHtml(toolCall.approvalId) + '" data-tool="' + escapeHtml(toolId) + '">Always</button>' +
@@ -407,10 +392,10 @@
 
       html += '</div>';
 
-      if (path && (toolId === 'read' || toolId === 'file.read')) {
-        const title = escapeHtml(path);
-        const label = escapeHtml(formatFilePath(path));
-        if (toolCall.status === 'success') {
+	      if (path && (toolId === 'read' || toolId === 'read_range')) {
+	        const title = escapeHtml(path);
+	        const label = escapeHtml(formatFilePath(path));
+	        if (toolCall.status === 'success') {
           html +=
             '<div class="tool-path" title="' + title + '">' +
             '<button type="button" class="file-link-token file-link" data-action="openLocation" data-path="' +
@@ -438,24 +423,21 @@
         html += '<div class="tool-note">' + escapeHtml(String(diffUnavailableReason)) + '</div>';
       }
 
-      if (toolCall.status === 'success' && toolId === 'lsp' && toolCall.lsp) {
-        html += renderLspResults(toolCall.lsp);
-      } else if (toolCall.status === 'success' && toolCall.result) {
-        if (toolId !== 'todowrite' && toolId !== 'todoread') {
-          if (toolId === 'glob' || toolId === 'file.list') html += renderOutputPreview(toolCall.result, 10);
-          else if (toolId === 'grep' || toolId === 'file.search') html += renderOutputPreview(toolCall.result, 12);
-          else if (toolId === 'bash' || toolId === 'shell.run') html += renderOutputPreview(toolCall.result, 12);
-          else if (toolId === 'list') html += renderOutputPreview(toolCall.result, 12);
-          else if (toolId === 'shell.terminal') html += renderOutputPreview(toolCall.result, 6);
-          else if (toolId === 'shell.which') html += renderOutputPreview(toolCall.result, 4);
-          else if (toolId.startsWith('kb.')) html += renderOutputPreview(toolCall.result, 12);
-          else html += renderOutputPreview(toolCall.result, 12);
-        }
-      }
+	      if (toolCall.status === 'success' && toolId === 'lsp' && toolCall.lsp) {
+	        html += renderLspResults(toolCall.lsp);
+	      } else if (toolCall.status === 'success' && toolCall.result) {
+	        if (toolId !== 'todowrite' && toolId !== 'todoread') {
+	          if (toolId === 'glob') html += renderOutputPreview(toolCall.result, 10);
+	          else if (toolId === 'grep') html += renderOutputPreview(toolCall.result, 12);
+	          else if (toolId === 'bash') html += renderOutputPreview(toolCall.result, 12);
+	          else if (toolId === 'list') html += renderOutputPreview(toolCall.result, 12);
+	          else html += renderOutputPreview(toolCall.result, 12);
+	        }
+	      }
 
-      if (toolCall.status === 'success' && (toolId === 'write' || toolId === 'edit' || toolId === 'file.write' || toolId.includes('edit'))) {
-        html += '<div class="tool-success">✓ Done</div>';
-      }
+	      if (toolCall.status === 'success' && (toolId === 'write' || toolId === 'edit')) {
+	        html += '<div class="tool-success">✓ Done</div>';
+	      }
 
       if (toolCall.status === 'error' && toolCall.result) {
         html += '<div class="tool-error-msg">' + escapeHtml(truncateText(toolCall.result, 100)) + '</div>';

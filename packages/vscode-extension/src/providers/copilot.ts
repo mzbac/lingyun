@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
+import { isCopilotResponsesModelId } from '@kooka/core';
 import type { LLMProvider } from '../core/types';
+import { normalizeResponsesStreamModel } from '../core/utils/normalizeResponsesStream';
 import { createCopilotResponsesModel } from './copilotResponsesModel';
 
 const COPILOT_TOKEN_URL = 'https://api.github.com/copilot_internal/v2/token';
@@ -12,12 +14,6 @@ export const FALLBACK_MODELS = {
 } as const;
 
 export const MODELS = FALLBACK_MODELS;
-
-function shouldUseResponsesApi(modelID: string): boolean {
-  // Minimize impact: only route the known Copilot-only model to `/responses`.
-  // Copilot rejects `gpt-5.3-codex` on `/chat/completions`.
-  return modelID.toLowerCase() === 'gpt-5.3-codex';
-}
 
 export interface ModelInfo {
   id: string;
@@ -31,6 +27,8 @@ export class CopilotProvider implements LLMProvider {
   readonly id = 'copilot';
   readonly name = 'GitHub Copilot';
 
+  private readonly createResponsesModel: typeof createCopilotResponsesModel;
+
   private copilotToken: string | null = null;
   private tokenExpiry: number = 0;
   private cachedModels: ModelInfo[] | null = null;
@@ -41,6 +39,10 @@ export class CopilotProvider implements LLMProvider {
   private provider:
     | ReturnType<typeof createOpenAICompatible>
     | null = null;
+
+  constructor(options?: { createResponsesModel?: typeof createCopilotResponsesModel }) {
+    this.createResponsesModel = options?.createResponsesModel ?? createCopilotResponsesModel;
+  }
 
   private getEditorVersionHeader(): string {
     const version = typeof vscode.version === 'string' && vscode.version.trim() ? vscode.version.trim() : '0.0.0';
@@ -141,9 +143,11 @@ export class CopilotProvider implements LLMProvider {
   async getModel(modelId: string): Promise<unknown> {
     await this.ensureProvider();
     const resolvedModel = modelId || MODELS.GPT_4O;
-    if (shouldUseResponsesApi(resolvedModel)) {
+    // Minimize impact: only route the known Copilot-only model(s) to `/responses`.
+    // Copilot rejects `gpt-5.3-codex` on `/chat/completions`.
+    if (isCopilotResponsesModelId(resolvedModel)) {
       const token = this.cachedProviderToken ?? (await this.getCopilotToken());
-      return createCopilotResponsesModel({
+      const raw = this.createResponsesModel({
         baseURL: COPILOT_BASE_URL,
         apiKey: token,
         modelId: resolvedModel,
@@ -154,6 +158,7 @@ export class CopilotProvider implements LLMProvider {
           'Copilot-Integration-Id': 'vscode-chat',
         },
       });
+      return normalizeResponsesStreamModel(raw, { canonicalizeTextPartIds: true });
     }
 
     if (!this.provider) {

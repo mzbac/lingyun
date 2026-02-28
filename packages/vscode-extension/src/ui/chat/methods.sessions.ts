@@ -6,9 +6,10 @@ import { SessionStore } from '../../core/sessionStore';
 import type { ChatMessage, ChatSessionInfo } from './types';
 import { formatErrorForUser } from './utils';
 import { createDefaultSessionTitle } from './sessionTitle';
-import { ChatViewProvider } from '../chat';
+import type { ChatViewProvider } from '../chat';
 
-Object.assign(ChatViewProvider.prototype, {
+export function installSessionsMethods(view: ChatViewProvider): void {
+  Object.assign(view, {
   initializeSessions(this: ChatViewProvider): void {
     this.sessions.clear();
     const initialId = this.activeSessionId || crypto.randomUUID();
@@ -532,15 +533,14 @@ Object.assign(ChatViewProvider.prototype, {
     this.currentModel = session.currentModel;
     this.mode = session.mode;
 
-    this.agent.importState(session.agentState);
-    this.agent.updateConfig({
+    this.agent.syncSession({
+      state: session.agentState,
       model: this.currentModel,
       mode: this.mode,
       sessionId,
       parentSessionId: session.parentSessionId,
       subagentType: session.subagentType,
     });
-    this.agent.setMode(this.mode);
   },
 
   async setBackend(
@@ -827,4 +827,5 @@ Object.assign(ChatViewProvider.prototype, {
 
     vscode.window.showInformationMessage('LingYun: Saved sessions cleared.');
   },
-});
+  });
+}

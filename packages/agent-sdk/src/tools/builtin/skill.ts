@@ -1,6 +1,5 @@
 import type { ToolDefinition, ToolHandler } from '../../types.js';
-import { optionalString, redactFsPathForPrompt } from '@kooka/core';
-import { getSkillIndex, loadSkillFile } from '../../skills.js';
+import { TOOL_ERROR_CODES, getSkillIndex, loadSkillFile, optionalString, redactFsPathForPrompt } from '@kooka/core';
 
 function formatAvailableSkills(skills: Array<{ name: string; description: string }>): string {
   if (skills.length === 0) return '<available_skills></available_skills>';
@@ -116,8 +115,8 @@ export function createSkillTool(options: {
         success: false,
         error: 'External paths are disabled. Enable allowExternalPaths to load skills outside the current workspace.',
         metadata: {
-          errorType: 'external_paths_disabled',
-          blockedSettingKey: 'allowExternalPaths',
+          errorCode: TOOL_ERROR_CODES.external_paths_disabled,
+          blockedSettingKey: 'lingyun.security.allowExternalPaths',
           isOutsideWorkspace: true,
         },
       };

@@ -3,8 +3,9 @@ import * as path from 'path';
 import type { AgentSessionState } from '../../core/agent';
 import { findGitRoot } from '../../core/instructions';
 import { getSnapshotProjectId, WorkspaceSnapshot, type SnapshotPatch } from '../../core/snapshot';
+import { getPrimaryWorkspaceFolderUri } from '../../core/workspaceContext';
 import type { ChatMessage, RevertBarState } from './types';
-import { ChatViewProvider } from '../chat';
+import type { ChatViewProvider } from '../chat';
 
 function derivePendingPlanFromMessages(
   messages: ChatMessage[],
@@ -34,18 +35,26 @@ function derivePendingPlanFromMessages(
   return undefined;
 }
 
-Object.assign(ChatViewProvider.prototype, {
+function cloneAgentState(state: AgentSessionState): AgentSessionState {
+  try {
+    return structuredClone(state);
+  } catch {
+    return JSON.parse(JSON.stringify(state)) as AgentSessionState;
+  }
+}
+
+export function installRevertMethods(view: ChatViewProvider): void {
+  Object.assign(view, {
   async getWorkspaceSnapshot(this: ChatViewProvider): Promise<WorkspaceSnapshot | undefined> {
     if (this.snapshot) return this.snapshot;
     if (this.snapshotUnavailableReason) return undefined;
 
-    const folder = vscode.workspace.workspaceFolders?.[0]?.uri;
-    if (!folder || folder.scheme !== 'file') {
+    const workspaceRoot = getPrimaryWorkspaceFolderUri();
+    if (!workspaceRoot || workspaceRoot.scheme !== 'file') {
       this.snapshotUnavailableReason = 'No workspace folder available for snapshots.';
       return undefined;
     }
 
-    const workspaceRoot = folder;
     const gitRoot = await findGitRoot(workspaceRoot, workspaceRoot);
     const gitMarker = vscode.Uri.joinPath(gitRoot, '.git');
     try {
@@ -296,6 +305,7 @@ Object.assign(ChatViewProvider.prototype, {
     ) {
       const length = Math.min(baseline.history.length, Math.floor(checkpoint.historyLength));
       return {
+        ...baseline,
         history: baseline.history.slice(0, length),
         pendingPlan: checkpoint.pendingPlan,
       };
@@ -311,12 +321,14 @@ Object.assign(ChatViewProvider.prototype, {
     const boundaryHistoryIndex = chatUserCount > 0 ? userIndices[chatUserCount - 1] : undefined;
     if (typeof boundaryHistoryIndex === 'number') {
       return {
+        ...baseline,
         history: baseline.history.slice(0, boundaryHistoryIndex),
         pendingPlan: undefined,
       };
     }
 
     return {
+      ...baseline,
       history: baseline.history.slice(0, Math.min(1, baseline.history.length)),
       pendingPlan: undefined,
     };
@@ -344,15 +356,21 @@ Object.assign(ChatViewProvider.prototype, {
 
     const existing = session.revert;
     const baselineSnapshotHash = existing?.snapshotHash ?? (await snapshot.track());
-    const baselineAgentState = existing?.baselineAgentState ?? this.agent.exportState();
-    const baselinePendingPlan = existing?.baselinePendingPlan ?? this.pendingPlan;
+    const baselineAgentState = cloneAgentState(existing?.baselineAgentState ?? this.agent.exportState());
+    const baselinePendingPlan = existing?.baselinePendingPlan
+      ? { ...existing.baselinePendingPlan }
+      : this.pendingPlan
+        ? { ...this.pendingPlan }
+        : undefined;
 
     try {
       if (existing) {
         await snapshot.restore(baselineSnapshotHash);
-        this.agent.importState(baselineAgentState);
-        this.agent.updateConfig({ model: this.currentModel, mode: this.mode });
-        this.agent.setMode(this.mode);
+        this.agent.syncSession({
+          state: cloneAgentState(baselineAgentState),
+          model: this.currentModel,
+          mode: this.mode,
+        });
       }
 
       const patches = this.collectPatchesFromIndex(boundaryIndex);
@@ -374,9 +392,11 @@ Object.assign(ChatViewProvider.prototype, {
         baseline: baselineAgentState,
         boundaryIndex,
       });
-      this.agent.importState(truncated);
-      this.agent.updateConfig({ model: this.currentModel, mode: this.mode });
-      this.agent.setMode(this.mode);
+      this.agent.syncSession({
+        state: cloneAgentState(truncated),
+        model: this.currentModel,
+        mode: this.mode,
+      });
 
       this.pendingPlan = derivePendingPlanFromMessages(this.messages, {
         beforeIndex: boundaryIndex,
@@ -405,9 +425,11 @@ Object.assign(ChatViewProvider.prototype, {
 
     try {
       await snapshot.restore(revert.snapshotHash);
-      this.agent.importState(revert.baselineAgentState);
-      this.agent.updateConfig({ model: this.currentModel, mode: this.mode });
-      this.agent.setMode(this.mode);
+      this.agent.syncSession({
+        state: cloneAgentState(revert.baselineAgentState),
+        model: this.currentModel,
+        mode: this.mode,
+      });
 
       this.pendingPlan = revert.baselinePendingPlan;
       session.revert = undefined;
@@ -419,4 +441,5 @@ Object.assign(ChatViewProvider.prototype, {
       );
     }
   },
-});
+  });
+}

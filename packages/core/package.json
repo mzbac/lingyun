@@ -1,6 +1,6 @@
 {
   "name": "@kooka/core",
-  "version": "0.1.5",
+  "version": "0.2.0",
   "type": "module",
   "description": "Shared LingYun core library (runtime-agnostic agent primitives).",
   "repository": {
@@ -26,7 +26,7 @@
   ],
   "scripts": {
     "clean": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\"",
-    "build:types": "tsc -p tsconfig.json",
+    "build:types": "tsc -p tsconfig.json && node scripts/patch-dts.cjs",
     "build:esm": "esbuild src/index.ts --bundle --platform=node --target=es2022 --format=esm --outfile=dist/esm/index.js",
     "build:cjs": "esbuild src/index.ts --bundle --platform=node --target=es2022 --format=cjs --outfile=dist/cjs/index.cjs",
     "build": "pnpm run clean && pnpm run build:types && pnpm run build:esm && pnpm run build:cjs",

@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import type { AgentHistoryMessage } from '@kooka/core';
 import { LingyunSession, type LingyunSession as LingyunSessionType } from '../agent/agent.js';
+import type { SemanticHandlesState } from '../agent/semanticHandles.js';
 
 export type LingyunSessionSnapshotV1 = {
   version: 1;
@@ -17,6 +18,7 @@ export type LingyunSessionSnapshotV1 = {
     nextId: number;
     byId: Record<string, string>;
   };
+  semanticHandles?: SemanticHandlesState;
 };
 
 export type LingyunSessionSnapshot = LingyunSessionSnapshotV1;
@@ -38,6 +40,7 @@ export const LingyunSessionSnapshotSchema = z
     history: z.array(z.unknown()),
     mentionedSkills: z.array(z.string()).optional(),
     fileHandles: FileHandlesSchema.optional(),
+    semanticHandles: z.unknown().optional(),
   })
   .passthrough();
 
@@ -60,6 +63,7 @@ export function snapshotSession(
     history: session.getHistory(),
     ...(session.mentionedSkills.length > 0 ? { mentionedSkills: [...session.mentionedSkills] } : {}),
     ...(includeFileHandles && session.fileHandles ? { fileHandles: session.fileHandles } : {}),
+    ...(session.semanticHandles ? { semanticHandles: session.semanticHandles } : {}),
   };
 }
 
@@ -73,6 +77,7 @@ export function restoreSession(snapshot: LingyunSessionSnapshot): LingyunSession
     modelId: snapshot.modelId,
     mentionedSkills: snapshot.mentionedSkills,
     fileHandles: snapshot.fileHandles,
+    semanticHandles: snapshot.semanticHandles,
   });
 }
 
@@ -95,5 +100,6 @@ export function parseSessionSnapshot(input: unknown): LingyunSessionSnapshot {
     history: parsed.history as AgentHistoryMessage[],
     ...(Array.isArray(parsed.mentionedSkills) ? { mentionedSkills: parsed.mentionedSkills } : {}),
     ...(parsed.fileHandles ? { fileHandles: parsed.fileHandles } : {}),
+    ...(parsed.semanticHandles ? { semanticHandles: parsed.semanticHandles as SemanticHandlesState } : {}),
   };
 }

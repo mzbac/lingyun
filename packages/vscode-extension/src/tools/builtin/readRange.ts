@@ -2,7 +2,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 
 import type { ToolDefinition, ToolHandler } from '../../core/types';
-import { optionalNumber, requireString } from '@kooka/core';
+import { TOOL_ERROR_CODES, optionalNumber, requireString } from '@kooka/core';
 import { BINARY_EXTENSIONS, resolveToolPath } from './workspace';
 
 const DEFAULT_MAX_LINES = 200;
@@ -65,7 +65,7 @@ export const readRangeHandler: ToolHandler = async (args, context) => {
       return {
         success: false,
         error: `Requested ${requestedLines} lines exceeds lingyun.tools.read.maxLines (${maxLines}). Use a smaller range.`,
-        metadata: { errorType: 'read_range_limit_exceeded', requestedLines, maxLines },
+        metadata: { errorCode: TOOL_ERROR_CODES.read_range_limit_exceeded, requestedLines, maxLines },
       };
     }
 

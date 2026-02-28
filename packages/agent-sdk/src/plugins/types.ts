@@ -16,6 +16,10 @@ export type LingyunPluginInput = {
   gitRoot?: string;
   projectId?: string;
   storagePath?: string;
+  /**
+   * Optional host logger. Prefer this over console.log so hosts can route logs appropriately.
+   */
+  log?: (message: string) => void;
 };
 
 export type LingyunPluginTool = {

@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as dns from 'node:dns/promises';
 import * as net from 'node:net';
 import type { ToolContext, ToolResult } from '../core/types';
-import { findExternalPathReferencesInShellCommand, isPathInsideWorkspace } from '@kooka/core';
+import { TOOL_ERROR_CODES, findExternalPathReferencesInShellCommand, isPathInsideWorkspace } from '@kooka/core';
 
 export interface ShellExecution {
   type: 'shell';
@@ -164,7 +164,7 @@ export async function executeShell(
             'External paths are disabled. This shell script references paths outside the current workspace. ' +
             'Enable lingyun.security.allowExternalPaths to allow external path access.',
           metadata: {
-            errorType: 'external_paths_disabled',
+            errorCode: TOOL_ERROR_CODES.external_paths_disabled,
             blockedSettingKey: 'lingyun.security.allowExternalPaths',
             isOutsideWorkspace: true,
             blockedPaths: blockedPaths.slice(0, blockedPathsMax),
@@ -182,7 +182,7 @@ export async function executeShell(
         error:
           'This workspace shell script looks long-running and timeout is disabled. ' +
           'Set execution.timeoutMs (or lingyun.tools.workspaceShell.timeoutMs) to run it safely.',
-        metadata: { errorType: 'workspace_shell_requires_timeout' },
+        metadata: { errorCode: TOOL_ERROR_CODES.workspace_shell_requires_timeout },
       });
       return;
     }
@@ -198,7 +198,7 @@ export async function executeShell(
       options.shell = execution.shell;
     }
 
-    context.log(`Executing: ${execution.script}`);
+    context.log('Executing workspace shell tool');
 
     const proc = cp.exec(execution.script, options, (error, stdout, stderr) => {
       if (context.cancellationToken.isCancellationRequested) {
@@ -350,7 +350,7 @@ export async function executeHttp(
       ...execution.headers,
     };
 
-    context.log(`HTTP ${method} ${execution.url}`);
+    context.log(`HTTP ${method} request`);
 
     const options: RequestInit = {
       method,
@@ -361,7 +361,7 @@ export async function executeHttp(
       if (execution.body) {
         let body = execution.body;
         for (const [key, value] of Object.entries(args)) {
-          body = body.replace(new RegExp(`\\$${key}`, 'g'), JSON.stringify(value));
+          body = body.replaceAll(`\${arg:${key}}`, JSON.stringify(value));
         }
         options.body = body;
       } else {

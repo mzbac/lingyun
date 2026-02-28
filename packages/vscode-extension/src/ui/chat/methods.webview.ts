@@ -6,7 +6,7 @@ import { readTodos } from '../../core/todo';
 import { getNonce } from './utils';
 import { getWorkspaceFolderUrisByPriority, resolveExistingFilePath } from './fileLinks';
 import type { ChatImageAttachment, ChatUserInput } from './types';
-import { ChatViewProvider } from '../chat';
+import type { ChatViewProvider } from '../chat';
 import { createLingyunDiffUri } from './diffContentProvider';
 
 function stripWrappingQuotes(value: string): string {
@@ -71,7 +71,8 @@ function parseWebviewImageAttachments(raw: unknown): ChatImageAttachment[] {
   return normalized;
 }
 
-Object.assign(ChatViewProvider.prototype, {
+export function installWebviewMethods(view: ChatViewProvider): void {
+  Object.assign(view, {
   resolveWebviewView(this: ChatViewProvider, webviewView: vscode.WebviewView): void {
     for (const d of this.viewDisposables) {
       d.dispose();
@@ -410,15 +411,7 @@ Object.assign(ChatViewProvider.prototype, {
               await this.executePendingPlan(this.pendingPlan.planMessageId);
               break;
             }
-            this.mode = data.mode;
-            this.agent.setMode(this.mode);
-            try {
-              await vscode.workspace.getConfiguration('lingyun').update('mode', this.mode, true);
-            } catch {
-              // Ignore persistence errors; mode still updated for this session.
-            }
-            this.postMessage({ type: 'modeChanged', mode: this.mode });
-            this.persistActiveSession();
+            await this.setModeAndPersist(data.mode);
             break;
           case 'executePlan':
             await this.executePendingPlan(
@@ -627,4 +620,5 @@ Object.assign(ChatViewProvider.prototype, {
       .replace(/{{LOGO_URI}}/g, String(logoUri))
       .replace(/{{VERSION_SUFFIX}}/g, versionSuffix);
   },
-});
+  });
+}

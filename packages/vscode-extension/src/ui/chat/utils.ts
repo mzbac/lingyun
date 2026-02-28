@@ -1,6 +1,8 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 
+import { getPrimaryWorkspaceFolderUri } from '../../core/workspaceContext';
+
 export function getNonce(): string {
   return crypto.randomUUID().replace(/-/g, '');
 }
@@ -13,7 +15,7 @@ export function formatWorkspacePathForUI(rawPath?: string): string | undefined {
   const value = typeof rawPath === 'string' ? rawPath.trim() : '';
   if (!value) return undefined;
 
-  const workspace = vscode.workspace.workspaceFolders?.[0]?.uri;
+  const workspace = getPrimaryWorkspaceFolderUri();
   if (!workspace || workspace.scheme !== 'file') {
     return value.replace(/\\/g, '/');
   }

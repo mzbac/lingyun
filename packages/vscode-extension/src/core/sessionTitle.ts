@@ -1,7 +1,6 @@
 import { convertToModelMessages, extractReasoningMiddleware, streamText, wrapLanguageModel } from 'ai';
 import type { LLMProvider } from './types';
-import { createUserHistoryMessage } from '@kooka/core';
-import { normalizeResponsesStreamModel } from './utils/normalizeResponsesStream';
+import { createUserHistoryMessage, stripThinkBlocks } from '@kooka/core';
 
 const TITLE_SYSTEM_PROMPT = `You are a title generator. You output ONLY a thread title. Nothing else.
 
@@ -26,10 +25,6 @@ Your output must be:
 - If the user message is short or conversational (e.g. "hello"):
   output a title reflecting the tone (Greeting, Quick check-in, etc.)
 </rules>`;
-
-function stripThinkBlocks(content: string): string {
-  return content.replace(/<think>[\s\S]*?<\/think>\s*/gi, '');
-}
 
 function cleanTitleLine(raw: string, maxChars: number): string | undefined {
   const firstLine = stripThinkBlocks(String(raw || ''))
@@ -61,13 +56,8 @@ export async function generateSessionTitle(params: {
   const maxRetries = Math.max(0, Math.floor(params.maxRetries ?? 0));
 
   const rawModel = await params.llm.getModel(params.modelId);
-  const isCopilotResponsesModel =
-    params.llm.id === 'copilot' && params.modelId.trim().toLowerCase() === 'gpt-5.3-codex';
-  const routedModel = isCopilotResponsesModel
-    ? normalizeResponsesStreamModel(rawModel, { canonicalizeTextPartIds: true })
-    : rawModel;
   const model = wrapLanguageModel({
-    model: routedModel as unknown as Parameters<typeof wrapLanguageModel>[0]['model'],
+    model: rawModel as unknown as Parameters<typeof wrapLanguageModel>[0]['model'],
     middleware: [extractReasoningMiddleware({ tagName: 'think', startWithReasoning: false })],
   });
 

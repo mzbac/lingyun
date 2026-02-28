@@ -160,36 +160,39 @@
 	        const extracted = extractArgValue(rawArgsText, 'pattern');
 	        if (extracted) args.pattern = extracted;
 	      }
-	      if (!args.query && rawArgsText) {
-	        const extracted = extractArgValue(rawArgsText, 'query');
-	        if (extracted) args.query = extracted;
-	      }
+		      if (!args.query && rawArgsText) {
+		        const extracted = extractArgValue(rawArgsText, 'query');
+		        if (extracted) args.query = extracted;
+		      }
 
-	      const filePath = toolCall.path || args.filePath || args.path || '';
-	      if (toolId === 'bash' || toolId === 'shell.run' || toolId === 'shell.terminal') {
-	        if (args.description) return String(args.description);
-	        if (args.command) return 'Run: ' + String(args.command);
-	        return 'Run Command';
-	      }
-	      if (toolId === 'grep' || toolId === 'file.search') {
-	        const p = args.pattern || args.query;
-	        return p ? 'Grep "' + String(p) + '"' : 'Grep';
-	      }
-	      if (toolId === 'glob' || toolId === 'file.list') {
-	        return args.pattern ? ('Glob ' + String(args.pattern)) : (filePath ? 'List ' + filePath : 'List Files');
-	      }
-	      if (toolId === 'list') {
-	        return filePath ? 'List ' + filePath : 'List Files';
-	      }
-	      if (toolId === 'read' || toolId === 'file.read') {
-	        return filePath ? 'Read ' + filePath : 'Read File';
-	      }
-	      if (toolId === 'write' || toolId === 'edit' || toolId === 'patch' || toolId === 'file.write') {
-	        return filePath ? 'Edit ' + filePath : (toolCall.name || toolId);
-	      }
-	      if (toolCall.name) return String(toolCall.name);
-	      return toolId || 'Output';
-	    }
+		      const filePath = toolCall.path || args.filePath || args.path || '';
+		      if (toolId === 'task') {
+		        if (args.description) return String(args.description);
+		        return String(toolCall.name || toolId);
+		      }
+		      if (toolId === 'bash') {
+		        if (args.command) return 'Run: ' + String(args.command);
+		        return 'Run Command';
+		      }
+		      if (toolId === 'grep') {
+		        const p = args.pattern || args.query;
+		        return p ? 'Grep "' + String(p) + '"' : 'Grep';
+		      }
+		      if (toolId === 'glob') {
+		        return args.pattern ? ('Glob ' + String(args.pattern)) : (filePath ? 'List ' + filePath : 'List Files');
+		      }
+		      if (toolId === 'list') {
+		        return filePath ? 'List ' + filePath : 'List Files';
+		      }
+		      if (toolId === 'read' || toolId === 'read_range') {
+		        return filePath ? 'Read ' + filePath : 'Read File';
+		      }
+		      if (toolId === 'write' || toolId === 'edit') {
+		        return filePath ? 'Edit ' + filePath : (toolCall.name || toolId);
+		      }
+		      if (toolCall.name) return String(toolCall.name);
+		      return toolId || 'Output';
+		    }
 
 	    if (outputModalBackdrop) {
 	      outputModalBackdrop.addEventListener('click', () => closeOutputModal());

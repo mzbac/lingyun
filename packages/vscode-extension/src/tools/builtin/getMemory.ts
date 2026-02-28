@@ -1,4 +1,4 @@
-import { optionalNumber, optionalString } from '@kooka/core';
+import { TOOL_ERROR_CODES, optionalNumber, optionalString } from '@kooka/core';
 
 import type { ToolDefinition, ToolHandler } from '../../core/types';
 import { WorkspaceMemories, isMemoriesEnabled, readMemoryArtifacts } from '../../core/memories';
@@ -63,7 +63,7 @@ export const getMemoryHandler: ToolHandler = async (args, context) => {
         success: false,
         error:
           'Memories feature is disabled. Enable lingyun.features.memories and run "LingYun: Update Memories".',
-        metadata: { errorType: 'memory_disabled' },
+        metadata: { errorCode: TOOL_ERROR_CODES.memory_disabled },
       };
     }
 
@@ -114,7 +114,7 @@ export const getMemoryHandler: ToolHandler = async (args, context) => {
         return {
           success: false,
           error: `Rollout summary not found: ${rolloutFile}`,
-          metadata: { errorType: 'memory_rollout_missing' },
+          metadata: { errorCode: TOOL_ERROR_CODES.memory_rollout_missing },
         };
       }
 
@@ -147,7 +147,7 @@ export const getMemoryHandler: ToolHandler = async (args, context) => {
         success: false,
         error:
           'No memory artifacts found yet. Run "LingYun: Update Memories" after at least one completed session.',
-        metadata: { errorType: 'memory_missing' },
+        metadata: { errorCode: TOOL_ERROR_CODES.memory_missing },
       };
     }
 

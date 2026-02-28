@@ -1,10 +1,11 @@
 import * as assert from 'assert';
-import { ChatViewProvider } from '../../ui/chat';
+import { ChatViewProvider, installChatViewProviderMethods } from '../../ui/chat';
 import type { ChatMessage } from '../../ui/chat/types';
 
 suite('Pending plan send', () => {
   test('handleUserMessage routes to revisePendingPlan in build mode', async () => {
     const provider = Object.create(ChatViewProvider.prototype) as ChatViewProvider;
+    installChatViewProviderMethods(provider);
 
     provider.isProcessing = false;
     provider.view = {} as any;
@@ -39,4 +40,3 @@ suite('Pending plan send', () => {
     assert.strictEqual(receivedInstructions, 'User clarification');
   });
 });
-

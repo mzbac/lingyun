@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 import type { ToolDefinition, ToolHandler } from '../../core/types';
 import { getLspAdapter } from '../../core/lsp';
 import { formatDiagnosticsBlock } from '../../core/lsp/diagnostics';
-import { requireString } from '@kooka/core';
+import { TOOL_ERROR_CODES, requireString } from '@kooka/core';
 import { resolveToolPath, toPosixPath } from './workspace';
 import { assertFileWasRead, recordFileRead, withFileLock } from './fileTime';
 
@@ -69,7 +69,7 @@ export const writeHandler: ToolHandler = async (args, context) => {
               `Use the Edit tool to apply targeted changes (oldString/newString). ` +
               `If you intentionally want to replace the entire file, set overwrite=true (and ensure you have read the file first).`,
             metadata: {
-              errorType: 'write_overwrite_blocked',
+              errorCode: TOOL_ERROR_CODES.write_overwrite_blocked,
               fileExists: true,
             },
           };

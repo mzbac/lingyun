@@ -25,7 +25,7 @@
           "id": {
             "type": "string",
             "pattern": "^[a-z][a-z0-9_]*$",
-            "description": "Unique identifier (lowercase, underscores allowed)"
+            "description": "Unique identifier (lowercase, underscores allowed). Exposed to the model as workspace_<id>."
           },
           "name": {
             "type": "string",
@@ -70,7 +70,7 @@
                   "type": { "const": "shell" },
                   "script": {
                     "type": "string",
-                    "description": "Shell command to execute. Use $argName for parameters."
+                    "description": "Shell command to execute. Use ${arg:name} for tool parameters."
                   },
                   "cwd": {
                     "type": "string",
@@ -85,7 +85,7 @@
                   "type": { "const": "http" },
                   "url": {
                     "type": "string",
-                    "description": "URL to call. Use $argName for parameters."
+                    "description": "URL to call. Use ${arg:name} for tool parameters."
                   },
                   "method": {
                     "type": "string",
@@ -98,7 +98,7 @@
                   },
                   "body": {
                     "type": "string",
-                    "description": "Request body template"
+                    "description": "Request body template (use ${arg:name} for tool parameters)"
                   }
                 }
               },
@@ -113,7 +113,7 @@
                   },
                   "args": {
                     "type": "array",
-                    "description": "Command arguments. Use $argName to pass tool parameters."
+                    "description": "Command arguments. Use ${arg:name} to pass tool parameters."
                   }
                 }
               }

@@ -1,4 +1,4 @@
-import type { AgentHistoryMessage } from '@kooka/core';
+import type { AgentHistoryMessage, ToolErrorCode } from '@kooka/core';
 
 export interface ToolParameterSchema {
   type: 'string' | 'number' | 'boolean' | 'array' | 'object';
@@ -91,6 +91,13 @@ export interface ToolResult {
   metadata?: Record<string, unknown> & {
     duration?: number;
     truncated?: boolean;
+    /**
+     * Stable, machine-readable error code used by UIs and hosts.
+     */
+    errorCode?: ToolErrorCode;
+    /**
+     * Optional free-form error type for debugging (e.g. exception class name).
+     */
     errorType?: string;
     stack?: string;
     /**
@@ -127,6 +134,11 @@ export interface LLMProvider {
   readonly id: string;
   readonly name: string;
   getModel(modelId: string): Promise<unknown>;
+  /**
+   * Optional hook invoked after a provider request fails (non-retryable).
+   * Providers can use this to clear cached clients/tokens so the next request can recover.
+   */
+  onRequestError?(error: unknown, context: { modelId: string; mode: 'plan' | 'build' }): void;
   dispose?(): void;
 }
 
@@ -157,6 +169,20 @@ export interface AgentConfig {
   sessionId?: string;
 }
 
+/**
+ * Optional host callbacks for UI/telemetry.
+ *
+ * Callback semantics:
+ * - All callbacks are treated as best-effort hooks.
+ * - The runtime catches and ignores synchronous throws.
+ * - If a callback returns a Promise, the runtime catches and ignores rejections.
+ * - Callback failures may be reported via `onDebug`, without including the original error message.
+ *
+ * Notes:
+ * - `onRequestApproval` is awaited and controls whether an action proceeds; errors are treated as denial.
+ * - Other callbacks may be awaited internally (e.g. iteration/compaction hooks) to allow async hosts,
+ *   but failures never crash the agent loop.
+ */
 export interface AgentCallbacks {
   onIterationStart?: (iteration: number) => void | Promise<void>;
   onIterationEnd?: (iteration: number) => void | Promise<void>;
@@ -185,7 +211,7 @@ export interface AgentCallbacks {
    * Token stream for model reasoning (<think> sections) with tool-call blocks removed.
    */
   onThoughtToken?: (token: string) => void;
-  onToolCall?: (tool: ToolCall, definition: ToolDefinition) => void;
+  onToolCall?: (tool: ToolCall, definition: ToolDefinition) => void | Promise<void>;
   onToolBlocked?: (tool: ToolCall, definition: ToolDefinition, reason: string) => void;
   onToolResult?: (tool: ToolCall, result: ToolResult) => void;
   onRequestApproval?: (tool: ToolCall, definition: ToolDefinition) => Promise<boolean>;

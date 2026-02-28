@@ -2,6 +2,7 @@ import * as assert from 'assert';
 import * as vscode from 'vscode';
 
 import type { ToolContext } from '../../core/types';
+import { TOOL_ERROR_CODES } from '@kooka/core';
 import { getMemoryHandler } from '../../tools/builtin/getMemory';
 
 function createToolContext(params: { storageRoot: vscode.Uri }): ToolContext {
@@ -75,7 +76,10 @@ suite('Memory Tool', () => {
         context,
       );
       assert.strictEqual(missingRollout.success, false);
-      assert.strictEqual((missingRollout.metadata as any)?.errorType, 'memory_rollout_missing');
+      assert.strictEqual(
+        (missingRollout.metadata as any)?.errorCode,
+        TOOL_ERROR_CODES.memory_rollout_missing,
+      );
     } finally {
       if (prevMemoryRoot === undefined) {
         delete process.env.LINGYUN_MEMORIES_DIR;

@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import type { ChatMessage } from './types';
-import { ChatViewProvider } from '../chat';
+import type { ChatViewProvider } from '../chat';
 
 const ASSUMPTIONS_HEADING = '## Assumptions (auto)';
 const ASSUMPTIONS_NOTE =
@@ -16,7 +16,8 @@ function appendAssumptionsToPlan(plan: string): string {
   return `${text}\n\n${ASSUMPTIONS_NOTE.trimEnd()}`;
 }
 
-Object.assign(ChatViewProvider.prototype, {
+export function installRunnerPlanMethods(view: ChatViewProvider): void {
+  Object.assign(view, {
   async executePendingPlan(this: ChatViewProvider, planMessageId?: string): Promise<void> {
     if (this.isProcessing || !this.pendingPlan || !this.view) {
       if (!this.view) return;
@@ -58,17 +59,9 @@ Object.assign(ChatViewProvider.prototype, {
       planMsg.plan = { status: 'draft' };
     }
 
-    const switchedToBuild = this.mode === 'plan';
-    if (this.mode === 'plan') {
-      this.mode = 'build';
-      this.agent.setMode('build');
-      try {
-        await vscode.workspace.getConfiguration('lingyun').update('mode', 'build', true);
-      } catch {
-        // Non-fatal: still execute the plan in Build mode.
-      }
-      this.postMessage({ type: 'modeChanged', mode: 'build' });
-    }
+    const previousMode = this.mode;
+    await this.setModeAndPersist('build');
+    const switchedToBuild = previousMode === 'plan';
 
     this.isProcessing = true;
     this.autoApproveThisRun = false;
@@ -92,9 +85,7 @@ Object.assign(ChatViewProvider.prototype, {
             : planMsg.content;
         if (basePlan && basePlan.trim()) {
           state.pendingPlan = appendAssumptionsToPlan(basePlan);
-          this.agent.importState(state);
-          this.agent.updateConfig({ model: this.currentModel, mode: this.mode });
-          this.agent.setMode(this.mode);
+          this.agent.syncSession({ state, model: this.currentModel, mode: this.mode });
         }
       }
 
@@ -113,14 +104,7 @@ Object.assign(ChatViewProvider.prototype, {
       });
 
       if (switchedToBuild) {
-        this.mode = 'plan';
-        this.agent.setMode('plan');
-        try {
-          await vscode.workspace.getConfiguration('lingyun').update('mode', 'plan', true);
-        } catch {
-          // Ignore config persistence failures
-        }
-        this.postMessage({ type: 'modeChanged', mode: 'plan' });
+        await this.setModeAndPersist('plan');
       }
 
       const message = error instanceof Error ? error.message : String(error);
@@ -389,4 +373,5 @@ Object.assign(ChatViewProvider.prototype, {
       this.persistActiveSession();
     }
   },
-});
+  });
+}

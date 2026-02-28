@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 
 import type { ToolDefinition, ToolHandler } from '../../core/types';
-import { optionalString, redactFsPathForPrompt } from '@kooka/core';
+import { TOOL_ERROR_CODES, optionalString, redactFsPathForPrompt } from '@kooka/core';
 import { getSkillIndex, loadSkillFile } from '../../core/skills';
 
 export const skillTool: ToolDefinition = {
@@ -126,7 +126,7 @@ export const skillHandler: ToolHandler = async (args, context) => {
       error:
         'External paths are disabled. Enable lingyun.security.allowExternalPaths to load skills outside the current workspace.',
       metadata: {
-        errorType: 'external_paths_disabled',
+        errorCode: TOOL_ERROR_CODES.external_paths_disabled,
         blockedSettingKey: 'lingyun.security.allowExternalPaths',
         isOutsideWorkspace: true,
       },

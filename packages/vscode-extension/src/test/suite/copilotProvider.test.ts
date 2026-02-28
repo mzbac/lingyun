@@ -34,6 +34,54 @@ suite('CopilotProvider', () => {
     }
   });
 
+  test('responses model is normalized for stream protocol quirks', async () => {
+    const provider = new CopilotProvider({
+      createResponsesModel: ({ modelId }: any) => {
+        return {
+          specificationVersion: 'v3',
+          provider: 'copilot',
+          modelId,
+          supportedUrls: {},
+          doGenerate: async () => {
+            throw new Error('Not implemented');
+          },
+          doStream: async () => {
+            const stream = new ReadableStream({
+              start(controller) {
+                controller.enqueue({ type: 'text-delta', id: 't0', delta: 'H' });
+                controller.enqueue({ type: 'text-end', id: 't0' });
+                controller.enqueue({ type: 'finish', finishReason: { unified: 'stop', raw: 'stop' }, usage: {} });
+                controller.close();
+              },
+            });
+            return { stream } as any;
+          },
+        };
+      },
+    });
+
+    (provider as any).ensureProvider = async () => {
+      (provider as any).provider = { chatModel: () => ({ type: 'chat' }) };
+      (provider as any).cachedProviderToken = 'test-token';
+      (provider as any).cachedProviderEditorVersion = `vscode/${vscode.version}`;
+      const ext = vscode.extensions.getExtension('mzbac.lingyun');
+      (provider as any).cachedProviderPluginVersion = `lingyun/${ext?.packageJSON?.version ?? '0.0.0'}`;
+    };
+
+    try {
+      const model = (await provider.getModel('gpt-5.3-codex')) as any;
+      const result = await model.doStream({});
+      const reader = result.stream.getReader();
+      const first = await reader.read();
+      const second = await reader.read();
+
+      assert.strictEqual(first.value?.type, 'text-start');
+      assert.strictEqual(second.value?.type, 'text-delta');
+    } finally {
+      provider.dispose();
+    }
+  });
+
   test('uses chat model path for other GPT-5 models', async () => {
     const provider = new CopilotProvider();
     let chatCalls = 0;

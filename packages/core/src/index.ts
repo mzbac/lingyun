@@ -5,6 +5,22 @@ export { expandHome, isSubPath, normalizeFsPath, redactFsPathForPrompt } from '.
 export type { PermissionAction, PermissionRule, PermissionRuleset } from './permission';
 export { evaluatePermission, mergeRulesets, wildcardMatch } from './permission';
 
+export { isCopilotResponsesModelId } from './copilot';
+
+export {
+  THINK_BLOCK_REGEX,
+  TOOL_BLOCK_REGEX,
+  stripThinkBlocks,
+  stripToolBlocks,
+} from './agentText';
+
+export { extractPlanFromReasoning } from './plan';
+
+export { getDefaultLingyunPermissionRuleset } from './lingyunPermissions';
+
+export type { ToolCall } from './toolCall';
+export { toToolCall } from './toolCall';
+
 export { findExternalPathReferencesInShellCommand, isPathInsideWorkspace } from './shellPaths';
 
 export type { SafeChildProcessEnvOptions } from './shellEnv';
@@ -12,6 +28,15 @@ export { buildSafeChildProcessEnv } from './shellEnv';
 
 export type { SkillListEntry } from './skills';
 export { extractSkillMentions, renderSkillsSectionForPrompt, selectSkillsForText } from './skills';
+
+export type { SkillInfo, SkillIndex } from './skillIndex';
+export { getSkillIndex, invalidateSkillIndexCache, loadSkillFile, parseSkillMarkdown } from './skillIndex';
+
+export type { ToolPathErrorCode } from './toolPaths';
+export { BINARY_EXTENSIONS, containsBinaryData, isToolPathError, resolveToolPath, ToolPathError, toPosixPath } from './toolPaths';
+
+export type { ToolErrorCode } from './toolErrors';
+export { TOOL_ERROR_CODES } from './toolErrors';
 
 export type { SubagentDefinition, SubagentName } from './subagents';
 export { listBuiltinSubagents, resolveBuiltinSubagent } from './subagents';

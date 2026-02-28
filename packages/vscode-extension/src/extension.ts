@@ -22,6 +22,8 @@ import { PluginManager } from './core/hooks/pluginManager';
 import { PluginToolProvider } from './core/hooks/pluginToolProvider';
 import { getSkillIndex } from './core/skills';
 import { WorkspaceMemories, getMemoriesConfig } from './core/memories';
+import { redactSensitive, summarizeToolArgsForDebug } from './core/agent/debug';
+import { getPrimaryWorkspaceFolderUri, getPrimaryWorkspaceRootPath } from './core/workspaceContext';
 
 import { ChatViewProvider } from './ui/chat';
 import { LingyunDiffContentProvider, LINGYUN_DIFF_SCHEME } from './ui/chat/diffContentProvider';
@@ -179,7 +181,7 @@ async function warmSkillIndexOnStartup(context: vscode.ExtensionContext): Promis
   const enabled = getConfig<boolean>('skills.enabled') ?? true;
   if (!enabled) return;
 
-  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  const workspaceRoot = getPrimaryWorkspaceRootPath();
   if (!workspaceRoot) return;
 
   const allowExternalPaths = getConfig<boolean>('security.allowExternalPaths') ?? false;
@@ -224,6 +226,7 @@ export async function activate(
 ): Promise<LingyunAPI> {
   extensionState = new ExtensionState();
 
+  toolRegistry.setExtensionContext(context);
   extensionState.outputChannel = vscode.window.createOutputChannel('LingYun');
   log('Activating LingYun...');
 
@@ -354,9 +357,7 @@ export async function activate(
           e.affectsConfiguration('lingyun.memories.maxRolloutAgeDays') ||
           e.affectsConfiguration('lingyun.memories.maxRolloutsPerStartup') ||
           e.affectsConfiguration('lingyun.memories.minRolloutIdleHours') ||
-          e.affectsConfiguration('lingyun.memories.maxStateOutputs') ||
-          e.affectsConfiguration('lingyun.memories.phase1Model') ||
-          e.affectsConfiguration('lingyun.memories.phase2Model');
+          e.affectsConfiguration('lingyun.memories.maxStateOutputs');
 
         if (providerChanged) {
           initializeLLMAndAgent(context).catch(err => {
@@ -427,7 +428,7 @@ function createAPI(): LingyunAPI {
       const tokenSource = new vscode.CancellationTokenSource();
       try {
         const context = {
-          workspaceFolder: vscode.workspace.workspaceFolders?.[0]?.uri,
+          workspaceFolder: getPrimaryWorkspaceFolderUri(),
           activeEditor: vscode.window.activeTextEditor,
           extensionContext: {} as vscode.ExtensionContext,
           cancellationToken: tokenSource.token,
@@ -642,12 +643,12 @@ async function cmdRunTool(): Promise<void> {
 
   extensionState?.outputChannel?.show();
   log(`\nRunning ${tool.name}...`);
-  log(`Args: ${JSON.stringify(args)}`);
+  log(`Args: ${summarizeToolArgsForDebug(args)}`);
 
   const tokenSource = new vscode.CancellationTokenSource();
   try {
     const context = {
-      workspaceFolder: vscode.workspace.workspaceFolders?.[0]?.uri,
+      workspaceFolder: getPrimaryWorkspaceFolderUri(),
       activeEditor: vscode.window.activeTextEditor,
       extensionContext: {} as vscode.ExtensionContext,
       cancellationToken: tokenSource.token,
@@ -674,7 +675,7 @@ function getConfig<T>(key: string): T | undefined {
 
 function log(message: string): void {
   const timestamp = new Date().toLocaleTimeString();
-  extensionState?.outputChannel?.appendLine(`[${timestamp}] ${message}`);
+  extensionState?.outputChannel?.appendLine(`[${timestamp}] ${redactSensitive(message)}`);
 }
 
 async function maybeWarnSessionPersistence(context: vscode.ExtensionContext): Promise<void> {

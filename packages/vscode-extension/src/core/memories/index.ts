@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 
 import { SessionStore } from '../sessionStore';
+import { getPrimaryWorkspaceRootPath } from '../workspaceContext';
 
 const STATE_VERSION = 1;
 const STORAGE_DIR_NAME = 'memories';
@@ -19,8 +20,6 @@ const DEFAULT_MAX_ROLLOUT_AGE_DAYS = 30;
 const DEFAULT_MAX_ROLLOUTS_PER_STARTUP = 24;
 const DEFAULT_MIN_ROLLOUT_IDLE_HOURS = 2;
 const DEFAULT_MAX_STATE_OUTPUTS = 500;
-const DEFAULT_PHASE1_MODEL = 'gpt-5.1-codex-mini';
-const DEFAULT_PHASE2_MODEL = 'gpt-5.3-codex';
 
 export type PersistedSessionMessage = {
   role?: string;
@@ -79,8 +78,6 @@ export type MemoriesConfig = {
   maxRolloutsPerStartup: number;
   minRolloutIdleHours: number;
   maxStateOutputs: number;
-  phase1Model: string;
-  phase2Model: string;
 };
 
 export type MemoryUpdateResult = {
@@ -120,13 +117,6 @@ function getNumberConfig(key: string, fallback: number, min: number, max: number
 
   if (!Number.isFinite(parsed as number)) return fallback;
   return Math.min(max, Math.max(min, Math.floor(parsed as number)));
-}
-
-function getStringConfig(key: string, fallback: string): string {
-  const raw = vscode.workspace.getConfiguration('lingyun').get<string>(key);
-  if (typeof raw !== 'string') return fallback;
-  const trimmed = raw.trim();
-  return trimmed || fallback;
 }
 
 function expandTilde(input: string): string {
@@ -185,8 +175,6 @@ export function getMemoriesConfig(): MemoriesConfig {
       24 * 30,
     ),
     maxStateOutputs: getNumberConfig('memories.maxStateOutputs', DEFAULT_MAX_STATE_OUTPUTS, 10, 5000),
-    phase1Model: getStringConfig('memories.phase1Model', DEFAULT_PHASE1_MODEL),
-    phase2Model: getStringConfig('memories.phase2Model', DEFAULT_PHASE2_MODEL),
   };
 }
 
@@ -611,7 +599,7 @@ export class WorkspaceMemories {
     const prev = await this.readState();
     const prevBySession = new Map(prev.outputs.map(output => [output.sessionId, output]));
     const workspaceRootPath =
-      workspaceFolder?.fsPath ?? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
+      workspaceFolder?.fsPath ?? getPrimaryWorkspaceRootPath() ?? '';
 
     let skippedRecentSessions = 0;
     let skippedPlanOrSubagentSessions = 0;

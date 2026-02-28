@@ -2,7 +2,7 @@ import * as assert from 'assert';
 import * as vscode from 'vscode';
 
 import type { ToolContext } from '../../core/types';
-import { killProcessTree } from '@kooka/core';
+import { killProcessTree, TOOL_ERROR_CODES } from '@kooka/core';
 import { bashHandler } from '../../tools/builtin/bash';
 
 function createToolContext(): ToolContext {
@@ -26,7 +26,7 @@ suite('Bash Tool', () => {
       const context = createToolContext();
       const res = await bashHandler({ command: 'git push origin main' }, context);
       assert.strictEqual(res.success, false);
-      assert.strictEqual((res.metadata as any)?.errorType, 'bash_git_push_blocked');
+      assert.strictEqual((res.metadata as any)?.errorCode, TOOL_ERROR_CODES.bash_git_push_blocked);
     } finally {
       await cfg.update('security.blockGitPush', prev as any, true);
     }
@@ -50,7 +50,10 @@ suite('Bash Tool', () => {
     const context = createToolContext();
     const res = await bashHandler({ command: 'python -m http.server' }, context);
     assert.strictEqual(res.success, false);
-    assert.strictEqual((res.metadata as any)?.errorType, 'bash_requires_background_or_timeout');
+    assert.strictEqual(
+      (res.metadata as any)?.errorCode,
+      TOOL_ERROR_CODES.bash_requires_background_or_timeout
+    );
   });
 
   test('supports background mode without blocking', async () => {

@@ -1,5 +1,6 @@
 import * as crypto from 'crypto';
 import type { ToolResult } from '../types';
+import { TOOL_ERROR_CODES } from '@kooka/core';
 
 export function truncateForDebug(value: string, max = 500): string {
   const text = String(value ?? '');
@@ -122,14 +123,16 @@ export function summarizeErrorForDebug(error: unknown): string {
 }
 
 export function formatToolFailureForDebug(result: ToolResult): string {
+  const errorCode = result.metadata?.errorCode ? String(result.metadata.errorCode) : '';
   const errorType = result.metadata?.errorType ? String(result.metadata.errorType) : '';
+  const label = errorCode || errorType;
   const errorRaw = result.error ? String(result.error) : 'Unknown error';
   const error = truncateForDebug(redactSensitive(errorRaw), 500);
 
   const extra: string[] = [];
   if (result.metadata && typeof result.metadata === 'object') {
     const meta = result.metadata as Record<string, unknown>;
-    if (errorType === 'external_paths_disabled') {
+    if (label === TOOL_ERROR_CODES.external_paths_disabled) {
       const settingKey = typeof meta.blockedSettingKey === 'string' ? meta.blockedSettingKey : '';
       if (settingKey) extra.push(`setting=${settingKey}`);
 
@@ -146,7 +149,7 @@ export function formatToolFailureForDebug(result: ToolResult): string {
       }
     }
   }
-  if (errorType.startsWith('edit_') && result.metadata) {
+  if (label.startsWith('edit_') && result.metadata) {
     const meta = result.metadata as Record<string, unknown>;
     const oldLen = typeof meta.oldStringLength === 'number' ? meta.oldStringLength : undefined;
     const sha = typeof meta.oldStringSha256 === 'string' ? meta.oldStringSha256 : undefined;
@@ -167,7 +170,7 @@ export function formatToolFailureForDebug(result: ToolResult): string {
     }
   }
 
-  const parts = [errorType, truncateForDebug(error, 500), extra.length ? `(${extra.join(' ')})` : ''].filter(Boolean);
+  const parts = [label, truncateForDebug(error, 500), extra.length ? `(${extra.join(' ')})` : ''].filter(Boolean);
   return parts.join(': ');
 }
 
