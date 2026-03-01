@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import type { ModelInfo } from '../../providers/copilot';
+import { appendErrorLog } from '../../core/logger';
 import type { ChatController } from './controller';
 
 const MAX_RECENT_MODELS = 10;
@@ -91,7 +92,7 @@ export function installModelsMethods(controller: ChatController): void {
         this.availableModels = [{ id: fallback, name: fallback, vendor: 'local', family: 'unknown' }];
       }
     } catch (error) {
-      console.error('Failed to load models:', error);
+      appendErrorLog(this.outputChannel, 'Failed to load models', error, { tag: 'Models' });
       const fallback = this.currentModel || 'gpt-4o';
       this.availableModels = [{ id: fallback, name: fallback, vendor: 'local', family: 'unknown' }];
     }
@@ -110,7 +111,9 @@ export function installModelsMethods(controller: ChatController): void {
       try {
         await vscode.workspace.getConfiguration('lingyun').update('model', this.currentModel, true);
       } catch (error) {
-        console.error('Failed to persist model setting:', error);
+        appendErrorLog(this.outputChannel, 'Failed to persist model setting', error, {
+          tag: 'Models',
+        });
       }
     }
 
@@ -188,7 +191,9 @@ export function installModelsMethods(controller: ChatController): void {
     try {
       await vscode.workspace.getConfiguration('lingyun').update('model', id, true);
     } catch (error) {
-      console.error('Failed to persist model setting:', error);
+      appendErrorLog(this.outputChannel, 'Failed to persist model setting', error, {
+        tag: 'Models',
+      });
     }
 
     await this.recordRecentModel(id);

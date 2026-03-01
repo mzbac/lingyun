@@ -43,6 +43,7 @@ import { FileHandleRegistry } from './fileHandles.js';
 import { compactSessionInternal } from './compaction.js';
 import { executeToolWithPolicies } from './toolExecution.js';
 import { runOnce as runOnceLoop } from './runOnce.js';
+import { snapshotSession } from '../persistence/sessionSnapshot.js';
 
 import { AsyncQueue } from './asyncQueue.js';
 import { invokeCallbackSafely } from './callbacks.js';
@@ -636,16 +637,10 @@ export class LingyunAgent {
                       ? { model_warning: childModelWarning, requested_model_id: desiredChildModelId }
                       : {}),
                   },
-                  childSession: {
+                  childSession: snapshotSession(childSession, {
                     sessionId: childSessionId,
-                    parentSessionId,
-                    subagentType: subagent.name,
-                    modelId: childModelId,
-                    history: childSession.getHistory(),
-                    pendingPlan: childSession.pendingPlan,
-                    fileHandles: childSession.fileHandles,
-                    semanticHandles: childSession.semanticHandles,
-                  },
+                    includeFileHandles: true,
+                  }),
                 },
               };
             } catch (error) {

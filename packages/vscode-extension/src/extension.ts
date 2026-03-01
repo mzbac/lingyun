@@ -129,7 +129,7 @@ function createLLMProviderFromConfig(): LLMProvider {
       vscode.window.showWarningMessage(
         'LingYun: openaiCompatible provider selected but lingyun.openaiCompatible.baseURL is not set. Falling back to Copilot.'
       );
-      return new CopilotProvider();
+      return new CopilotProvider({ outputChannel: extensionState?.outputChannel });
     }
 
     const apiKeyEnv = getConfig<string>('openaiCompatible.apiKeyEnv') || 'OPENAI_API_KEY';
@@ -160,7 +160,7 @@ function createLLMProviderFromConfig(): LLMProvider {
   }
 
   log('Using GitHub Copilot provider');
-  return new CopilotProvider();
+  return new CopilotProvider({ outputChannel: extensionState?.outputChannel });
 }
 
 async function initializeLLMAndAgent(context: vscode.ExtensionContext): Promise<void> {
@@ -243,7 +243,7 @@ export async function activate(
 
   log(`Registered ${await toolRegistry.getToolCount()} built-in tools`);
 
-  extensionState.workspaceProvider = new WorkspaceToolProvider(context);
+  extensionState.workspaceProvider = new WorkspaceToolProvider(context, extensionState.outputChannel);
   await extensionState.workspaceProvider.initialize();
   extensionState.addDisposable(toolRegistry.registerProvider(extensionState.workspaceProvider));
 

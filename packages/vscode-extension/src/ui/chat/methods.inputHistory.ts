@@ -4,6 +4,7 @@ import {
   DEFAULT_INPUT_HISTORY_MAX_ENTRIES,
   DEFAULT_INPUT_HISTORY_MAX_ENTRY_CHARS,
 } from '../../core/inputHistoryStore';
+import { appendErrorLog } from '../../core/logger';
 import type { ChatController } from './controller';
 
 export function installInputHistoryMethods(controller: ChatController): void {
@@ -45,7 +46,9 @@ export function installInputHistoryMethods(controller: ChatController): void {
           }
         }
       } catch (error) {
-        console.error('Failed to load input history:', error);
+        appendErrorLog(this.outputChannel, 'Failed to load input history', error, {
+          tag: 'InputHistory',
+        });
       } finally {
         this.inputHistoryLoadedFromDisk = true;
       }

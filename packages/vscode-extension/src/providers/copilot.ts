@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import { isCopilotResponsesModelId } from '@kooka/core';
 import type { LLMProvider } from '../core/types';
+import { appendErrorLog } from '../core/logger';
 import { normalizeResponsesStreamModel } from '../core/utils/normalizeResponsesStream';
 import { createCopilotResponsesModel } from './copilotResponsesModel';
 
@@ -28,6 +29,7 @@ export class CopilotProvider implements LLMProvider {
   readonly name = 'GitHub Copilot';
 
   private readonly createResponsesModel: typeof createCopilotResponsesModel;
+  private readonly outputChannel?: vscode.OutputChannel;
 
   private copilotToken: string | null = null;
   private tokenExpiry: number = 0;
@@ -40,8 +42,9 @@ export class CopilotProvider implements LLMProvider {
     | ReturnType<typeof createOpenAICompatible>
     | null = null;
 
-  constructor(options?: { createResponsesModel?: typeof createCopilotResponsesModel }) {
+  constructor(options?: { createResponsesModel?: typeof createCopilotResponsesModel; outputChannel?: vscode.OutputChannel }) {
     this.createResponsesModel = options?.createResponsesModel ?? createCopilotResponsesModel;
+    this.outputChannel = options?.outputChannel;
   }
 
   private getEditorVersionHeader(): string {
@@ -185,7 +188,12 @@ export class CopilotProvider implements LLMProvider {
         return this.cachedModels;
       }
     } catch (error) {
-      console.log('VSCode LM API not available:', error);
+      const debug = vscode.workspace.getConfiguration('lingyun').get<boolean>('debug.llm') ?? false;
+      if (debug) {
+        appendErrorLog(this.outputChannel, 'VSCode LM API not available (falling back to model list)', error, {
+          tag: 'Copilot',
+        });
+      }
     }
 
     this.cachedModels = Object.values(FALLBACK_MODELS).map(id => ({

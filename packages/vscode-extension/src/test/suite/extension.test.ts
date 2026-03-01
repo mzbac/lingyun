@@ -163,7 +163,7 @@ suite('Workspace Tools Config', () => {
     const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     assert.ok(workspaceRoot, 'expected a workspace root');
 
-    const provider = new WorkspaceToolProvider({} as any);
+    const provider = new WorkspaceToolProvider({} as any, undefined);
     (provider as any).variables = { API_BASE: 'https://api.example.com' };
 
     const execution = {

@@ -4,6 +4,7 @@ import { getModelLimit } from '../../core/compaction';
 import { getMessageText } from '@kooka/core';
 import { SessionStore } from '../../core/sessionStore';
 import { createBlankSessionSignals, normalizeSessionSignals } from '../../core/sessionSignals';
+import { appendErrorLog } from '../../core/logger';
 import type { ChatMessage, ChatSessionInfo } from './types';
 import { formatErrorForUser } from './utils';
 import { createDefaultSessionTitle } from './sessionTitle';
@@ -123,7 +124,7 @@ export function installSessionsMethods(controller: ChatController): void {
     this.sessionSaveTimer = setTimeout(() => {
       this.sessionSaveTimer = undefined;
       void this.flushSessionSave().catch(error => {
-        console.error('Failed to persist sessions:', error);
+        appendErrorLog(this.outputChannel, 'Failed to persist sessions', error, { tag: 'Sessions' });
       });
     }, delayMs);
   },
@@ -256,7 +257,6 @@ export function installSessionsMethods(controller: ChatController): void {
 
     return {
       history,
-      pendingPlan: typeof state.pendingPlan === 'string' ? state.pendingPlan : undefined,
       fileHandles,
       semanticHandles,
     };
@@ -348,7 +348,9 @@ export function installSessionsMethods(controller: ChatController): void {
 
         this.recoverInterruptedSessions();
       } catch (error) {
-        console.error('Failed to load persisted sessions:', error);
+        appendErrorLog(this.outputChannel, 'Failed to load persisted sessions', error, {
+          tag: 'Sessions',
+        });
       } finally {
         this.sessionsLoadedFromDisk = true;
       }
@@ -362,7 +364,6 @@ export function installSessionsMethods(controller: ChatController): void {
   getBlankAgentState(this: ChatController): AgentSessionState {
     return {
       history: [],
-      pendingPlan: undefined,
       fileHandles: { nextId: 1, byId: {} },
       semanticHandles: {
         nextMatchId: 1,
@@ -460,7 +461,6 @@ export function installSessionsMethods(controller: ChatController): void {
     session.mode = this.mode;
     session.stepCounter = this.stepCounter;
     session.activeStepId = this.activeStepId;
-    session.pendingPlan = this.pendingPlan;
     session.runtime = { wasRunning: this.isProcessing, updatedAt: Date.now() };
     this.markSessionDirty(session.id);
   },
@@ -533,7 +533,6 @@ export function installSessionsMethods(controller: ChatController): void {
     this.activeSessionId = sessionId;
     this.messages = session.messages;
     this.signals = session.signals;
-    this.pendingPlan = session.pendingPlan;
     this.stepCounter = session.stepCounter;
     this.activeStepId = session.activeStepId;
     this.currentModel = session.currentModel;
@@ -556,7 +555,6 @@ export function installSessionsMethods(controller: ChatController): void {
   ): Promise<void> {
     this.agent = agent;
     this.llmProvider = llmProvider;
-    this.pendingPlan = undefined;
     this.isProcessing = false;
     this.availableModels = [];
     this.currentModel = vscode.workspace.getConfiguration('lingyun').get('model') || this.currentModel;
@@ -613,7 +611,6 @@ export function installSessionsMethods(controller: ChatController): void {
     this.stepCounter = 0;
     this.activeStepId = undefined;
     this.abortRequested = false;
-    this.pendingPlan = undefined;
 
     this.postMessage({ type: 'cleared' });
     this.postMessage({ type: 'planPending', value: false, planMessageId: '' });

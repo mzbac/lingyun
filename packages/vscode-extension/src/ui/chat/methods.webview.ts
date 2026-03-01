@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { readTodos } from '../../core/todo';
+import { appendErrorLog, appendLog } from '../../core/logger';
 import { getNonce } from './utils';
 import { getWorkspaceFolderUrisByPriority, resolveExistingFilePath } from './fileLinks';
 import type { ChatImageAttachment, ChatUserInput } from './types';
@@ -354,7 +355,6 @@ export function installWebviewMethods(controller: ChatController): void {
             this.stepCounter = 0;
             this.activeStepId = undefined;
             this.abortRequested = false;
-            this.pendingPlan = undefined;
             this.postMessage({ type: 'cleared' });
             this.postMessage({ type: 'planPending', value: false, planMessageId: '' });
             this.persistActiveSession();
@@ -407,9 +407,12 @@ export function installWebviewMethods(controller: ChatController): void {
               break;
             }
             if (data.mode !== 'plan' && data.mode !== 'build') break;
-            if (data.mode === 'build' && this.pendingPlan) {
-              await this.executePendingPlan(this.pendingPlan.planMessageId);
-              break;
+            if (data.mode === 'build') {
+              const pendingPlan = this.getActiveSession().pendingPlan;
+              if (pendingPlan) {
+                await this.executePendingPlan(pendingPlan.planMessageId);
+                break;
+              }
             }
             await this.setModeAndPersist(data.mode);
             break;
@@ -419,7 +422,7 @@ export function installWebviewMethods(controller: ChatController): void {
             );
             break;
           case 'cancelPlan':
-            if (this.pendingPlan?.planMessageId === data.planMessageId) {
+            if (this.getActiveSession().pendingPlan?.planMessageId === data.planMessageId) {
               const choice = await vscode.window.showWarningMessage(
                 'Cancel this plan?',
                 { modal: true },
@@ -430,8 +433,11 @@ export function installWebviewMethods(controller: ChatController): void {
             await this.cancelPendingPlan(data.planMessageId);
             break;
           case 'revisePlan':
-            if (!this.pendingPlan) return;
-            if (this.pendingPlan.planMessageId !== data.planMessageId) return;
+            {
+              const pendingPlan = this.getActiveSession().pendingPlan;
+              if (!pendingPlan) return;
+              if (pendingPlan.planMessageId !== data.planMessageId) return;
+            }
 
             if (typeof data.instructions === 'string' && data.instructions.trim()) {
               await this.revisePendingPlan(data.planMessageId, data.instructions);
@@ -470,7 +476,10 @@ export function installWebviewMethods(controller: ChatController): void {
           case 'webviewError': {
             const errorText =
               typeof data.error === 'string' ? data.error : JSON.stringify(data.error, null, 2);
-            console.error('LingYun webview error:', errorText);
+            appendLog(this.outputChannel, `Webview error: ${errorText}`, {
+              level: 'error',
+              tag: 'Webview',
+            });
             if (!this.webviewErrorShown) {
               this.webviewErrorShown = true;
               void vscode.window.showErrorMessage(
@@ -529,8 +538,8 @@ export function installWebviewMethods(controller: ChatController): void {
         currentModelLabel: modelLabel,
         currentModelIsFavorite,
         mode: this.mode,
-        planPending: !!this.pendingPlan,
-        activePlanMessageId: this.pendingPlan?.planMessageId ?? '',
+        planPending: !!this.getActiveSession().pendingPlan,
+        activePlanMessageId: this.getActiveSession().pendingPlan?.planMessageId ?? '',
         processing: this.isProcessing,
         pendingApprovals: this.pendingApprovals.size,
         autoApproveThisRun: this.autoApproveThisRun,
@@ -538,7 +547,7 @@ export function installWebviewMethods(controller: ChatController): void {
         ...this.getUndoRedoAvailability(),
       });
     } catch (error) {
-      console.error('Failed to send init:', error);
+      appendErrorLog(this.outputChannel, 'Failed to send init', error, { tag: 'Webview' });
 
       const fallback = this.currentModel || 'gpt-4o';
       this.currentModel = fallback;
@@ -563,11 +572,11 @@ export function installWebviewMethods(controller: ChatController): void {
           context: this.getContextForUI(),
           todos,
           currentModel: this.currentModel,
-          currentModelLabel: modelLabel,
-          currentModelIsFavorite,
-          mode: this.mode,
-          planPending: !!this.pendingPlan,
-          activePlanMessageId: this.pendingPlan?.planMessageId ?? '',
+        currentModelLabel: modelLabel,
+        currentModelIsFavorite,
+        mode: this.mode,
+          planPending: !!this.getActiveSession().pendingPlan,
+          activePlanMessageId: this.getActiveSession().pendingPlan?.planMessageId ?? '',
           processing: this.isProcessing,
           pendingApprovals: this.pendingApprovals.size,
           autoApproveThisRun: this.autoApproveThisRun,
@@ -575,7 +584,9 @@ export function installWebviewMethods(controller: ChatController): void {
           ...this.getUndoRedoAvailability(),
         });
       } catch (postError) {
-        console.error('Failed to post init fallback:', postError);
+        appendErrorLog(this.outputChannel, 'Failed to post init fallback', postError, {
+          tag: 'Webview',
+        });
       }
     } finally {
       this.initInFlight = false;

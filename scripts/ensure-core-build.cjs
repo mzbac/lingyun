@@ -37,7 +37,7 @@ function run(command) {
   execSync(command, { stdio: 'inherit' });
 }
 
-const coreDir = path.resolve(__dirname, '../../core');
+const coreDir = path.resolve(__dirname, '../packages/core');
 const coreSrcDir = path.join(coreDir, 'src');
 const newestCoreSourceMtimeMs = fileExists(coreSrcDir) ? getNewestMtimeMs(coreSrcDir) : 0;
 const coreOutputs = {
@@ -58,7 +58,7 @@ const required = [...new Set([...missing, ...stale])];
 
 if (required.length === 0) process.exit(0);
 
-console.log(`[agent-sdk] Building @kooka/core outputs: ${required.join(', ')}`);
+console.log(`[ensure-core-build] Building @kooka/core outputs: ${required.join(', ')}`);
 
 if (required.includes('types')) run('pnpm -w --filter @kooka/core build:types');
 if (required.includes('esm')) run('pnpm -w --filter @kooka/core build:esm');
@@ -69,6 +69,7 @@ const stillMissing = Object.entries(coreOutputs)
   .map(([key]) => key);
 
 if (stillMissing.length > 0) {
-  console.error(`[agent-sdk] Failed to build @kooka/core outputs: ${stillMissing.join(', ')}`);
+  console.error(`[ensure-core-build] Failed to build @kooka/core outputs: ${stillMissing.join(', ')}`);
   process.exit(1);
 }
+

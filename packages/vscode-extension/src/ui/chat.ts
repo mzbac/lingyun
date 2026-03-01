@@ -32,39 +32,38 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   // Facade methods used by extension.ts commands/config listeners.
   setBackend(...args: Parameters<ChatController['setBackend']>): ReturnType<ChatController['setBackend']> {
-    return (this.controller.setBackend as any)(...args);
+    return this.controller.setBackend(...args);
   }
 
   sendMessage(...args: Parameters<ChatController['sendMessage']>): ReturnType<ChatController['sendMessage']> {
-    return (this.controller.sendMessage as any)(...args);
+    return this.controller.sendMessage(...args);
   }
 
   clearCurrentSession(...args: Parameters<ChatController['clearCurrentSession']>): ReturnType<ChatController['clearCurrentSession']> {
-    return (this.controller.clearCurrentSession as any)(...args);
+    return this.controller.clearCurrentSession(...args);
   }
 
   clearSavedSessions(...args: Parameters<ChatController['clearSavedSessions']>): ReturnType<ChatController['clearSavedSessions']> {
-    return (this.controller.clearSavedSessions as any)(...args);
+    return this.controller.clearSavedSessions(...args);
   }
 
   compactCurrentSession(...args: Parameters<ChatController['compactCurrentSession']>): ReturnType<ChatController['compactCurrentSession']> {
-    return (this.controller.compactCurrentSession as any)(...args);
+    return this.controller.compactCurrentSession(...args);
   }
 
   undo(...args: Parameters<ChatController['undo']>): ReturnType<ChatController['undo']> {
-    return (this.controller.undo as any)(...args);
+    return this.controller.undo(...args);
   }
 
   redo(...args: Parameters<ChatController['redo']>): ReturnType<ChatController['redo']> {
-    return (this.controller.redo as any)(...args);
+    return this.controller.redo(...args);
   }
 
   onAutoApproveEnabled(...args: Parameters<ChatController['onAutoApproveEnabled']>): ReturnType<ChatController['onAutoApproveEnabled']> {
-    return (this.controller.onAutoApproveEnabled as any)(...args);
+    return this.controller.onAutoApproveEnabled(...args);
   }
 
   onSessionPersistenceConfigChanged(...args: Parameters<ChatController['onSessionPersistenceConfigChanged']>): ReturnType<ChatController['onSessionPersistenceConfigChanged']> {
-    return (this.controller.onSessionPersistenceConfigChanged as any)(...args);
+    return this.controller.onSessionPersistenceConfigChanged(...args);
   }
 }
-

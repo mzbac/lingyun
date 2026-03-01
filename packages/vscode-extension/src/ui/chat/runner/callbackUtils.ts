@@ -3,6 +3,7 @@ import * as vscode from 'vscode';
 import { TOOL_ERROR_CODES, containsBinaryData } from '@kooka/core';
 import type { AgentCallbacks, ToolCall, ToolDefinition, ToolResult } from '../../../core/types';
 import type { AgentSessionState } from '../../../core/agent';
+import { appendErrorLog } from '../../../core/logger';
 import type { ChatMessage, ChatSessionInfo } from '../types';
 import { formatWorkspacePathForUI } from '../utils';
 import { createBlankSessionSignals } from '../../../core/sessionSignals';
@@ -39,12 +40,14 @@ export type TaskChildSessionView = {
 };
 
 type AgentSdkChildSessionSnapshot = {
+  version: 1;
+  savedAt: string;
   sessionId: string;
   parentSessionId?: string;
   subagentType?: string;
   modelId?: string;
   history?: unknown;
-  pendingPlan?: unknown;
+  mentionedSkills?: unknown;
   fileHandles?: unknown;
   semanticHandles?: unknown;
 };
@@ -68,15 +71,13 @@ function emitWarningMessage(view: Pick<TaskChildSessionView, 'currentTurnId' | '
   view.postMessage({ type: 'message', message: msg });
 }
 
-function coerceChatSessionInfoLike(value: unknown): ChatSessionInfo | undefined {
-  if (!isRecord(value)) return undefined;
-  const id = typeof (value as any).id === 'string' ? String((value as any).id).trim() : '';
-  if (!id) return undefined;
-  return value as unknown as ChatSessionInfo;
-}
-
 function coerceAgentSdkChildSessionSnapshot(value: unknown): AgentSdkChildSessionSnapshot | undefined {
   if (!isRecord(value)) return undefined;
+  if ((value as any).version !== 1) return undefined;
+
+  const savedAt = typeof (value as any).savedAt === 'string' ? String((value as any).savedAt).trim() : '';
+  if (!savedAt) return undefined;
+
   const sessionId = typeof (value as any).sessionId === 'string' ? String((value as any).sessionId).trim() : '';
   if (!sessionId) return undefined;
   const parentSessionId =
@@ -86,12 +87,14 @@ function coerceAgentSdkChildSessionSnapshot(value: unknown): AgentSdkChildSessio
   const modelId = typeof (value as any).modelId === 'string' ? String((value as any).modelId).trim() : undefined;
 
   return {
-    sessionId,
+    version: 1,
+    savedAt,
     ...(parentSessionId ? { parentSessionId } : {}),
     ...(subagentType ? { subagentType } : {}),
     ...(modelId ? { modelId } : {}),
+    sessionId,
     history: (value as any).history,
-    pendingPlan: (value as any).pendingPlan,
+    mentionedSkills: (value as any).mentionedSkills,
     fileHandles: (value as any).fileHandles,
     semanticHandles: (value as any).semanticHandles,
   };
@@ -99,14 +102,17 @@ function coerceAgentSdkChildSessionSnapshot(value: unknown): AgentSdkChildSessio
 
 function toAgentSessionStateFromSnapshot(snapshot: AgentSdkChildSessionSnapshot): AgentSessionState {
   const history = Array.isArray(snapshot.history) ? (snapshot.history as AgentSessionState['history']) : [];
-  const pendingPlan = typeof snapshot.pendingPlan === 'string' ? snapshot.pendingPlan : undefined;
+  const mentionedSkillsRaw = snapshot.mentionedSkills;
+  const mentionedSkills = Array.isArray(mentionedSkillsRaw)
+    ? (mentionedSkillsRaw.filter(item => typeof item === 'string') as string[])
+    : undefined;
   const fileHandles = snapshot.fileHandles as AgentSessionState['fileHandles'] | undefined;
   const semanticHandles = snapshot.semanticHandles as AgentSessionState['semanticHandles'] | undefined;
   return {
     history,
-    pendingPlan,
     ...(fileHandles ? { fileHandles } : {}),
     ...(semanticHandles ? { semanticHandles } : {}),
+    ...(mentionedSkills && mentionedSkills.length > 0 ? { mentionedSkills } : {}),
   };
 }
 
@@ -154,20 +160,13 @@ export function upsertTaskChildSession(view: TaskChildSessionView, result: unkno
   const childRaw = (meta as any).childSession;
   const title = extractTitleFromTaskResult(meta) ?? '';
 
-  let rawSession: ChatSessionInfo | undefined = coerceChatSessionInfoLike(childRaw);
-  if (rawSession) {
-    if ((!rawSession.title || !rawSession.title.trim()) && title) {
-      rawSession = { ...rawSession, title };
-    }
-  } else {
-    const snapshot = coerceAgentSdkChildSessionSnapshot(childRaw);
-    if (!snapshot) return undefined;
-    rawSession = toChatSessionInfoFromSnapshot({
-      snapshot,
-      parentSessionIdFallback: view.activeSessionId,
-      title: title || `Task: ${snapshot.subagentType || 'subagent'}`,
-    });
-  }
+  const snapshot = coerceAgentSdkChildSessionSnapshot(childRaw);
+  if (!snapshot) return undefined;
+  const rawSession = toChatSessionInfoFromSnapshot({
+    snapshot,
+    parentSessionIdFallback: view.activeSessionId,
+    title: title || `Task: ${snapshot.subagentType || 'subagent'}`,
+  });
 
   const normalized = view.normalizeLoadedSession(rawSession);
   if (!normalized.parentSessionId) {
@@ -182,7 +181,7 @@ export function upsertTaskChildSession(view: TaskChildSessionView, result: unkno
 
   view.markSessionDirty(normalized.id);
   void view.flushSessionSave().catch(error => {
-    console.error('Failed to persist subagent session:', error);
+    appendErrorLog(view.outputChannel, 'Failed to persist subagent session', error, { tag: 'Sessions' });
   });
 
   return normalized.id;

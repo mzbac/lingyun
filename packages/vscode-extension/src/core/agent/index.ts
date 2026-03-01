@@ -20,7 +20,6 @@ type SemanticHandlesState = NonNullable<LingyunSession['semanticHandles']>;
 
 export type AgentSessionState = {
   history: AgentHistoryMessage[];
-  pendingPlan?: string;
   fileHandles?: { nextId: number; byId: Record<string, string> };
   semanticHandles?: SemanticHandlesState;
   mentionedSkills?: string[];
@@ -337,7 +336,6 @@ export class AgentLoop {
 
     return {
       history,
-      pendingPlan: this.session.pendingPlan,
       fileHandles,
       semanticHandles: this.session.semanticHandles,
       mentionedSkills: [...(this.session.mentionedSkills || [])],
@@ -359,7 +357,6 @@ export class AgentLoop {
 
     const history = Array.isArray(state.history) ? [...state.history] : [];
     this.session.history = history;
-    this.session.pendingPlan = typeof state.pendingPlan === 'string' ? state.pendingPlan : undefined;
     this.session.mentionedSkills = Array.isArray(state.mentionedSkills) ? [...state.mentionedSkills] : [];
 
     const fileHandlesRaw = state.fileHandles;
@@ -484,10 +481,8 @@ export class AgentLoop {
       this.agent.setMode('plan');
     }
 
-    this.session.pendingPlan = undefined;
-
     try {
-      const plan = await this.withRun({ explorePrepassInput: task }, async (signal) => {
+      return await this.withRun({ explorePrepassInput: task }, async (signal) => {
         const run = this.agent.run({
           session: this.session,
           input: task,
@@ -497,9 +492,6 @@ export class AgentLoop {
         const result = await run.done;
         return String(result.text || '').trim();
       });
-
-      this.session.pendingPlan = plan;
-      return plan;
     } finally {
       if (previousMode !== 'plan') {
         this.config = { ...this.config, mode: previousMode };
@@ -508,7 +500,7 @@ export class AgentLoop {
     }
   }
 
-  async execute(callbacks?: AgentCallbacks): Promise<string> {
+  async execute(callbacks?: AgentCallbacks, options?: { approvedPlan?: string }): Promise<string> {
     if (this._running) {
       throw new Error('Agent is already running');
     }
@@ -517,10 +509,9 @@ export class AgentLoop {
       throw new Error('No active task. Call plan() or run() first.');
     }
 
-    const pendingPlan = typeof this.session.pendingPlan === 'string' ? this.session.pendingPlan.trim() : '';
-    if (pendingPlan) {
-      this.session.history.push(createUserHistoryMessage(`## Approved Plan\n${pendingPlan}`, { synthetic: true }));
-      this.session.pendingPlan = undefined;
+    const approvedPlan = String(options?.approvedPlan || '').trim();
+    if (approvedPlan) {
+      this.session.history.push(createUserHistoryMessage(`## Approved Plan\n${approvedPlan}`, { synthetic: true }));
     }
 
     return await this.withRun({}, async (signal) => {
@@ -535,7 +526,6 @@ export class AgentLoop {
 
     this.session = new LingyunSession({
       history: [],
-      pendingPlan: undefined,
       sessionId: this.config.sessionId,
       parentSessionId: this.config.parentSessionId,
       subagentType: this.config.subagentType,
@@ -561,8 +551,6 @@ export class AgentLoop {
     if (this._running) {
       throw new Error('Agent is already running');
     }
-
-    this.session.pendingPlan = undefined;
 
     return await this.withRun({ explorePrepassInput: message }, async (signal) => {
       const run = this.agent.run({
@@ -608,7 +596,6 @@ export class AgentLoop {
 
   async clear(): Promise<void> {
     this.session.history = [];
-    this.session.pendingPlan = undefined;
     this.session.fileHandles = { nextId: 1, byId: {} };
     this.session.semanticHandles = createBlankSemanticHandlesState();
     this.session.mentionedSkills = [];

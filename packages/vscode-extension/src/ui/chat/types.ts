@@ -36,7 +36,6 @@ export interface ChatMessage {
   stepId?: string;
   checkpoint?: {
     historyLength: number;
-    pendingPlan?: string;
   };
   step?: {
     index: number;

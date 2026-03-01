@@ -4,8 +4,10 @@ import * as path from 'path';
 
 import type { ToolDefinition, ToolHandler } from '../../types.js';
 import {
+  computeStopHint,
   DEFAULT_BACKGROUND_KILL_GRACE_MS,
   DEFAULT_BACKGROUND_TTL_MS,
+  looksLikeLongRunningServerCommand,
   TOOL_ERROR_CODES,
   buildSafeChildProcessEnv,
   cleanupDeadBackgroundJobs,
@@ -27,36 +29,6 @@ import {
 import { getWorkspaceRoot, resolveToolPath } from './workspace.js';
 
 const MAX_BASH_OUTPUT = 50_000;
-
-function normalizeCommandForHeuristics(command: string): string {
-  const collapsed = command.trim().toLowerCase().replace(/\s+/g, ' ');
-  return collapsed.replace(/^(?:[a-z_][a-z0-9_]*=\S+\s+)+/gi, '');
-}
-
-function looksLikeLongRunningServerCommand(command: string): boolean {
-  const normalized = normalizeCommandForHeuristics(command);
-
-  const patterns: readonly RegExp[] = [
-    /\bnpx\s+serve\b/,
-    /\bnpx\s+http-server\b/,
-    /\bhttp-server\b/,
-    /\bpython(?:3)?\s+-m\s+http\.server\b/,
-    /\bpython(?:3)?\s+-m\s+simplehttpserver\b/,
-    /\bflask\s+run\b/,
-    /\buvicorn\b/,
-    /\bdjango-admin\s+runserver\b/,
-    /\bmanage\.py\s+runserver\b/,
-    /\bnpm\s+run\s+(dev|start|serve)\b/,
-    /\bpnpm\s+(dev|start)\b/,
-    /\byarn\s+(dev|start)\b/,
-    /\bbun\s+(dev|start)\b/,
-    /\bvite\b/,
-    /\bnext\s+dev\b/,
-    /\breact-scripts\s+start\b/,
-  ];
-
-  return patterns.some((re) => re.test(normalized));
-}
 
 export const bashTool: ToolDefinition = {
   id: 'bash',
@@ -87,7 +59,7 @@ export const bashTool: ToolDefinition = {
   metadata: {
     category: 'shell',
     icon: 'terminal',
-    requiresApproval: true,
+    requiresApproval: false,
     permission: 'bash',
     readOnly: false,
     supportsExternalPaths: true,
@@ -197,8 +169,7 @@ export const bashHandler: ToolHandler = async (args, context) => {
     const existing = getBackgroundJob(backgroundScope, backgroundKey);
     if (existing && isPidAlive(existing.pid)) {
       const refreshed = refreshBackgroundJob(backgroundScope, backgroundKey, backgroundTtlMs) ?? existing;
-      const stopHint =
-        process.platform === 'win32' ? `taskkill /pid ${existing.pid} /T /F` : `kill -TERM -${existing.pid}`;
+      const stopHint = computeStopHint(existing.pid);
 
       return {
         success: true,
@@ -237,12 +208,7 @@ export const bashHandler: ToolHandler = async (args, context) => {
       }
 
       const pid = typeof proc.pid === 'number' ? proc.pid : undefined;
-      const stopHint =
-        typeof pid === 'number'
-          ? process.platform === 'win32'
-            ? `taskkill /pid ${pid} /T /F`
-            : `kill -TERM -${pid}`
-          : undefined;
+      const stopHint = computeStopHint(pid);
 
       const job =
         typeof pid === 'number'

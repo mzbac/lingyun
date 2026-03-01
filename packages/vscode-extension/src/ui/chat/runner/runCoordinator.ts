@@ -108,19 +108,21 @@ export class RunCoordinator {
       recordUserIntent(c.signals, normalizedInput.text);
     }
 
-    if (c.pendingPlan) {
-      const planMsg = c.messages.find(m => m.id === c.pendingPlan?.planMessageId);
+    const activeSession = c.getActiveSession();
+    const pendingPlan = activeSession.pendingPlan;
+    if (pendingPlan) {
+      const planMsg = c.messages.find(m => m.id === pendingPlan.planMessageId);
       if (!planMsg || planMsg.role !== 'plan') {
-        c.pendingPlan = undefined;
+        activeSession.pendingPlan = undefined;
         c.postMessage({ type: 'planPending', value: false, planMessageId: '' });
         c.persistActiveSession();
       } else {
         if (!planMsg.plan) {
-          planMsg.plan = { status: 'draft', task: c.pendingPlan.task };
+          planMsg.plan = { status: 'draft', task: pendingPlan.task };
           c.postMessage({ type: 'updateMessage', message: planMsg });
         }
         if (!normalizedInput.text) return;
-        await c.revisePendingPlan(c.pendingPlan.planMessageId, normalizedInput.text);
+        await c.revisePendingPlan(pendingPlan.planMessageId, normalizedInput.text);
         return;
       }
     }
@@ -143,13 +145,11 @@ export class RunCoordinator {
       timestamp: Date.now(),
       checkpoint: {
         historyLength: checkpointState.history.length,
-        pendingPlan: checkpointState.pendingPlan,
       },
     };
     c.messages.push(userMsg);
     c.currentTurnId = userMsg.id;
 
-    const activeSession = c.getActiveSession();
     const userCount = activeSession.messages.filter(m => m.role === 'user').length;
     if (normalizedInput.text && userCount === 1 && isDefaultSessionTitle(activeSession.title)) {
       void c.agent
@@ -212,9 +212,9 @@ export class RunCoordinator {
         }
 
         planMsg.plan = { status: c.classifyPlanStatus(planMsg.content), task: normalizedInput.displayContent };
-        c.pendingPlan = { task: normalizedInput.displayContent, planMessageId: planMsg.id };
+        activeSession.pendingPlan = { task: normalizedInput.displayContent, planMessageId: planMsg.id };
         c.postMessage({ type: 'updateMessage', message: planMsg });
-        c.postMessage({ type: 'planPending', value: true, planMessageId: c.pendingPlan.planMessageId });
+        c.postMessage({ type: 'planPending', value: true, planMessageId: planMsg.id });
         // Plan runs can still produce usage metadata; update the global context indicator now.
         c.postMessage({ type: 'context', context: c.getContextForUI() });
         return;
@@ -247,7 +247,7 @@ export class RunCoordinator {
     const c = this.controller;
     if (c.isProcessing || !c.view) return;
     if (!approvalId || typeof approvalId !== 'string') return;
-    if (c.pendingPlan) return;
+    if (c.getActiveSession().pendingPlan) return;
 
     await c.ensureSessionsLoaded();
 
@@ -291,7 +291,9 @@ export class RunCoordinator {
 
   async executePendingPlan(planMessageId?: string): Promise<void> {
     const c = this.controller;
-    if (c.isProcessing || !c.pendingPlan || !c.view) {
+    const session = c.getActiveSession();
+    const pendingPlan = session.pendingPlan;
+    if (c.isProcessing || !pendingPlan || !c.view) {
       if (!c.view) return;
       if (c.isProcessing) {
         void vscode.window.showInformationMessage('LingYun: A task is already running.');
@@ -304,7 +306,8 @@ export class RunCoordinator {
     await c.ensureSessionsLoaded();
     c.commitRevertedConversationIfNeeded();
 
-    if (!c.pendingPlan) {
+    const refreshedPendingPlan = c.getActiveSession().pendingPlan;
+    if (!refreshedPendingPlan) {
       void vscode.window.showInformationMessage('LingYun: No pending plan to execute.');
       return;
     }
@@ -312,7 +315,7 @@ export class RunCoordinator {
     const requestedId =
       typeof planMessageId === 'string' && planMessageId.trim() ? planMessageId : undefined;
     const effectiveId =
-      requestedId && requestedId === c.pendingPlan.planMessageId ? requestedId : c.pendingPlan.planMessageId;
+      requestedId && requestedId === refreshedPendingPlan.planMessageId ? requestedId : refreshedPendingPlan.planMessageId;
 
     const planMsg = c.messages.find(m => m.id === effectiveId);
     if (!planMsg || planMsg.role !== 'plan') {
@@ -349,22 +352,15 @@ export class RunCoordinator {
     }
 
     try {
-      if (previousStatus === 'needs_input') {
-        const state = c.agent.exportState();
-        const basePlan =
-          typeof state.pendingPlan === 'string' && state.pendingPlan.trim()
-            ? state.pendingPlan
-            : planMsg.content;
-        if (basePlan && basePlan.trim()) {
-          state.pendingPlan = appendAssumptionsToPlan(basePlan);
-          c.agent.syncSession({ state, model: c.currentModel, mode: c.mode });
-        }
+      let approvedPlan = String(planMsg.content || '');
+      if (previousStatus === 'needs_input' && approvedPlan.trim()) {
+        approvedPlan = appendAssumptionsToPlan(approvedPlan);
       }
 
-      await c.agent.execute(c.createAgentCallbacks());
+      await c.agent.execute(c.createAgentCallbacks(), { approvedPlan });
       planMsg.plan.status = 'done';
       c.postMessage({ type: 'updateMessage', message: planMsg });
-      c.pendingPlan = undefined;
+      c.getActiveSession().pendingPlan = undefined;
       c.persistActiveSession();
     } catch (error) {
       planMsg.plan.status = previousStatus;
@@ -372,7 +368,7 @@ export class RunCoordinator {
       c.postMessage({
         type: 'planPending',
         value: true,
-        planMessageId: c.pendingPlan?.planMessageId ?? '',
+        planMessageId: c.getActiveSession().pendingPlan?.planMessageId ?? '',
       });
 
       if (switchedToBuild) {
@@ -400,8 +396,10 @@ export class RunCoordinator {
 
   async regeneratePendingPlan(planMessageId: string, reason?: string): Promise<void> {
     const c = this.controller;
-    if (c.isProcessing || !c.pendingPlan || !c.view) return;
-    if (c.pendingPlan.planMessageId !== planMessageId) return;
+    const session = c.getActiveSession();
+    const pendingPlan = session.pendingPlan;
+    if (c.isProcessing || !pendingPlan || !c.view) return;
+    if (pendingPlan.planMessageId !== planMessageId) return;
 
     await c.ensureSessionsLoaded();
     c.commitRevertedConversationIfNeeded();
@@ -424,7 +422,6 @@ export class RunCoordinator {
         turnId: planMsg.turnId,
         checkpoint: {
           historyLength: checkpointState.history.length,
-          pendingPlan: checkpointState.pendingPlan,
         },
       };
       c.messages.push(userMsg);
@@ -437,11 +434,11 @@ export class RunCoordinator {
     c.postMessage({
       type: 'planPending',
       value: true,
-      planMessageId: c.pendingPlan.planMessageId,
+      planMessageId: pendingPlan.planMessageId,
     });
 
-    const previousPendingPlan = { ...c.pendingPlan };
-    const taskForPlan = note ? `${c.pendingPlan.task}\n\n${note}` : c.pendingPlan.task;
+    const previousPendingPlan = { ...pendingPlan };
+    const taskForPlan = note ? `${pendingPlan.task}\n\n${note}` : pendingPlan.task;
 
     try {
       const nextPlanMsg: ChatMessage = {
@@ -455,7 +452,7 @@ export class RunCoordinator {
       c.messages.push(nextPlanMsg);
       c.postMessage({ type: 'message', message: nextPlanMsg });
 
-      c.pendingPlan = { task: taskForPlan, planMessageId: nextPlanMsg.id };
+      session.pendingPlan = { task: taskForPlan, planMessageId: nextPlanMsg.id };
       c.postMessage({ type: 'planPending', value: true, planMessageId: nextPlanMsg.id });
 
       const plan = await c.agent.plan(taskForPlan, c.createPlanningCallbacks(nextPlanMsg));
@@ -474,11 +471,11 @@ export class RunCoordinator {
       c.postMessage({ type: 'updateMessage', message: nextPlanMsg });
       c.persistActiveSession();
     } catch (error) {
-      c.pendingPlan = previousPendingPlan;
+      session.pendingPlan = previousPendingPlan;
       c.postMessage({
         type: 'planPending',
         value: true,
-        planMessageId: c.pendingPlan.planMessageId,
+        planMessageId: previousPendingPlan.planMessageId,
       });
 
       const message = error instanceof Error ? error.message : String(error);
@@ -501,7 +498,7 @@ export class RunCoordinator {
       c.postMessage({
         type: 'planPending',
         value: true,
-        planMessageId: c.pendingPlan?.planMessageId ?? '',
+        planMessageId: session.pendingPlan?.planMessageId ?? '',
       });
       c.autoApproveThisRun = false;
       c.pendingApprovals.clear();
@@ -512,7 +509,9 @@ export class RunCoordinator {
 
   async cancelPendingPlan(planMessageId: string): Promise<void> {
     const c = this.controller;
-    if (!c.pendingPlan || c.pendingPlan.planMessageId !== planMessageId) return;
+    const session = c.getActiveSession();
+    const pendingPlan = session.pendingPlan;
+    if (!pendingPlan || pendingPlan.planMessageId !== planMessageId) return;
 
     const planMsg = c.messages.find(m => m.id === planMessageId);
     if (planMsg?.role === 'plan' && planMsg.plan) {
@@ -520,7 +519,7 @@ export class RunCoordinator {
       c.postMessage({ type: 'updateMessage', message: planMsg });
     }
 
-    c.pendingPlan = undefined;
+    session.pendingPlan = undefined;
     await c.agent.clear();
     c.postMessage({ type: 'planPending', value: false, planMessageId: '' });
     c.persistActiveSession();
@@ -528,8 +527,10 @@ export class RunCoordinator {
 
   async revisePendingPlan(planMessageId: string, instructions: string): Promise<void> {
     const c = this.controller;
-    if (c.isProcessing || !c.pendingPlan || !c.view) return;
-    if (c.pendingPlan.planMessageId !== planMessageId) return;
+    const session = c.getActiveSession();
+    const pendingPlan = session.pendingPlan;
+    if (c.isProcessing || !pendingPlan || !c.view) return;
+    if (pendingPlan.planMessageId !== planMessageId) return;
 
     const trimmed = (instructions || '').trim();
     if (!trimmed) return;
@@ -545,7 +546,7 @@ export class RunCoordinator {
     c.autoApproveThisRun = false;
     c.postApprovalState();
 
-    const previousPendingPlan = { ...c.pendingPlan };
+    const previousPendingPlan = { ...pendingPlan };
 
     const checkpointState = c.agent.exportState();
     const userMsg: ChatMessage = {
@@ -556,7 +557,6 @@ export class RunCoordinator {
       turnId: planMsg.turnId,
       checkpoint: {
         historyLength: checkpointState.history.length,
-        pendingPlan: checkpointState.pendingPlan,
       },
     };
     c.messages.push(userMsg);
@@ -569,10 +569,10 @@ export class RunCoordinator {
     c.postMessage({
       type: 'planPending',
       value: true,
-      planMessageId: c.pendingPlan.planMessageId,
+      planMessageId: pendingPlan.planMessageId,
     });
 
-    const updatedTask = `${c.pendingPlan.task}\n\nUser clarifications:\n${trimmed}`;
+    const updatedTask = `${pendingPlan.task}\n\nUser clarifications:\n${trimmed}`;
     const nextPlanMsg: ChatMessage = {
       id: crypto.randomUUID(),
       role: 'plan',
@@ -584,7 +584,7 @@ export class RunCoordinator {
     c.messages.push(nextPlanMsg);
     c.postMessage({ type: 'message', message: nextPlanMsg });
 
-    c.pendingPlan = { task: updatedTask, planMessageId: nextPlanMsg.id };
+    session.pendingPlan = { task: updatedTask, planMessageId: nextPlanMsg.id };
     c.postMessage({ type: 'planPending', value: true, planMessageId: nextPlanMsg.id });
 
     try {
@@ -604,11 +604,11 @@ export class RunCoordinator {
       c.postMessage({ type: 'updateMessage', message: nextPlanMsg });
       c.persistActiveSession();
     } catch (error) {
-      c.pendingPlan = previousPendingPlan;
+      session.pendingPlan = previousPendingPlan;
       c.postMessage({
         type: 'planPending',
         value: true,
-        planMessageId: c.pendingPlan.planMessageId,
+        planMessageId: previousPendingPlan.planMessageId,
       });
 
       const message = error instanceof Error ? error.message : String(error);
@@ -631,7 +631,7 @@ export class RunCoordinator {
       c.postMessage({
         type: 'planPending',
         value: true,
-        planMessageId: c.pendingPlan?.planMessageId ?? '',
+        planMessageId: session.pendingPlan?.planMessageId ?? '',
       });
       c.autoApproveThisRun = false;
       c.pendingApprovals.clear();

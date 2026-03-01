@@ -12,6 +12,7 @@ suite('Pending plan send', () => {
     provider.view = {} as any;
     provider.mode = 'build';
     provider.signals = createBlankSessionSignals();
+    provider.currentModel = 'gpt-4o';
 
     const planMsg: ChatMessage = {
       id: 'plan-1',
@@ -23,7 +24,26 @@ suite('Pending plan send', () => {
     };
 
     provider.messages = [planMsg];
-    provider.pendingPlan = { task: 'Task', planMessageId: 'plan-1' };
+    provider.activeSessionId = 'session-1';
+    provider.sessions = new Map([
+      [
+        provider.activeSessionId,
+        {
+          id: provider.activeSessionId,
+          title: 'Test',
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          signals: provider.signals,
+          messages: provider.messages,
+          agentState: provider.getBlankAgentState(),
+          currentModel: provider.currentModel,
+          mode: provider.mode,
+          stepCounter: 0,
+          pendingPlan: { task: 'Task', planMessageId: 'plan-1' },
+          runtime: { wasRunning: false, updatedAt: Date.now() },
+        },
+      ],
+    ]);
 
     let called = false;
     let receivedPlanId = '';

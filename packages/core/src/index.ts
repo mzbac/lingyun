@@ -26,6 +26,8 @@ export { findExternalPathReferencesInShellCommand, isPathInsideWorkspace } from 
 export type { SafeChildProcessEnvOptions } from './shellEnv';
 export { buildSafeChildProcessEnv } from './shellEnv';
 
+export { computeStopHint, looksLikeGitPushCommand, looksLikeLongRunningServerCommand } from './bashHeuristics';
+
 export type { SkillListEntry } from './skills';
 export { extractSkillMentions, renderSkillsSectionForPrompt, selectSkillsForText } from './skills';
 

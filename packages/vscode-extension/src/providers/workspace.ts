@@ -9,6 +9,7 @@ import type {
 } from '../core/types';
 import { executeShell, executeHttp } from './executors';
 import { getPrimaryWorkspaceFolder, getPrimaryWorkspaceRootPath } from '../core/workspaceContext';
+import { appendLog } from '../core/logger';
 
 export class WorkspaceToolProvider implements ToolProvider {
   readonly id = 'workspace';
@@ -21,7 +22,10 @@ export class WorkspaceToolProvider implements ToolProvider {
 
   readonly onDidChange = this._onDidChange.event;
 
-  constructor(private context: vscode.ExtensionContext) {}
+  constructor(
+    private context: vscode.ExtensionContext,
+    private readonly outputChannel?: vscode.OutputChannel,
+  ) {}
 
   async initialize(): Promise<void> {
     await this.loadTools();
@@ -50,10 +54,16 @@ export class WorkspaceToolProvider implements ToolProvider {
     } catch (error) {
       if (error instanceof vscode.FileSystemError) {
         if (error.code !== 'FileNotFound') {
-          console.warn(`[Workspace Tools] Failed to read agent-tools directory: ${error.message}`);
+          appendLog(this.outputChannel, `Failed to read agent-tools directory: ${error.message}`, {
+            level: 'warn',
+            tag: 'WorkspaceTools',
+          });
         }
       } else if (error instanceof Error) {
-        console.warn(`[Workspace Tools] Unexpected error reading agent-tools directory: ${error.message}`);
+        appendLog(this.outputChannel, `Unexpected error reading agent-tools directory: ${error.message}`, {
+          level: 'warn',
+          tag: 'WorkspaceTools',
+        });
       }
     }
   }

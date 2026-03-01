@@ -25,19 +25,23 @@ export type LLMProviderWithModels = LLMProvider & {
   clearModelCache?: () => void;
 };
 
-export function installChatControllerMethods(controller: ChatController): void {
-  installSessionsMethods(controller);
-  installInputHistoryMethods(controller);
-  installModeMethods(controller);
-  installRevertMethods(controller);
-  installSkillsMethods(controller);
-  installWebviewMethods(controller);
-  installRunnerInputMethods(controller);
-  installRunnerCallbacksMethods(controller);
-  installRunnerPlanMethods(controller);
-  installModelsMethods(controller);
-  installApprovalsMethods(controller);
-  controller.runner = new RunCoordinator(controller);
+let chatControllerPrototypeInstalled = false;
+
+function installChatControllerPrototype(): void {
+  if (chatControllerPrototypeInstalled) return;
+  chatControllerPrototypeInstalled = true;
+
+  installSessionsMethods(ChatController.prototype as any);
+  installInputHistoryMethods(ChatController.prototype as any);
+  installModeMethods(ChatController.prototype as any);
+  installRevertMethods(ChatController.prototype as any);
+  installSkillsMethods(ChatController.prototype as any);
+  installWebviewMethods(ChatController.prototype as any);
+  installRunnerInputMethods(ChatController.prototype as any);
+  installRunnerCallbacksMethods(ChatController.prototype as any);
+  installRunnerPlanMethods(ChatController.prototype as any);
+  installModelsMethods(ChatController.prototype as any);
+  installApprovalsMethods(ChatController.prototype as any);
 }
 
 // eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging
@@ -58,7 +62,6 @@ export class ChatController {
     { resolve: (approved: boolean) => void; toolName: string; stepId?: string }
   > = new Map();
   autoApproveThisRun = false;
-  pendingPlan?: { task: string; planMessageId: string };
   activeStepId?: string;
   currentTurnId?: string;
   stepCounter = 0;
@@ -106,7 +109,7 @@ export class ChatController {
     }
   > = new Map();
 
-  runner!: RunCoordinator;
+  runner: RunCoordinator = new RunCoordinator(this);
 
   constructor(
     public context: vscode.ExtensionContext,
@@ -114,8 +117,6 @@ export class ChatController {
     public llmProvider?: LLMProviderWithModels,
     public outputChannel?: vscode.OutputChannel
   ) {
-    installChatControllerMethods(this);
-
     this.currentModel = vscode.workspace.getConfiguration('lingyun').get('model') || 'gpt-4o';
     this.mode =
       (vscode.workspace.getConfiguration('lingyun').get<string>('mode') || 'build') === 'plan'
@@ -128,6 +129,15 @@ export class ChatController {
     this.activeSessionId = crypto.randomUUID();
     this.initializeSessions();
     void this.ensureSessionsLoaded();
+  }
+}
+
+installChatControllerPrototype();
+
+export function installChatControllerMethods(controller: ChatController): void {
+  installChatControllerPrototype();
+  if (!(controller as any).runner) {
+    (controller as any).runner = new RunCoordinator(controller);
   }
 }
 

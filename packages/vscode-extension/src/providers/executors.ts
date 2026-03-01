@@ -4,7 +4,12 @@ import * as path from 'path';
 import * as dns from 'node:dns/promises';
 import * as net from 'node:net';
 import type { ToolContext, ToolResult } from '../core/types';
-import { TOOL_ERROR_CODES, findExternalPathReferencesInShellCommand, isPathInsideWorkspace } from '@kooka/core';
+import {
+  TOOL_ERROR_CODES,
+  findExternalPathReferencesInShellCommand,
+  isPathInsideWorkspace,
+  looksLikeLongRunningServerCommand,
+} from '@kooka/core';
 
 export interface ShellExecution {
   type: 'shell';
@@ -17,34 +22,6 @@ export interface ShellExecution {
 
 const DEFAULT_WORKSPACE_SHELL_TIMEOUT_MS = 60_000;
 const DEFAULT_WORKSPACE_HTTP_TIMEOUT_MS = 30_000;
-
-function normalizeCommandForHeuristics(command: string): string {
-  const collapsed = command.trim().toLowerCase().replace(/\s+/g, ' ');
-  return collapsed.replace(/^(?:[a-z_][a-z0-9_]*=\S+\s+)+/gi, '');
-}
-
-function looksLikeLongRunningServerCommand(command: string): boolean {
-  const normalized = normalizeCommandForHeuristics(command);
-  const patterns: readonly RegExp[] = [
-    /\bnpx\s+serve\b/,
-    /\bnpx\s+http-server\b/,
-    /\bhttp-server\b/,
-    /\bpython(?:3)?\s+-m\s+http\.server\b/,
-    /\bpython(?:3)?\s+-m\s+simplehttpserver\b/,
-    /\bflask\s+run\b/,
-    /\buvicorn\b/,
-    /\bdjango-admin\s+runserver\b/,
-    /\bmanage\.py\s+runserver\b/,
-    /\bnpm\s+run\s+(dev|start|serve)\b/,
-    /\bpnpm\s+(dev|start)\b/,
-    /\byarn\s+(dev|start)\b/,
-    /\bbun\s+(dev|start)\b/,
-    /\bvite\b/,
-    /\bnext\s+dev\b/,
-    /\breact-scripts\s+start\b/,
-  ];
-  return patterns.some((re) => re.test(normalized));
-}
 
 function getWorkspaceShellTimeoutMs(execution: ShellExecution): number {
   const cfgValue = vscode.workspace.getConfiguration('lingyun').get<number>(
