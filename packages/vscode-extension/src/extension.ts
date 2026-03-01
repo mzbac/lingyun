@@ -108,12 +108,22 @@ function createAgentConfig(): AgentConfig {
       ? Math.floor(maxRetriesParsed as number)
       : undefined;
 
+  const retryWithPartialOutputRaw = getConfig<unknown>('llm.retryWithPartialOutput');
+  const retryWithPartialOutputParsed =
+    typeof retryWithPartialOutputRaw === 'boolean'
+      ? retryWithPartialOutputRaw
+      : typeof retryWithPartialOutputRaw === 'string'
+        ? retryWithPartialOutputRaw.toLowerCase() === 'true'
+        : undefined;
+  const retryWithPartialOutput = typeof retryWithPartialOutputParsed === 'boolean' ? retryWithPartialOutputParsed : undefined;
+
   return {
     model: getConfig('model') || MODELS.GPT_4O,
     subagentModel: getConfig('subagents.model') || undefined,
     mode: (getConfig<'build' | 'plan'>('mode') || 'build'),
     temperature,
     maxRetries,
+    retryWithPartialOutput,
     autoApprove: getConfig('autoApprove') || false,
     toolFilter: getConfig('toolFilter') || [],
   };

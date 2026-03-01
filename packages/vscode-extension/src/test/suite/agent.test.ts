@@ -864,7 +864,7 @@ suite('AgentLoop', () => {
   });
 
   test('run - retries transient terminated stream errors after assistant output', async () => {
-    agent.updateConfig({ maxRetries: 1 });
+    agent.updateConfig({ maxRetries: 1, retryWithPartialOutput: true });
 
     const err = {
       name: 'TypeError',

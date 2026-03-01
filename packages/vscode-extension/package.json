@@ -187,6 +187,11 @@
           "default": 2,
           "description": "Retry count for transient LLM request failures (network errors, overload, etc.). Set to 0 to disable retries."
         },
+        "lingyun.llm.retryWithPartialOutput": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow retrying transient streaming failures even after partial assistant output. When enabled, may discard partial output on retry; otherwise the error is shown and you can retry manually."
+        },
         "lingyun.llm.timeoutMs": {
           "type": "number",
           "default": 0,
