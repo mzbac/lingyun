@@ -863,6 +863,34 @@ suite('AgentLoop', () => {
     assert.strictEqual(getMessageText(history[history.length - 1]), 'Hello');
   });
 
+  test('run - retries transient terminated stream errors after assistant output', async () => {
+    agent.updateConfig({ maxRetries: 1 });
+
+    const err = {
+      name: 'TypeError',
+      message: 'terminated',
+      responseHeaders: { 'retry-after-ms': '1' },
+    };
+
+    mockLLM.setNextResponse({
+      kind: 'stream',
+      chunks: [
+        { type: 'text-start' as const, id: 't0' },
+        { type: 'text-delta' as const, id: 't0', delta: 'partial output' },
+        { type: 'error' as const, error: err },
+      ],
+    });
+    mockLLM.queueResponse({ kind: 'text', content: 'Hello' });
+
+    const result = await agent.run('Hi');
+    assert.strictEqual(result, 'Hello');
+    assert.strictEqual(mockLLM.callCount, 2);
+
+    const history = agent.getHistory();
+    assert.strictEqual(history.filter(m => m.role === 'assistant').length, 1);
+    assert.strictEqual(getMessageText(history[history.length - 1]), 'Hello');
+  });
+
   test('run - retries copilot codex responses parser-state errors before finish', async () => {
     const copilotLLM = new MockCopilotProvider();
     agent = new AgentLoop(copilotLLM, mockContext, { model: 'gpt-5.3-codex', maxRetries: 1 }, registry);

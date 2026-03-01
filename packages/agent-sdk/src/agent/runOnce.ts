@@ -64,6 +64,7 @@ export async function runOnce(params: {
 
   temperature: number;
   maxRetries: number;
+  retryWithPartialOutput: boolean;
   getMaxOutputTokens: () => number;
   getModelLimit: (modelId: string) => ModelLimit | undefined;
 
@@ -86,6 +87,7 @@ export async function runOnce(params: {
 }): Promise<string> {
   const { session, callbacks, signal, modelId, mode, llm, plugins, registry, providerBehavior } = params;
   const sessionId = params.sessionId;
+  const retryWithPartialOutput = !!params.retryWithPartialOutput;
 
   const semanticHandles = new SemanticHandleRegistry();
   semanticHandles.importState(session.semanticHandles);
@@ -340,8 +342,13 @@ export async function runOnce(params: {
           break;
         } catch (e) {
           const retryable = getRetryableLlmError(e);
+          const allowRetryAfterOutput = retryWithPartialOutput && !!attemptText.trim();
           const canRetry =
-            !!retryable && retryAttempt < maxRetries && !sawToolCall && !attemptText.trim() && !combined.aborted;
+            !!retryable &&
+            retryAttempt < maxRetries &&
+            !sawToolCall &&
+            (!attemptText.trim() || allowRetryAfterOutput) &&
+            !combined.aborted;
           if (canRetry) {
             retryAttempt += 1;
             const waitMs = getRetryDelayMs(retryAttempt, retryable.retryAfterMs);
@@ -497,4 +504,3 @@ export async function runOnce(params: {
     session.semanticHandles = semanticHandles.exportState();
   }
 }
-

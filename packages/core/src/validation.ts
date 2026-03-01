@@ -246,8 +246,6 @@ const SAFE_SHELL_COMMANDS = new Set([
   'docker',
   'kubectl',
   'terraform',
-  'curl',
-  'wget',
   'jq',
   'yq',
 ]);

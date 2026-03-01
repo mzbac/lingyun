@@ -774,6 +774,7 @@ export class LingyunAgent {
       compactionConfig: this.compactionConfig,
       temperature: this.config.temperature ?? 0.0,
       maxRetries: this.config.maxRetries ?? 0,
+      retryWithPartialOutput: this.config.retryWithPartialOutput === true,
       getMaxOutputTokens: () => this.getMaxOutputTokens(),
       getModelLimit: (id) => this.getModelLimit(id),
       composeSystemPrompt: (id, options) => this.composeSystemPrompt(id, options),

@@ -177,9 +177,15 @@ export interface AgentConfig {
   temperature?: number;
   /**
    * Retry count for transient provider failures.
-   * Note: retries are only attempted when no tool call has started and no output was streamed.
+   * Note: by default, retries are only attempted when no tool call has started and no output was streamed.
+   * Set `retryWithPartialOutput=true` to allow retrying after some output was streamed (hosts should reset UI state).
    */
   maxRetries?: number;
+  /**
+   * Allow retries after some assistant output was streamed.
+   * Intended for hosts that can discard/reset partially-streamed UI tokens when a retry starts.
+   */
+  retryWithPartialOutput?: boolean;
   /**
    * Maximum tokens for generated output (provider-dependent).
    */

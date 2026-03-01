@@ -645,21 +645,28 @@ function createResponsesStream(
 
           if (!finished) {
             closeOpenParts();
-            controller.enqueue({
-              type: 'finish',
-              usage,
-              finishReason,
-              providerMetadata: lastReasoningReplay
-                ? {
-                  copilot: {
-                    reasoningOpaque: lastReasoningReplay.id,
-                    ...(lastReasoningReplay.encryptedContent
-                      ? { reasoningEncryptedContent: lastReasoningReplay.encryptedContent }
-                      : {}),
-                  },
-                }
-                : undefined,
-            });
+            // If we were in the middle of streaming a tool call, treating the early EOF as a normal finish
+            // makes the agent silently stop without ever receiving the tool invocation. Surface it as a
+            // retryable connection termination instead.
+            if (pendingToolCalls.size > 0) {
+              controller.enqueue({ type: 'error', error: new Error('Connection terminated') });
+            } else {
+              controller.enqueue({
+                type: 'finish',
+                usage,
+                finishReason,
+                providerMetadata: lastReasoningReplay
+                  ? {
+                    copilot: {
+                      reasoningOpaque: lastReasoningReplay.id,
+                      ...(lastReasoningReplay.encryptedContent
+                        ? { reasoningEncryptedContent: lastReasoningReplay.encryptedContent }
+                        : {}),
+                    },
+                  }
+                  : undefined,
+              });
+            }
           }
           controller.close();
         } catch (error) {

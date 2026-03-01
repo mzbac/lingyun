@@ -28,6 +28,7 @@ export function installRunnerCallbacksMethods(controller: ChatController): void 
     const persistSessions = this.isSessionPersistenceEnabled();
     const planContainerId = planMsg.id;
     const planTurnId = planMsg.turnId ?? this.currentTurnId;
+    const planPlaceholderText = planMsg.content || 'Planning...';
 
     let buffered = '';
     let flushHandle: NodeJS.Timeout | undefined;
@@ -91,6 +92,18 @@ export function installRunnerCallbacksMethods(controller: ChatController): void 
         appendDebugLog(this, message);
       },
       onStatusChange: (status) => {
+        if (status?.type === 'retry') {
+          buffered = '';
+          if (flushHandle) {
+            clearTimeout(flushHandle);
+            flushHandle = undefined;
+          }
+          planMsg.content = planPlaceholderText;
+          this.postMessage({ type: 'updateMessage', message: planMsg });
+          if (persistSessions) {
+            this.persistActiveSession();
+          }
+        }
         postTurnStatus(this, planTurnId, status);
       },
       onAssistantToken: (token) => {
@@ -823,6 +836,18 @@ export function installRunnerCallbacksMethods(controller: ChatController): void 
         compactionMsg = undefined;
       },
       onStatusChange: (status) => {
+        if (status?.type === 'retry') {
+          thoughtBuffer = '';
+          if (thoughtMsg && thoughtMsg.turnId === this.currentTurnId) {
+            thoughtMsg.content = '';
+            this.postMessage({ type: 'updateMessage', message: thoughtMsg });
+          }
+          if (assistantMsg && assistantMsg.turnId === this.currentTurnId) {
+            assistantMsg.content = '';
+            this.postMessage({ type: 'updateMessage', message: assistantMsg });
+          }
+          assistantStarted = false;
+        }
         postTurnStatus(this, this.currentTurnId, status);
       },
       onDebug: (message) => {
