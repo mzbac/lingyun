@@ -9,6 +9,7 @@ import { resolveToolPath } from '../../tools/builtin/workspace';
 import { summarizeErrorForDebug } from '../../core/agent/debug';
 import { recordAssistantOutcome, recordFileTouch, recordToolUse } from '../../core/sessionSignals';
 import type { ChatController } from './controller';
+import { decorateAgentCallbacksWithOfficeSync } from '../office/sync';
 import {
   appendDebugLog,
   applyCommonToolResultFields,
@@ -46,34 +47,34 @@ export function installRunnerCallbacksMethods(controller: ChatController): void 
       flushHandle = setTimeout(flush, 60);
     };
 
-	    const upsertToolError = (tc: ToolCall, def: ToolDefinition, reason: string) => {
+    const upsertToolError = (tc: ToolCall, def: ToolDefinition, reason: string) => {
       const existing = [...this.messages]
         .reverse()
         .find(m => m.toolCall?.approvalId === tc.id && m.stepId === planContainerId);
 
-	      if (existing?.toolCall) {
+      if (existing?.toolCall) {
         existing.toolCall.status = 'error';
         existing.toolCall.result = reason;
         this.postMessage({ type: 'updateTool', message: existing });
-	      } else {
-	        const { path } = resolveToolCallUiPath(this, tc, def, { includeWorkdir: true });
+      } else {
+        const { path } = resolveToolCallUiPath(this, tc, def, { includeWorkdir: true });
 
-	        const toolMsg: ChatMessage = {
+        const toolMsg: ChatMessage = {
           id: crypto.randomUUID(),
           role: 'tool',
           content: '',
           timestamp: Date.now(),
           stepId: planContainerId,
-	          toolCall: {
+          toolCall: {
             id: def.id,
             name: def.name,
             args: tc.function.arguments,
             status: 'error',
-	            approvalId: tc.id,
-	            path,
-	            result: reason,
-	          },
-	        };
+            approvalId: tc.id,
+            path,
+            result: reason,
+          },
+        };
         this.messages.push(toolMsg);
         this.postMessage({ type: 'message', message: toolMsg });
       }
@@ -83,7 +84,7 @@ export function installRunnerCallbacksMethods(controller: ChatController): void 
       }
     };
 
-    return {
+    const callbacks: AgentCallbacks = {
       onIterationEnd: () => {
         // Keep the global context indicator in sync during plan loops (usage updates per turn).
         this.postMessage({ type: 'context', context: this.getContextForUI() });
@@ -111,8 +112,8 @@ export function installRunnerCallbacksMethods(controller: ChatController): void 
         planMsg.content = cleanAssistantPreamble(buffered);
         scheduleFlush();
       },
-	      onToolCall: (tc: ToolCall, def: ToolDefinition) => {
-	        const { path } = resolveToolCallUiPath(this, tc, def);
+      onToolCall: (tc: ToolCall, def: ToolDefinition) => {
+        const { path } = resolveToolCallUiPath(this, tc, def);
 
         const existing = [...this.messages].reverse().find(m => {
           if (m.role !== 'tool') return false;
@@ -192,7 +193,7 @@ export function installRunnerCallbacksMethods(controller: ChatController): void 
         }
       },
       onRequestApproval: async (tc, def) => {
-        return this.requestInlineApproval(tc, def, planContainerId);
+        return await this.requestInlineApproval(tc, def, planContainerId);
       },
       onComplete: () => {
         if (planTurnId) {
@@ -204,7 +205,7 @@ export function installRunnerCallbacksMethods(controller: ChatController): void 
         const errorMsg: ChatMessage = {
           id: crypto.randomUUID(),
           role: 'error',
-          content: formatErrorForUser(error),
+          content: formatErrorForUser(error, { llmProviderId: this.llmProvider?.id }),
           timestamp: Date.now(),
         };
         this.messages.push(errorMsg);
@@ -215,6 +216,8 @@ export function installRunnerCallbacksMethods(controller: ChatController): void 
         }
       },
     };
+
+    return this.officeSync ? decorateAgentCallbacksWithOfficeSync(callbacks, this.officeSync) : callbacks;
   },
 
   createAgentCallbacks(this: ChatController): AgentCallbacks {
@@ -409,7 +412,7 @@ export function installRunnerCallbacksMethods(controller: ChatController): void 
       assistantStarted = false;
     };
 
-    return {
+    const callbacks: AgentCallbacks = {
       onCompactionStart: ({ auto }) => {
         const startedAt = Date.now();
         const operationId = crypto.randomUUID();
@@ -471,11 +474,11 @@ export function installRunnerCallbacksMethods(controller: ChatController): void 
       onThoughtToken: (token) => {
         pushThought(token);
       },
-	      onToolCall: async (tc: ToolCall, def: ToolDefinition) => {
+      onToolCall: async (tc: ToolCall, def: ToolDefinition) => {
         postStepMsgIfNeeded();
         reconcileAssistantForToolCall();
 
-	        const { path, filePathRaw } = resolveToolCallUiPath(this, tc, def);
+        const { path, filePathRaw } = resolveToolCallUiPath(this, tc, def);
         recordToolUse(this.signals, def.id);
         if (path) recordFileTouch(this.signals, path);
 
@@ -546,7 +549,7 @@ export function installRunnerCallbacksMethods(controller: ChatController): void 
           }
         }
       },
-	      onToolBlocked: (tc: ToolCall, def: ToolDefinition, reason: string) => {
+      onToolBlocked: (tc: ToolCall, def: ToolDefinition, reason: string) => {
         postStepMsgIfNeeded();
         reconcileAssistantForToolCall();
         this.toolDiffBeforeByToolCallId.delete(tc.id);
@@ -559,12 +562,12 @@ export function installRunnerCallbacksMethods(controller: ChatController): void 
           return true;
         });
 
-	        if (existing?.toolCall) {
+        if (existing?.toolCall) {
           existing.toolCall.status = 'error';
           existing.toolCall.result = reason;
           this.postMessage({ type: 'updateTool', message: existing });
-	        } else {
-	          const { path } = resolveToolCallUiPath(this, tc, def, { includeWorkdir: true });
+        } else {
+          const { path } = resolveToolCallUiPath(this, tc, def, { includeWorkdir: true });
 
           const toolMsg: ChatMessage = {
             id: crypto.randomUUID(),
@@ -726,11 +729,6 @@ export function installRunnerCallbacksMethods(controller: ChatController): void 
           }
         }
       },
-      onRequestApproval: async (tc, def) => {
-        postStepMsgIfNeeded();
-        reconcileAssistantForToolCall();
-        return this.requestInlineApproval(tc, def);
-      },
       onIterationEnd: async () => {
         if (this.mode === 'build' && stepMsg?.step?.snapshot?.baseHash) {
           const snapshot = await this.getWorkspaceSnapshot();
@@ -850,6 +848,11 @@ export function installRunnerCallbacksMethods(controller: ChatController): void 
         }
         postTurnStatus(this, this.currentTurnId, status);
       },
+      onRequestApproval: async (tc, def) => {
+        postStepMsgIfNeeded();
+        reconcileAssistantForToolCall();
+        return await this.requestInlineApproval(tc, def);
+      },
       onDebug: (message) => {
         appendDebugLog(this, message);
       },
@@ -891,7 +894,7 @@ export function installRunnerCallbacksMethods(controller: ChatController): void 
           this.postMessage({
             type: 'turnStatus',
             turnId: this.currentTurnId,
-            status: { type: 'error', message: formatErrorForUser(error) },
+            status: { type: 'error', message: formatErrorForUser(error, { llmProviderId: this.llmProvider?.id }) },
           });
         }
 
@@ -904,7 +907,7 @@ export function installRunnerCallbacksMethods(controller: ChatController): void 
         const errorMsg: ChatMessage = {
           id: crypto.randomUUID(),
           role: 'error',
-          content: formatErrorForUser(error),
+          content: formatErrorForUser(error, { llmProviderId: this.llmProvider?.id }),
           timestamp: Date.now(),
           turnId: this.currentTurnId,
         };
@@ -916,6 +919,8 @@ export function installRunnerCallbacksMethods(controller: ChatController): void 
         }
       },
     };
+
+    return this.officeSync ? decorateAgentCallbacksWithOfficeSync(callbacks, this.officeSync) : callbacks;
   },
   });
 }

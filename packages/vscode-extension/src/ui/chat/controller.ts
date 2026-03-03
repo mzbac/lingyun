@@ -7,6 +7,7 @@ import type { AgentCallbacks, LLMProvider, ToolDefinition, ToolCall } from '../.
 import { createBlankSessionSignals, type SessionSignals } from '../../core/sessionSignals';
 import type { ModelInfo } from '../../providers/copilot';
 import type { ChatMessage, ChatMode, ChatSessionInfo, ChatUserInput, RevertBarState } from './types';
+import type { OfficeSync } from '../office/sync';
 import { installApprovalsMethods } from './methods.approvals';
 import { installInputHistoryMethods } from './methods.inputHistory';
 import { installModeMethods } from './methods.mode';
@@ -52,6 +53,7 @@ export class ChatController {
   signals: SessionSignals = createBlankSessionSignals();
   sessions: Map<string, ChatSessionInfo> = new Map();
   activeSessionId: string;
+  officeSync?: OfficeSync;
   isProcessing = false;
   currentModel: string;
   mode: ChatMode;

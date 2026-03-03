@@ -127,6 +127,15 @@ export function createUserHistoryMessage(
   };
 }
 
+export function isSkillInjectedMessage(message: AgentHistoryMessage): boolean {
+  return message.role === 'user' && !!message.metadata?.skill;
+}
+
+export function stripSkillInjectedMessages(history: readonly AgentHistoryMessage[]): AgentHistoryMessage[] {
+  if (!Array.isArray(history) || history.length === 0) return [];
+  return history.filter((msg) => !isSkillInjectedMessage(msg));
+}
+
 export function createAssistantHistoryMessage(): AgentHistoryMessage {
   return {
     id: crypto.randomUUID(),

@@ -2,6 +2,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 
 import { getPrimaryWorkspaceFolderUri } from '../../core/workspaceContext';
+import { redactSensitive, truncateForDebug } from '../../core/agent/debug';
 
 export function getNonce(): string {
   return crypto.randomUUID().replace(/-/g, '');
@@ -42,7 +43,68 @@ export function formatWorkspacePathForUI(rawPath?: string): string | undefined {
   return value.replace(/\\/g, '/');
 }
 
-export function formatErrorForUser(error: unknown): string {
+export type FormatErrorForUserOptions = {
+  llmProviderId?: string;
+};
+
+const MAX_SERVER_RESPONSE_SNIPPET_CHARS = 2000;
+
+function asMaybeNonEmptyString(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function stringifyLoose(value: unknown): string | undefined {
+  if (typeof value === 'string') return value;
+  if (value instanceof Uint8Array) {
+    try {
+      return Buffer.from(value).toString('utf8');
+    } catch {
+      return undefined;
+    }
+  }
+  if (value && typeof value === 'object') {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return undefined;
+}
+
+function extractServerResponseBody(error: unknown): string | undefined {
+  const err = error as any;
+  const candidates: unknown[] = [
+    err?.responseBody,
+    err?.responseBodyString,
+    err?.responseBodyText,
+    err?.responseText,
+    err?.data?.responseBody,
+    err?.data,
+    err?.cause?.responseBody,
+    err?.cause?.responseBodyString,
+    err?.cause?.responseBodyText,
+    err?.cause?.responseText,
+    err?.cause?.data?.responseBody,
+    err?.cause?.data,
+  ];
+
+  for (const candidate of candidates) {
+    const raw = stringifyLoose(candidate);
+    const text = asMaybeNonEmptyString(raw);
+    if (text) return text;
+  }
+
+  // Some providers only surface server details in the underlying error message.
+  const cause = err?.cause;
+  const causeMessage = cause instanceof Error ? cause.message : typeof cause === 'string' ? cause : undefined;
+  return asMaybeNonEmptyString(causeMessage);
+}
+
+export function formatErrorForUser(error: unknown, options?: FormatErrorForUserOptions): string {
   const err = error instanceof Error ? error : new Error(String(error));
   const errRecord = err as Error & { statusCode?: unknown; url?: unknown; code?: unknown; cause?: unknown };
   const causeRecord =
@@ -113,7 +175,19 @@ export function formatErrorForUser(error: unknown): string {
     }
 
     const hint = tips.length > 0 ? `\n\n${tips.join('\n')}` : '';
-    return `Server error: ${summary}${hint}`.trim();
+
+    const includeServerResponse =
+      options?.llmProviderId === 'openaiCompatible' && (!urlValue || !/githubcopilot\.com/i.test(urlValue));
+    const responseBodyRaw = includeServerResponse ? extractServerResponseBody(error) : undefined;
+    const responseSnippet = responseBodyRaw
+      ? truncateForDebug(redactSensitive(responseBodyRaw), MAX_SERVER_RESPONSE_SNIPPET_CHARS)
+      : '';
+
+    const responseBlock = responseSnippet
+      ? `\n\nServer response (truncated & redacted):\n${responseSnippet}`
+      : '';
+
+    return `Server error: ${summary}${hint}${responseBlock}`.trim();
   }
 
   const lower = base.toLowerCase();

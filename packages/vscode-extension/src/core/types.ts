@@ -4,6 +4,7 @@ import type {
   AgentCallbacks as SdkAgentCallbacks,
   AgentConfig as SdkAgentConfig,
   LLMProvider as SdkLLMProvider,
+  SubagentEvent as SdkSubagentEvent,
   ToolCall as SdkToolCall,
   ToolDefinition as SdkToolDefinition,
   ToolExecution as SdkToolExecution,
@@ -57,6 +58,7 @@ export interface AgentConfig extends SdkAgentConfig {
 }
 
 export type AgentCallbacks = SdkAgentCallbacks;
+export type SubagentEvent = SdkSubagentEvent;
 
 export interface LingyunAPI {
   readonly version: string;

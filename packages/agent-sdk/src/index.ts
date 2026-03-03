@@ -9,6 +9,7 @@ export type {
   ToolCall,
   AgentConfig,
   AgentCallbacks,
+  SubagentEvent,
   LingyunEvent,
   LingyunRun,
   LingyunRunResult,

@@ -98,9 +98,11 @@ export {
   finalizeStreamingParts,
   getUserHistoryInputText,
   getMessageText,
+  isSkillInjectedMessage,
   normalizeUserHistoryInputParts,
   setDynamicToolError,
   setDynamicToolOutput,
+  stripSkillInjectedMessages,
   upsertDynamicToolCall,
 } from './history';
 

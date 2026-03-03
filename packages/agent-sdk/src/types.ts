@@ -244,6 +244,15 @@ export interface AgentCallbacks {
   onToolBlocked?: (tool: ToolCall, definition: ToolDefinition, reason: string) => void;
   onToolResult?: (tool: ToolCall, result: ToolResult) => void;
   onRequestApproval?: (tool: ToolCall, definition: ToolDefinition) => Promise<boolean>;
+  /**
+   * Subagent event hook for the built-in `task` tool.
+   *
+   * Notes:
+   * - Only emitted for subagents spawned by the task tool.
+   * - Some subagent tool approvals may also trigger the host `onRequestApproval`,
+   *   since the subagent reuses the same approval handler by design.
+   */
+  onSubagentEvent?: (event: SubagentEvent) => void | Promise<void>;
   onComplete?: (response: string) => void;
   onError?: (error: Error) => void;
   /**
@@ -264,6 +273,63 @@ export type LingyunNotice = {
   message: string;
 };
 
+export type SubagentEvent =
+  | {
+      type: 'subagent_start';
+      parentSessionId?: string;
+      parentToolCallId: string;
+      sessionId: string;
+      subagentType: string;
+      description: string;
+      modelId: string;
+    }
+  | {
+      type: 'subagent_tool_call';
+      parentSessionId?: string;
+      parentToolCallId: string;
+      sessionId: string;
+      subagentType: string;
+      tool: ToolCall;
+      definition: ToolDefinition;
+    }
+  | {
+      type: 'subagent_tool_result';
+      parentSessionId?: string;
+      parentToolCallId: string;
+      sessionId: string;
+      subagentType: string;
+      tool: ToolCall;
+      result: ToolResult;
+    }
+  | {
+      type: 'subagent_request_approval';
+      parentSessionId?: string;
+      parentToolCallId: string;
+      sessionId: string;
+      subagentType: string;
+      tool: ToolCall;
+      definition: ToolDefinition;
+    }
+  | {
+      type: 'subagent_approval_resolved';
+      parentSessionId?: string;
+      parentToolCallId: string;
+      sessionId: string;
+      subagentType: string;
+      tool: ToolCall;
+      definition: ToolDefinition;
+      approved: boolean;
+    }
+  | {
+      type: 'subagent_complete';
+      parentSessionId?: string;
+      parentToolCallId: string;
+      sessionId: string;
+      subagentType: string;
+      status: 'done' | 'error';
+      error?: string;
+    };
+
 export type LingyunEvent =
   | { type: 'debug'; message: string }
   | { type: 'notice'; notice: LingyunNotice }
@@ -273,6 +339,7 @@ export type LingyunEvent =
   | { type: 'tool_call'; tool: ToolCall; definition: ToolDefinition }
   | { type: 'tool_blocked'; tool: ToolCall; definition: ToolDefinition; reason: string }
   | { type: 'tool_result'; tool: ToolCall; result: ToolResult }
+  | SubagentEvent
   | { type: 'compaction_start'; auto: boolean; markerMessageId: string }
   | {
       type: 'compaction_end';

@@ -4,24 +4,21 @@ import {
   jsonSchema,
   tool as aiTool,
   type ModelMessage,
+  type ToolExecutionOptions,
 } from 'ai';
 
 import type { ToolCall, ToolDefinition, ToolResult, AgentCallbacks, AgentConfig, LLMProvider, LingyunEvent, LingyunRun } from '../types.js';
 import {
-  TOOL_ERROR_CODES,
   createHistoryForModel,
   createUserHistoryMessage,
   extractSkillMentions,
   getSkillIndex,
   getEffectiveHistory,
   getUserHistoryInputText,
-  listBuiltinSubagents,
   loadSkillFile,
-  normalizeSessionId,
   redactFsPathForPrompt,
-  requireString,
-  resolveBuiltinSubagent,
   selectSkillsForText,
+  stripSkillInjectedMessages,
   type AgentHistoryMessage,
   type CompactionConfig,
   type ModelLimit,
@@ -43,11 +40,11 @@ import { FileHandleRegistry } from './fileHandles.js';
 import { compactSessionInternal } from './compaction.js';
 import { executeToolWithPolicies } from './toolExecution.js';
 import { runOnce as runOnceLoop } from './runOnce.js';
-import { snapshotSession } from '../persistence/sessionSnapshot.js';
 
 import { AsyncQueue } from './asyncQueue.js';
 import { invokeCallbackSafely } from './callbacks.js';
 import { LingyunSession } from './session.js';
+import { TaskSubagentRunner } from './taskSubagentRunner.js';
 
 export { LingyunSession };
 
@@ -111,6 +108,7 @@ export class LingyunAgent {
   private readonly taskSessions = new Map<string, LingyunSession>();
   private readonly maxTaskSessions = 50;
   private readonly providerBehavior: ProviderBehavior;
+  private readonly taskSubagentRunner: TaskSubagentRunner;
 
   constructor(
     private readonly llm: LLMProvider,
@@ -189,6 +187,24 @@ export class LingyunAgent {
       getBasePrompt: () => this.config.systemPrompt || DEFAULT_SYSTEM_PROMPT,
       getSessionId: () => this.config.sessionId,
       getMode: () => this.getMode(),
+    });
+
+    this.taskSubagentRunner = new TaskSubagentRunner({
+      llm: this.llm,
+      getConfig: () => this.config,
+      getMode: () => this.getMode(),
+      getTaskMaxOutputChars: () => this.taskMaxOutputChars,
+      taskSessions: this.taskSessions,
+      maxTaskSessions: this.maxTaskSessions,
+      createSubagentAgent: (subagentConfig) =>
+        new LingyunAgent(this.llm, subagentConfig, this.registry, {
+          plugins: this.plugins,
+          workspaceRoot: this.workspaceRoot,
+          allowExternalPaths: this.allowExternalPaths,
+          skills: this.skillsConfig,
+          modelLimits: this.modelLimits,
+          compaction: this.compactionConfig,
+        }),
     });
   }
 
@@ -437,229 +453,7 @@ export class LingyunAgent {
       toolNameToDefinition.set(toolName, def);
 
       if (toolName === 'task') {
-        out[toolName] = aiTool({
-          id: toolName as any,
-          description: def.description,
-          inputSchema: jsonSchema(def.parameters as any),
-          execute: async (args: any, options: any) => {
-            const resolvedArgs: any = args ?? {};
-
-            if (session.parentSessionId || session.subagentType) {
-              return {
-                success: false,
-                error: 'Subagents cannot spawn other subagents via task.',
-                metadata: { errorCode: TOOL_ERROR_CODES.task_recursion_denied },
-              };
-            }
-
-            const parentMode = this.getMode();
-
-            const descriptionResult = requireString(resolvedArgs, 'description');
-            if ('error' in descriptionResult) return { success: false, error: descriptionResult.error };
-            const promptResult = requireString(resolvedArgs, 'prompt');
-            if ('error' in promptResult) return { success: false, error: promptResult.error };
-            const typeResult = requireString(resolvedArgs, 'subagent_type');
-            if ('error' in typeResult) return { success: false, error: typeResult.error };
-
-            const subagentTypeRaw = typeResult.value.trim();
-            const subagent = resolveBuiltinSubagent(subagentTypeRaw);
-            if (!subagent) {
-              const names = listBuiltinSubagents().map((a: { name: string }) => a.name).join(', ');
-              return {
-                success: false,
-                error: `Unknown subagent_type: ${subagentTypeRaw}. Available: ${names || '(none)'}`,
-                metadata: { errorCode: TOOL_ERROR_CODES.unknown_subagent_type, subagentType: subagentTypeRaw },
-              };
-            }
-
-            if (parentMode === 'plan' && subagent.name !== 'explore') {
-              return {
-                success: false,
-                error: 'Only the explore subagent is allowed in Plan mode.',
-                metadata: { errorCode: TOOL_ERROR_CODES.subagent_denied_in_plan, subagentType: subagent.name },
-              };
-            }
-
-            const sessionIdRaw =
-              typeof resolvedArgs.session_id === 'string' && resolvedArgs.session_id.trim()
-                ? String(resolvedArgs.session_id).trim()
-                : '';
-
-            const parentSessionId = session.sessionId ?? this.config.sessionId;
-            const requestedSessionId = normalizeSessionId(sessionIdRaw) || '';
-            const childSessionId = requestedSessionId || crypto.randomUUID();
-
-            const existing = this.taskSessions.get(childSessionId);
-            const childSession =
-              existing ??
-              new LingyunSession({
-                sessionId: childSessionId,
-                parentSessionId,
-                subagentType: subagent.name,
-              });
-
-            if (!existing) {
-              this.taskSessions.set(childSessionId, childSession);
-              while (this.taskSessions.size > this.maxTaskSessions) {
-                const oldestKey = this.taskSessions.keys().next().value as string | undefined;
-                if (!oldestKey) break;
-                if (oldestKey === childSessionId) break;
-                this.taskSessions.delete(oldestKey);
-              }
-            } else {
-              childSession.parentSessionId = parentSessionId;
-              childSession.subagentType = subagent.name;
-              // Refresh LRU order.
-              this.taskSessions.delete(childSessionId);
-              this.taskSessions.set(childSessionId, childSession);
-            }
-
-            const parentModelId = this.config.model;
-            if (!parentModelId) {
-              return {
-                success: false,
-                error: 'No model configured. Set AgentConfig.model.',
-                metadata: { errorCode: TOOL_ERROR_CODES.missing_model },
-              };
-            }
-
-            const configuredSubagentModel =
-              typeof this.config.subagentModel === 'string' ? this.config.subagentModel.trim() : '';
-
-            const desiredChildModelId = childSession.modelId || configuredSubagentModel || parentModelId;
-            let childModelId = parentModelId;
-            let childModelWarning: string | undefined;
-            if (desiredChildModelId !== parentModelId) {
-              try {
-                await this.llm.getModel(desiredChildModelId);
-                childModelId = desiredChildModelId;
-              } catch (error) {
-                childModelWarning =
-                  `Subagent model "${desiredChildModelId}" is unavailable; ` +
-                  `using parent model "${parentModelId}".`;
-                invokeCallbackSafely(
-                  callbacks?.onNotice,
-                  { label: 'onNotice subagent_model_fallback', onDebug: callbacks?.onDebug },
-                  { level: 'warning', message: childModelWarning },
-                );
-                invokeCallbackSafely(
-                  callbacks?.onDebug,
-                  { label: 'onDebug subagent_model_fallback' },
-                  `[Task] subagent model fallback requested=${desiredChildModelId} using=${parentModelId} error=${error instanceof Error ? error.name : typeof error}`,
-                );
-                childModelId = parentModelId;
-              }
-            }
-
-            childSession.modelId = childModelId;
-
-            const basePrompt = this.config.systemPrompt || DEFAULT_SYSTEM_PROMPT;
-            const subagentConfig: AgentConfig = {
-              model: childModelId,
-              mode: 'build',
-              temperature: this.config.temperature,
-              maxRetries: this.config.maxRetries,
-              maxOutputTokens: this.config.maxOutputTokens,
-              autoApprove: this.config.autoApprove,
-              toolFilter: subagent.toolFilter?.length ? subagent.toolFilter : undefined,
-              systemPrompt: `${basePrompt}\n\n${subagent.prompt}`,
-              sessionId: childSessionId,
-            };
-
-            const subagentRunner = new LingyunAgent(this.llm, subagentConfig, this.registry, {
-              plugins: this.plugins,
-              workspaceRoot: this.workspaceRoot,
-              allowExternalPaths: this.allowExternalPaths,
-              skills: this.skillsConfig,
-              modelLimits: this.modelLimits,
-              compaction: this.compactionConfig,
-            });
-
-            const toolSummary = new Map<
-              string,
-              { id: string; tool: string; status: 'running' | 'success' | 'error' }
-            >();
-
-            const childCallbacks: AgentCallbacks = {
-              onRequestApproval: callbacks?.onRequestApproval,
-              onToolCall: (tool, definition) => {
-                toolSummary.set(tool.id, { id: tool.id, tool: definition.id, status: 'running' });
-              },
-              onToolResult: (tool, result) => {
-                const prev = toolSummary.get(tool.id);
-                const nextStatus: 'success' | 'error' = result.success ? 'success' : 'error';
-                toolSummary.set(tool.id, {
-                  id: tool.id,
-                  tool: prev?.tool ?? tool.function.name,
-                  status: nextStatus,
-                });
-              },
-            };
-
-            try {
-              const run = subagentRunner.run({
-                session: childSession,
-                input: promptResult.value,
-                callbacks: childCallbacks,
-                signal: options.abortSignal,
-              });
-              const drain = (async () => {
-                for await (const _event of run.events) {
-                  // drain
-                }
-              })();
-              const done = await run.done;
-              await drain;
-              const text = done.text || '';
-
-              const outputText = this.formatTaskOutputText(text, childSessionId);
-
-              const summary = [...toolSummary.values()].sort((a, b) => a.id.localeCompare(b.id));
-
-              return {
-                success: true,
-                data: {
-                  session_id: childSessionId,
-                  subagent_type: subagent.name,
-                  text,
-                },
-                metadata: {
-                  title: descriptionResult.value,
-                  outputText,
-                  task: {
-                    description: descriptionResult.value,
-                    subagent_type: subagent.name,
-                    session_id: childSessionId,
-                    parent_session_id: parentSessionId,
-                    summary,
-                    model_id: childModelId,
-                    ...(childModelWarning
-                      ? { model_warning: childModelWarning, requested_model_id: desiredChildModelId }
-                      : {}),
-                  },
-                  childSession: snapshotSession(childSession, {
-                    sessionId: childSessionId,
-                    includeFileHandles: true,
-                  }),
-                },
-              };
-            } catch (error) {
-              return {
-                success: false,
-                error: error instanceof Error ? error.message : String(error),
-                metadata: { errorCode: TOOL_ERROR_CODES.task_subagent_failed },
-              };
-            } finally {
-              // Avoid leaking subagent's temporary skill injection messages to later turns.
-              childSession.history = childSession.history.filter((msg) => !(msg.role === 'user' && msg.metadata?.skill));
-            }
-          },
-          toModelOutput: async (options: any) => {
-            const output = options.output as ToolResult;
-            const content = await this.formatToolResult(output, def.name);
-            return { type: 'text', value: content };
-          },
-        });
+        out[toolName] = this.createTaskTool(def, session, callbacks);
         continue;
       }
 
@@ -667,7 +461,8 @@ export class LingyunAgent {
         id: toolName as any,
         description: def.description,
         inputSchema: jsonSchema(def.parameters as any),
-        execute: async (args: any, options: any) => {
+        execute: async (args: any, options: ToolExecutionOptions) => {
+          const abortSignal = options.abortSignal ?? new AbortController().signal;
           return executeToolWithPolicies({
             host: {
               config: this.config,
@@ -687,7 +482,7 @@ export class LingyunAgent {
             semanticHandles,
             callbacks,
             args,
-            options: { toolCallId: String(options.toolCallId), abortSignal: options.abortSignal },
+            options: { toolCallId: options.toolCallId, abortSignal },
           });
         },
         toModelOutput: async (options: any) => {
@@ -701,29 +496,22 @@ export class LingyunAgent {
     return out;
   }
 
-  private formatTaskOutputText(text: string, childSessionId: string): string {
-    const baseText = String(text || '').trimEnd();
-    const metadataBlock =
-      '\n\n' + ['<task_metadata>', `session_id: ${childSessionId}`, '</task_metadata>'].join('\n');
-
-    const maxChars = this.taskMaxOutputChars;
-    if (!maxChars || !Number.isFinite(maxChars) || maxChars <= 0) {
-      return baseText + metadataBlock;
-    }
-
-    const full = baseText + metadataBlock;
-    if (full.length <= maxChars) return full;
-
-    const marker = '\n\n... [TRUNCATED]';
-    const reserved = marker.length + metadataBlock.length;
-    if (reserved >= maxChars) {
-      if (metadataBlock.length <= maxChars) return metadataBlock;
-      return metadataBlock.slice(metadataBlock.length - maxChars);
-    }
-
-    const available = maxChars - reserved;
-    const truncatedText = available > 0 ? baseText.slice(0, available).trimEnd() : '';
-    return truncatedText + marker + metadataBlock;
+  private createTaskTool(def: ToolDefinition, session: LingyunSession, callbacks: AgentCallbacks | undefined): unknown {
+    const toolName = def.id;
+    return aiTool({
+      id: toolName as any,
+      description: def.description,
+      inputSchema: jsonSchema(def.parameters as any),
+      execute: async (args: any, options: ToolExecutionOptions) => {
+        const resolvedArgs: Record<string, unknown> = isRecord(args) ? args : {};
+        return this.taskSubagentRunner.executeTaskTool({ def, session, callbacks, args: resolvedArgs, options });
+      },
+      toModelOutput: async (options: any) => {
+        const output = options.output as ToolResult;
+        const content = await this.formatToolResult(output, def.name);
+        return { type: 'text', value: content };
+      },
+    });
   }
 
   private filterTools(tools: ToolDefinition[]): ToolDefinition[] {
@@ -875,9 +663,9 @@ export class LingyunAgent {
   run(params: { session: LingyunSession; input: UserHistoryInput; callbacks?: AgentCallbacks; signal?: AbortSignal }): LingyunRun {
     const queue = new AsyncQueue<LingyunEvent>();
 
-	    const callbacks = params.callbacks;
-	    const proxy: AgentCallbacks = {
-	      ...callbacks,
+    const callbacks = params.callbacks;
+    const proxy: AgentCallbacks = {
+      ...callbacks,
       onDebug: (message) => {
         invokeCallbackSafely(callbacks?.onDebug, { label: 'onDebug' }, message);
         queue.push({ type: 'debug', message });
@@ -899,15 +687,15 @@ export class LingyunAgent {
         invokeCallbackSafely(callbacks?.onThoughtToken, { label: 'onThoughtToken', onDebug: callbacks?.onDebug }, token);
         queue.push({ type: 'thought_token', token });
       },
-	      onToolCall: (tool, definition) => {
-	        invokeCallbackSafely(
-	          callbacks?.onToolCall,
-	          { label: `onToolCall tool=${definition.id}`, onDebug: callbacks?.onDebug },
-	          tool,
-	          definition,
-	        );
-	        queue.push({ type: 'tool_call', tool, definition });
-	      },
+      onToolCall: (tool, definition) => {
+        invokeCallbackSafely(
+          callbacks?.onToolCall,
+          { label: `onToolCall tool=${definition.id}`, onDebug: callbacks?.onDebug },
+          tool,
+          definition,
+        );
+        queue.push({ type: 'tool_call', tool, definition });
+      },
       onToolBlocked: (tool, definition, reason) => {
         invokeCallbackSafely(callbacks?.onToolBlocked, { label: `onToolBlocked tool=${definition.id}`, onDebug: callbacks?.onDebug }, tool, definition, reason);
         queue.push({ type: 'tool_blocked', tool, definition, reason });
@@ -915,6 +703,14 @@ export class LingyunAgent {
       onToolResult: (tool, result) => {
         invokeCallbackSafely(callbacks?.onToolResult, { label: `onToolResult tool=${tool.function.name}`, onDebug: callbacks?.onDebug }, tool, result);
         queue.push({ type: 'tool_result', tool, result });
+      },
+      onSubagentEvent: (event) => {
+        invokeCallbackSafely(
+          callbacks?.onSubagentEvent,
+          { label: `onSubagentEvent type=${event.type}`, onDebug: callbacks?.onDebug },
+          event,
+        );
+        queue.push(event);
       },
       onCompactionStart: (event) => {
         const result = invokeCallbackSafely(
@@ -958,7 +754,7 @@ export class LingyunAgent {
         queue.fail(err);
         throw err;
       } finally {
-        params.session.history = params.session.history.filter((msg) => !(msg.role === 'user' && msg.metadata?.skill));
+        params.session.history = stripSkillInjectedMessages(params.session.history);
       }
     })();
 

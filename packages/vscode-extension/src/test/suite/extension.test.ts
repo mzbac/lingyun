@@ -28,6 +28,9 @@ suite('Extension Integration', () => {
     
     const expectedCommands = [
       'lingyun.start',
+      'lingyun.openAgent',
+      'lingyun.openOffice',
+      'lingyun.resetOfficeLayout',
       'lingyun.abort',
       'lingyun.clear',
       'lingyun.showLogs',
@@ -78,14 +81,11 @@ suite('Extension Integration', () => {
   // Views
   // ===========================================================================
 
-  test('chat view should be registered', () => {
-    // Views are defined in package.json
-    // We can verify they're loadable
-    const viewId = 'lingyun.chatView';
-
-    // This would need the extension to be fully activated
-    // Just verify the view ID format is correct
-    assert.ok(viewId.includes('lingyun'));
+  test('views should be registered', () => {
+    const viewIds = ['lingyun.chatView', 'lingyun.officeView'];
+    for (const viewId of viewIds) {
+      assert.ok(viewId.includes('lingyun'));
+    }
   });
 });
 

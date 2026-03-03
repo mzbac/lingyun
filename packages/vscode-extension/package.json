@@ -34,6 +34,18 @@
         "icon": "$(play)"
       },
       {
+        "command": "lingyun.openAgent",
+        "title": "LingYun: Open Agent"
+      },
+      {
+        "command": "lingyun.openOffice",
+        "title": "LingYun: Open Office"
+      },
+      {
+        "command": "lingyun.resetOfficeLayout",
+        "title": "LingYun Office: Reset Layout"
+      },
+      {
         "command": "lingyun.abort",
         "title": "LingYun: Abort"
       },
@@ -98,6 +110,13 @@
           "type": "webview",
           "id": "lingyun.chatView",
           "name": "AGENT",
+          "icon": "media/icon.svg"
+        },
+        {
+          "type": "webview",
+          "id": "lingyun.officeView",
+          "name": "OFFICE",
+          "visibility": "collapsed",
           "icon": "media/icon.svg"
         }
       ]
@@ -361,6 +380,11 @@
           "default": true,
           "description": "Generate and review a plan before executing a new task"
         },
+        "lingyun.office.tilesetRoot": {
+          "type": "string",
+          "default": "",
+          "description": "Optional path to a local Office_Tileset folder to override Office view furniture sprites. This is never bundled into the extension; you must supply the tileset on your machine."
+        },
         "lingyun.showThinking": {
           "type": "boolean",
           "default": true,
@@ -501,9 +525,11 @@
     "vscode:prepublish": "pnpm run bundle",
     "build": "pnpm run bundle",
     "clean": "node scripts/clean.js",
-    "compile": "pnpm run clean && node ../../scripts/ensure-core-build.cjs && node ../../scripts/ensure-agent-sdk-build.cjs && tsc -p ./",
+    "compile": "pnpm run clean && pnpm run office:build && node ../../scripts/ensure-core-build.cjs && node ../../scripts/ensure-agent-sdk-build.cjs && tsc -p ./",
     "bundle": "pnpm run clean && node scripts/bundle.js",
-    "watch": "tsc -watch -p ./",
+    "office:build": "node scripts/build-office-webview.js",
+    "office:watch": "node scripts/build-office-webview.js --watch",
+    "watch": "pnpm run office:build && tsc -watch -p ./",
     "lint": "eslint src --ext ts",
     "test": "pnpm run compile && node ./dist/test/runTest.js",
     "test:unit": "pnpm run test",
@@ -521,6 +547,7 @@
     "@ai-sdk/openai-compatible": "^2.0.30",
     "ai": "^6.0.86",
     "diff": "^7.0.0",
+    "pngjs": "^7.0.0",
     "undici": "^7.18.2",
     "zod": "^4.1.8"
   },
@@ -531,7 +558,9 @@
     "@types/diff": "^7.0.0",
     "@types/mocha": "^10.0.10",
     "@types/node": "^20.11.16",
+    "@types/pngjs": "^6.0.5",
     "@types/vscode": "^1.93.0",
+    "@vitejs/plugin-react": "^5.1.1",
     "@typescript-eslint/eslint-plugin": "^8.50.0",
     "@typescript-eslint/parser": "^8.50.0",
     "@vscode/test-electron": "^2.5.2",
@@ -540,8 +569,11 @@
     "eslint": "^9.39.2",
     "glob": "^13.0.0",
     "mocha": "^11.7.5",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
     "typescript": "^5.3.3",
-    "typescript-eslint": "^8.50.0"
+    "typescript-eslint": "^8.50.0",
+    "vite": "^7.2.4"
   },
   "extensionDependencies": [],
   "capabilities": {

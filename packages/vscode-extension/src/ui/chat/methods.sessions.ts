@@ -478,6 +478,7 @@ export function installSessionsMethods(controller: ChatController): void {
       sessions: this.getSessionsForUI(),
       activeSessionId: this.activeSessionId,
     });
+    this.officeSync?.sync();
   },
 
   async createNewSession(this: ChatController): Promise<void> {
@@ -546,6 +547,8 @@ export function installSessionsMethods(controller: ChatController): void {
       parentSessionId: session.parentSessionId,
       subagentType: session.subagentType,
     });
+
+    this.officeSync?.sync();
   },
 
   async setBackend(
@@ -708,7 +711,7 @@ export function installSessionsMethods(controller: ChatController): void {
       this.persistActiveSession();
     } catch (error) {
       const endedAt = Date.now();
-      const formatted = formatErrorForUser(error);
+      const formatted = formatErrorForUser(error, { llmProviderId: this.llmProvider?.id });
       const canceled =
         this.abortRequested ||
         /agent aborted/i.test(formatted) ||

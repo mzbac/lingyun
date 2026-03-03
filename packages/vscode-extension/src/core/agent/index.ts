@@ -3,7 +3,12 @@ import * as path from 'path';
 
 import { LingyunAgent, LingyunSession } from '@kooka/agent-sdk';
 import type { AgentHistoryMessage, UserHistoryInput } from '@kooka/core';
-import { createAssistantHistoryMessage, createUserHistoryMessage, resolveBuiltinSubagent } from '@kooka/core';
+import {
+  createAssistantHistoryMessage,
+  createUserHistoryMessage,
+  resolveBuiltinSubagent,
+  stripSkillInjectedMessages,
+} from '@kooka/core';
 
 import type { AgentCallbacks, AgentConfig, LLMProvider } from '../types';
 import type { ToolRegistry } from '../registry';
@@ -329,7 +334,7 @@ export class AgentLoop {
   }
 
   exportState(): AgentSessionState {
-    const history = this.session.history.filter((msg) => !(msg.role === 'user' && msg.metadata?.skill));
+    const history = stripSkillInjectedMessages(this.session.history);
     const fileHandles = this.session.fileHandles
       ? {
           nextId: this.session.fileHandles.nextId,
@@ -464,7 +469,9 @@ export class AgentLoop {
       }
       return await fn(signal);
     } catch (error) {
-      if (isAbortError(error)) {
+      // Only show "Agent aborted" when the user explicitly aborted the run.
+      // Timeout-driven AbortSignals (or provider-side aborts) should preserve the original error so the UI can show details.
+      if (this.activeAbortController?.signal.aborted && isAbortError(error)) {
         throw new Error('Agent aborted');
       }
       throw error;

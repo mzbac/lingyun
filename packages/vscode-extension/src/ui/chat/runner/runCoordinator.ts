@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 
 import type { UserHistoryInputPart } from '@kooka/core';
 import { isDefaultSessionTitle } from '../sessionTitle';
+import { formatErrorForUser } from '../utils';
 import { recordUserIntent } from '../../../core/sessionSignals';
 
 import type { ChatController } from '../controller';
@@ -94,6 +95,7 @@ export class RunCoordinator {
     if (params?.postProcessingSignal !== false) {
       c.postMessage({ type: 'processing', value: false });
     }
+    c.officeSync?.onRunEnd();
     c.persistActiveSession();
   }
 
@@ -136,6 +138,8 @@ export class RunCoordinator {
     c.isProcessing = true;
     c.autoApproveThisRun = false;
     c.postApprovalState();
+
+    c.officeSync?.onRunStart();
 
     const checkpointState = c.agent.exportState();
     const userMsg: ChatMessage = {
@@ -222,22 +226,31 @@ export class RunCoordinator {
 
       await c.agent[isNew ? 'run' : 'continue'](normalizedInput.agentInput, c.createAgentCallbacks());
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      c.markActiveStepStatus(c.abortRequested || message === 'Agent aborted' ? 'canceled' : 'error');
+      const message = formatErrorForUser(error, { llmProviderId: c.llmProvider?.id });
+      const trimmed = message.trim();
+      c.markActiveStepStatus(c.abortRequested || trimmed === 'Agent aborted' ? 'canceled' : 'error');
 
-      if (c.currentTurnId && !(message === 'Agent aborted' && !c.abortRequested)) {
+      if (c.currentTurnId && !(trimmed === 'Agent aborted' && !c.abortRequested)) {
         c.postMessage({ type: 'turnStatus', turnId: c.currentTurnId, status: { type: 'done' } });
       }
 
-      const errorMsg: ChatMessage = {
-        id: crypto.randomUUID(),
-        role: 'error',
-        content: message,
-        timestamp: Date.now(),
-        turnId: c.currentTurnId,
-      };
-      c.messages.push(errorMsg);
-      c.postMessage({ type: 'message', message: errorMsg });
+      const alreadyPosted =
+        !!c.currentTurnId &&
+        [...c.messages]
+          .reverse()
+          .some((m) => m.turnId === c.currentTurnId && m.role === 'error' && (m.content || '').trim() === trimmed);
+
+      if (!alreadyPosted) {
+        const errorMsg: ChatMessage = {
+          id: crypto.randomUUID(),
+          role: 'error',
+          content: message,
+          timestamp: Date.now(),
+          turnId: c.currentTurnId,
+        };
+        c.messages.push(errorMsg);
+        c.postMessage({ type: 'message', message: errorMsg });
+      }
     } finally {
       this.finalizeRun();
     }
@@ -265,25 +278,36 @@ export class RunCoordinator {
     c.postApprovalState();
     c.postMessage({ type: 'processing', value: true });
 
+    c.officeSync?.onRunStart({ clearTools: false });
+
     try {
       await c.agent.resume(c.createAgentCallbacks());
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      c.markActiveStepStatus(c.abortRequested || message === 'Agent aborted' ? 'canceled' : 'error');
+      const message = formatErrorForUser(error, { llmProviderId: c.llmProvider?.id });
+      const trimmed = message.trim();
+      c.markActiveStepStatus(c.abortRequested || trimmed === 'Agent aborted' ? 'canceled' : 'error');
 
-      if (c.currentTurnId && !(message === 'Agent aborted' && !c.abortRequested)) {
+      if (c.currentTurnId && !(trimmed === 'Agent aborted' && !c.abortRequested)) {
         c.postMessage({ type: 'turnStatus', turnId: c.currentTurnId, status: { type: 'done' } });
       }
 
-      const errorMsg: ChatMessage = {
-        id: crypto.randomUUID(),
-        role: 'error',
-        content: message,
-        timestamp: Date.now(),
-        turnId: c.currentTurnId,
-      };
-      c.messages.push(errorMsg);
-      c.postMessage({ type: 'message', message: errorMsg });
+      const alreadyPosted =
+        !!c.currentTurnId &&
+        [...c.messages]
+          .reverse()
+          .some((m) => m.turnId === c.currentTurnId && m.role === 'error' && (m.content || '').trim() === trimmed);
+
+      if (!alreadyPosted) {
+        const errorMsg: ChatMessage = {
+          id: crypto.randomUUID(),
+          role: 'error',
+          content: message,
+          timestamp: Date.now(),
+          turnId: c.currentTurnId,
+        };
+        c.messages.push(errorMsg);
+        c.postMessage({ type: 'message', message: errorMsg });
+      }
     } finally {
       this.finalizeRun();
     }
@@ -344,6 +368,8 @@ export class RunCoordinator {
     c.postMessage({ type: 'processing', value: true });
     c.postMessage({ type: 'planPending', value: false, planMessageId: '' });
 
+    c.officeSync?.onRunStart();
+
     const previousStatus = planMsg.plan.status;
     planMsg.plan.status = 'executing';
     c.postMessage({ type: 'updateMessage', message: planMsg });
@@ -375,20 +401,29 @@ export class RunCoordinator {
         await c.setModeAndPersist('plan');
       }
 
-      const message = error instanceof Error ? error.message : String(error);
-      if (planMsg.turnId && !(message === 'Agent aborted' && !c.abortRequested)) {
+      const message = formatErrorForUser(error, { llmProviderId: c.llmProvider?.id });
+      const trimmed = message.trim();
+      if (planMsg.turnId && !(trimmed === 'Agent aborted' && !c.abortRequested)) {
         c.postMessage({ type: 'turnStatus', turnId: planMsg.turnId, status: { type: 'done' } });
       }
 
-      const errorMsg: ChatMessage = {
-        id: crypto.randomUUID(),
-        role: 'error',
-        content: message,
-        timestamp: Date.now(),
-        turnId: planMsg.turnId,
-      };
-      c.messages.push(errorMsg);
-      c.postMessage({ type: 'message', message: errorMsg });
+      const alreadyPosted =
+        !!planMsg.turnId &&
+        [...c.messages]
+          .reverse()
+          .some((m) => m.turnId === planMsg.turnId && m.role === 'error' && (m.content || '').trim() === trimmed);
+
+      if (!alreadyPosted) {
+        const errorMsg: ChatMessage = {
+          id: crypto.randomUUID(),
+          role: 'error',
+          content: message,
+          timestamp: Date.now(),
+          turnId: planMsg.turnId,
+        };
+        c.messages.push(errorMsg);
+        c.postMessage({ type: 'message', message: errorMsg });
+      }
     } finally {
       this.finalizeRun();
     }
@@ -410,6 +445,8 @@ export class RunCoordinator {
     c.isProcessing = true;
     c.autoApproveThisRun = false;
     c.postApprovalState();
+
+    c.officeSync?.onRunStart();
 
     const note = (reason || '').trim();
     if (note) {
@@ -478,20 +515,29 @@ export class RunCoordinator {
         planMessageId: previousPendingPlan.planMessageId,
       });
 
-      const message = error instanceof Error ? error.message : String(error);
-      if (planMsg.turnId && !(message === 'Agent aborted' && !c.abortRequested)) {
+      const message = formatErrorForUser(error, { llmProviderId: c.llmProvider?.id });
+      const trimmed = message.trim();
+      if (planMsg.turnId && !(trimmed === 'Agent aborted' && !c.abortRequested)) {
         c.postMessage({ type: 'turnStatus', turnId: planMsg.turnId, status: { type: 'done' } });
       }
 
-      const errorMsg: ChatMessage = {
-        id: crypto.randomUUID(),
-        role: 'error',
-        content: message,
-        timestamp: Date.now(),
-        turnId: planMsg.turnId,
-      };
-      c.messages.push(errorMsg);
-      c.postMessage({ type: 'message', message: errorMsg });
+      const alreadyPosted =
+        !!planMsg.turnId &&
+        [...c.messages]
+          .reverse()
+          .some((m) => m.turnId === planMsg.turnId && m.role === 'error' && (m.content || '').trim() === trimmed);
+
+      if (!alreadyPosted) {
+        const errorMsg: ChatMessage = {
+          id: crypto.randomUUID(),
+          role: 'error',
+          content: message,
+          timestamp: Date.now(),
+          turnId: planMsg.turnId,
+        };
+        c.messages.push(errorMsg);
+        c.postMessage({ type: 'message', message: errorMsg });
+      }
     } finally {
       c.isProcessing = false;
       c.postMessage({ type: 'processing', value: false });
@@ -503,6 +549,7 @@ export class RunCoordinator {
       c.autoApproveThisRun = false;
       c.pendingApprovals.clear();
       c.postApprovalState();
+      c.officeSync?.onRunEnd();
       c.persistActiveSession();
     }
   }
@@ -545,6 +592,8 @@ export class RunCoordinator {
     c.isProcessing = true;
     c.autoApproveThisRun = false;
     c.postApprovalState();
+
+    c.officeSync?.onRunStart();
 
     const previousPendingPlan = { ...pendingPlan };
 
@@ -611,20 +660,29 @@ export class RunCoordinator {
         planMessageId: previousPendingPlan.planMessageId,
       });
 
-      const message = error instanceof Error ? error.message : String(error);
-      if (planMsg.turnId && !(message === 'Agent aborted' && !c.abortRequested)) {
+      const message = formatErrorForUser(error, { llmProviderId: c.llmProvider?.id });
+      const trimmed = message.trim();
+      if (planMsg.turnId && !(trimmed === 'Agent aborted' && !c.abortRequested)) {
         c.postMessage({ type: 'turnStatus', turnId: planMsg.turnId, status: { type: 'done' } });
       }
 
-      const errorMsg: ChatMessage = {
-        id: crypto.randomUUID(),
-        role: 'error',
-        content: message,
-        timestamp: Date.now(),
-        turnId: planMsg.turnId,
-      };
-      c.messages.push(errorMsg);
-      c.postMessage({ type: 'message', message: errorMsg });
+      const alreadyPosted =
+        !!planMsg.turnId &&
+        [...c.messages]
+          .reverse()
+          .some((m) => m.turnId === planMsg.turnId && m.role === 'error' && (m.content || '').trim() === trimmed);
+
+      if (!alreadyPosted) {
+        const errorMsg: ChatMessage = {
+          id: crypto.randomUUID(),
+          role: 'error',
+          content: message,
+          timestamp: Date.now(),
+          turnId: planMsg.turnId,
+        };
+        c.messages.push(errorMsg);
+        c.postMessage({ type: 'message', message: errorMsg });
+      }
     } finally {
       c.isProcessing = false;
       c.postMessage({ type: 'processing', value: false });
@@ -636,6 +694,7 @@ export class RunCoordinator {
       c.autoApproveThisRun = false;
       c.pendingApprovals.clear();
       c.postApprovalState();
+      c.officeSync?.onRunEnd();
       c.persistActiveSession();
     }
   }

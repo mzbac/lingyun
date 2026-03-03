@@ -5,7 +5,7 @@
     "declaration": false,
     "declarationMap": false,
     "outDir": "dist-test",
-    "rootDir": "src/test",
+    "rootDir": "src",
     "baseUrl": ".",
     "paths": {
       "@kooka/agent-sdk": ["./dist/index.d.ts"]

@@ -26,6 +26,7 @@ import {
   type ToolDefinition,
   type ToolResult,
 } from '@kooka/agent-sdk';
+import { TaskSubagentRunner } from '../../agent/taskSubagentRunner.js';
 
 function getMessageText(message: AgentHistoryMessage): string {
   return message.parts
@@ -1350,5 +1351,42 @@ suite('LingYun Agent SDK', () => {
       assert.strictEqual(taskResult!.metadata?.errorCode, TOOL_ERROR_CODES.subagent_denied_in_plan);
       assert.strictEqual(taskResult!.metadata?.subagentType, 'general');
     }
+  });
+
+  test('task tool subagent inherits parent mode (plan) and disables autoApprove', async () => {
+    const llm = new MockLLMProvider();
+    const parentSession = new LingyunSession({ sessionId: 'parent' });
+
+    let capturedSubagentConfig: any;
+    const runner = new TaskSubagentRunner({
+      llm,
+      getConfig: () => ({ model: 'parent-model', mode: 'plan', autoApprove: true } as any),
+      getMode: () => 'plan',
+      getTaskMaxOutputChars: () => 0,
+      taskSessions: new Map<string, LingyunSession>(),
+      maxTaskSessions: 10,
+      createSubagentAgent: (subagentConfig) => {
+        capturedSubagentConfig = subagentConfig as any;
+        return {
+          run: () => ({
+            events: (async function* () {})(),
+            done: Promise.resolve({ text: 'ok', session: { history: [] } }),
+          }),
+        };
+      },
+    });
+
+    const result = await runner.executeTaskTool({
+      def: { id: 'task' } as any,
+      session: parentSession,
+      callbacks: undefined,
+      args: { description: 'desc', prompt: 'prompt', subagent_type: 'explore' },
+      options: { toolCallId: 'call_task', abortSignal: new AbortController().signal } as any,
+    });
+
+    assert.strictEqual(result.success, true);
+    assert.ok(capturedSubagentConfig, 'expected TaskSubagentRunner to create a subagent config');
+    assert.strictEqual(capturedSubagentConfig.mode, 'plan');
+    assert.strictEqual(capturedSubagentConfig.autoApprove, false);
   });
 });
