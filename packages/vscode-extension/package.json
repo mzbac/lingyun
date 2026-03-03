@@ -380,11 +380,6 @@
           "default": true,
           "description": "Generate and review a plan before executing a new task"
         },
-        "lingyun.office.tilesetRoot": {
-          "type": "string",
-          "default": "",
-          "description": "Optional path to a local Office_Tileset folder to override Office view furniture sprites. This is never bundled into the extension; you must supply the tileset on your machine."
-        },
         "lingyun.showThinking": {
           "type": "boolean",
           "default": true,

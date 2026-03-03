@@ -1,5 +1,4 @@
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 
@@ -30,7 +29,7 @@ const MAX_FOOTPRINT_TILES = 4;
 const MAX_TILESET_PIXELS = 4096 * 4096;
 const MAX_DETECTED_ASSETS = 2000;
 
-// These coordinates are metadata only. The actual pixels are loaded from the user's local tileset at runtime.
+// These coordinates are metadata only. The actual pixels are loaded from the bundled tileset at runtime.
 const FURNITURE_CROPS: FurnitureCrop[] = [
   // Office Tileset (16x16) pixel crops.
   // Note: many assets are not aligned to a 16px grid (e.g. y=183), so we use pixel coords.
@@ -51,21 +50,11 @@ type OfficeTilesetAssets = {
 
 let cachedTilesetAssets: { pngPath: string; mtimeMs: number; assets: OfficeTilesetAssets } | null = null;
 
-function expandUserHome(inputPath: string): string {
-  const raw = (inputPath || '').trim();
-  if (!raw) return '';
-  if (raw === '~') return os.homedir();
-  if (raw.startsWith('~/')) return path.join(os.homedir(), raw.slice(2));
-  return raw;
-}
-
 function findTilesetRoot(context: vscode.ExtensionContext): string | null {
-  const cfg = vscode.workspace.getConfiguration('lingyun');
-  const configured = expandUserHome(cfg.get<string>('office.tilesetRoot') || '');
   const candidates = [
-    configured,
+    path.join(context.extensionPath, 'dist', 'office-webview', 'vendor', 'Office_Tileset'),
     path.join(context.extensionPath, 'office-webview', 'vendor', 'Office_Tileset'),
-  ].filter(Boolean);
+  ];
 
   for (const root of candidates) {
     try {
