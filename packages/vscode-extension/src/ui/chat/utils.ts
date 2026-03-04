@@ -165,9 +165,15 @@ export function formatErrorForUser(error: unknown, options?: FormatErrorForUserO
           : 'Tip: this usually means the server endpoint is wrong. Ensure your base URL ends with `/v1` and the server supports `POST /v1/chat/completions`.',
       );
     } else if (statusCode === 401 || statusCode === 403) {
-      tips.push(
-        'Tip: check authentication. Ensure the env var configured by `lingyun.openaiCompatible.apiKeyEnv` is set (or disable auth on the server).',
-      );
+      if (options?.llmProviderId === 'copilot') {
+        tips.push('Tip: GitHub Copilot auth expired — please sign in again and retry.');
+      } else if (options?.llmProviderId === 'openaiCompatible') {
+        tips.push(
+          'Tip: check authentication. Ensure the env var configured by `lingyun.openaiCompatible.apiKeyEnv` is set (or disable auth on the server).',
+        );
+      } else {
+        tips.push('Tip: check authentication/authorization and retry.');
+      }
     } else if (statusCode === 429) {
       tips.push('Tip: the server is rate limiting requests. Try again later or reduce concurrency.');
     } else if (typeof statusCode === 'number' && statusCode >= 500) {

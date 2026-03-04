@@ -136,8 +136,34 @@ export class CopilotProvider implements LLMProvider {
     this.cachedProviderPluginVersion = null;
 
     // If the token was rejected, force-refresh it on the next call.
+    const statusCode = (() => {
+      const candidates = [
+        (error as any)?.status,
+        (error as any)?.statusCode,
+        (error as any)?.response?.status,
+        (error as any)?.cause?.status,
+        (error as any)?.cause?.statusCode,
+      ];
+
+      for (const value of candidates) {
+        if (typeof value === 'number' && Number.isFinite(value)) return value;
+        if (typeof value === 'string') {
+          const parsed = Number(value);
+          if (Number.isFinite(parsed)) return parsed;
+        }
+      }
+
+      return undefined;
+    })();
+
     const message = error instanceof Error ? error.message : String(error);
-    if (/\b401\b/i.test(message) || /\b403\b/i.test(message) || /unauthori[sz]ed|forbidden|invalid token|expired/i.test(message)) {
+    if (
+      statusCode === 401 ||
+      statusCode === 403 ||
+      /\b401\b/i.test(message) ||
+      /\b403\b/i.test(message) ||
+      /unauthori[sz]ed|forbidden|invalid token|expired/i.test(message)
+    ) {
       this.copilotToken = null;
       this.tokenExpiry = 0;
     }

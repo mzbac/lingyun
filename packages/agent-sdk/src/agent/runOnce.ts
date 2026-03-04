@@ -92,12 +92,46 @@ export async function runOnce(params: {
   const semanticHandles = new SemanticHandleRegistry();
   semanticHandles.importState(session.semanticHandles);
 
+  function getErrorMessage(error: unknown): string {
+    if (!error) return '';
+    if (typeof error === 'string') return error;
+    if (error instanceof Error) return error.message || String(error);
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return String(error);
+    }
+  }
+
+  function getStatusCode(error: unknown): number | undefined {
+    const candidates = [
+      (error as any)?.status,
+      (error as any)?.statusCode,
+      (error as any)?.response?.status,
+      (error as any)?.cause?.status,
+      (error as any)?.cause?.statusCode,
+    ];
+
+    for (const value of candidates) {
+      if (typeof value === 'number' && Number.isFinite(value)) return value;
+      if (typeof value === 'string') {
+        const parsed = Number(value);
+        if (Number.isFinite(parsed)) return parsed;
+      }
+    }
+
+    return undefined;
+  }
+
   try {
-    const rawModel = await llm.getModel(modelId);
-    const model = wrapLanguageModel({
-      model: rawModel as any,
-      middleware: [extractReasoningMiddleware({ tagName: 'think', startWithReasoning: false })],
-    });
+    const modelMiddleware = [extractReasoningMiddleware({ tagName: 'think', startWithReasoning: false })];
+    const wrapModel = (rawModel: unknown) =>
+      wrapLanguageModel({
+        model: rawModel as any,
+        middleware: modelMiddleware,
+      });
+
+    let model: any = wrapModel(await llm.getModel(modelId));
 
     const systemParts = await params.composeSystemPrompt(modelId, { signal });
     const tools = params.filterTools(await registry.getTools());
@@ -168,6 +202,7 @@ export async function runOnce(params: {
 
       const maxRetries = Math.max(0, Math.floor(params.maxRetries ?? 0));
       let retryAttempt = 0;
+      let copilotAuthRefreshAttempt = 0;
 
       while (true) {
         assistantMessage = createAssistantHistoryMessage();
@@ -341,28 +376,61 @@ export async function runOnce(params: {
           streamReplayUpdates = streamAdapter.getReplayUpdates();
           break;
         } catch (e) {
-          const retryable = getRetryableLlmError(e);
+          const statusCode = getStatusCode(e);
+          const msg = getErrorMessage(e);
+          const lower = msg.toLowerCase();
+          const isCopilotAuthError =
+            llm.id === 'copilot' &&
+            (statusCode === 401 ||
+              statusCode === 403 ||
+              lower.includes('unauthorized') ||
+              lower.includes('forbidden') ||
+              lower.includes('invalid token') ||
+              lower.includes('token expired') ||
+              lower.includes('expired token'));
+
+          const retryable = isCopilotAuthError
+            ? { kind: 'auth_expired' as const, message: 'GitHub Copilot auth expired', retryAfterMs: undefined }
+            : getRetryableLlmError(e);
           const allowRetryAfterOutput = retryWithPartialOutput && !!attemptText.trim();
           const canRetry =
             !!retryable &&
-            retryAttempt < maxRetries &&
+            (isCopilotAuthError ? copilotAuthRefreshAttempt < 1 : retryAttempt < maxRetries) &&
             !sawToolCall &&
             (!attemptText.trim() || allowRetryAfterOutput) &&
             !combined.aborted;
           if (canRetry) {
-            retryAttempt += 1;
-            const waitMs = getRetryDelayMs(retryAttempt, retryable.retryAfterMs);
+            if (isCopilotAuthError) {
+              copilotAuthRefreshAttempt += 1;
+            } else {
+              retryAttempt += 1;
+            }
+
+            const totalRetryAttempt = retryAttempt + copilotAuthRefreshAttempt;
+            const waitMs = isCopilotAuthError ? 0 : getRetryDelayMs(retryAttempt, retryable.retryAfterMs);
             invokeCallbackSafely(
               callbacksSafe?.onStatusChange,
               { label: 'onStatusChange', onDebug: callbacksSafe?.onDebug },
               {
                 type: 'retry',
-                attempt: retryAttempt,
+                attempt: totalRetryAttempt,
                 nextRetryTime: Date.now() + waitMs,
-                message: retryable.message,
+                message: isCopilotAuthError ? 'Refreshing GitHub Copilot auth…' : retryable.message,
               },
             );
-            await retrySleep(waitMs, combined).catch(() => {});
+
+            if (!combined.aborted && isCopilotAuthError) {
+              try {
+                llm.onRequestError?.(e, { modelId, mode });
+              } catch {
+                // ignore
+              }
+              model = wrapModel(await llm.getModel(modelId));
+            }
+
+            if (waitMs > 0) {
+              await retrySleep(waitMs, combined).catch(() => {});
+            }
             continue;
           }
 
