@@ -212,15 +212,28 @@ export class OfficeBridge {
     const agentMeta: Record<number, OfficeAgentSeat> = {};
     let activeAgentId: number | undefined;
 
+    const visibleSessionIds: string[] = [];
     if (activeVisibleSessionId) {
-      const agentId = this.getAgentIdForSessionId(activeVisibleSessionId);
-      if (agentId > 0) {
+      const active = normalizedSessions.find((s) => s.id === activeVisibleSessionId);
+      const parent = active?.parentSessionId;
+      if (parent && sessionIdSet.has(parent)) {
+        visibleSessionIds.push(parent);
+      }
+      visibleSessionIds.push(activeVisibleSessionId);
+    }
+
+    for (const sessionId of visibleSessionIds) {
+      const agentId = this.getAgentIdForSessionId(sessionId);
+      if (agentId <= 0) continue;
+      if (sessionId === activeVisibleSessionId) {
         activeAgentId = agentId;
+      }
+      if (!ids.includes(agentId)) {
         ids.push(agentId);
-        const seat = this.seatsByAgentId[String(agentId)];
-        if (seat) {
-          agentMeta[agentId] = seat;
-        }
+      }
+      const seat = this.seatsByAgentId[String(agentId)];
+      if (seat) {
+        agentMeta[agentId] = seat;
       }
     }
 

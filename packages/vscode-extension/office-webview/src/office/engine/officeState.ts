@@ -839,10 +839,17 @@ export class OfficeState {
       return this.findNearestFurnitureInteraction(ch.tileCol, ch.tileRow, (entry) => entry.category === 'electronics')
     }
 
-    if (normalized === 'task') {
-      // Prefer whiteboards if present; otherwise fall back to decor.
+    if (normalized === 'task' || normalized === 'todo') {
+      // Todo / planning work should happen at a board.
+      const kanban = this.findNearestFurnitureInteraction(ch.tileCol, ch.tileRow, (entry) => entry.type === FurnitureType.KANBAN_BOARD)
+      const bulletin = this.findNearestFurnitureInteraction(ch.tileCol, ch.tileRow, (entry) => entry.type === FurnitureType.BULLETIN_BOARD)
       const whiteboard = this.findNearestFurnitureInteraction(ch.tileCol, ch.tileRow, (entry) => entry.type === FurnitureType.WHITEBOARD)
-      return whiteboard || this.findNearestFurnitureInteraction(ch.tileCol, ch.tileRow, (entry) => entry.category === 'decor')
+      return (
+        kanban ||
+        bulletin ||
+        whiteboard ||
+        this.findNearestFurnitureInteraction(ch.tileCol, ch.tileRow, (entry) => entry.category === 'decor')
+      )
     }
 
     return null
@@ -892,7 +899,12 @@ export class OfficeState {
       return seatChanged
     }
 
-    if (normalizedWorkType === 'read' || normalizedWorkType === 'execute' || normalizedWorkType === 'task') {
+    if (
+      normalizedWorkType === 'read' ||
+      normalizedWorkType === 'execute' ||
+      normalizedWorkType === 'task' ||
+      normalizedWorkType === 'todo'
+    ) {
       // If a semantic work type is provided, prefer it over tool-name mapping (e.g. `bash cat` should be treated as read).
       ch.workTarget = this.computeWorkTargetForWorkType(ch, normalizedWorkType)
       return prevSeatId !== ch.seatId

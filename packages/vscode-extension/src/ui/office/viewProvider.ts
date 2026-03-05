@@ -4,8 +4,8 @@ import * as vscode from 'vscode';
 
 import type { ChatController } from '../chat/controller';
 import { OfficeBridge } from './bridge';
-import { isWebviewToExtensionMessage, type OfficeSpriteData, type OfficeToWebviewMessage } from '../../shared/officeProtocol';
-import { loadOfficeFurnitureSpriteOverrides, loadOfficeTilesetFurnitureAssets } from './tileset';
+import { isWebviewToExtensionMessage, type OfficeToWebviewMessage } from '../../shared/officeProtocol';
+import { loadOfficeFurnitureSpriteOverrides } from './tileset';
 
 function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.Uri): string {
   const distPath = vscode.Uri.joinPath(extensionUri, 'dist', 'office-webview');
@@ -72,24 +72,6 @@ export class OfficeViewProvider implements vscode.WebviewViewProvider {
     return undefined;
   }
 
-  private async postTilesetSpritesInBatches(webview: vscode.Webview, sprites: Record<string, OfficeSpriteData>): Promise<void> {
-    const entries = Object.entries(sprites || {});
-    if (entries.length === 0) return;
-
-    const batchSize = 25;
-    for (let i = 0; i < entries.length; i += batchSize) {
-      if (!this.webviewView || this.webviewView.webview !== webview || !this.webviewReady) return;
-
-      const batch: Record<string, OfficeSpriteData> = {};
-      for (const [type, sprite] of entries.slice(i, i + batchSize)) {
-        batch[type] = sprite;
-      }
-      const loaded: OfficeToWebviewMessage = { type: 'furnitureSpritesLoaded', sprites: batch };
-      await webview.postMessage(loaded);
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    }
-  }
-
   resolveWebviewView(webviewView: vscode.WebviewView): void {
     this.webviewView = webviewView;
     this.webviewReady = false;
@@ -108,13 +90,6 @@ export class OfficeViewProvider implements vscode.WebviewViewProvider {
       const type = message.type;
       if (type === 'webviewReady') {
         this.webviewReady = true;
-
-        const tilesetAssets = loadOfficeTilesetFurnitureAssets(this.context);
-        if (tilesetAssets) {
-          const catalogLoaded: OfficeToWebviewMessage = { type: 'furnitureCatalogLoaded', catalog: tilesetAssets.catalog };
-          await webviewView.webview.postMessage(catalogLoaded);
-          void this.postTilesetSpritesInBatches(webviewView.webview, tilesetAssets.sprites);
-        }
 
         const furnitureSprites = loadOfficeFurnitureSpriteOverrides(this.context);
         if (furnitureSprites) {

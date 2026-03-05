@@ -129,7 +129,7 @@ function ColorSlider({ label, value, min, max, onChange }: {
         max={max}
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
-        style={{ flex: 1, height: 12, accentColor: 'rgba(90, 140, 255, 0.8)' }}
+        style={{ flex: 1, height: 12, accentColor: 'var(--pixel-accent)' }}
       />
       <span style={{ fontSize: '20px', color: '#999', width: 48, textAlign: 'right', flexShrink: 0 }}>{value}</span>
     </div>
@@ -444,7 +444,7 @@ export function EditorToolbar({
                   type="checkbox"
                   checked={!!effectiveColor.colorize}
                   onChange={(e) => onSelectedFurnitureColorChange({ ...effectiveColor, colorize: e.target.checked || undefined })}
-                  style={{ accentColor: 'rgba(90, 140, 255, 0.8)' }}
+                  style={{ accentColor: 'var(--pixel-accent)' }}
                 />
                 Colorize
               </label>

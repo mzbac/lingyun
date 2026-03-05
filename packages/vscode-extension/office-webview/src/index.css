@@ -7,16 +7,18 @@
 }
 
 :root {
-  --pixel-bg: #1e1e2e;
-  --pixel-border: #4a4a6a;
-  --pixel-border-light: #6a6a8a;
-  --pixel-accent: #5a8cff;
-  --pixel-green: #5ac88c;
-  --pixel-shadow: 2px 2px 0px #0a0a14;
+  /* Match VS Code / mainstream software styling by inheriting theme tokens. */
+  --pixel-bg: var(--vscode-editor-background, #1e1e1e);
+  --pixel-border: var(--vscode-panel-border, #3c3c3c);
+  --pixel-border-light: var(--vscode-editorGroup-border, #4a4a4a);
+  --pixel-accent: var(--vscode-focusBorder, var(--vscode-charts-blue, #3794ff));
+  --pixel-green: var(--vscode-terminal-ansiGreen, var(--vscode-charts-green, #5ac88c));
+  --pixel-shadow-color: var(--vscode-widget-shadow, rgba(0, 0, 0, 0.35));
+  --pixel-shadow: 2px 2px 0px var(--pixel-shadow-color);
 
   /* Button base */
-  --pixel-text: rgba(255, 255, 255, 0.8);
-  --pixel-text-dim: rgba(255, 255, 255, 0.7);
+  --pixel-text: var(--vscode-foreground, rgba(255, 255, 255, 0.8));
+  --pixel-text-dim: var(--vscode-descriptionForeground, rgba(255, 255, 255, 0.7));
   --pixel-btn-bg: rgba(255, 255, 255, 0.08);
   --pixel-btn-hover-bg: rgba(255, 255, 255, 0.15);
   --pixel-btn-disabled-opacity: 0.35;
@@ -27,7 +29,7 @@
   /* Agent button */
   --pixel-agent-bg: rgba(90, 200, 140, 0.15);
   --pixel-agent-hover-bg: rgba(90, 200, 140, 0.3);
-  --pixel-agent-border: #5ac88c;
+  --pixel-agent-border: var(--pixel-green);
   --pixel-agent-text: rgba(200, 255, 220, 0.95);
 
   /* Close button */
@@ -35,7 +37,7 @@
   --pixel-close-hover: #e55;
 
   /* Hints & confirmations */
-  --pixel-hint-bg: #3278c8;
+  --pixel-hint-bg: var(--vscode-notifications-background, #3278c8);
   --pixel-reset-text: #ecc;
   --pixel-danger-bg: #a33;
 
@@ -50,6 +52,14 @@
   --pixel-overlay-z: 100;
   --pixel-overlay-selected-z: 110;
   --pixel-controls-z: 50;
+}
+
+@supports (color: color-mix(in srgb, red 50%, blue)) {
+  :root {
+    --pixel-active-bg: color-mix(in srgb, var(--pixel-accent) 25%, transparent);
+    --pixel-agent-bg: color-mix(in srgb, var(--pixel-green) 15%, transparent);
+    --pixel-agent-hover-bg: color-mix(in srgb, var(--pixel-green) 30%, transparent);
+  }
 }
 
 html, body, #root {

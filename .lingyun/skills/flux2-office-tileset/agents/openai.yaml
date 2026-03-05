@@ -1,0 +1,4 @@
+interface:
+  display_name: "Office tileset (FLUX2)"
+  short_description: "Generate office tileset PNG"
+  default_prompt: "Use $flux2-office-tileset to regenerate the office furniture tileset PNG."

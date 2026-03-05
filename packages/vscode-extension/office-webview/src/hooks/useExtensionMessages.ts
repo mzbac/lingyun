@@ -211,7 +211,13 @@ export function useExtensionMessages(
         os.clearPermissionBubble(id)
         if (toolName && toolName.toLowerCase() === 'task') {
           const label = status.startsWith('Task:') ? status.slice('Task:'.length).trim() : ''
-          ensureSubagent(os, id, toolId, label)
+          const subId = ensureSubagent(os, id, toolId, label)
+          if (subId !== null) {
+            // Keep both the parent and the subagent "working at a computer" for Task work.
+            os.setAgentTool(subId, toolName, workTypeFromMsg || null)
+            os.setAgentActive(subId, true)
+            os.clearPermissionBubble(subId)
+          }
         }
       } else if (msg.type === 'agentToolDone') {
         const id = msg.id as number

@@ -76,7 +76,8 @@ export function classifyOfficeWorkType(toolName: string, args: Record<string, un
   }
   if (tool === 'grep' || tool === 'glob' || tool === 'symbols_search') return 'search';
   if (tool === 'write' || tool === 'edit') return 'write';
-  if (tool === 'task') return 'task';
+  // The Task tool represents a background "subagent" job; keep the character at a computer.
+  if (tool === 'task') return 'write';
   if (tool === 'bash') return classifyBashWorkType(args.command);
 
   return 'other';
