@@ -93,6 +93,7 @@ export type {
 export {
   appendReasoning,
   appendText,
+  cloneUserHistoryInput,
   createAssistantHistoryMessage,
   createUserHistoryMessage,
   finalizeStreamingParts,
@@ -100,6 +101,7 @@ export {
   getMessageText,
   isSkillInjectedMessage,
   normalizeUserHistoryInputParts,
+  parseUserHistoryInput,
   setDynamicToolError,
   setDynamicToolOutput,
   stripSkillInjectedMessages,

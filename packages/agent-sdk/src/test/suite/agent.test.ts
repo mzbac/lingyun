@@ -266,6 +266,78 @@ suite('LingYun Agent SDK', () => {
     assert.strictEqual(getMessageText(finalAssistant).trim(), 'done');
   });
 
+  test('drains steered input after assistant completion and continues with a follow-up iteration', async () => {
+    const llm = new MockLLMProvider();
+    const registry = new ToolRegistry();
+
+    llm.queueResponse({ kind: 'text', content: 'first reply' });
+    llm.queueResponse({ kind: 'text', content: 'follow-up reply' });
+
+    const agent = new LingyunAgent(llm, { model: 'mock-model' }, registry, { allowExternalPaths: false });
+    const session = new LingyunSession();
+
+    let injected = false;
+    const run = agent.run({
+      session,
+      input: 'start',
+      callbacks: {
+        onAssistantToken: () => {
+          if (injected) return;
+          injected = true;
+          session.enqueuePendingInput('follow-up from user');
+        },
+      },
+    });
+
+    for await (const _event of run.events) {
+      // drain
+    }
+    const result = await run.done;
+
+    assert.strictEqual(result.text, 'follow-up reply');
+    assert.strictEqual(llm.callCount, 2);
+
+    const history = session.getHistory();
+    const userTexts = history.filter((message) => message.role === 'user').map(getMessageText);
+    assert.deepStrictEqual(userTexts, ['start', 'follow-up from user']);
+
+    const assistantTexts = history.filter((message) => message.role === 'assistant').map(getMessageText).filter(Boolean);
+    assert.deepStrictEqual(assistantTexts, ['first reply', 'follow-up reply']);
+  });
+
+  test('preserves undrained steered inputs when aborting mid-drain', async () => {
+    const llm = new MockLLMProvider();
+    const registry = new ToolRegistry();
+    const agent = new LingyunAgent(llm, { model: 'mock-model' }, registry, { allowExternalPaths: false });
+    const session = new LingyunSession({ pendingInputs: ['first pending', 'second pending'] });
+    const abortController = new AbortController();
+
+    const originalInject = (agent as any).injectSkillsForUserText;
+    (agent as any).injectSkillsForUserText = async (
+      scopedSession: LingyunSession,
+      text: string,
+      callbacks: unknown,
+      signal: AbortSignal | undefined,
+    ) => {
+      await originalInject.call(agent, scopedSession, text, callbacks, signal);
+      if (text === 'first pending') {
+        abortController.abort();
+      }
+    };
+
+    try {
+      const drained = await (agent as any).drainPendingInputs(session, undefined, abortController.signal);
+      assert.strictEqual(drained, 1);
+    } finally {
+      (agent as any).injectSkillsForUserText = originalInject;
+    }
+
+    const userTexts = session.getHistory().filter((message) => message.role === 'user').map(getMessageText);
+    assert.deepStrictEqual(userTexts, ['first pending']);
+    assert.deepStrictEqual(session.getPendingInputs(), ['second pending']);
+    assert.strictEqual(llm.callCount, 0);
+  });
+
   test('callbacks - does not emit unhandledRejection when onToolCall rejects', async () => {
     const llm = new MockLLMProvider();
     const registry = new ToolRegistry();

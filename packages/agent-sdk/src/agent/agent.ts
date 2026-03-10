@@ -535,6 +535,22 @@ export class LingyunAgent {
     return this.promptComposer.composeSystemPrompts(modelId, { signal: options?.signal });
   }
 
+  private async drainPendingInputs(session: LingyunSession, callbacks?: AgentCallbacks, signal?: AbortSignal): Promise<number> {
+    let drained = 0;
+
+    while (!signal?.aborted) {
+      const input = session.peekPendingInput();
+      if (input === undefined) break;
+
+      await this.injectSkillsForUserText(session, getUserHistoryInputText(input), callbacks, signal);
+      session.history.push(createUserHistoryMessage(input));
+      session.shiftPendingInput();
+      drained++;
+    }
+
+    return drained;
+  }
+
   private async runOnce(session: LingyunSession, callbacks?: AgentCallbacks, signal?: AbortSignal): Promise<string> {
     const modelId = (this.config.model || '').trim();
     if (!modelId) {
@@ -578,6 +594,8 @@ export class LingyunAgent {
         ),
       toModelMessages: (scopedSession, tools, id) => this.toModelMessages(scopedSession, tools, id),
       pruneToolResultForHistory: (output, toolLabel) => this.pruneToolResultForHistory(output, toolLabel),
+      drainPendingInputs: (scopedSession, scopedCallbacks, scopedSignal) =>
+        this.drainPendingInputs(scopedSession, scopedCallbacks, scopedSignal),
     });
   }
 

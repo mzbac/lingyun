@@ -4,8 +4,10 @@ import * as path from 'path';
 import { LingyunAgent, LingyunSession } from '@kooka/agent-sdk';
 import type { AgentHistoryMessage, UserHistoryInput } from '@kooka/core';
 import {
+  cloneUserHistoryInput,
   createAssistantHistoryMessage,
   createUserHistoryMessage,
+  parseUserHistoryInput,
   resolveBuiltinSubagent,
   stripSkillInjectedMessages,
 } from '@kooka/core';
@@ -28,6 +30,7 @@ export type AgentSessionState = {
   fileHandles?: { nextId: number; byId: Record<string, string> };
   semanticHandles?: SemanticHandlesState;
   mentionedSkills?: string[];
+  pendingInputs?: UserHistoryInput[];
 };
 
 function dirnameUri(uri: vscode.Uri): vscode.Uri {
@@ -347,6 +350,7 @@ export class AgentLoop {
       fileHandles,
       semanticHandles: this.session.semanticHandles,
       mentionedSkills: [...(this.session.mentionedSkills || [])],
+      pendingInputs: this.session.getPendingInputs().map((input) => cloneUserHistoryInput(input)),
     };
   }
 
@@ -366,6 +370,13 @@ export class AgentLoop {
     const history = Array.isArray(state.history) ? [...state.history] : [];
     this.session.history = history;
     this.session.mentionedSkills = Array.isArray(state.mentionedSkills) ? [...state.mentionedSkills] : [];
+    this.session.setPendingInputs(
+      Array.isArray(state.pendingInputs)
+        ? state.pendingInputs
+            .map((input) => parseUserHistoryInput(input))
+            .filter((input): input is UserHistoryInput => input !== undefined)
+        : [],
+    );
 
     const fileHandlesRaw = state.fileHandles;
     if (fileHandlesRaw && typeof fileHandlesRaw === 'object') {
@@ -604,8 +615,16 @@ export class AgentLoop {
     this.activeAbortController?.abort();
   }
 
+  steer(input: UserHistoryInput): void {
+    if (!this._running) {
+      throw new Error('Agent is not running');
+    }
+    this.session.enqueuePendingInput(input);
+  }
+
   async clear(): Promise<void> {
     this.session.history = [];
+    this.session.clearPendingInputs();
     this.session.fileHandles = { nextId: 1, byId: {} };
     this.session.semanticHandles = createBlankSemanticHandlesState();
     this.session.mentionedSkills = [];

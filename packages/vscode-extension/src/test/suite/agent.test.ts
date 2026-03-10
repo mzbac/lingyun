@@ -819,6 +819,21 @@ suite('AgentLoop', () => {
     assert.ok(String(grepResult?.data || '').toLowerCase().includes('lsp'), 'grep output should include lsp hint');
   });
 
+  test('state round-trips pending steers and clear resets them', async () => {
+    agent.syncSession({
+      state: {
+        history: [],
+        pendingInputs: ['queued follow-up'],
+      },
+    });
+
+    const state = agent.exportState();
+    assert.deepStrictEqual(state.pendingInputs, ['queued follow-up']);
+
+    await agent.clear();
+    assert.deepStrictEqual(agent.exportState().pendingInputs, []);
+  });
+
   test('run - continues when tool calls are present even if finishReason is stop', async () => {
     mockLLM.setNextResponse({
       kind: 'tool-call',

@@ -84,6 +84,11 @@ export async function runOnce(params: {
     modelId: string,
   ) => Promise<ModelMessage[]>;
   pruneToolResultForHistory: (output: unknown, toolLabel: string) => Promise<ToolResult>;
+  drainPendingInputs: (
+    session: LingyunSession,
+    callbacks: AgentCallbacks | undefined,
+    signal: AbortSignal | undefined,
+  ) => Promise<number>;
 }): Promise<string> {
   const { session, callbacks, signal, modelId, mode, llm, plugins, registry, providerBehavior } = params;
   const sessionId = params.sessionId;
@@ -173,6 +178,8 @@ export async function runOnce(params: {
         iteration,
       );
       invokeCallbackSafely(callbacksSafe?.onThinking, { label: 'onThinking', onDebug: callbacksSafe?.onDebug });
+
+      await params.drainPendingInputs(session, callbacksSafe, signal);
 
       const abortController = new AbortController();
       const combined = signal
@@ -548,6 +555,9 @@ export async function runOnce(params: {
 
       const hasToolParts = assistantMessage.parts.some((part: any) => part.type === 'dynamic-tool');
       if (streamFinishReason === 'tool-calls' || hasToolParts) continue;
+
+      const drained = await params.drainPendingInputs(session, callbacksSafe, signal);
+      if (drained > 0) continue;
 
       await plugins.trigger(
         'experimental.chat.complete',

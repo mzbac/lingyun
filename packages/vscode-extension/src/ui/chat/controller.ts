@@ -6,7 +6,13 @@ import type { InputHistoryStore } from '../../core/inputHistoryStore';
 import type { AgentCallbacks, LLMProvider, ToolDefinition, ToolCall } from '../../core/types';
 import { createBlankSessionSignals, type SessionSignals } from '../../core/sessionSignals';
 import type { ModelInfo } from '../../providers/copilot';
-import type { ChatMessage, ChatMode, ChatSessionInfo, ChatUserInput, RevertBarState } from './types';
+import type {
+  ChatMessage,
+  ChatMode,
+  ChatSessionInfo,
+  ChatUserInput,
+  RevertBarState,
+} from './types';
 import type { OfficeSync } from '../office/sync';
 import { installApprovalsMethods } from './methods.approvals';
 import { installInputHistoryMethods } from './methods.inputHistory';
@@ -19,6 +25,7 @@ import { installRunnerPlanMethods } from './methods.runner.plan';
 import { installSessionsMethods } from './methods.sessions';
 import { installSkillsMethods } from './methods.skills';
 import { installWebviewMethods } from './methods.webview';
+import { ChatQueueManager } from './queueManager';
 import { RunCoordinator } from './runner/runCoordinator';
 
 export type LLMProviderWithModels = LLMProvider & {
@@ -111,6 +118,7 @@ export class ChatController {
     }
   > = new Map();
 
+  queueManager: ChatQueueManager = new ChatQueueManager(this);
   runner: RunCoordinator = new RunCoordinator(this);
 
   constructor(
@@ -138,6 +146,9 @@ installChatControllerPrototype();
 
 export function installChatControllerMethods(controller: ChatController): void {
   installChatControllerPrototype();
+  if (!(controller as any).queueManager) {
+    (controller as any).queueManager = new ChatQueueManager(controller);
+  }
   if (!(controller as any).runner) {
     (controller as any).runner = new RunCoordinator(controller);
   }

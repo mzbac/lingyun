@@ -15,6 +15,14 @@ export interface ChatUserInput {
   attachments?: ChatImageAttachment[];
 }
 
+export interface ChatQueuedInput {
+  id: string;
+  createdAt: number;
+  message: string;
+  displayContent: string;
+  attachmentCount: number;
+}
+
 export type ChatMessageRole =
   | 'user'
   | 'assistant'
@@ -105,6 +113,7 @@ export interface ChatSessionInfo {
   stepCounter: number;
   activeStepId?: string;
   pendingPlan?: { task: string; planMessageId: string };
+  queuedInputs?: ChatQueuedInput[];
   /**
    * When set, this session is a subagent session created via the `task` tool.
    */

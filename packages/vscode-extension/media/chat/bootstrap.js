@@ -5,11 +5,18 @@
 		      vscode = { postMessage: () => {} };
 		    }
 		    const clientInstanceId = String(Date.now()) + '_' + Math.random().toString(16).slice(2);
-		    const messages = document.getElementById('messages');
-		    const empty = document.getElementById('empty');
+			    const messages = document.getElementById('messages');
+			    const empty = document.getElementById('empty');
 		    const input = document.getElementById('input');
 		    const skillDropdown = document.getElementById('skillDropdown');
-		    const sendBtn = document.getElementById('send');
+		    const queueBanner = document.getElementById('queueBanner');
+		    const queueBannerCount = document.getElementById('queueBannerCount');
+		    const queueBannerText = document.getElementById('queueBannerText');
+		    const queueBannerHint = document.getElementById('queueBannerHint');
+		    const queueItems = document.getElementById('queueItems');
+		    const queueClearBtn = document.getElementById('queueClear');
+			    const sendBtn = document.getElementById('send');
+			    const stopBtn = document.getElementById('stop');
 		    const newSessionBtn = document.getElementById('newSession');
 		    const compactSessionBtn = document.getElementById('compactSession');
 		    const undoBtn = document.getElementById('undo');
@@ -58,9 +65,10 @@
 
 		    let initReceived = false;
 		    let isProcessing = false;
-		    let planPending = false;
-		    let activePlanMessageId = '';
-		    let activeTurnId = '';
+			    let planPending = false;
+			    let activePlanMessageId = '';
+			    let activeTurnId = '';
+			    let queuedInputs = [];
 	    let canUndo = false;
 	    let canRedo = false;
 	    let currentRevertState = null;
@@ -883,16 +891,10 @@
         return;
       }
 
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        if (e.ctrlKey || e.metaKey) {
-          send();
-        } else if (isProcessing) {
-          vscode.postMessage({ type: 'abort' });
-        } else {
-          send();
-        }
-      }
+	      if (e.key === 'Enter' && !e.shiftKey) {
+	        e.preventDefault();
+	        send();
+	      }
       if (e.key === 'Escape') {
         e.preventDefault();
         if (revertBar && !revertBar.hidden) {
@@ -920,7 +922,21 @@
       input.focus();
     });
 
-	    sendBtn.addEventListener('click', () => isProcessing ? vscode.postMessage({ type: 'abort' }) : send());
+	    sendBtn.addEventListener('click', () => send());
+
+	    if (stopBtn) {
+	      stopBtn.addEventListener('click', () => {
+	        if (!initReceived || !isProcessing) return;
+	        vscode.postMessage({ type: 'abort' });
+	      });
+	    }
+
+		    if (queueClearBtn) {
+		      queueClearBtn.addEventListener('click', () => {
+		        if (!initReceived) return;
+		        vscode.postMessage({ type: 'clearQueue' });
+	      });
+	    }
 
 	    if (approvalAllowAllBtn) {
 	      approvalAllowAllBtn.addEventListener('click', () => {
@@ -961,35 +977,105 @@
 
 		    const defaultPlaceholder = input.placeholder || 'Describe a task...';
 
-		    function send() {
-		      const text = input.value.trim();
-		      const hasAttachments = pendingImageAttachments.length > 0;
-		      const requiresText = planPending && currentMode === 'plan';
-		      if (!initReceived || isProcessing) return;
-		      if (requiresText && !text) return;
+			    function send() {
+			      const text = input.value.trim();
+			      const hasAttachments = pendingImageAttachments.length > 0;
+			      const requiresText = planPending && currentMode === 'plan' && !isProcessing;
+			      if (!initReceived) return;
+			      if (requiresText && !text) return;
 		      if (!text && !hasAttachments) return;
 		      closeSkillDropdown();
 		      inputHistoryIndex = -1;
 		      inputHistorySavedDraft = null;
 		      if (text) {
 		        addToInputHistory(text);
-		      }
-		      try {
-		        vscode.postMessage({
-		          type: 'send',
-		          message: text,
-		          attachments: pendingImageAttachments.map((attachment) => ({
-		            mediaType: attachment.mediaType,
-		            dataUrl: attachment.dataUrl,
+			      }
+			      try {
+			        vscode.postMessage({
+			          type: 'send',
+			          message: text,
+			          attachments: pendingImageAttachments.map((attachment) => ({
+			            mediaType: attachment.mediaType,
+			            dataUrl: attachment.dataUrl,
 		            ...(attachment.filename ? { filename: attachment.filename } : {}),
 		          })),
 		        });
 		      } catch {}
 		      input.value = '';
 		      clearPendingImageAttachments();
-		      updateInputLayout();
-		      syncInputState();
-		    }
+			      updateInputLayout();
+			      syncInputState();
+			    }
+
+				    function setQueueState(next) {
+				      queuedInputs = Array.isArray(next) ? next : [];
+				      const count = queuedInputs.length;
+				      if (queueBanner) {
+				        if (count <= 0) {
+				          queueBanner.classList.add('hidden');
+				        } else {
+				          queueBanner.classList.remove('hidden');
+				          if (queueBannerCount) queueBannerCount.textContent = count === 1 ? '1 queued' : count + ' queued';
+				          if (queueBannerText) {
+				            queueBannerText.textContent = isProcessing
+				              ? 'Queued for the next step'
+				              : 'Queued messages ready to run';
+				          }
+				          if (queueBannerHint) {
+				            queueBannerHint.textContent = isProcessing
+				              ? 'Click a queued message to steer it into the current run.'
+				              : 'Click a queued message to run it now.';
+				          }
+				        }
+				      }
+				      if (queueClearBtn) {
+				        queueClearBtn.disabled = !initReceived || count <= 0;
+				      }
+				      if (queueItems) {
+				        queueItems.innerHTML = '';
+				        for (const item of queuedInputs) {
+				          if (!item || typeof item !== 'object') continue;
+				          const id = typeof item.id === 'string' ? item.id : '';
+				          if (!id) continue;
+				          const previewRaw =
+				            typeof item.displayContent === 'string' && item.displayContent.trim()
+				              ? item.displayContent.trim()
+				              : typeof item.message === 'string'
+				                ? item.message.trim()
+				                : '';
+				          const preview = previewRaw.length > 96 ? previewRaw.slice(0, 93) + '…' : previewRaw;
+
+				          const btn = document.createElement('button');
+				          btn.type = 'button';
+				          btn.className = 'queue-item';
+				          btn.dataset.id = id;
+				          btn.disabled = !initReceived;
+				          btn.title = isProcessing ? 'Steer this queued message now' : 'Run this queued message now';
+
+				          const bodyEl = document.createElement('span');
+				          bodyEl.className = 'queue-item-body';
+
+				          const labelEl = document.createElement('span');
+				          labelEl.className = 'queue-item-label';
+				          labelEl.textContent = isProcessing ? 'Steer now' : 'Run now';
+
+				          const textEl = document.createElement('span');
+				          textEl.className = 'queue-item-text';
+				          textEl.textContent = preview || 'Queued message';
+
+				          btn.addEventListener('click', () => {
+				            if (!initReceived) return;
+				            try { vscode.postMessage({ type: 'steerQueuedInput', id }); } catch {}
+				          });
+
+				          bodyEl.appendChild(labelEl);
+				          bodyEl.appendChild(textEl);
+				          btn.appendChild(bodyEl);
+				          queueItems.appendChild(btn);
+				        }
+				      }
+				      syncInputState();
+				    }
 
 		    function syncInputState() {
 		      const connected = initReceived;
@@ -997,20 +1083,20 @@
 		      const hasContent = showPlanUpdate
 		        ? !!input.value.trim()
 		        : (!!input.value.trim() || pendingImageAttachments.length > 0);
-		      input.disabled = !connected || isProcessing;
+		      input.disabled = !connected;
 		      input.placeholder = connected
 	        ? (showPlanUpdate ? 'Answer plan questions / add constraints…' : defaultPlaceholder)
 	        : 'Connecting…';
-		      clearInputBtn.disabled = !connected || (!input.value.trim() && pendingImageAttachments.length === 0) || isProcessing;
+		      clearInputBtn.disabled = !connected || (!input.value.trim() && pendingImageAttachments.length === 0);
 		      if (newSessionBtn) newSessionBtn.disabled = !connected || isProcessing;
 		      if (compactSessionBtn) compactSessionBtn.disabled = !connected || isProcessing;
 		      if (undoBtn) undoBtn.disabled = !connected || isProcessing || !canUndo;
 		      if (redoBtn) redoBtn.disabled = !connected || isProcessing || !canRedo;
-		      if (sessionSelect) sessionSelect.disabled = !connected || isProcessing;
-		      if (modePlanBtn) modePlanBtn.disabled = !connected || isProcessing;
-		      if (modeBuildBtn) modeBuildBtn.disabled = !connected || isProcessing;
-		      if (contextIndicator) contextIndicator.disabled = !connected;
-		      if (contextCompactNowBtn) contextCompactNowBtn.disabled = !connected || isProcessing;
+			      if (sessionSelect) sessionSelect.disabled = !connected || isProcessing;
+			      if (modePlanBtn) modePlanBtn.disabled = !connected || isProcessing;
+			      if (modeBuildBtn) modeBuildBtn.disabled = !connected || isProcessing;
+			      if (contextIndicator) contextIndicator.disabled = !connected;
+			      if (contextCompactNowBtn) contextCompactNowBtn.disabled = !connected || isProcessing;
 		      if (operationStopBtn) {
 		        operationStopBtn.disabled =
 		          !connected ||
@@ -1024,29 +1110,44 @@
 		      if (!connected) {
 		        sendBtn.innerHTML = '<span>…</span><span>Connecting</span>';
 	        sendBtn.disabled = true;
+	        if (stopBtn) {
+	          stopBtn.classList.add('hidden');
+	          stopBtn.disabled = true;
+	        }
 	        return;
 	      }
 
-	      if (isProcessing) {
-	        sendBtn.innerHTML = '<span class="stop-icon"></span><span>Stop</span>';
-	        sendBtn.title = 'Stop the current run (Ctrl+.)';
-	        sendBtn.classList.add('stop');
-	      } else if (showPlanUpdate) {
-	        sendBtn.innerHTML = '<span>↻</span><span>Update Plan</span>';
-	        sendBtn.title = '';
-	        sendBtn.classList.remove('stop');
-	      } else {
-	        sendBtn.innerHTML = '<span>→</span><span>Send</span>';
+	      if (stopBtn) {
+	        if (isProcessing) {
+	          stopBtn.classList.remove('hidden');
+	          stopBtn.disabled = false;
+	        } else {
+	          stopBtn.classList.add('hidden');
+	          stopBtn.disabled = true;
+	        }
+	      }
+
+		      if (showPlanUpdate) {
+		        sendBtn.innerHTML = '<span>↻</span><span>Update Plan</span>';
+		        sendBtn.title = '';
+		        sendBtn.classList.remove('stop');
+		      } else if (isProcessing) {
+		        sendBtn.innerHTML = '<span>⏸</span><span>Queue</span>';
+		        sendBtn.title = 'Queue input to run after the current task finishes';
+		        sendBtn.classList.remove('stop');
+		      } else {
+		        sendBtn.innerHTML = '<span>→</span><span>Send</span>';
 	        sendBtn.title = '';
 	        sendBtn.classList.remove('stop');
 	      }
-	      sendBtn.disabled = !isProcessing && !hasContent;
+	      sendBtn.disabled = !hasContent;
 	    }
 
-	    function setProcessing(val) {
-	      isProcessing = val;
-	      syncInputState();
-	      updateApprovalBanner();
+		    function setProcessing(val) {
+		      isProcessing = val;
+		      try { setQueueState(queuedInputs); } catch {}
+		      syncInputState();
+		      updateApprovalBanner();
 	      const suppressTurnStatus =
 	        !!val &&
 	        !!currentOperation &&

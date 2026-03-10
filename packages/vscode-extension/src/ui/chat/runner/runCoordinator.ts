@@ -21,6 +21,7 @@ const ASSUMPTIONS_NOTE =
 type NormalizedUserInput = {
   text: string;
   agentInput: UserHistoryInputPart[];
+  imageAttachments: NonNullable<ChatUserInput['attachments']>;
   attachmentCount: number;
   displayContent: string;
   hasContent: boolean;
@@ -33,6 +34,7 @@ function normalizeUserInput(content: string | ChatUserInput): NormalizedUserInpu
 
   const attachmentsRaw = typeof content === 'object' && content ? content.attachments : undefined;
   const imageParts: UserHistoryInputPart[] = [];
+  const imageAttachments: NonNullable<ChatUserInput['attachments']> = [];
 
   if (Array.isArray(attachmentsRaw)) {
     for (const attachment of attachmentsRaw) {
@@ -52,6 +54,11 @@ function normalizeUserInput(content: string | ChatUserInput): NormalizedUserInpu
         ...(filename ? { filename } : {}),
         url: dataUrl,
       });
+      imageAttachments.push({
+        mediaType,
+        dataUrl,
+        ...(filename ? { filename } : {}),
+      });
 
       if (imageParts.length >= MAX_USER_IMAGE_ATTACHMENTS) break;
     }
@@ -67,6 +74,7 @@ function normalizeUserInput(content: string | ChatUserInput): NormalizedUserInpu
   return {
     text,
     agentInput,
+    imageAttachments,
     attachmentCount,
     displayContent,
     hasContent: !!text || attachmentCount > 0,
@@ -83,8 +91,9 @@ function appendAssumptionsToPlan(plan: string): string {
 export class RunCoordinator {
   constructor(private readonly controller: ChatController) {}
 
-  private finalizeRun(params?: { postProcessingSignal?: boolean; keepAbortFlag?: boolean }): void {
+  private finalizeRun(params?: { postProcessingSignal?: boolean; keepAbortFlag?: boolean; suppressQueueAutosend?: boolean }): void {
     const c = this.controller;
+    const sessionId = c.activeSessionId;
     c.isProcessing = false;
     if (!params?.keepAbortFlag) {
       c.abortRequested = false;
@@ -97,21 +106,96 @@ export class RunCoordinator {
     }
     c.officeSync?.onRunEnd();
     c.persistActiveSession();
+    c.queueManager.scheduleAutosendForSession(sessionId, { suppress: params?.suppressQueueAutosend });
   }
 
-  async handleUserMessage(content: string | ChatUserInput): Promise<void> {
+  private enqueueQueuedInput(params: { normalized: NormalizedUserInput }): void {
+    this.controller.queueManager.enqueueActiveInput({
+      message: params.normalized.text,
+      displayContent: params.normalized.displayContent,
+      attachmentCount: params.normalized.attachmentCount,
+      attachments: params.normalized.imageAttachments,
+    });
+  }
+
+  async steerQueuedInput(id: string): Promise<void> {
     const c = this.controller;
-    if (c.isProcessing || !c.view) return;
+    if (!id || typeof id !== 'string') return;
+
+    await c.ensureSessionsLoaded();
+    const input = c.queueManager.takeByIdFromActiveSession(id);
+    if (!input) return;
+
+    if (c.isProcessing) {
+      const normalized = normalizeUserInput(input);
+      if (!normalized.hasContent) return;
+      this.steerIntoActiveRun({ normalized });
+      return;
+    }
+
+    await this.handleUserMessage(input, { fromQueue: true });
+  }
+
+  private steerIntoActiveRun(params: { normalized: NormalizedUserInput }): void {
+    const c = this.controller;
+    const turnId = c.currentTurnId;
+    if (!turnId) {
+      this.enqueueQueuedInput(params);
+      return;
+    }
+
+    const userMsg: ChatMessage = {
+      id: crypto.randomUUID(),
+      role: 'user',
+      content: params.normalized.displayContent,
+      timestamp: Date.now(),
+      turnId,
+    };
+    c.messages.push(userMsg);
+    c.postMessage({ type: 'message', message: userMsg });
+
+    try {
+      c.agent.steer(params.normalized.agentInput);
+    } catch (error) {
+      const warningMsg: ChatMessage = {
+        id: crypto.randomUUID(),
+        role: 'warning',
+        content: `LingYun: Failed to steer input into the active run (${String((error as any)?.message || error)}). Queuing instead.`,
+        timestamp: Date.now(),
+        turnId,
+      };
+      c.messages.push(warningMsg);
+      c.postMessage({ type: 'message', message: warningMsg });
+      this.enqueueQueuedInput(params);
+    }
+
+    c.persistActiveSession();
+  }
+
+  async handleUserMessage(content: string | ChatUserInput, options?: { fromQueue?: boolean }): Promise<void> {
+    const c = this.controller;
+    if (!c.view) return;
 
     const normalizedInput = normalizeUserInput(content);
     if (!normalizedInput.hasContent) return;
 
-    if (normalizedInput.text) {
+    if (normalizedInput.text && !options?.fromQueue) {
       recordUserIntent(c.signals, normalizedInput.text);
     }
 
     const activeSession = c.getActiveSession();
     const pendingPlan = activeSession.pendingPlan;
+
+    if (c.isProcessing) {
+      await c.ensureSessionsLoaded();
+      if (normalizedInput.text) {
+        c.recordInputHistory(normalizedInput.text);
+      }
+
+      this.enqueueQueuedInput({ normalized: normalizedInput });
+      return;
+    }
+
     if (pendingPlan) {
       const planMsg = c.messages.find(m => m.id === pendingPlan.planMessageId);
       if (!planMsg || planMsg.role !== 'plan') {
@@ -131,7 +215,9 @@ export class RunCoordinator {
 
     await c.ensureSessionsLoaded();
 
-    c.recordInputHistory(normalizedInput.text);
+    if (!options?.fromQueue) {
+      c.recordInputHistory(normalizedInput.text);
+    }
 
     c.commitRevertedConversationIfNeeded();
 
@@ -185,6 +271,7 @@ export class RunCoordinator {
     // attaches to the correct turn.
     c.postMessage({ type: 'processing', value: true });
 
+    let wasCanceled = false;
     try {
       const isNew = c.agent.getHistory().length === 0;
 
@@ -228,7 +315,8 @@ export class RunCoordinator {
     } catch (error) {
       const message = formatErrorForUser(error, { llmProviderId: c.llmProvider?.id });
       const trimmed = message.trim();
-      c.markActiveStepStatus(c.abortRequested || trimmed === 'Agent aborted' ? 'canceled' : 'error');
+      wasCanceled = c.abortRequested || trimmed === 'Agent aborted';
+      c.markActiveStepStatus(wasCanceled ? 'canceled' : 'error');
 
       if (c.currentTurnId && !(trimmed === 'Agent aborted' && !c.abortRequested)) {
         c.postMessage({ type: 'turnStatus', turnId: c.currentTurnId, status: { type: 'done' } });
@@ -252,7 +340,7 @@ export class RunCoordinator {
         c.postMessage({ type: 'message', message: errorMsg });
       }
     } finally {
-      this.finalizeRun();
+      this.finalizeRun({ keepAbortFlag: wasCanceled, suppressQueueAutosend: wasCanceled });
     }
   }
 
@@ -280,12 +368,14 @@ export class RunCoordinator {
 
     c.officeSync?.onRunStart({ clearTools: false });
 
+    let wasCanceled = false;
     try {
       await c.agent.resume(c.createAgentCallbacks());
     } catch (error) {
       const message = formatErrorForUser(error, { llmProviderId: c.llmProvider?.id });
       const trimmed = message.trim();
-      c.markActiveStepStatus(c.abortRequested || trimmed === 'Agent aborted' ? 'canceled' : 'error');
+      wasCanceled = c.abortRequested || trimmed === 'Agent aborted';
+      c.markActiveStepStatus(wasCanceled ? 'canceled' : 'error');
 
       if (c.currentTurnId && !(trimmed === 'Agent aborted' && !c.abortRequested)) {
         c.postMessage({ type: 'turnStatus', turnId: c.currentTurnId, status: { type: 'done' } });
@@ -309,7 +399,7 @@ export class RunCoordinator {
         c.postMessage({ type: 'message', message: errorMsg });
       }
     } finally {
-      this.finalizeRun();
+      this.finalizeRun({ keepAbortFlag: wasCanceled, suppressQueueAutosend: wasCanceled });
     }
   }
 
@@ -377,6 +467,7 @@ export class RunCoordinator {
       c.persistActiveSession();
     }
 
+    let wasCanceled = false;
     try {
       let approvedPlan = String(planMsg.content || '');
       if (previousStatus === 'needs_input' && approvedPlan.trim()) {
@@ -403,6 +494,7 @@ export class RunCoordinator {
 
       const message = formatErrorForUser(error, { llmProviderId: c.llmProvider?.id });
       const trimmed = message.trim();
+      wasCanceled = c.abortRequested || trimmed === 'Agent aborted';
       if (planMsg.turnId && !(trimmed === 'Agent aborted' && !c.abortRequested)) {
         c.postMessage({ type: 'turnStatus', turnId: planMsg.turnId, status: { type: 'done' } });
       }
@@ -425,7 +517,7 @@ export class RunCoordinator {
         c.postMessage({ type: 'message', message: errorMsg });
       }
     } finally {
-      this.finalizeRun();
+      this.finalizeRun({ keepAbortFlag: wasCanceled, suppressQueueAutosend: wasCanceled });
     }
   }
 
@@ -477,6 +569,7 @@ export class RunCoordinator {
     const previousPendingPlan = { ...pendingPlan };
     const taskForPlan = note ? `${pendingPlan.task}\n\n${note}` : pendingPlan.task;
 
+    let wasCanceled = false;
     try {
       const nextPlanMsg: ChatMessage = {
         id: crypto.randomUUID(),
@@ -517,6 +610,7 @@ export class RunCoordinator {
 
       const message = formatErrorForUser(error, { llmProviderId: c.llmProvider?.id });
       const trimmed = message.trim();
+      wasCanceled = c.abortRequested || trimmed === 'Agent aborted';
       if (planMsg.turnId && !(trimmed === 'Agent aborted' && !c.abortRequested)) {
         c.postMessage({ type: 'turnStatus', turnId: planMsg.turnId, status: { type: 'done' } });
       }
@@ -551,6 +645,7 @@ export class RunCoordinator {
       c.postApprovalState();
       c.officeSync?.onRunEnd();
       c.persistActiveSession();
+      c.queueManager.scheduleAutosendForSession(c.activeSessionId, { suppress: wasCanceled });
     }
   }
 
@@ -570,6 +665,7 @@ export class RunCoordinator {
     await c.agent.clear();
     c.postMessage({ type: 'planPending', value: false, planMessageId: '' });
     c.persistActiveSession();
+    void c.queueManager.flushAutosendForActiveSession();
   }
 
   async revisePendingPlan(planMessageId: string, instructions: string): Promise<void> {
@@ -636,6 +732,7 @@ export class RunCoordinator {
     session.pendingPlan = { task: updatedTask, planMessageId: nextPlanMsg.id };
     c.postMessage({ type: 'planPending', value: true, planMessageId: nextPlanMsg.id });
 
+    let wasCanceled = false;
     try {
       const plan = await c.agent.plan(updatedTask, c.createPlanningCallbacks(nextPlanMsg));
       const trimmedPlan = (plan || '').trim();
@@ -662,6 +759,7 @@ export class RunCoordinator {
 
       const message = formatErrorForUser(error, { llmProviderId: c.llmProvider?.id });
       const trimmed = message.trim();
+      wasCanceled = c.abortRequested || trimmed === 'Agent aborted';
       if (planMsg.turnId && !(trimmed === 'Agent aborted' && !c.abortRequested)) {
         c.postMessage({ type: 'turnStatus', turnId: planMsg.turnId, status: { type: 'done' } });
       }
@@ -696,6 +794,7 @@ export class RunCoordinator {
       c.postApprovalState();
       c.officeSync?.onRunEnd();
       c.persistActiveSession();
+      c.queueManager.scheduleAutosendForSession(c.activeSessionId, { suppress: wasCanceled });
     }
   }
 }

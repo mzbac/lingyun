@@ -88,6 +88,24 @@ export function normalizeUserHistoryInputParts(input: UserHistoryInput): UserHis
   return normalized;
 }
 
+export function cloneUserHistoryInput(input: UserHistoryInput): UserHistoryInput {
+  if (typeof input === 'string') {
+    return input;
+  }
+  return normalizeUserHistoryInputParts(input);
+}
+
+export function parseUserHistoryInput(input: unknown): UserHistoryInput | undefined {
+  if (typeof input === 'string') {
+    return input;
+  }
+  if (!Array.isArray(input)) {
+    return undefined;
+  }
+  const normalized = normalizeUserHistoryInputParts(input as UserHistoryInput);
+  return normalized.length > 0 ? normalized : undefined;
+}
+
 export function getUserHistoryInputText(input: UserHistoryInput): string {
   return normalizeUserHistoryInputParts(input)
     .filter((part): part is UserHistoryTextPart => part.type === 'text')

@@ -181,6 +181,7 @@
 		          setMode(data.mode || 'build');
 		          setPlanPending(!!data.planPending);
 		          setProcessing(!!data.processing);
+		          try { setQueueState(Array.isArray(data.queuedInputs) ? data.queuedInputs : []); } catch {}
 		          try { setInputHistoryEntries(Array.isArray(data.inputHistory) ? data.inputHistory : []); } catch {}
 		          try { setAvailableSkills(Array.isArray(data.skills) ? data.skills : []); } catch {}
 		          pendingApprovalsCount = Number(data.pendingApprovals || 0) || 0;
@@ -192,6 +193,9 @@
 		          syncInputState();
 		          vscode.postMessage({ type: 'initAck', clientInstanceId });
 		          break;
+	        case 'queueState':
+	          try { setQueueState(Array.isArray(data.queuedInputs) ? data.queuedInputs : []); } catch {}
+	          break;
 	        case 'context':
 	          updateContextIndicatorState(data.context);
 	          break;
@@ -427,6 +431,7 @@
 		          canUndo = false;
 		          canRedo = false;
 		          setPlanPending(false);
+		          try { setQueueState([]); } catch {}
 		          syncInputState();
 		          break;
         case 'modelChanged':

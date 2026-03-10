@@ -329,6 +329,16 @@ export function installWebviewMethods(controller: ChatController): void {
               await this.handleUserMessage(input);
             }
             break;
+          case 'clearQueue': {
+            this.queueManager.clearActiveSession();
+            break;
+          }
+          case 'steerQueuedInput': {
+            const id = typeof (data as any).id === 'string' ? String((data as any).id) : '';
+            if (!id) break;
+            await this.runner.steerQueuedInput(id);
+            break;
+          }
           case 'abort':
             // If we're blocked waiting for tool approval, resolve those promises so the agent can unwind.
             this.rejectAllPendingApprovals('Canceled by user.');
@@ -341,23 +351,9 @@ export function installWebviewMethods(controller: ChatController): void {
             this.approveAllPendingApprovals();
             break;
           case 'clear': {
-            const session = this.getActiveSession();
-            session.messages = [];
-            session.pendingPlan = undefined;
-            session.stepCounter = 0;
-            session.activeStepId = undefined;
-            session.agentState = this.getBlankAgentState();
-            this.switchToSessionSync(session.id);
-
             this.toolDiffBeforeByToolCallId.clear();
             this.toolDiffSnapshotsByToolCallId.clear();
-
-            this.stepCounter = 0;
-            this.activeStepId = undefined;
-            this.abortRequested = false;
-            this.postMessage({ type: 'cleared' });
-            this.postMessage({ type: 'planPending', value: false, planMessageId: '' });
-            this.persistActiveSession();
+            await this.clearCurrentSession();
             break;
           }
           case 'ready':
@@ -539,10 +535,11 @@ export function installWebviewMethods(controller: ChatController): void {
         currentModelIsFavorite,
         mode: this.mode,
         planPending: !!this.getActiveSession().pendingPlan,
-        activePlanMessageId: this.getActiveSession().pendingPlan?.planMessageId ?? '',
-        processing: this.isProcessing,
-        pendingApprovals: this.pendingApprovals.size,
-        autoApproveThisRun: this.autoApproveThisRun,
+	        activePlanMessageId: this.getActiveSession().pendingPlan?.planMessageId ?? '',
+	        processing: this.isProcessing,
+        queuedInputs: this.queueManager.getQueuedInputs(),
+	        pendingApprovals: this.pendingApprovals.size,
+	        autoApproveThisRun: this.autoApproveThisRun,
         skills,
         ...this.getUndoRedoAvailability(),
       });
@@ -576,10 +573,11 @@ export function installWebviewMethods(controller: ChatController): void {
         currentModelIsFavorite,
         mode: this.mode,
           planPending: !!this.getActiveSession().pendingPlan,
-          activePlanMessageId: this.getActiveSession().pendingPlan?.planMessageId ?? '',
-          processing: this.isProcessing,
-          pendingApprovals: this.pendingApprovals.size,
-          autoApproveThisRun: this.autoApproveThisRun,
+	          activePlanMessageId: this.getActiveSession().pendingPlan?.planMessageId ?? '',
+	          processing: this.isProcessing,
+          queuedInputs: this.queueManager.getQueuedInputs(),
+	          pendingApprovals: this.pendingApprovals.size,
+	          autoApproveThisRun: this.autoApproveThisRun,
           skills,
           ...this.getUndoRedoAvailability(),
         });
@@ -590,6 +588,7 @@ export function installWebviewMethods(controller: ChatController): void {
       }
     } finally {
       this.initInFlight = false;
+      void this.queueManager.flushAutosendForActiveSession();
     }
   },
 

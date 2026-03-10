@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import type { AgentLoop, AgentSessionState } from '../../core/agent';
 import { getModelLimit } from '../../core/compaction';
-import { getMessageText } from '@kooka/core';
+import { getMessageText, parseUserHistoryInput } from '@kooka/core';
 import { SessionStore } from '../../core/sessionStore';
 import { createBlankSessionSignals, normalizeSessionSignals } from '../../core/sessionSignals';
 import { appendErrorLog } from '../../core/logger';
@@ -15,18 +15,19 @@ export function installSessionsMethods(controller: ChatController): void {
   initializeSessions(this: ChatController): void {
     this.sessions.clear();
     const initialId = this.activeSessionId || crypto.randomUUID();
-    const session: ChatSessionInfo = {
-      id: initialId,
-      title: createDefaultSessionTitle(),
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-      signals: createBlankSessionSignals(),
-      messages: [],
-      agentState: this.getBlankAgentState(),
-      currentModel: this.currentModel,
-      mode: this.mode,
-      stepCounter: 0,
-    };
+	    const session: ChatSessionInfo = {
+	      id: initialId,
+	      title: createDefaultSessionTitle(),
+	      createdAt: Date.now(),
+	      updatedAt: Date.now(),
+	      signals: createBlankSessionSignals(),
+	      messages: [],
+	      agentState: this.getBlankAgentState(),
+	      currentModel: this.currentModel,
+	      mode: this.mode,
+	      stepCounter: 0,
+	      queuedInputs: [],
+	    };
     this.sessions.set(initialId, session);
     this.switchToSessionSync(initialId);
   },
@@ -142,6 +143,7 @@ export function installSessionsMethods(controller: ChatController): void {
     const keepSet = new Set(keep);
     for (const id of ids) {
       if (keepSet.has(id)) continue;
+      this.queueManager.releaseSession(this.sessions.get(id));
       this.sessions.delete(id);
       this.dirtySessionIds.delete(id);
     }
@@ -176,7 +178,26 @@ export function installSessionsMethods(controller: ChatController): void {
 
   normalizeLoadedSession(this: ChatController, raw: ChatSessionInfo): ChatSessionInfo {
     const now = Date.now();
-    return {
+
+    const queuedInputsRaw = (raw as any).queuedInputs;
+    const queuedInputs =
+      Array.isArray(queuedInputsRaw)
+        ? queuedInputsRaw
+            .filter((v: any) => v && typeof v === 'object')
+            .map((v: any) => ({
+              id: typeof v.id === 'string' && v.id ? v.id : crypto.randomUUID(),
+              createdAt: typeof v.createdAt === 'number' && Number.isFinite(v.createdAt) ? v.createdAt : now,
+              message: typeof v.message === 'string' ? v.message : '',
+              displayContent: typeof v.displayContent === 'string' ? v.displayContent : '',
+              attachmentCount:
+                typeof v.attachmentCount === 'number' && Number.isFinite(v.attachmentCount)
+                  ? Math.max(0, Math.floor(v.attachmentCount))
+                  : 0,
+            }))
+            .slice(-50)
+        : [];
+
+	    return {
       id: typeof raw.id === 'string' ? raw.id : crypto.randomUUID(),
       title:
         typeof raw.title === 'string' && raw.title.trim()
@@ -191,10 +212,11 @@ export function installSessionsMethods(controller: ChatController): void {
       mode: raw.mode === 'plan' ? 'plan' : 'build',
       stepCounter: typeof raw.stepCounter === 'number' ? raw.stepCounter : 0,
       activeStepId: typeof raw.activeStepId === 'string' ? raw.activeStepId : undefined,
-      pendingPlan:
-        raw.pendingPlan && typeof raw.pendingPlan === 'object' ? raw.pendingPlan : undefined,
-      parentSessionId:
-        typeof (raw as any).parentSessionId === 'string' ? String((raw as any).parentSessionId) : undefined,
+	      pendingPlan:
+	        raw.pendingPlan && typeof raw.pendingPlan === 'object' ? raw.pendingPlan : undefined,
+	      queuedInputs,
+	      parentSessionId:
+	        typeof (raw as any).parentSessionId === 'string' ? String((raw as any).parentSessionId) : undefined,
       subagentType:
         typeof (raw as any).subagentType === 'string' ? String((raw as any).subagentType) : undefined,
       revert:
@@ -255,10 +277,19 @@ export function installSessionsMethods(controller: ChatController): void {
         ? (semanticHandlesRaw as AgentSessionState['semanticHandles'])
         : undefined;
 
+    const pendingInputsRaw = (state as any).pendingInputs;
+    const pendingInputs =
+      Array.isArray(pendingInputsRaw)
+        ? pendingInputsRaw
+            .map((input: unknown) => parseUserHistoryInput(input))
+            .filter((input): input is NonNullable<AgentSessionState['pendingInputs']>[number] => input !== undefined)
+        : undefined;
+
     return {
       history,
       fileHandles,
       semanticHandles,
+      ...(pendingInputs ? { pendingInputs } : {}),
     };
   },
 
@@ -373,6 +404,7 @@ export function installSessionsMethods(controller: ChatController): void {
         symbols: {},
         locations: {},
       },
+      pendingInputs: [],
     };
   },
 
@@ -494,18 +526,19 @@ export function installSessionsMethods(controller: ChatController): void {
     const id = crypto.randomUUID();
     const now = Date.now();
 
-    const session: ChatSessionInfo = {
-      id,
-      title: createDefaultSessionTitle(new Date(now)),
-      createdAt: now,
-      updatedAt: now,
-      signals: createBlankSessionSignals(now),
-      messages: [],
-      agentState: this.getBlankAgentState(),
-      currentModel: this.currentModel,
-      mode: this.mode,
-      stepCounter: 0,
-    };
+	    const session: ChatSessionInfo = {
+	      id,
+	      title: createDefaultSessionTitle(new Date(now)),
+	      createdAt: now,
+	      updatedAt: now,
+	      signals: createBlankSessionSignals(now),
+	      messages: [],
+	      agentState: this.getBlankAgentState(),
+	      currentModel: this.currentModel,
+	      mode: this.mode,
+	      stepCounter: 0,
+	      queuedInputs: [],
+	    };
 
     this.sessions.set(id, session);
     this.switchToSessionSync(id);
@@ -606,6 +639,7 @@ export function installSessionsMethods(controller: ChatController): void {
     session.signals = createBlankSessionSignals();
     session.messages = [];
     session.pendingPlan = undefined;
+    this.queueManager.clearActiveSession({ persist: false });
     session.stepCounter = 0;
     session.activeStepId = undefined;
     session.agentState = this.getBlankAgentState();
@@ -822,6 +856,7 @@ export function installSessionsMethods(controller: ChatController): void {
     this.inputHistoryEntries = [];
     this.inputHistoryStore = undefined;
     this.inputHistoryLoadedFromDisk = true;
+    this.queueManager.clearAllRuntimeData();
 
     this.activeSessionId = crypto.randomUUID();
     this.initializeSessions();
