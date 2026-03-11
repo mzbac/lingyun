@@ -1,5 +1,6 @@
 const COPILOT_RESPONSES_MODEL_IDS = new Set([
   'gpt-5.3-codex',
+  'gpt-5.4',
 ]);
 
 /**
@@ -13,4 +14,3 @@ export function isCopilotResponsesModelId(modelId: string): boolean {
   const normalized = String(modelId || '').trim().toLowerCase();
   return COPILOT_RESPONSES_MODEL_IDS.has(normalized);
 }
-

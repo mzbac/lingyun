@@ -172,8 +172,7 @@ export class CopilotProvider implements LLMProvider {
   async getModel(modelId: string): Promise<unknown> {
     await this.ensureProvider();
     const resolvedModel = modelId || MODELS.GPT_4O;
-    // Minimize impact: only route the known Copilot-only model(s) to `/responses`.
-    // Copilot rejects `gpt-5.3-codex` on `/chat/completions`.
+    // Minimize impact: only route the known Responses-only model(s) to `/responses`.
     if (isCopilotResponsesModelId(resolvedModel)) {
       const token = this.cachedProviderToken ?? (await this.getCopilotToken());
       const raw = this.createResponsesModel({

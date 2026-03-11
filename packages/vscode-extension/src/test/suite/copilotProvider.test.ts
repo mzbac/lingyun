@@ -4,33 +4,35 @@ import * as vscode from 'vscode';
 import { CopilotProvider } from '../../providers/copilot';
 
 suite('CopilotProvider', () => {
-  test('uses Responses API only for gpt-5.3-codex', async () => {
-    const provider = new CopilotProvider();
-    let chatCalls = 0;
-    const fakeChatModel = { type: 'chat' };
+  test('uses Responses API for Copilot Responses-only models', async () => {
+    for (const modelId of ['gpt-5.3-codex', 'gpt-5.4']) {
+      const provider = new CopilotProvider();
+      let chatCalls = 0;
+      const fakeChatModel = { type: 'chat' };
 
-    (provider as any).ensureProvider = async () => {
-      (provider as any).provider = {
-        chatModel: () => {
-          chatCalls += 1;
-          return fakeChatModel;
-        },
+      (provider as any).ensureProvider = async () => {
+        (provider as any).provider = {
+          chatModel: () => {
+            chatCalls += 1;
+            return fakeChatModel;
+          },
+        };
+        (provider as any).cachedProviderToken = 'test-token';
+        (provider as any).cachedProviderEditorVersion = `vscode/${vscode.version}`;
+        const ext = vscode.extensions.getExtension('mzbac.lingyun');
+        (provider as any).cachedProviderPluginVersion = `lingyun/${ext?.packageJSON?.version ?? '0.0.0'}`;
       };
-      (provider as any).cachedProviderToken = 'test-token';
-      (provider as any).cachedProviderEditorVersion = `vscode/${vscode.version}`;
-      const ext = vscode.extensions.getExtension('mzbac.lingyun');
-      (provider as any).cachedProviderPluginVersion = `lingyun/${ext?.packageJSON?.version ?? '0.0.0'}`;
-    };
 
-    try {
-      const model = (await provider.getModel('gpt-5.3-codex')) as any;
+      try {
+        const model = (await provider.getModel(modelId)) as any;
 
-      assert.strictEqual(model?.specificationVersion, 'v3');
-      assert.strictEqual(model?.modelId, 'gpt-5.3-codex');
-      assert.strictEqual(typeof model?.doStream, 'function');
-      assert.strictEqual(chatCalls, 0);
-    } finally {
-      provider.dispose();
+        assert.strictEqual(model?.specificationVersion, 'v3');
+        assert.strictEqual(model?.modelId, modelId);
+        assert.strictEqual(typeof model?.doStream, 'function');
+        assert.strictEqual(chatCalls, 0);
+      } finally {
+        provider.dispose();
+      }
     }
   });
 
