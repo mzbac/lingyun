@@ -174,6 +174,7 @@
 		        label: data.currentModelLabel || data.currentModel || 'Pick model',
 		        isFavorite: !!data.currentModelIsFavorite,
 		      });
+			      setLoopState(data.loop);
 			      updateContextIndicatorState(data.context);
 			      closeContextPopover();
 			      updateTodoIndicatorState(data.todos);
@@ -195,6 +196,10 @@
 		          break;
 	        case 'queueState':
 	          try { setQueueState(Array.isArray(data.queuedInputs) ? data.queuedInputs : []); } catch {}
+	          break;
+	        case 'loopState':
+	          try { setLoopState(data.loop); } catch {}
+	          syncInputState();
 	          break;
 	        case 'context':
 	          updateContextIndicatorState(data.context);

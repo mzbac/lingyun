@@ -19,6 +19,7 @@
 			    const stopBtn = document.getElementById('stop');
 		    const newSessionBtn = document.getElementById('newSession');
 		    const compactSessionBtn = document.getElementById('compactSession');
+		    const loopControlBtn = document.getElementById('loopControl');
 		    const undoBtn = document.getElementById('undo');
 		    const redoBtn = document.getElementById('redo');
 	    const clearInputBtn = document.getElementById('clearInput');
@@ -72,10 +73,21 @@
 	    let canUndo = false;
 	    let canRedo = false;
 	    let currentRevertState = null;
-	    let currentSessionId = '';
-		    let currentModel = '';
-		    let currentMode = 'build';
-		    let currentOperation = null;
+		    let currentSessionId = '';
+			    let currentModel = '';
+			    let currentMode = 'build';
+		    let currentLoop = {
+		      available: true,
+		      enabled: false,
+		      canRunNow: false,
+		      intervalMinutes: 5,
+		      prompt: '',
+		      reason: 'disabled',
+		      statusText: 'Loop is off for this session.',
+		      lastFiredAt: undefined,
+		      nextFireAt: undefined,
+		    };
+			    let currentOperation = null;
 		    let operationTimer = null;
 		    let pendingApprovalsCount = 0;
 		    let autoApproveThisRun = false;
@@ -491,6 +503,72 @@
 	      warning: '!',
 	    };
 
+	    function setLoopState(loop) {
+	      const next = loop && typeof loop === 'object' ? loop : {};
+	      const parsedInterval = Number(next.intervalMinutes);
+	      currentLoop = {
+	        available: next.available !== false,
+	        enabled: !!next.enabled,
+	        canRunNow: !!next.canRunNow,
+	        intervalMinutes: Number.isFinite(parsedInterval) && parsedInterval > 0 ? Math.floor(parsedInterval) : 5,
+	        prompt: typeof next.prompt === 'string' ? next.prompt : '',
+	        reason: typeof next.reason === 'string' ? next.reason : 'disabled',
+	        statusText:
+	          typeof next.statusText === 'string' && next.statusText.trim()
+	            ? next.statusText.trim()
+	            : 'Loop is off for this session.',
+	        lastFiredAt:
+	          typeof next.lastFiredAt === 'number' && Number.isFinite(next.lastFiredAt)
+	            ? next.lastFiredAt
+	            : undefined,
+	        nextFireAt:
+	          typeof next.nextFireAt === 'number' && Number.isFinite(next.nextFireAt)
+	            ? next.nextFireAt
+	            : undefined,
+	      };
+	      updateLoopControl();
+	    }
+
+	    function updateLoopControl() {
+	      if (!loopControlBtn) return;
+	      const available = currentLoop.available !== false;
+	      const intervalText =
+	        currentLoop.intervalMinutes === 60
+	          ? 'every hour'
+	          : currentLoop.intervalMinutes % 60 === 0 && currentLoop.intervalMinutes > 60
+	            ? ('every ' + (currentLoop.intervalMinutes / 60) + ' hours')
+	            : currentLoop.intervalMinutes === 1
+	              ? 'every minute'
+	              : ('every ' + currentLoop.intervalMinutes + ' minutes');
+	      const nextFireText =
+	        typeof currentLoop.nextFireAt === 'number'
+	          ? new Date(currentLoop.nextFireAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+	          : '';
+
+	      loopControlBtn.classList.toggle('active', available && currentLoop.enabled);
+	      loopControlBtn.setAttribute(
+	        'aria-pressed',
+	        available && currentLoop.enabled ? 'true' : 'false'
+	      );
+
+	      if (!available) {
+	        loopControlBtn.title = 'Loop steering is unavailable for subagent sessions';
+	        return;
+	      }
+
+	      if (!currentLoop.enabled) {
+	        loopControlBtn.title = 'Loop off. Click to configure. Current interval: ' + intervalText + '.';
+	        return;
+	      }
+
+	      if (currentLoop.canRunNow) {
+	        loopControlBtn.title = 'Loop on, ' + intervalText + (nextFireText ? (', next ' + nextFireText) : '') + '. Click to configure.';
+	        return;
+	      }
+
+	      loopControlBtn.title = currentLoop.statusText + ' Current interval: ' + intervalText + '. Click to configure.';
+	    }
+
 	    function setMode(mode) {
 	      currentMode = mode === 'plan' ? 'plan' : 'build';
 	      if (modePlanBtn) {
@@ -532,6 +610,14 @@
 	        if (!initReceived || isProcessing) return;
 	        try { vscode.postMessage({ type: 'compactSession' }); } catch {}
 	      });
+	    }
+
+	    if (loopControlBtn) {
+	      loopControlBtn.addEventListener('click', () => {
+	        if (!initReceived || currentLoop.available === false) return;
+	        try { vscode.postMessage({ type: 'configureLoop' }); } catch {}
+	      });
+	      loopControlBtn.setAttribute('aria-pressed', 'false');
 	    }
 
 	    if (operationStopBtn) {
@@ -1090,6 +1176,7 @@
 		      clearInputBtn.disabled = !connected || (!input.value.trim() && pendingImageAttachments.length === 0);
 		      if (newSessionBtn) newSessionBtn.disabled = !connected || isProcessing;
 		      if (compactSessionBtn) compactSessionBtn.disabled = !connected || isProcessing;
+		      if (loopControlBtn) loopControlBtn.disabled = !connected || currentLoop.available === false;
 		      if (undoBtn) undoBtn.disabled = !connected || isProcessing || !canUndo;
 		      if (redoBtn) redoBtn.disabled = !connected || isProcessing || !canRedo;
 			      if (sessionSelect) sessionSelect.disabled = !connected || isProcessing;
@@ -1141,6 +1228,7 @@
 	        sendBtn.classList.remove('stop');
 	      }
 	      sendBtn.disabled = !hasContent;
+	      updateLoopControl();
 	    }
 
 		    function setProcessing(val) {

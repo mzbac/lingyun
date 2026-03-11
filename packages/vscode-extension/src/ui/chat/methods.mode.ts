@@ -28,6 +28,11 @@ export function installModeMethods(controller: ChatController): void {
         this.postMessage({ type: 'modeChanged', mode: nextMode });
       }
 
+      if (changed) {
+        this.loopManager.syncActiveSession();
+        this.postLoopState();
+      }
+
       const persistSession = options?.persistSession !== false;
       if (persistSession && changed) {
         this.persistActiveSession();

@@ -23,6 +23,30 @@ export interface ChatQueuedInput {
   attachmentCount: number;
 }
 
+export interface ChatSessionLoopState {
+  enabled: boolean;
+  intervalMinutes: number;
+  prompt: string;
+  lastFiredAt?: number;
+  nextFireAt?: number;
+}
+
+export type ChatLoopStatusReason =
+  | 'ready'
+  | 'disabled'
+  | 'unavailable'
+  | 'no_context'
+  | 'busy'
+  | 'plan_mode'
+  | 'pending_plan';
+
+export interface ChatLoopUiState extends ChatSessionLoopState {
+  available: boolean;
+  canRunNow: boolean;
+  reason: ChatLoopStatusReason;
+  statusText: string;
+}
+
 export type ChatMessageRole =
   | 'user'
   | 'assistant'
@@ -114,6 +138,7 @@ export interface ChatSessionInfo {
   activeStepId?: string;
   pendingPlan?: { task: string; planMessageId: string };
   queuedInputs?: ChatQueuedInput[];
+  loop?: ChatSessionLoopState;
   /**
    * When set, this session is a subagent session created via the `task` tool.
    */

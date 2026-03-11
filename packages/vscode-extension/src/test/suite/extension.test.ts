@@ -62,6 +62,8 @@ suite('Extension Integration', () => {
     assert.strictEqual(config.get('toolTimeoutMs'), 0);
     assert.strictEqual(config.get('autoApprove'), false);
     assert.strictEqual(config.get('planFirst'), true);
+    assert.strictEqual(config.get('loop.enabled'), false);
+    assert.strictEqual(config.get('loop.intervalMinutes'), 5);
     assert.strictEqual(config.get('sessions.persist'), true);
   });
 

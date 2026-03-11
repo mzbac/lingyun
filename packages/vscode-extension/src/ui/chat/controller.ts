@@ -8,6 +8,7 @@ import { createBlankSessionSignals, type SessionSignals } from '../../core/sessi
 import type { ModelInfo } from '../../providers/copilot';
 import type {
   ChatMessage,
+  ChatLoopUiState,
   ChatMode,
   ChatSessionInfo,
   ChatUserInput,
@@ -16,6 +17,8 @@ import type {
 import type { OfficeSync } from '../office/sync';
 import { installApprovalsMethods } from './methods.approvals';
 import { installInputHistoryMethods } from './methods.inputHistory';
+import { ChatLoopManager } from './loopManager';
+import { installLoopMethods } from './methods.loop';
 import { installModeMethods } from './methods.mode';
 import { installModelsMethods } from './methods.models';
 import { installRevertMethods } from './methods.revert';
@@ -41,6 +44,7 @@ function installChatControllerPrototype(): void {
 
   installSessionsMethods(ChatController.prototype as any);
   installInputHistoryMethods(ChatController.prototype as any);
+  installLoopMethods(ChatController.prototype as any);
   installModeMethods(ChatController.prototype as any);
   installRevertMethods(ChatController.prototype as any);
   installSkillsMethods(ChatController.prototype as any);
@@ -118,6 +122,7 @@ export class ChatController {
     }
   > = new Map();
 
+  loopManager: ChatLoopManager = new ChatLoopManager(this);
   queueManager: ChatQueueManager = new ChatQueueManager(this);
   runner: RunCoordinator = new RunCoordinator(this);
 
@@ -146,6 +151,9 @@ installChatControllerPrototype();
 
 export function installChatControllerMethods(controller: ChatController): void {
   installChatControllerPrototype();
+  if (!(controller as any).loopManager) {
+    (controller as any).loopManager = new ChatLoopManager(controller);
+  }
   if (!(controller as any).queueManager) {
     (controller as any).queueManager = new ChatQueueManager(controller);
   }
@@ -195,6 +203,10 @@ export interface ChatController extends vscode.WebviewViewProvider {
   ensureInputHistoryLoaded(): Promise<void>;
   recordInputHistory(content: string): void;
   postInputHistory(): void;
+  getLoopStateForUI(session?: ChatSessionInfo): ChatLoopUiState;
+  postLoopState(session?: ChatSessionInfo): void;
+  injectLoopPrompt(prompt?: string): Promise<boolean>;
+  configureLoopForActiveSession(): Promise<void>;
 
   getWorkspaceSnapshot(): Promise<WorkspaceSnapshot | undefined>;
   getUndoRedoAvailability(): { canUndo: boolean; canRedo: boolean };

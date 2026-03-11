@@ -333,6 +333,9 @@ export function installWebviewMethods(controller: ChatController): void {
             this.queueManager.clearActiveSession();
             break;
           }
+          case 'configureLoop':
+            await this.configureLoopForActiveSession();
+            break;
           case 'steerQueuedInput': {
             const id = typeof (data as any).id === 'string' ? String((data as any).id) : '';
             if (!id) break;
@@ -530,6 +533,7 @@ export function installWebviewMethods(controller: ChatController): void {
         revertState: this.getRevertBarStateForUI(),
         context: this.getContextForUI(),
         todos,
+        loop: this.getLoopStateForUI(),
         currentModel: this.currentModel,
         currentModelLabel: modelLabel,
         currentModelIsFavorite,
@@ -568,6 +572,7 @@ export function installWebviewMethods(controller: ChatController): void {
           revertState: this.getRevertBarStateForUI(),
           context: this.getContextForUI(),
           todos,
+          loop: this.getLoopStateForUI(),
           currentModel: this.currentModel,
         currentModelLabel: modelLabel,
         currentModelIsFavorite,

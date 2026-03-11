@@ -269,12 +269,14 @@ export function installRevertMethods(controller: ChatController): void {
     session.revert = undefined;
     this.pendingApprovals.clear();
     session.pendingPlan = derivePendingPlanFromMessages(this.messages, { fallback: previousPendingPlan });
+    this.loopManager.syncActiveSession();
     this.persistActiveSession();
     this.postMessage({
       type: 'planPending',
       value: !!session.pendingPlan,
       planMessageId: session.pendingPlan?.planMessageId ?? '',
     });
+    this.postLoopState(session);
     this.postRevertBarState();
   },
 
@@ -399,6 +401,7 @@ export function installRevertMethods(controller: ChatController): void {
         beforeIndex: boundaryIndex,
         fallback: baselinePendingPlan,
       });
+      this.loopManager.syncActiveSession();
       this.persistActiveSession();
       await this.sendInit(true);
     } catch (error) {
@@ -430,6 +433,7 @@ export function installRevertMethods(controller: ChatController): void {
 
       session.pendingPlan = revert.baselinePendingPlan;
       session.revert = undefined;
+      this.loopManager.syncActiveSession();
       this.persistActiveSession();
       await this.sendInit(true);
     } catch (error) {

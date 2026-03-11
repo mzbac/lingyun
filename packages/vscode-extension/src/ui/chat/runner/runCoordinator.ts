@@ -89,12 +89,22 @@ function appendAssumptionsToPlan(plan: string): string {
 }
 
 export class RunCoordinator {
+  private loopSteerableDuringProcessing = false;
+
   constructor(private readonly controller: ChatController) {}
+
+  canAcceptLoopSteer(): boolean {
+    const c = this.controller;
+    const turnId = typeof c.currentTurnId === 'string' ? c.currentTurnId.trim() : '';
+    return c.isProcessing && this.loopSteerableDuringProcessing && c.agent.running && !!turnId;
+  }
 
   private finalizeRun(params?: { postProcessingSignal?: boolean; keepAbortFlag?: boolean; suppressQueueAutosend?: boolean }): void {
     const c = this.controller;
     const sessionId = c.activeSessionId;
     c.isProcessing = false;
+    this.loopSteerableDuringProcessing = false;
+    c.loopManager.onRunEnd(sessionId);
     if (!params?.keepAbortFlag) {
       c.abortRequested = false;
     }
@@ -109,10 +119,10 @@ export class RunCoordinator {
     c.queueManager.scheduleAutosendForSession(sessionId, { suppress: params?.suppressQueueAutosend });
   }
 
-  private enqueueQueuedInput(params: { normalized: NormalizedUserInput }): void {
+  private enqueueQueuedInput(params: { normalized: NormalizedUserInput; displayContent?: string }): void {
     this.controller.queueManager.enqueueActiveInput({
       message: params.normalized.text,
-      displayContent: params.normalized.displayContent,
+      displayContent: params.displayContent ?? params.normalized.displayContent,
       attachmentCount: params.normalized.attachmentCount,
       attachments: params.normalized.imageAttachments,
     });
@@ -136,18 +146,24 @@ export class RunCoordinator {
     await this.handleUserMessage(input, { fromQueue: true });
   }
 
-  private steerIntoActiveRun(params: { normalized: NormalizedUserInput }): void {
+  private steerIntoActiveRun(params: {
+    normalized: NormalizedUserInput;
+    displayContent?: string;
+    queueOnFailure?: boolean;
+  }): boolean {
     const c = this.controller;
     const turnId = c.currentTurnId;
     if (!turnId) {
-      this.enqueueQueuedInput(params);
-      return;
+      if (params.queueOnFailure !== false) {
+        this.enqueueQueuedInput(params);
+      }
+      return false;
     }
 
     const userMsg: ChatMessage = {
       id: crypto.randomUUID(),
       role: 'user',
-      content: params.normalized.displayContent,
+      content: params.displayContent ?? params.normalized.displayContent,
       timestamp: Date.now(),
       turnId,
     };
@@ -166,20 +182,54 @@ export class RunCoordinator {
       };
       c.messages.push(warningMsg);
       c.postMessage({ type: 'message', message: warningMsg });
-      this.enqueueQueuedInput(params);
+      if (params.queueOnFailure !== false) {
+        this.enqueueQueuedInput(params);
+      }
+      return false;
     }
 
     c.persistActiveSession();
+    return true;
   }
 
-  async handleUserMessage(content: string | ChatUserInput, options?: { fromQueue?: boolean }): Promise<void> {
+  async triggerLoopPrompt(content: string): Promise<boolean> {
+    const c = this.controller;
+    if (!c.view) return false;
+
+    const normalized = normalizeUserInput(content);
+    if (!normalized.hasContent) return false;
+
+    if (this.canAcceptLoopSteer()) {
+      return this.steerIntoActiveRun({
+        normalized,
+        queueOnFailure: false,
+      });
+    }
+
+    if (c.isProcessing) return false;
+
+    if (!c.loopManager.hasLoopContext(c.getActiveSession())) {
+      return false;
+    }
+
+    await this.handleUserMessage(content, {
+      fromQueue: true,
+      synthetic: true,
+    });
+    return true;
+  }
+
+  async handleUserMessage(
+    content: string | ChatUserInput,
+    options?: { fromQueue?: boolean; synthetic?: boolean; displayContent?: string }
+  ): Promise<void> {
     const c = this.controller;
     if (!c.view) return;
 
     const normalizedInput = normalizeUserInput(content);
     if (!normalizedInput.hasContent) return;
 
-    if (normalizedInput.text && !options?.fromQueue) {
+    if (normalizedInput.text && !options?.fromQueue && !options?.synthetic) {
       recordUserIntent(c.signals, normalizedInput.text);
     }
 
@@ -188,7 +238,7 @@ export class RunCoordinator {
 
     if (c.isProcessing) {
       await c.ensureSessionsLoaded();
-      if (normalizedInput.text) {
+      if (normalizedInput.text && !options?.synthetic) {
         c.recordInputHistory(normalizedInput.text);
       }
 
@@ -215,15 +265,21 @@ export class RunCoordinator {
 
     await c.ensureSessionsLoaded();
 
-    if (!options?.fromQueue) {
+    if (!options?.fromQueue && !options?.synthetic) {
       c.recordInputHistory(normalizedInput.text);
     }
 
     c.commitRevertedConversationIfNeeded();
 
+    const isNew = c.agent.getHistory().length === 0;
+    const planFirst = c.isPlanFirstEnabled();
+    const shouldGeneratePlan = c.mode === 'plan' || (planFirst && isNew);
+
     c.isProcessing = true;
+    this.loopSteerableDuringProcessing = !shouldGeneratePlan;
     c.autoApproveThisRun = false;
     c.postApprovalState();
+    c.loopManager.onRunStart(activeSession.id);
 
     c.officeSync?.onRunStart();
 
@@ -231,7 +287,7 @@ export class RunCoordinator {
     const userMsg: ChatMessage = {
       id: crypto.randomUUID(),
       role: 'user',
-      content: normalizedInput.displayContent,
+      content: options?.displayContent ?? normalizedInput.displayContent,
       timestamp: Date.now(),
       checkpoint: {
         historyLength: checkpointState.history.length,
@@ -241,7 +297,12 @@ export class RunCoordinator {
     c.currentTurnId = userMsg.id;
 
     const userCount = activeSession.messages.filter(m => m.role === 'user').length;
-    if (normalizedInput.text && userCount === 1 && isDefaultSessionTitle(activeSession.title)) {
+    if (
+      normalizedInput.text &&
+      userCount === 1 &&
+      isDefaultSessionTitle(activeSession.title) &&
+      !options?.synthetic
+    ) {
       void c.agent
         .generateSessionTitle(normalizedInput.text, { maxChars: 50 })
         .then(title => {
@@ -259,7 +320,7 @@ export class RunCoordinator {
     }
 
     c.postMessage({ type: 'message', message: userMsg });
-    if (normalizedInput.text) {
+    if (normalizedInput.text && !options?.synthetic) {
       void c.postUnknownSkillWarnings(normalizedInput.text, userMsg.id);
     }
     if (c.isSessionPersistenceEnabled()) {
@@ -273,10 +334,6 @@ export class RunCoordinator {
 
     let wasCanceled = false;
     try {
-      const isNew = c.agent.getHistory().length === 0;
-
-      const planFirst = c.isPlanFirstEnabled();
-      const shouldGeneratePlan = c.mode === 'plan' || (planFirst && isNew);
       if (shouldGeneratePlan) {
         await c.setModeAndPersist('plan');
 
@@ -362,8 +419,10 @@ export class RunCoordinator {
     c.commitRevertedConversationIfNeeded();
 
     c.isProcessing = true;
+    this.loopSteerableDuringProcessing = true;
     c.autoApproveThisRun = false;
     c.postApprovalState();
+    c.loopManager.onRunStart(c.activeSessionId);
     c.postMessage({ type: 'processing', value: true });
 
     c.officeSync?.onRunStart({ clearTools: false });
@@ -451,12 +510,16 @@ export class RunCoordinator {
     const previousMode = c.mode;
     await c.setModeAndPersist('build');
     const switchedToBuild = previousMode === 'plan';
+    const lastUserTurn = [...c.messages].reverse().find(m => m.role === 'user')?.id;
+    c.currentTurnId = planMsg.turnId || lastUserTurn || c.currentTurnId;
 
     c.isProcessing = true;
+    this.loopSteerableDuringProcessing = true;
     c.autoApproveThisRun = false;
     c.postApprovalState();
     c.postMessage({ type: 'processing', value: true });
     c.postMessage({ type: 'planPending', value: false, planMessageId: '' });
+    c.loopManager.onRunStart(c.activeSessionId);
 
     c.officeSync?.onRunStart();
 
@@ -535,6 +598,7 @@ export class RunCoordinator {
     if (!planMsg || planMsg.role !== 'plan' || !planMsg.plan) return;
 
     c.isProcessing = true;
+    this.loopSteerableDuringProcessing = false;
     c.autoApproveThisRun = false;
     c.postApprovalState();
 
@@ -634,6 +698,7 @@ export class RunCoordinator {
       }
     } finally {
       c.isProcessing = false;
+      this.loopSteerableDuringProcessing = false;
       c.postMessage({ type: 'processing', value: false });
       c.postMessage({
         type: 'planPending',
@@ -663,6 +728,8 @@ export class RunCoordinator {
 
     session.pendingPlan = undefined;
     await c.agent.clear();
+    c.loopManager.syncActiveSession();
+    c.postLoopState(session);
     c.postMessage({ type: 'planPending', value: false, planMessageId: '' });
     c.persistActiveSession();
     void c.queueManager.flushAutosendForActiveSession();
@@ -686,6 +753,7 @@ export class RunCoordinator {
     if (!planMsg || planMsg.role !== 'plan' || !planMsg.plan) return;
 
     c.isProcessing = true;
+    this.loopSteerableDuringProcessing = false;
     c.autoApproveThisRun = false;
     c.postApprovalState();
 
@@ -783,6 +851,7 @@ export class RunCoordinator {
       }
     } finally {
       c.isProcessing = false;
+      this.loopSteerableDuringProcessing = false;
       c.postMessage({ type: 'processing', value: false });
       c.postMessage({
         type: 'planPending',

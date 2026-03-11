@@ -27,6 +27,7 @@ export function installSessionsMethods(controller: ChatController): void {
 	      mode: this.mode,
 	      stepCounter: 0,
 	      queuedInputs: [],
+        loop: this.loopManager.normalizeSessionState(undefined),
 	    };
     this.sessions.set(initialId, session);
     this.switchToSessionSync(initialId);
@@ -78,6 +79,7 @@ export function installSessionsMethods(controller: ChatController): void {
     const base: ChatSessionInfo = {
       ...session,
       messages: [...(session.messages || [])],
+      loop: this.loopManager.normalizeStoredSessionState(session.loop),
     };
 
     const measure = (value: unknown) => Buffer.byteLength(JSON.stringify(value), 'utf8');
@@ -215,6 +217,7 @@ export function installSessionsMethods(controller: ChatController): void {
 	      pendingPlan:
 	        raw.pendingPlan && typeof raw.pendingPlan === 'object' ? raw.pendingPlan : undefined,
 	      queuedInputs,
+      loop: this.loopManager.normalizeStoredSessionState((raw as any).loop),
 	      parentSessionId:
 	        typeof (raw as any).parentSessionId === 'string' ? String((raw as any).parentSessionId) : undefined,
       subagentType:
@@ -319,6 +322,10 @@ export function installSessionsMethods(controller: ChatController): void {
         lastTool.toolCall.status = 'error';
         lastTool.toolCall.result =
           lastTool.toolCall.result || 'Interrupted (VS Code closed or extension reloaded).';
+      }
+
+      if (session.loop?.nextFireAt) {
+        session.loop.nextFireAt = undefined;
       }
 
       session.runtime = { wasRunning: false, updatedAt: now };
@@ -538,6 +545,7 @@ export function installSessionsMethods(controller: ChatController): void {
 	      mode: this.mode,
 	      stepCounter: 0,
 	      queuedInputs: [],
+        loop: this.loopManager.normalizeSessionState(undefined),
 	    };
 
     this.sessions.set(id, session);
@@ -581,6 +589,7 @@ export function installSessionsMethods(controller: ChatController): void {
       subagentType: session.subagentType,
     });
 
+    this.loopManager.syncActiveSession({ resetSchedule: true });
     this.officeSync?.sync();
   },
 
@@ -592,6 +601,7 @@ export function installSessionsMethods(controller: ChatController): void {
     this.agent = agent;
     this.llmProvider = llmProvider;
     this.isProcessing = false;
+    this.loopManager.clearAllRuntimeData();
     this.availableModels = [];
     this.currentModel = vscode.workspace.getConfiguration('lingyun').get('model') || this.currentModel;
     this.mode =
@@ -640,6 +650,10 @@ export function installSessionsMethods(controller: ChatController): void {
     session.messages = [];
     session.pendingPlan = undefined;
     this.queueManager.clearActiveSession({ persist: false });
+    this.loopManager.releaseSession(session);
+    if (session.loop) {
+      session.loop.lastFiredAt = undefined;
+    }
     session.stepCounter = 0;
     session.activeStepId = undefined;
     session.agentState = this.getBlankAgentState();
@@ -702,13 +716,15 @@ export function installSessionsMethods(controller: ChatController): void {
       },
     });
     this.postMessage({ type: 'message', message: operationMsg });
-    this.persistActiveSession();
+	    this.persistActiveSession();
 
-    this.isProcessing = true;
-    this.postMessage({ type: 'processing', value: true });
+	    this.isProcessing = true;
+      this.loopManager.syncActiveSession();
+	    this.postMessage({ type: 'processing', value: true });
+      this.postLoopState();
 
-    try {
-      await this.agent.compactSession();
+	    try {
+	      await this.agent.compactSession();
 
       const endedAt = Date.now();
       if (operationMsg.operation) {
@@ -774,13 +790,15 @@ export function installSessionsMethods(controller: ChatController): void {
       });
       this.postMessage({ type: 'context', context: this.getContextForUI() });
       this.persistActiveSession();
-    } finally {
-      this.isProcessing = false;
-      this.abortRequested = false;
-      this.postMessage({ type: 'processing', value: false });
-      this.persistActiveSession();
-    }
-  },
+	    } finally {
+	      this.isProcessing = false;
+	      this.abortRequested = false;
+        this.loopManager.syncActiveSession();
+	      this.postMessage({ type: 'processing', value: false });
+        this.postLoopState();
+	      this.persistActiveSession();
+	    }
+	  },
 
   async onSessionPersistenceConfigChanged(this: ChatController): Promise<void> {
     const enabled = this.isSessionPersistenceEnabled();
@@ -856,6 +874,7 @@ export function installSessionsMethods(controller: ChatController): void {
     this.inputHistoryEntries = [];
     this.inputHistoryStore = undefined;
     this.inputHistoryLoadedFromDisk = true;
+    this.loopManager.clearAllRuntimeData();
     this.queueManager.clearAllRuntimeData();
 
     this.activeSessionId = crypto.randomUUID();

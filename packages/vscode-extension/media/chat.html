@@ -69,6 +69,16 @@
       border-color: var(--vscode-widget-border);
     }
 
+    .header-btn.active {
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      border-color: var(--vscode-button-border, transparent);
+    }
+
+    .header-btn.active:hover:not(:disabled) {
+      background: var(--vscode-button-hoverBackground);
+    }
+
     .header-btn:disabled {
       opacity: 0.5;
       cursor: not-allowed;
@@ -3254,6 +3264,9 @@
         <path d="M2 6.5H5V5L8 8L5 11V9.5H2V6.5Z"></path>
         <path d="M14 6.5H11V5L8 8L11 11V9.5H14V6.5Z"></path>
       </svg>
+    </button>
+    <button id="loopControl" class="header-btn" title="Loop steering" aria-label="Loop steering" aria-pressed="false">
+      ⟲
     </button>
     <div class="header-title">
       <span class="header-label">Session</span>

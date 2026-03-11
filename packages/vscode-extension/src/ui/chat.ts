@@ -66,4 +66,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   onSessionPersistenceConfigChanged(...args: Parameters<ChatController['onSessionPersistenceConfigChanged']>): ReturnType<ChatController['onSessionPersistenceConfigChanged']> {
     return this.controller.onSessionPersistenceConfigChanged(...args);
   }
+
+  postLoopState(...args: Parameters<ChatController['postLoopState']>): ReturnType<ChatController['postLoopState']> {
+    return this.controller.postLoopState(...args);
+  }
 }
