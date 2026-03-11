@@ -22,6 +22,7 @@ export interface ModelInfo {
   vendor: string;
   family: string;
   maxInputTokens?: number;
+  maxOutputTokens?: number;
 }
 
 export class CopilotProvider implements LLMProvider {
@@ -209,6 +210,10 @@ export class CopilotProvider implements LLMProvider {
           vendor: m.vendor,
           family: m.family,
           maxInputTokens: m.maxInputTokens,
+          maxOutputTokens:
+            typeof (m as any).maxOutputTokens === 'number' && Number.isFinite((m as any).maxOutputTokens)
+              ? (m as any).maxOutputTokens
+              : undefined,
         }));
         return this.cachedModels;
       }

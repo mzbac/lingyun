@@ -19,7 +19,7 @@ import { AgentLoop } from '../../core/agent';
 import { ToolRegistry } from '../../core/registry';
 import type { LLMProvider } from '../../core/types';
 import { getMessageText, TOOL_ERROR_CODES } from '@kooka/core';
-import { COMPACTED_TOOL_PLACEHOLDER, createHistoryForModel } from '../../core/compaction';
+import { COMPACTED_TOOL_PLACEHOLDER, COMPACTION_AUTO_CONTINUE_TEXT, createHistoryForModel } from '../../core/compaction';
 import { PluginManager } from '../../core/hooks/pluginManager';
 import { taskHandler, taskTool } from '../../tools/builtin/task';
 
@@ -233,6 +233,23 @@ class MockCopilotProvider extends MockLLMProvider {
 class MockOpenAICompatibleProvider extends MockLLMProvider {
   override readonly id: string = 'openaiCompatible';
   override readonly name: string = 'OpenAI-Compatible';
+}
+
+class MockProviderWithModelMetadata extends MockLLMProvider {
+  async getModels(): Promise<
+    Array<{ id: string; name: string; vendor: string; family: string; maxInputTokens: number; maxOutputTokens: number }>
+  > {
+    return [
+      {
+        id: 'mock-model',
+        name: 'Mock Model',
+        vendor: 'mock',
+        family: 'mock',
+        maxInputTokens: 10,
+        maxOutputTokens: 5,
+      },
+    ];
+  }
 }
 
 suite('AgentLoop', () => {
@@ -1640,6 +1657,79 @@ suite('AgentLoop', () => {
       const end = compactionEvents.find(e => e.type === 'end');
       assert.ok(start && start.auto === true, 'compaction start event exists');
       assert.ok(end && end.auto === true && end.status === 'done', 'compaction end event exists');
+    } finally {
+      await cfg.update('modelLimits', previousLimits as any, true);
+    }
+  });
+
+  test('continue - auto compacts before the next user turn and preserves the real follow-up input', async () => {
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const previousLimits = cfg.get('modelLimits');
+    await cfg.update('modelLimits', undefined, true);
+
+    const metadataLLM = new MockProviderWithModelMetadata();
+    agent = new AgentLoop(metadataLLM, mockContext, { model: 'mock-model' }, registry);
+
+    try {
+      metadataLLM.setNextResponse({
+        kind: 'text',
+        content: 'First done',
+        usage: { inputNoCache: 10, cacheRead: 0, outputTotal: 1 },
+      });
+      await agent.run('First task');
+
+      const compactionEvents: Array<
+        | { type: 'start'; auto: boolean; markerMessageId: string }
+        | {
+          type: 'end';
+          auto: boolean;
+          markerMessageId: string;
+          summaryMessageId?: string;
+          status: 'done' | 'error' | 'canceled';
+          error?: string;
+        }
+      > = [];
+
+      metadataLLM.setNextResponse({ kind: 'text', content: 'Summary of progress' });
+      metadataLLM.queueResponse({ kind: 'text', content: 'Second done' });
+
+      const result = await agent.continue('Follow up', {
+        onCompactionStart: (event) => {
+          compactionEvents.push({ type: 'start', auto: event.auto, markerMessageId: event.markerMessageId });
+        },
+        onCompactionEnd: (event) => {
+          compactionEvents.push({
+            type: 'end',
+            auto: event.auto,
+            markerMessageId: event.markerMessageId,
+            summaryMessageId: event.summaryMessageId,
+            status: event.status,
+            error: event.error,
+          });
+        },
+      });
+
+      assert.strictEqual(result, 'Second done');
+      assert.strictEqual(metadataLLM.callCount, 3, 'first turn + preflight compaction + final response');
+
+      const history = agent.getHistory();
+      assert.ok(history.some(m => m.role === 'assistant' && m.metadata?.summary === true), 'summary message exists');
+      assert.ok(history.some(m => m.role === 'user' && m.metadata?.compaction), 'compaction marker exists');
+      assert.ok(history.some(m => getMessageText(m) === 'Follow up'), 'real follow-up input is preserved in history');
+      assert.strictEqual(
+        history.some(m => getMessageText(m) === COMPACTION_AUTO_CONTINUE_TEXT),
+        false,
+        'preflight auto compaction should not inject a synthetic continue message before the real follow-up input',
+      );
+
+      const prompt = JSON.stringify(metadataLLM.lastPrompt ?? '');
+      assert.ok(prompt.includes('Follow up'), 'final prompt should include the real follow-up input');
+      assert.ok(!prompt.includes(COMPACTION_AUTO_CONTINUE_TEXT), 'final prompt should not contain the synthetic continue text');
+
+      const start = compactionEvents.find(e => e.type === 'start');
+      const end = compactionEvents.find(e => e.type === 'end');
+      assert.ok(start && start.auto === true, 'auto preflight compaction should emit start');
+      assert.ok(end && end.auto === true && end.status === 'done', 'auto preflight compaction should emit success');
     } finally {
       await cfg.update('modelLimits', previousLimits as any, true);
     }

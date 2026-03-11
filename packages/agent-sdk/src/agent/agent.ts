@@ -14,7 +14,9 @@ import {
   extractSkillMentions,
   getSkillIndex,
   getEffectiveHistory,
+  getReservedOutputTokens,
   getUserHistoryInputText,
+  isOverflow as isContextOverflow,
   loadSkillFile,
   redactFsPathForPrompt,
   selectSkillsForText,
@@ -50,6 +52,20 @@ export { LingyunSession };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function getLastAssistantTokens(
+  history: AgentHistoryMessage[],
+): { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; total?: number; raw?: unknown } | undefined {
+  for (let i = history.length - 1; i >= 0; i--) {
+    const msg = history[i];
+    if (msg.role !== 'assistant') continue;
+    const tokens = msg.metadata?.tokens;
+    if (typeof tokens?.total === 'number' && Number.isFinite(tokens.total) && tokens.total > 0) {
+      return tokens;
+    }
+  }
+  return undefined;
 }
 
 export type LingyunAgentRuntimeOptions = {
@@ -104,6 +120,7 @@ export class LingyunAgent {
   private taskMaxOutputChars: number;
   private modelLimits?: Record<string, ModelLimit>;
   private compactionConfig: CompactionConfig;
+  private readonly derivedModelLimits = new Map<string, ModelLimit>();
   private registeredPluginTools = new Set<string>();
   private readonly taskSessions = new Map<string, LingyunSession>();
   private readonly maxTaskSessions = 50;
@@ -284,7 +301,43 @@ export class LingyunAgent {
   }
 
   private getModelLimit(modelId: string): ModelLimit | undefined {
-    return this.modelLimits?.[modelId];
+    return this.modelLimits?.[modelId] ?? this.derivedModelLimits.get(modelId);
+  }
+
+  async warmModelLimit(modelId: string): Promise<ModelLimit | undefined> {
+    const trimmed = String(modelId || '').trim();
+    if (!trimmed) return undefined;
+
+    const configured = this.modelLimits?.[trimmed];
+    if (configured) return configured;
+
+    const cached = this.derivedModelLimits.get(trimmed);
+    if (cached) return cached;
+
+    const getModels = (this.llm as any)?.getModels;
+    if (typeof getModels !== 'function') return undefined;
+
+    try {
+      const models = await Promise.resolve(getModels.call(this.llm));
+      if (!Array.isArray(models)) return undefined;
+      const match = models.find((model: any) => model && typeof model.id === 'string' && model.id === trimmed);
+      const maxInputTokensRaw = match?.maxInputTokens;
+      if (typeof maxInputTokensRaw !== 'number' || !Number.isFinite(maxInputTokensRaw) || maxInputTokensRaw <= 0) {
+        return undefined;
+      }
+
+      const maxOutputTokensRaw = match?.maxOutputTokens;
+      const derived: ModelLimit = {
+        context: Math.floor(maxInputTokensRaw),
+        ...(typeof maxOutputTokensRaw === 'number' && Number.isFinite(maxOutputTokensRaw) && maxOutputTokensRaw > 0
+          ? { output: Math.floor(maxOutputTokensRaw) }
+          : {}),
+      };
+      this.derivedModelLimits.set(trimmed, derived);
+      return derived;
+    } catch {
+      return undefined;
+    }
   }
 
   private getMaxOutputTokens(): number {
@@ -759,6 +812,39 @@ export class LingyunAgent {
 
     const done = (async () => {
       try {
+        const modelId = (this.config.model ?? '').trim();
+        const modelLimit = modelId ? this.getModelLimit(modelId) : undefined;
+        const reservedOutputTokens = getReservedOutputTokens({
+          modelLimit,
+          maxOutputTokens: this.getMaxOutputTokens(),
+        });
+        const lastTokens = getLastAssistantTokens(params.session.history);
+
+        if (
+          modelId &&
+          isContextOverflow({
+            lastTokens,
+            modelLimit,
+            reservedOutputTokens,
+            config: this.compactionConfig,
+          })
+        ) {
+          await compactSessionInternal({
+            session: params.session,
+            auto: true,
+            appendContinue: false,
+            modelId,
+            mode: this.getMode(),
+            sessionIdFallback: this.config.sessionId,
+            callbacks: proxy,
+            llm: this.llm,
+            plugins: this.plugins,
+            providerBehavior: this.providerBehavior,
+            compactionConfig: this.compactionConfig,
+            maxOutputTokens: this.getMaxOutputTokens(),
+          });
+        }
+
         await this.injectSkillsForUserText(params.session, getUserHistoryInputText(params.input), proxy, params.signal);
         params.session.history.push(createUserHistoryMessage(params.input));
         const text = await this.runOnce(params.session, proxy, params.signal);

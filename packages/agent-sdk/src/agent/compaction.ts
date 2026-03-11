@@ -35,6 +35,7 @@ type PluginManagerLike = {
 export async function compactSessionInternal(params: {
   session: LingyunSession;
   auto: boolean;
+  appendContinue?: boolean;
   modelId: string;
   mode: 'build' | 'plan';
   sessionIdFallback?: string;
@@ -136,7 +137,7 @@ export async function compactSessionInternal(params: {
     }
     params.session.history.push(summaryMessage);
 
-    if (params.auto) {
+    if ((params.appendContinue ?? params.auto) === true) {
       params.session.history.push(
         createUserHistoryMessage(COMPACTION_AUTO_CONTINUE_TEXT, { synthetic: true }),
       );

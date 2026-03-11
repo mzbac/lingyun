@@ -78,6 +78,7 @@ export class AgentLoop {
 
   private instructionsText?: string;
   private instructionsKey?: string;
+  private readonly derivedModelLimits = new Map<string, { context: number; output?: number }>();
 
   constructor(
     private readonly llm: LLMProvider,
@@ -165,7 +166,7 @@ export class AgentLoop {
 
     const workspaceRoot = getPrimaryWorkspaceRootPath();
     const compactionConfig = getCompactionConfig();
-    const modelLimit = getModelLimit(exploreModelId);
+    const modelLimit = await this.warmRuntimeModelLimit(exploreModelId);
 
     const exploreAgent = new LingyunAgent(
       this.llm,
@@ -317,7 +318,7 @@ export class AgentLoop {
     this.agent.setCompactionConfig(compactionConfig);
 
     const modelId = (this.config.model || '').trim();
-    const modelLimit = modelId ? getModelLimit(modelId) : undefined;
+    const modelLimit = modelId ? this.getRuntimeModelLimit(modelId) : undefined;
     this.agent.setModelLimits(modelLimit ? { [modelId]: modelLimit } : undefined);
 
     this.agent.updateConfig({
@@ -334,6 +335,49 @@ export class AgentLoop {
     });
 
     this.syncSessionMetadata();
+  }
+
+  private getRuntimeModelLimit(modelId: string): { context: number; output?: number } | undefined {
+    const trimmed = String(modelId || '').trim();
+    if (!trimmed) return undefined;
+    return getModelLimit(trimmed) ?? this.derivedModelLimits.get(trimmed);
+  }
+
+  private async warmRuntimeModelLimit(modelId: string): Promise<{ context: number; output?: number } | undefined> {
+    const trimmed = String(modelId || '').trim();
+    if (!trimmed) return undefined;
+
+    const configured = getModelLimit(trimmed);
+    if (configured) return configured;
+
+    const cached = this.derivedModelLimits.get(trimmed);
+    if (cached) return cached;
+
+    const getModels = (this.llm as any)?.getModels;
+    if (typeof getModels !== 'function') return undefined;
+
+    try {
+      const models = await Promise.resolve(getModels.call(this.llm));
+      if (!Array.isArray(models)) return undefined;
+
+      const match = models.find((model: any) => model && typeof model.id === 'string' && model.id === trimmed);
+      const maxInputTokens = match?.maxInputTokens;
+      if (typeof maxInputTokens !== 'number' || !Number.isFinite(maxInputTokens) || maxInputTokens <= 0) {
+        return undefined;
+      }
+
+      const maxOutputTokens = match?.maxOutputTokens;
+      const derived = {
+        context: Math.floor(maxInputTokens),
+        ...(typeof maxOutputTokens === 'number' && Number.isFinite(maxOutputTokens) && maxOutputTokens > 0
+          ? { output: Math.floor(maxOutputTokens) }
+          : {}),
+      };
+      this.derivedModelLimits.set(trimmed, derived);
+      return derived;
+    } catch {
+      return undefined;
+    }
   }
 
   exportState(): AgentSessionState {
@@ -474,6 +518,10 @@ export class AgentLoop {
     const signal = this.startRun();
     try {
       await this.refreshInstructions();
+      const modelId = (this.config.model || '').trim();
+      if (modelId) {
+        await this.warmRuntimeModelLimit(modelId);
+      }
       this.syncAgentConfig();
       if (params.explorePrepassInput) {
         await this.maybeRunExplorePrepass(params.explorePrepassInput, signal);
