@@ -2,7 +2,7 @@
   "name": "lingyun",
   "displayName": "LingYun",
   "description": "Agentic AI assistant for VS Code",
-  "version": "2.1.6",
+  "version": "2.1.7",
   "publisher": "mzbac",
   "icon": "images/icon.png",
   "license": "MIT",
