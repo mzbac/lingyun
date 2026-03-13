@@ -89,7 +89,7 @@ class ExtensionState implements vscode.Disposable {
 
 let extensionState: ExtensionState | undefined;
 
-function createAgentConfig(): AgentConfig {
+export function createAgentConfig(): AgentConfig {
   const temperatureRaw = getConfig<unknown>('temperature');
   const temperatureParsed =
     typeof temperatureRaw === 'number'
@@ -123,6 +123,20 @@ function createAgentConfig(): AgentConfig {
         ? retryWithPartialOutputRaw.toLowerCase() === 'true'
         : undefined;
   const retryWithPartialOutput = typeof retryWithPartialOutputParsed === 'boolean' ? retryWithPartialOutputParsed : undefined;
+  const provider = getConfig<string>('llmProvider') || 'copilot';
+  const maxOutputTokensRaw = getConfig<unknown>('openaiCompatible.maxTokens');
+  const maxOutputTokensParsed =
+    typeof maxOutputTokensRaw === 'number'
+      ? maxOutputTokensRaw
+      : typeof maxOutputTokensRaw === 'string'
+        ? Number(maxOutputTokensRaw)
+        : undefined;
+  const maxOutputTokens =
+    provider === 'openaiCompatible' &&
+    Number.isFinite(maxOutputTokensParsed as number) &&
+    (maxOutputTokensParsed as number) > 0
+      ? Math.floor(maxOutputTokensParsed as number)
+      : undefined;
 
   return {
     model: getConfig('model') || MODELS.GPT_4O,
@@ -131,6 +145,7 @@ function createAgentConfig(): AgentConfig {
     temperature,
     maxRetries,
     retryWithPartialOutput,
+    maxOutputTokens,
     autoApprove: getConfig('autoApprove') || false,
     toolFilter: getConfig('toolFilter') || [],
   };

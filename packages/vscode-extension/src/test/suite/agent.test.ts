@@ -323,6 +323,41 @@ suite('AgentLoop', () => {
     }
   });
 
+  test('run - forwards configured maxOutputTokens to the model request', async () => {
+    const openaiCompatibleLLM = new MockOpenAICompatibleProvider();
+    agent = new AgentLoop(
+      openaiCompatibleLLM,
+      mockContext,
+      { model: 'mock-model', maxOutputTokens: 12345 },
+      registry,
+    );
+    openaiCompatibleLLM.setNextResponse({ kind: 'text', content: 'OK' });
+
+    await agent.run('Hi');
+
+    const options = openaiCompatibleLLM.lastCallOptions as any;
+    assert.strictEqual(options?.maxOutputTokens, 12345);
+  });
+
+  test('updateConfig - refreshes maxOutputTokens for later model requests', async () => {
+    const openaiCompatibleLLM = new MockOpenAICompatibleProvider();
+    agent = new AgentLoop(
+      openaiCompatibleLLM,
+      mockContext,
+      { model: 'mock-model', maxOutputTokens: 111 },
+      registry,
+    );
+    openaiCompatibleLLM.setNextResponse({ kind: 'text', content: 'first' });
+    await agent.run('First');
+
+    agent.updateConfig({ maxOutputTokens: 222 });
+    openaiCompatibleLLM.setNextResponse({ kind: 'text', content: 'second' });
+    await agent.run('Second');
+
+    const options = openaiCompatibleLLM.lastCallOptions as any;
+    assert.strictEqual(options?.maxOutputTokens, 222);
+  });
+
   test('run - applies Codex-style image boundaries for Copilot prompts', async () => {
     const copilotLLM = new MockCopilotProvider();
     const plugins = new PluginManager(mockContext);

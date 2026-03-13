@@ -5,6 +5,7 @@
 import * as assert from 'assert';
 import * as vscode from 'vscode';
 
+import { createAgentConfig } from '../../extension';
 import { WorkspaceToolProvider } from '../../providers/workspace';
 
 suite('Extension Integration', () => {
@@ -77,6 +78,21 @@ suite('Extension Integration', () => {
 
     // Reset
     await config.update('autoApprove', undefined, vscode.ConfigurationTarget.Global);
+  });
+
+  test('createAgentConfig should map openaiCompatible.maxTokens into maxOutputTokens', async () => {
+    const config = vscode.workspace.getConfiguration('lingyun');
+
+    await config.update('llmProvider', 'openaiCompatible', vscode.ConfigurationTarget.Global);
+    await config.update('openaiCompatible.maxTokens', 12345, vscode.ConfigurationTarget.Global);
+
+    try {
+      const agentConfig = createAgentConfig();
+      assert.strictEqual(agentConfig.maxOutputTokens, 12345);
+    } finally {
+      await config.update('openaiCompatible.maxTokens', undefined, vscode.ConfigurationTarget.Global);
+      await config.update('llmProvider', undefined, vscode.ConfigurationTarget.Global);
+    }
   });
 
   // ===========================================================================
