@@ -2,7 +2,7 @@
   "name": "lingyun",
   "displayName": "LingYun",
   "description": "Agentic AI assistant for VS Code",
-  "version": "2.1.8",
+  "version": "2.1.9",
   "publisher": "mzbac",
   "icon": "images/icon.png",
   "license": "MIT",
@@ -369,6 +369,41 @@
           "default": 500,
           "minimum": 10,
           "description": "Maximum number of stage-1 memory outputs retained in extension storage."
+        },
+        "lingyun.memories.maxRecords": {
+          "type": "number",
+          "default": 5000,
+          "minimum": 100,
+          "description": "Maximum number of transcript-backed memory records retained in extension storage."
+        },
+        "lingyun.memories.maxSearchResults": {
+          "type": "number",
+          "default": 8,
+          "minimum": 1,
+          "description": "Default maximum number of transcript-backed memory matches returned by search."
+        },
+        "lingyun.memories.searchNeighborWindow": {
+          "type": "number",
+          "default": 1,
+          "minimum": 0,
+          "description": "How many neighboring transcript chunks to include around each memory search hit."
+        },
+        "lingyun.memories.autoRecall": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically inject relevant transcript-backed memory before each top-level user turn."
+        },
+        "lingyun.memories.maxAutoRecallResults": {
+          "type": "number",
+          "default": 4,
+          "minimum": 1,
+          "description": "Maximum number of auto-recalled memory matches injected into the model context."
+        },
+        "lingyun.memories.maxAutoRecallTokens": {
+          "type": "number",
+          "default": 1200,
+          "minimum": 100,
+          "description": "Maximum estimated tokens allocated to automatically recalled memory context."
         },
         "lingyun.autoApprove": {
           "type": "boolean",

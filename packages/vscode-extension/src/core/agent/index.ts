@@ -7,6 +7,7 @@ import {
   cloneUserHistoryInput,
   createAssistantHistoryMessage,
   createUserHistoryMessage,
+  getUserHistoryInputText,
   parseUserHistoryInput,
   resolveBuiltinSubagent,
   stripSkillInjectedMessages,
@@ -17,6 +18,7 @@ import type { ToolRegistry } from '../registry';
 import { toolRegistry as defaultToolRegistry } from '../registry';
 import { getCompactionConfig, getModelLimit } from '../compaction';
 import { findGitRoot, loadInstructions } from '../instructions';
+import { WorkspaceMemories, getMemoriesConfig } from '../memories';
 import { generateSessionTitle as generateSessionTitleInternal } from '../sessionTitle';
 import type { PluginManager } from '../hooks/pluginManager';
 import { getPrimaryWorkspaceFolderUri, getPrimaryWorkspaceRootPath } from '../workspaceContext';
@@ -58,6 +60,17 @@ function createBlankSemanticHandlesState(): SemanticHandlesState {
     symbols: {},
     locations: {},
   };
+}
+
+function isTransientSyntheticMessage(message: AgentHistoryMessage): boolean {
+  if (!message.metadata?.synthetic) return false;
+  const tag = (message.metadata as any)?.transientContext;
+  return tag === 'explore' || tag === 'memoryRecall';
+}
+
+function stripTransientSyntheticMessages(history: readonly AgentHistoryMessage[]): AgentHistoryMessage[] {
+  if (!Array.isArray(history) || history.length === 0) return [];
+  return history.filter((message) => !isTransientSyntheticMessage(message));
 }
 
 export class AgentLoop {
@@ -231,8 +244,80 @@ export class AgentLoop {
       .join('\n');
 
     const message = createAssistantHistoryMessage();
-    message.metadata = { synthetic: true };
+    message.metadata = { synthetic: true, ...( { transientContext: 'explore' } as any) } as any;
     message.parts.push({ type: 'text', text: injected, state: 'done' } as any);
+    this.session.history.push(message);
+  }
+
+  private pruneTransientSyntheticHistory(): void {
+    this.session.history = this.session.history.filter(message => !isTransientSyntheticMessage(message));
+  }
+
+  private async maybeInjectMemoryRecall(input: UserHistoryInput, signal: AbortSignal): Promise<void> {
+    if (signal.aborted) return;
+    if (this.config.parentSessionId || this.config.subagentType) return;
+
+    const memoriesConfig = getMemoriesConfig();
+    if (!memoriesConfig.enabled || !memoriesConfig.autoRecall) return;
+
+    const query = getUserHistoryInputText(input).trim();
+    if (!query) return;
+
+    const workspaceFolder = this.getWorkspaceRootForContext();
+    const manager = new WorkspaceMemories(this.context);
+
+    let search = await manager.searchMemory({
+      query,
+      workspaceFolder,
+      limit: memoriesConfig.maxAutoRecallResults,
+      maxTokens: memoriesConfig.maxAutoRecallTokens,
+      neighborWindow: memoriesConfig.searchNeighborWindow,
+    });
+
+    if (search.hits.length === 0) {
+      try {
+        await manager.updateFromSessions(workspaceFolder);
+      } catch {
+        // ignore memory refresh failures during pre-run recall
+      }
+      search = await manager.searchMemory({
+        query,
+        workspaceFolder,
+        limit: memoriesConfig.maxAutoRecallResults,
+        maxTokens: memoriesConfig.maxAutoRecallTokens,
+        neighborWindow: memoriesConfig.searchNeighborWindow,
+      });
+    }
+
+    if (search.hits.length === 0) return;
+
+    const lines: string[] = [
+      '<memory_recall_context>',
+      'Use this recalled context only if it is relevant to the current turn.',
+      `query: ${query}`,
+      '',
+    ];
+
+    for (const [index, hit] of search.hits.entries()) {
+      lines.push(
+        `## Memory ${index + 1} [${hit.record.kind}] score=${hit.score.toFixed(2)} reason=${hit.reason}`,
+      );
+      lines.push(`session_id: ${hit.record.sessionId}`);
+      if (hit.record.filesTouched.length > 0) {
+        lines.push(`files: ${hit.record.filesTouched.join(', ')}`);
+      }
+      if (hit.record.toolsUsed.length > 0) {
+        lines.push(`tools: ${hit.record.toolsUsed.join(', ')}`);
+      }
+      lines.push(hit.record.text.trim());
+      lines.push('');
+    }
+
+    lines.push('</memory_recall_context>');
+
+    const message = createAssistantHistoryMessage();
+    message.metadata = { synthetic: true, ...( { transientContext: 'memoryRecall' } as any) } as any;
+    message.parts.push({ type: 'text', text: lines.join('\n'), state: 'done' } as any);
     this.session.history.push(message);
   }
 
@@ -383,7 +468,7 @@ export class AgentLoop {
   }
 
   exportState(): AgentSessionState {
-    const history = stripSkillInjectedMessages(this.session.history);
+    const history = stripTransientSyntheticMessages(stripSkillInjectedMessages(this.session.history));
     const fileHandles = this.session.fileHandles
       ? {
           nextId: this.session.fileHandles.nextId,
@@ -525,8 +610,10 @@ export class AgentLoop {
         await this.warmRuntimeModelLimit(modelId);
       }
       this.syncAgentConfig();
+      this.pruneTransientSyntheticHistory();
       if (params.explorePrepassInput) {
         await this.maybeRunExplorePrepass(params.explorePrepassInput, signal);
+        await this.maybeInjectMemoryRecall(params.explorePrepassInput, signal);
       }
       return await fn(signal);
     } catch (error) {

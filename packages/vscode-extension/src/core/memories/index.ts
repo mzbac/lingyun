@@ -6,7 +6,7 @@ import { SessionStore } from '../sessionStore';
 import { getPrimaryWorkspaceRootPath } from '../workspaceContext';
 import { normalizeSessionSignals, type SessionSignals } from '../sessionSignals';
 
-const STATE_VERSION = 1;
+const STATE_VERSION = 2;
 const STORAGE_DIR_NAME = 'memories';
 const STAGE1_OUTPUTS_FILE = 'stage1_outputs.json';
 const ROLLOUT_SUMMARIES_DIR_NAME = 'rollout_summaries';
@@ -21,6 +21,28 @@ const DEFAULT_MAX_ROLLOUT_AGE_DAYS = 30;
 const DEFAULT_MAX_ROLLOUTS_PER_STARTUP = 24;
 const DEFAULT_MIN_ROLLOUT_IDLE_HOURS = 2;
 const DEFAULT_MAX_STATE_OUTPUTS = 500;
+const DEFAULT_MAX_MEMORY_RECORDS = 5000;
+const DEFAULT_MAX_SEARCH_RESULTS = 8;
+const DEFAULT_SEARCH_NEIGHBOR_WINDOW = 1;
+const DEFAULT_MAX_AUTO_RECALL_RESULTS = 4;
+const DEFAULT_MAX_AUTO_RECALL_TOKENS = 1200;
+
+type PersistedChatToolCall = {
+  name?: string;
+  status?: string;
+  result?: string;
+  path?: string;
+  batchFiles?: string[];
+};
+
+type PersistedChatMessage = {
+  id?: string;
+  role?: string;
+  content?: string;
+  timestamp?: number;
+  turnId?: string;
+  toolCall?: PersistedChatToolCall;
+};
 
 export type PersistedSession = {
   id: string;
@@ -32,6 +54,7 @@ export type PersistedSession = {
   parentSessionId?: string;
   subagentType?: string;
   runtime?: { wasRunning?: boolean; updatedAt?: number };
+  messages?: PersistedChatMessage[];
 };
 
 export type Stage1Output = {
@@ -50,9 +73,44 @@ export type Stage1Output = {
   toolsUsed: string[];
 };
 
+export type MemoryRecordKind = 'episodic' | 'semantic' | 'procedural';
+
+export type MemoryRecord = {
+  id: string;
+  workspaceId: string;
+  sessionId: string;
+  kind: MemoryRecordKind;
+  title: string;
+  text: string;
+  sourceUpdatedAt: number;
+  generatedAt: number;
+  filesTouched: string[];
+  toolsUsed: string[];
+  index: number;
+  turnId?: string;
+  prevRecordId?: string;
+  nextRecordId?: string;
+};
+
+export type MemorySearchHit = {
+  record: MemoryRecord;
+  score: number;
+  reason: 'match' | 'neighbor';
+  matchedTerms: string[];
+};
+
+export type MemorySearchResult = {
+  query: string;
+  workspaceId: string;
+  hits: MemorySearchHit[];
+  totalTokens: number;
+  truncated: boolean;
+};
+
 type MemoriesState = {
   version: number;
   outputs: Stage1Output[];
+  records: MemoryRecord[];
   jobs?: {
     lastSessionScanAt?: number;
     lastGlobalRebuildAt?: number;
@@ -66,6 +124,12 @@ export type MemoriesConfig = {
   maxRolloutsPerStartup: number;
   minRolloutIdleHours: number;
   maxStateOutputs: number;
+  maxRecords: number;
+  maxSearchResults: number;
+  searchNeighborWindow: number;
+  autoRecall: boolean;
+  maxAutoRecallResults: number;
+  maxAutoRecallTokens: number;
 };
 
 export type MemoryUpdateResult = {
@@ -92,6 +156,12 @@ export type MemoryArtifacts = {
   rawMemoriesFile: vscode.Uri;
   memorySummaryFile: vscode.Uri;
   memoryFile: vscode.Uri;
+};
+
+type MemoryRecordScore = {
+  record: MemoryRecord;
+  score: number;
+  matchedTerms: string[];
 };
 
 function getNumberConfig(key: string, fallback: number, min: number, max: number): number {
@@ -163,6 +233,27 @@ export function getMemoriesConfig(): MemoriesConfig {
       24 * 30,
     ),
     maxStateOutputs: getNumberConfig('memories.maxStateOutputs', DEFAULT_MAX_STATE_OUTPUTS, 10, 5000),
+    maxRecords: getNumberConfig('memories.maxRecords', DEFAULT_MAX_MEMORY_RECORDS, 100, 50_000),
+    maxSearchResults: getNumberConfig('memories.maxSearchResults', DEFAULT_MAX_SEARCH_RESULTS, 1, 100),
+    searchNeighborWindow: getNumberConfig(
+      'memories.searchNeighborWindow',
+      DEFAULT_SEARCH_NEIGHBOR_WINDOW,
+      0,
+      5,
+    ),
+    autoRecall: vscode.workspace.getConfiguration('lingyun').get<boolean>('memories.autoRecall', true) ?? true,
+    maxAutoRecallResults: getNumberConfig(
+      'memories.maxAutoRecallResults',
+      DEFAULT_MAX_AUTO_RECALL_RESULTS,
+      1,
+      20,
+    ),
+    maxAutoRecallTokens: getNumberConfig(
+      'memories.maxAutoRecallTokens',
+      DEFAULT_MAX_AUTO_RECALL_TOKENS,
+      100,
+      20_000,
+    ),
   };
 }
 
@@ -239,8 +330,113 @@ function shortHash(input: string): string {
   return out;
 }
 
+export function deriveWorkspaceMemoryId(workspaceRootPath?: string): string {
+  const normalized = String(workspaceRootPath || '')
+    .trim()
+    .replace(/\\/g, '/');
+  if (!normalized) return 'global';
+  const base = path.basename(normalized) || 'workspace';
+  const slug = slugify(base, 24) || 'workspace';
+  return `${slug}-${shortHash(normalized.toLowerCase())}`;
+}
+
 function toIso(ts: number): string {
   return new Date(ts).toISOString();
+}
+
+function normalizeSearchText(input: string | undefined): string {
+  return String(input || '')
+    .toLowerCase()
+    .replace(/[`"'()[\]{}<>]/g, ' ')
+    .replace(/[^\w./:-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function estimateTokenCount(text: string | undefined): number {
+  const value = String(text || '');
+  if (!value) return 0;
+  return Math.ceil(value.length / 4);
+}
+
+function splitSearchTerms(query: string): string[] {
+  const normalized = normalizeSearchText(query);
+  if (!normalized) return [];
+
+  const rawTerms = normalized
+    .split(/\s+/)
+    .flatMap(term => term.split(/[/:._-]+/))
+    .map(term => term.trim())
+    .filter(term => term.length >= 3);
+
+  return uniqueLimited(rawTerms, 24);
+}
+
+function normalizeChatMessageRole(role: string | undefined): string | undefined {
+  const normalized = String(role || '').trim().toLowerCase();
+  return normalized || undefined;
+}
+
+function formatPersistedMessageForMemory(message: PersistedChatMessage): string {
+  const role = normalizeChatMessageRole(message.role);
+  if (!role) return '';
+
+  if (role === 'tool') {
+    const toolName = summarizeMessage(message.toolCall?.name, 80) || 'tool';
+    const toolPath = summarizeMessage(message.toolCall?.path, 160);
+    const toolResult = summarizeMessage(message.toolCall?.result || message.content, 500);
+    if (!toolResult && !toolPath) return '';
+    const label = toolPath ? `Tool ${toolName} (${toolPath})` : `Tool ${toolName}`;
+    return toolResult ? `${label}: ${toolResult}` : label;
+  }
+
+  if (
+    role !== 'user' &&
+    role !== 'assistant' &&
+    role !== 'error' &&
+    role !== 'warning' &&
+    role !== 'plan'
+  ) {
+    return '';
+  }
+
+  const content = summarizeMessage(message.content, 500);
+  if (!content) return '';
+
+  const label =
+    role === 'user'
+      ? 'User'
+      : role === 'assistant'
+        ? 'Assistant'
+        : role === 'error'
+          ? 'Error'
+          : role === 'warning'
+            ? 'Warning'
+            : 'Plan';
+  return `${label}: ${content}`;
+}
+
+function collectMessageTooling(
+  message: PersistedChatMessage,
+  filesTouched: Set<string>,
+  toolsUsed: Set<string>,
+): void {
+  const toolName = String(message.toolCall?.name || '').trim();
+  if (toolName) {
+    toolsUsed.add(toolName);
+  }
+
+  const toolPath = String(message.toolCall?.path || '').trim();
+  if (toolPath) {
+    filesTouched.add(toolPath);
+  }
+
+  for (const file of Array.isArray(message.toolCall?.batchFiles) ? message.toolCall?.batchFiles || [] : []) {
+    const normalized = String(file || '').trim();
+    if (normalized) {
+      filesTouched.add(normalized);
+    }
+  }
 }
 
 function buildRolloutFileName(params: {
@@ -352,6 +548,171 @@ function buildStage1Output(params: {
     filesTouched: signals.filesTouched,
     toolsUsed: signals.toolsUsed,
   };
+}
+
+function buildSemanticMemoryRecord(params: {
+  session: PersistedSession;
+  stage1: Stage1Output;
+  workspaceId: string;
+}): MemoryRecord | undefined {
+  if (!hasSignal(params.stage1)) return undefined;
+
+  const text = [
+    `Session "${params.stage1.title}" updated at ${toIso(params.stage1.sourceUpdatedAt)}.`,
+    params.stage1.userIntents.length > 0
+      ? `User intents: ${params.stage1.userIntents.join(' | ')}`
+      : '',
+    params.stage1.assistantOutcomes.length > 0
+      ? `Assistant outcomes: ${params.stage1.assistantOutcomes.join(' | ')}`
+      : '',
+    params.stage1.filesTouched.length > 0
+      ? `Files touched: ${params.stage1.filesTouched.join(', ')}`
+      : '',
+    params.stage1.toolsUsed.length > 0
+      ? `Tools used: ${params.stage1.toolsUsed.join(', ')}`
+      : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  return {
+    id: `${params.session.id}:semantic`,
+    workspaceId: params.workspaceId,
+    sessionId: params.session.id,
+    kind: 'semantic',
+    title: params.stage1.title,
+    text,
+    sourceUpdatedAt: params.stage1.sourceUpdatedAt,
+    generatedAt: params.stage1.generatedAt,
+    filesTouched: [...params.stage1.filesTouched],
+    toolsUsed: [...params.stage1.toolsUsed],
+    index: 0,
+  };
+}
+
+function buildTranscriptMemoryRecords(params: {
+  session: PersistedSession;
+  stage1: Stage1Output;
+  workspaceId: string;
+}): MemoryRecord[] {
+  const messages = Array.isArray(params.session.messages) ? params.session.messages : [];
+  if (messages.length === 0) return [];
+
+  const turns: Array<{ turnId?: string; lines: string[]; filesTouched: Set<string>; toolsUsed: Set<string> }> = [];
+  let current: { turnId?: string; lines: string[]; filesTouched: Set<string>; toolsUsed: Set<string> } | undefined;
+
+  for (const message of messages) {
+    const line = formatPersistedMessageForMemory(message);
+    if (!line) continue;
+
+    const role = normalizeChatMessageRole(message.role);
+    const turnId = typeof message.turnId === 'string' && message.turnId.trim() ? message.turnId.trim() : undefined;
+    const startsNewTurn =
+      !!current &&
+      current.lines.length > 0 &&
+      (role === 'user' || (!!current.turnId && !!turnId && current.turnId !== turnId));
+
+    if (!current || startsNewTurn) {
+      current = {
+        turnId,
+        lines: [],
+        filesTouched: new Set<string>(),
+        toolsUsed: new Set<string>(),
+      };
+      turns.push(current);
+    } else if (!current.turnId && turnId) {
+      current.turnId = turnId;
+    }
+
+    current.lines.push(line);
+    collectMessageTooling(message, current.filesTouched, current.toolsUsed);
+  }
+
+  const records: MemoryRecord[] = [];
+  for (let index = 0; index < turns.length; index += 1) {
+    const turn = turns[index];
+    const text = turn.lines.join('\n').trim();
+    if (!text) continue;
+
+    records.push({
+      id: `${params.session.id}:turn:${String(index).padStart(4, '0')}`,
+      workspaceId: params.workspaceId,
+      sessionId: params.session.id,
+      kind: 'episodic',
+      title: params.stage1.title,
+      text,
+      sourceUpdatedAt: params.stage1.sourceUpdatedAt,
+      generatedAt: params.stage1.generatedAt,
+      filesTouched: [...turn.filesTouched],
+      toolsUsed: [...turn.toolsUsed],
+      index: index + 1,
+      ...(turn.turnId ? { turnId: turn.turnId } : {}),
+    });
+  }
+
+  for (let i = 0; i < records.length; i += 1) {
+    if (i > 0) {
+      records[i].prevRecordId = records[i - 1].id;
+    }
+    if (i < records.length - 1) {
+      records[i].nextRecordId = records[i + 1].id;
+    }
+  }
+
+  return records;
+}
+
+function buildMemoryRecords(params: {
+  session: PersistedSession;
+  stage1: Stage1Output;
+  workspaceId: string;
+}): MemoryRecord[] {
+  const records: MemoryRecord[] = [];
+  const semantic = buildSemanticMemoryRecord(params);
+  if (semantic) {
+    records.push(semantic);
+  }
+  records.push(...buildTranscriptMemoryRecords(params));
+  return records;
+}
+
+function sortRecords(records: MemoryRecord[]): MemoryRecord[] {
+  return [...records].sort(
+    (a, b) => b.sourceUpdatedAt - a.sourceUpdatedAt || a.sessionId.localeCompare(b.sessionId) || a.index - b.index,
+  );
+}
+
+function scoreMemoryRecord(record: MemoryRecord, queryTerms: string[], now: number): MemoryRecordScore | undefined {
+  if (queryTerms.length === 0) return undefined;
+
+  const haystack = normalizeSearchText(
+    [record.title, record.text, ...record.filesTouched, ...record.toolsUsed].filter(Boolean).join(' '),
+  );
+  if (!haystack) return undefined;
+
+  const fileHaystack = normalizeSearchText(record.filesTouched.map(file => path.basename(file)).join(' '));
+  const toolHaystack = normalizeSearchText(record.toolsUsed.join(' '));
+
+  let score = 0;
+  const matchedTerms: string[] = [];
+
+  for (const term of queryTerms) {
+    if (!haystack.includes(term)) continue;
+    matchedTerms.push(term);
+    score += term.length >= 8 ? 4 : term.length >= 5 ? 3 : 2;
+    if (fileHaystack.includes(term)) score += 1.5;
+    if (toolHaystack.includes(term)) score += 1;
+  }
+
+  if (matchedTerms.length === 0) return undefined;
+
+  score += Math.min(1.5, matchedTerms.length * 0.35);
+  score += record.kind === 'procedural' ? 0.75 : record.kind === 'semantic' ? 0.4 : 0;
+
+  const ageDays = Math.max(0, (now - record.sourceUpdatedAt) / DAY_MS);
+  score += Math.max(0, 1.5 - Math.log2(ageDays + 1));
+
+  return { record, score, matchedTerms };
 }
 
 function renderRawMemories(outputs: Stage1Output[]): string {
@@ -547,8 +908,13 @@ export class WorkspaceMemories {
     const sessions = await this.loadPersistedSessions();
     const prev = await this.readState();
     const prevBySession = new Map(prev.outputs.map(output => [output.sessionId, output]));
+    const prevRecordCountBySession = new Map<string, number>();
+    for (const record of prev.records) {
+      prevRecordCountBySession.set(record.sessionId, (prevRecordCountBySession.get(record.sessionId) || 0) + 1);
+    }
     const workspaceRootPath =
       workspaceFolder?.fsPath ?? getPrimaryWorkspaceRootPath() ?? '';
+    const workspaceId = deriveWorkspaceMemoryId(workspaceRootPath);
 
     let skippedRecentSessions = 0;
     let skippedPlanOrSubagentSessions = 0;
@@ -584,13 +950,15 @@ export class WorkspaceMemories {
       .slice(0, config.maxRolloutsPerStartup);
 
     const outputs = [...prev.outputs];
+    let records = prev.records.filter(record => record.workspaceId !== workspaceId);
     let insertedOutputs = 0;
     let updatedOutputs = 0;
 
     for (const session of eligible) {
       const existing = prevBySession.get(session.id);
       const sessionUpdatedAt = Number.isFinite(session.updatedAt) ? Math.floor(session.updatedAt) : 0;
-      if (existing && existing.sourceUpdatedAt >= sessionUpdatedAt) {
+      const hasExistingRecords = (prevRecordCountBySession.get(session.id) || 0) > 0;
+      if (existing && existing.sourceUpdatedAt >= sessionUpdatedAt && hasExistingRecords) {
         continue;
       }
 
@@ -599,26 +967,39 @@ export class WorkspaceMemories {
         cwd: workspaceRootPath,
         generatedAt: now,
       });
-      if (!hasSignal(stage1)) {
+      const nextRecords = buildMemoryRecords({
+        session,
+        stage1,
+        workspaceId,
+      });
+
+      if (!hasSignal(stage1) && nextRecords.length === 0) {
         skippedNoSignalSessions += 1;
         continue;
       }
 
-      const idx = outputs.findIndex(item => item.sessionId === session.id);
-      if (idx >= 0) {
-        outputs[idx] = stage1;
-        updatedOutputs += 1;
-      } else {
-        outputs.push(stage1);
-        insertedOutputs += 1;
+      records = records.filter(record => record.sessionId !== session.id);
+      records.push(...nextRecords);
+
+      if (hasSignal(stage1)) {
+        const idx = outputs.findIndex(item => item.sessionId === session.id);
+        if (idx >= 0) {
+          outputs[idx] = stage1;
+          updatedOutputs += 1;
+        } else {
+          outputs.push(stage1);
+          insertedOutputs += 1;
+        }
       }
     }
 
     const sorted = sortOutputs(outputs).slice(0, config.maxStateOutputs);
+    const sortedRecords = sortRecords(records).slice(0, config.maxRecords);
 
     await this.writeState({
       version: STATE_VERSION,
       outputs: sorted,
+      records: sortedRecords,
       jobs: {
         lastSessionScanAt: now,
         lastGlobalRebuildAt: now,
@@ -685,6 +1066,128 @@ export class WorkspaceMemories {
     return readTextIfExists(vscode.Uri.joinPath(artifacts.rolloutSummariesDir, normalized));
   }
 
+  async listMemoryRecords(workspaceFolder?: vscode.Uri): Promise<MemoryRecord[]> {
+    const state = await this.readState();
+    const workspaceRootPath = workspaceFolder?.fsPath ?? getPrimaryWorkspaceRootPath() ?? '';
+    const workspaceId = deriveWorkspaceMemoryId(workspaceRootPath);
+    return state.records.filter(record => record.workspaceId === workspaceId);
+  }
+
+  async searchMemory(params: {
+    query: string;
+    workspaceFolder?: vscode.Uri;
+    kind?: MemoryRecordKind;
+    limit?: number;
+    neighborWindow?: number;
+    maxTokens?: number;
+  }): Promise<MemorySearchResult> {
+    const config = getMemoriesConfig();
+    const query = String(params.query || '').trim();
+    const workspaceRootPath = params.workspaceFolder?.fsPath ?? getPrimaryWorkspaceRootPath() ?? '';
+    const workspaceId = deriveWorkspaceMemoryId(workspaceRootPath);
+    if (!query) {
+      return { query: '', workspaceId, hits: [], totalTokens: 0, truncated: false };
+    }
+
+    const state = await this.readState();
+    const terms = splitSearchTerms(query);
+    if (terms.length === 0) {
+      return { query, workspaceId, hits: [], totalTokens: 0, truncated: false };
+    }
+
+    const candidates = state.records.filter(record => {
+      if (record.workspaceId !== workspaceId) return false;
+      if (params.kind && record.kind !== params.kind) return false;
+      return true;
+    });
+
+    const scored = candidates
+      .map(record => scoreMemoryRecord(record, terms, Date.now()))
+      .filter((score): score is MemoryRecordScore => !!score)
+      .sort((a, b) => b.score - a.score || b.record.sourceUpdatedAt - a.record.sourceUpdatedAt);
+
+    const baseLimit = Math.max(
+      1,
+      Math.min(
+        100,
+        Math.floor(
+          typeof params.limit === 'number' && Number.isFinite(params.limit)
+            ? params.limit
+            : config.maxSearchResults,
+        ),
+      ),
+    );
+    const neighborWindow = Math.max(
+      0,
+      Math.min(
+        5,
+        Math.floor(
+          typeof params.neighborWindow === 'number' && Number.isFinite(params.neighborWindow)
+            ? params.neighborWindow
+            : config.searchNeighborWindow,
+        ),
+      ),
+    );
+    const maxTokens =
+      typeof params.maxTokens === 'number' && Number.isFinite(params.maxTokens) && params.maxTokens > 0
+        ? Math.floor(params.maxTokens)
+        : undefined;
+
+    const workspaceRecords = new Map(
+      state.records.filter(record => record.workspaceId === workspaceId).map(record => [record.id, record]),
+    );
+    const selected: MemorySearchHit[] = [];
+    const visited = new Set<string>();
+
+    const pushHit = (record: MemoryRecord | undefined, reason: 'match' | 'neighbor', score: number, matchedTerms: string[]) => {
+      if (!record || visited.has(record.id)) return;
+      const nextTokens = estimateTokenCount(record.text);
+      if (typeof maxTokens === 'number' && selected.length > 0) {
+        const currentTokens = selected.reduce((sum, item) => sum + estimateTokenCount(item.record.text), 0);
+        if (currentTokens + nextTokens > maxTokens) {
+          return;
+        }
+      }
+      visited.add(record.id);
+      selected.push({ record, reason, score, matchedTerms });
+    };
+
+    for (const match of scored.slice(0, baseLimit)) {
+      pushHit(match.record, 'match', match.score, match.matchedTerms);
+      if (neighborWindow <= 0) continue;
+
+      let prevId = match.record.prevRecordId;
+      for (let distance = 1; distance <= neighborWindow; distance += 1) {
+        const prev = prevId ? workspaceRecords.get(prevId) : undefined;
+        if (!prev) break;
+        pushHit(prev, 'neighbor', Math.max(0, match.score - distance * 0.2), match.matchedTerms);
+        prevId = prev.prevRecordId;
+      }
+
+      let nextId = match.record.nextRecordId;
+      for (let distance = 1; distance <= neighborWindow; distance += 1) {
+        const next = nextId ? workspaceRecords.get(nextId) : undefined;
+        if (!next) break;
+        pushHit(next, 'neighbor', Math.max(0, match.score - distance * 0.2), match.matchedTerms);
+        nextId = next.nextRecordId;
+      }
+    }
+
+    selected.sort((a, b) => b.score - a.score || b.record.sourceUpdatedAt - a.record.sourceUpdatedAt);
+    const totalTokens = selected.reduce((sum, item) => sum + estimateTokenCount(item.record.text), 0);
+    const truncated =
+      selected.length < Math.min(scored.length, baseLimit) ||
+      (typeof maxTokens === 'number' && totalTokens >= maxTokens && scored.length > 0);
+
+    return {
+      query,
+      workspaceId,
+      hits: selected,
+      totalTokens,
+      truncated,
+    };
+  }
+
   private async loadPersistedSessions(): Promise<PersistedSession[]> {
     if (!this.storageRootUri) return [];
 
@@ -710,11 +1213,11 @@ export class WorkspaceMemories {
 
   private async readState(): Promise<MemoriesState> {
     if (!this.stateUri) {
-      return { version: STATE_VERSION, outputs: [] };
+      return { version: STATE_VERSION, outputs: [], records: [] };
     }
 
     const raw = await readTextIfExists(this.stateUri);
-    if (!raw) return { version: STATE_VERSION, outputs: [] };
+    if (!raw) return { version: STATE_VERSION, outputs: [], records: [] };
 
     try {
       const parsed = JSON.parse(raw) as Partial<MemoriesState>;
@@ -722,14 +1225,19 @@ export class WorkspaceMemories {
       const outputs: Stage1Output[] = outputsRaw
         .map(item => this.normalizeOutput(item))
         .filter((item): item is Stage1Output => !!item);
+      const recordsRaw = Array.isArray(parsed.records) ? parsed.records : [];
+      const records: MemoryRecord[] = recordsRaw
+        .map(item => this.normalizeRecord(item))
+        .filter((item): item is MemoryRecord => !!item);
 
       return {
         version: typeof parsed.version === 'number' ? parsed.version : STATE_VERSION,
         outputs: sortOutputs(outputs),
+        records: sortRecords(records),
         jobs: parsed.jobs,
       };
     } catch {
-      return { version: STATE_VERSION, outputs: [] };
+      return { version: STATE_VERSION, outputs: [], records: [] };
     }
   }
 
@@ -765,6 +1273,49 @@ export class WorkspaceMemories {
       assistantOutcomes: Array.isArray(row.assistantOutcomes)
         ? (row.assistantOutcomes.filter(item => typeof item === 'string') as string[])
         : [],
+      filesTouched: Array.isArray(row.filesTouched)
+        ? (row.filesTouched.filter(item => typeof item === 'string') as string[])
+        : [],
+      toolsUsed: Array.isArray(row.toolsUsed)
+        ? (row.toolsUsed.filter(item => typeof item === 'string') as string[])
+        : [],
+    };
+  }
+
+  private normalizeRecord(value: unknown): MemoryRecord | undefined {
+    if (!value || typeof value !== 'object') return undefined;
+    const row = value as Record<string, unknown>;
+
+    const id = typeof row.id === 'string' ? row.id : undefined;
+    const workspaceId = typeof row.workspaceId === 'string' ? row.workspaceId : undefined;
+    const sessionId = typeof row.sessionId === 'string' ? row.sessionId : undefined;
+    const kind =
+      row.kind === 'episodic' || row.kind === 'semantic' || row.kind === 'procedural'
+        ? row.kind
+        : undefined;
+    const title = typeof row.title === 'string' ? row.title : undefined;
+    const text = typeof row.text === 'string' ? row.text : undefined;
+    const sourceUpdatedAt = typeof row.sourceUpdatedAt === 'number' ? row.sourceUpdatedAt : undefined;
+    const generatedAt = typeof row.generatedAt === 'number' ? row.generatedAt : undefined;
+    const index = typeof row.index === 'number' ? row.index : undefined;
+
+    if (!id || !workspaceId || !sessionId || !kind || !title || !text) return undefined;
+    if (!Number.isFinite(sourceUpdatedAt as number) || !Number.isFinite(generatedAt as number)) return undefined;
+    if (!Number.isFinite(index as number)) return undefined;
+
+    return {
+      id,
+      workspaceId,
+      sessionId,
+      kind,
+      title,
+      text,
+      sourceUpdatedAt: Math.floor(sourceUpdatedAt as number),
+      generatedAt: Math.floor(generatedAt as number),
+      index: Math.max(0, Math.floor(index as number)),
+      turnId: typeof row.turnId === 'string' ? row.turnId : undefined,
+      prevRecordId: typeof row.prevRecordId === 'string' ? row.prevRecordId : undefined,
+      nextRecordId: typeof row.nextRecordId === 'string' ? row.nextRecordId : undefined,
       filesTouched: Array.isArray(row.filesTouched)
         ? (row.filesTouched.filter(item => typeof item === 'string') as string[])
         : [],

@@ -3,6 +3,9 @@ import * as vscode from 'vscode';
 
 import type { ToolContext } from '../../core/types';
 import { TOOL_ERROR_CODES } from '@kooka/core';
+import { WorkspaceMemories } from '../../core/memories';
+import { SessionStore } from '../../core/sessionStore';
+import { createBlankSessionSignals } from '../../core/sessionSignals';
 import { getMemoryHandler } from '../../tools/builtin/getMemory';
 
 function createToolContext(params: { storageRoot: vscode.Uri }): ToolContext {
@@ -16,6 +19,70 @@ function createToolContext(params: { storageRoot: vscode.Uri }): ToolContext {
     cancellationToken: new vscode.CancellationTokenSource().token,
     progress: { report: () => {} },
     log: () => {},
+  };
+}
+
+async function seedPersistedSessions(storageRoot: vscode.Uri, sessions: any[]): Promise<void> {
+  const store = new SessionStore<any>(storageRoot, {
+    maxSessions: 20,
+    maxSessionBytes: 2_000_000,
+  });
+  const sessionsById = new Map(sessions.map(session => [session.id, session]));
+  await store.save({
+    sessionsById,
+    activeSessionId: sessions[0]?.id ?? '',
+    order: sessions.map(session => session.id),
+  });
+}
+
+function buildPersistedSession(now: number): any {
+  const signals = createBlankSessionSignals(now);
+  signals.userIntents = ['Improve the memory system with transcript-backed recall'];
+  signals.assistantOutcomes = ['Chunk memory by turn boundary and auto recall relevant context'];
+  signals.toolsUsed = ['read', 'grep'];
+  signals.filesTouched = ['packages/vscode-extension/src/core/agent/index.ts'];
+
+  return {
+    id: 'session-memory-1',
+    title: 'Memory design discussion',
+    createdAt: now - 5_000,
+    updatedAt: now - 5_000,
+    signals,
+    mode: 'build',
+    stepCounter: 0,
+    currentModel: 'mock-model',
+    agentState: { history: [] },
+    messages: [
+      {
+        id: 'm1',
+        role: 'user',
+        content: 'What did we decide about memory chunking?',
+        timestamp: now - 5_000,
+        turnId: 'turn-1',
+      },
+      {
+        id: 'm2',
+        role: 'assistant',
+        content: 'We decided to chunk memory by turn boundary and expand neighboring chunks during recall.',
+        timestamp: now - 4_900,
+        turnId: 'turn-1',
+      },
+      {
+        id: 'm3',
+        role: 'user',
+        content: 'Where should auto recall be injected?',
+        timestamp: now - 4_800,
+        turnId: 'turn-2',
+      },
+      {
+        id: 'm4',
+        role: 'assistant',
+        content: 'Inject it in AgentLoop.withRun near maybeRunExplorePrepass before the main agent execution.',
+        timestamp: now - 4_700,
+        turnId: 'turn-2',
+      },
+    ],
+    runtime: { wasRunning: false, updatedAt: now - 4_700 },
   };
 }
 
@@ -88,6 +155,124 @@ suite('Memory Tool', () => {
       }
       try {
         await cfg.update('features.memories', prevEnabled, true);
+      } catch {
+        // ignore
+      }
+      try {
+        await vscode.workspace.fs.delete(storageRoot, { recursive: true, useTrash: false });
+      } catch {
+        // ignore
+      }
+    }
+  });
+
+  test('workspace memories build transcript-backed records and search them', async () => {
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri;
+    assert.ok(root, 'Workspace folder must be available for memory tests');
+
+    const prevMemoryRoot = process.env.LINGYUN_MEMORIES_DIR;
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const prevEnabled = cfg.get('features.memories');
+    const prevIdleHours = cfg.get('memories.minRolloutIdleHours');
+
+    const storageRoot = vscode.Uri.joinPath(root, '.lingyun-test-storage-search');
+    const memoriesDir = vscode.Uri.joinPath(storageRoot, 'memories');
+    await vscode.workspace.fs.createDirectory(storageRoot);
+
+    try {
+      process.env.LINGYUN_MEMORIES_DIR = memoriesDir.fsPath;
+      await cfg.update('features.memories', true, true);
+      await cfg.update('memories.minRolloutIdleHours', 0, true);
+
+      const now = Date.now();
+      await seedPersistedSessions(storageRoot, [buildPersistedSession(now)]);
+
+      const manager = new WorkspaceMemories({
+        storageUri: storageRoot,
+        globalStorageUri: storageRoot,
+      } as unknown as vscode.ExtensionContext);
+      const update = await manager.updateFromSessions(root);
+      assert.strictEqual(update.enabled, true);
+
+      const search = await manager.searchMemory({
+        query: 'chunk memory by turn boundary',
+        workspaceFolder: root,
+        limit: 3,
+      });
+      assert.ok(search.hits.length > 0);
+      assert.ok(search.hits.some(hit => hit.record.text.includes('chunk memory by turn boundary')));
+
+      const records = await manager.listMemoryRecords(root);
+      assert.ok(records.some(record => record.kind === 'semantic'));
+      assert.ok(records.some(record => record.kind === 'episodic'));
+    } finally {
+      if (prevMemoryRoot === undefined) {
+        delete process.env.LINGYUN_MEMORIES_DIR;
+      } else {
+        process.env.LINGYUN_MEMORIES_DIR = prevMemoryRoot;
+      }
+      try {
+        await cfg.update('features.memories', prevEnabled, true);
+      } catch {
+        // ignore
+      }
+      try {
+        await cfg.update('memories.minRolloutIdleHours', prevIdleHours, true);
+      } catch {
+        // ignore
+      }
+      try {
+        await vscode.workspace.fs.delete(storageRoot, { recursive: true, useTrash: false });
+      } catch {
+        // ignore
+      }
+    }
+  });
+
+  test('get_memory search returns transcript-backed matches', async () => {
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri;
+    assert.ok(root, 'Workspace folder must be available for memory tests');
+
+    const prevMemoryRoot = process.env.LINGYUN_MEMORIES_DIR;
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const prevEnabled = cfg.get('features.memories');
+    const prevIdleHours = cfg.get('memories.minRolloutIdleHours');
+
+    const storageRoot = vscode.Uri.joinPath(root, '.lingyun-test-storage-search-tool');
+    const memoriesDir = vscode.Uri.joinPath(storageRoot, 'memories');
+    await vscode.workspace.fs.createDirectory(storageRoot);
+
+    try {
+      process.env.LINGYUN_MEMORIES_DIR = memoriesDir.fsPath;
+      await cfg.update('features.memories', true, true);
+      await cfg.update('memories.minRolloutIdleHours', 0, true);
+
+      const now = Date.now();
+      await seedPersistedSessions(storageRoot, [buildPersistedSession(now)]);
+
+      const context = createToolContext({ storageRoot });
+      const result = await getMemoryHandler(
+        { view: 'search', query: 'maybeRunExplorePrepass', limit: 3, neighborWindow: 0 },
+        context,
+      );
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(typeof result.data, 'string');
+      assert.ok(String(result.data).includes('Match 1'));
+      assert.ok(String(result.data).includes('AgentLoop.withRun'));
+    } finally {
+      if (prevMemoryRoot === undefined) {
+        delete process.env.LINGYUN_MEMORIES_DIR;
+      } else {
+        process.env.LINGYUN_MEMORIES_DIR = prevMemoryRoot;
+      }
+      try {
+        await cfg.update('features.memories', prevEnabled, true);
+      } catch {
+        // ignore
+      }
+      try {
+        await cfg.update('memories.minRolloutIdleHours', prevIdleHours, true);
       } catch {
         // ignore
       }

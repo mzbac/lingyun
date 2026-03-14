@@ -26,18 +26,35 @@ export const getMemoryTool: ToolDefinition = {
   id: 'get_memory',
   name: 'Get Memory',
   description:
-    'Read generated memory artifacts. Default returns memory summary; you can also list rollout summaries or read one rollout file.',
+    'Read generated memory artifacts or search transcript-backed memory records. Default returns memory summary.',
   parameters: {
     type: 'object',
     properties: {
       view: {
         type: 'string',
-        enum: ['summary', 'memory', 'raw', 'list', 'rollout'],
-        description: 'summary (default), memory (MEMORY.md), raw (raw_memories.md), list, or rollout',
+        enum: ['summary', 'memory', 'raw', 'list', 'rollout', 'search'],
+        description: 'summary (default), memory (MEMORY.md), raw (raw_memories.md), list, rollout, or search',
       },
       rolloutFile: {
         type: 'string',
         description: 'When view=rollout, the rollout summary filename under rollout_summaries/*.md',
+      },
+      query: {
+        type: 'string',
+        description: 'When provided, runs transcript-backed memory search. Implies view=search.',
+      },
+      kind: {
+        type: 'string',
+        enum: ['episodic', 'semantic', 'procedural'],
+        description: 'Optional memory kind filter for search.',
+      },
+      limit: {
+        type: 'number',
+        description: 'Maximum number of memory search matches to return.',
+      },
+      neighborWindow: {
+        type: 'number',
+        description: 'How many neighboring transcript chunks to include around each memory match.',
       },
       maxChars: {
         type: 'number',
@@ -68,20 +85,24 @@ export const getMemoryHandler: ToolHandler = async (args, context) => {
     }
 
     const manager = new WorkspaceMemories(context.extensionContext);
-    const viewRaw = (optionalString(args, 'view', 'summary') ?? 'summary').trim().toLowerCase();
+    const query = optionalString(args, 'query')?.trim();
+    const viewRaw = (optionalString(args, 'view', query ? 'search' : 'summary') ?? (query ? 'search' : 'summary'))
+      .trim()
+      .toLowerCase();
     const view =
       viewRaw === 'summary' ||
       viewRaw === 'memory' ||
       viewRaw === 'raw' ||
       viewRaw === 'list' ||
-      viewRaw === 'rollout'
+      viewRaw === 'rollout' ||
+      viewRaw === 'search'
         ? viewRaw
         : undefined;
 
     if (!view) {
       return {
         success: false,
-        error: 'view must be one of: summary, memory, raw, list, rollout.',
+        error: 'view must be one of: summary, memory, raw, list, rollout, search.',
       };
     }
 
@@ -124,6 +145,85 @@ export const getMemoryHandler: ToolHandler = async (args, context) => {
         success: true,
         data: `<memory view="rollout" file="${normalizedFile}">\n${trimmed.text}\n</memory>`,
         metadata: { view, rolloutFile: normalizedFile, truncated: trimmed.truncated },
+      };
+    }
+
+    if (view === 'search') {
+      if (!query) {
+        return {
+          success: false,
+          error: 'query is required when view="search".',
+        };
+      }
+
+      const kindRaw = optionalString(args, 'kind')?.trim().toLowerCase();
+      const kind =
+        kindRaw === 'episodic' || kindRaw === 'semantic' || kindRaw === 'procedural' ? kindRaw : undefined;
+      const limit = optionalNumber(args, 'limit');
+      const neighborWindow = optionalNumber(args, 'neighborWindow');
+
+      let search = await manager.searchMemory({
+        query,
+        workspaceFolder: context.workspaceFolder,
+        ...(kind ? { kind } : {}),
+        ...(Number.isFinite(limit as number) ? { limit: Math.max(1, Math.floor(limit as number)) } : {}),
+        ...(Number.isFinite(neighborWindow as number)
+          ? { neighborWindow: Math.max(0, Math.floor(neighborWindow as number)) }
+          : {}),
+      });
+
+      if (search.hits.length === 0) {
+        await manager.updateFromSessions(context.workspaceFolder);
+        search = await manager.searchMemory({
+          query,
+          workspaceFolder: context.workspaceFolder,
+          ...(kind ? { kind } : {}),
+          ...(Number.isFinite(limit as number) ? { limit: Math.max(1, Math.floor(limit as number)) } : {}),
+          ...(Number.isFinite(neighborWindow as number)
+            ? { neighborWindow: Math.max(0, Math.floor(neighborWindow as number)) }
+            : {}),
+        });
+      }
+
+      if (search.hits.length === 0) {
+        return {
+          success: true,
+          data: `<memory view="search" query="${query.replace(/"/g, '&quot;')}">\n(no matching memory)\n</memory>`,
+          metadata: { view, query, matchCount: 0 },
+        };
+      }
+
+      const lines: string[] = [`<memory view="search" query="${query.replace(/"/g, '&quot;')}">`];
+      for (const [index, hit] of search.hits.entries()) {
+        lines.push(
+          `## Match ${index + 1} [${hit.record.kind}] score=${hit.score.toFixed(2)} reason=${hit.reason}`,
+        );
+        lines.push(`session_id: ${hit.record.sessionId}`);
+        lines.push(`chunk_id: ${hit.record.id}`);
+        lines.push(`updated_at: ${new Date(hit.record.sourceUpdatedAt).toISOString()}`);
+        if (hit.record.filesTouched.length > 0) {
+          lines.push(`files: ${hit.record.filesTouched.join(', ')}`);
+        }
+        if (hit.record.toolsUsed.length > 0) {
+          lines.push(`tools: ${hit.record.toolsUsed.join(', ')}`);
+        }
+        lines.push(hit.record.text.trim());
+        lines.push('');
+      }
+      lines.push('</memory>');
+
+      const trimmed = trimForOutput(lines.join('\n'), maxChars);
+      return {
+        success: true,
+        data: trimmed.text,
+        metadata: {
+          view,
+          query,
+          matchCount: search.hits.length,
+          truncated: trimmed.truncated,
+          totalTokens: search.totalTokens,
+          searchTruncated: search.truncated,
+        },
       };
     }
 

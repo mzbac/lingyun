@@ -422,7 +422,13 @@ export async function activate(
           e.affectsConfiguration('lingyun.memories.maxRolloutAgeDays') ||
           e.affectsConfiguration('lingyun.memories.maxRolloutsPerStartup') ||
           e.affectsConfiguration('lingyun.memories.minRolloutIdleHours') ||
-          e.affectsConfiguration('lingyun.memories.maxStateOutputs');
+          e.affectsConfiguration('lingyun.memories.maxStateOutputs') ||
+          e.affectsConfiguration('lingyun.memories.maxRecords') ||
+          e.affectsConfiguration('lingyun.memories.maxSearchResults') ||
+          e.affectsConfiguration('lingyun.memories.searchNeighborWindow') ||
+          e.affectsConfiguration('lingyun.memories.autoRecall') ||
+          e.affectsConfiguration('lingyun.memories.maxAutoRecallResults') ||
+          e.affectsConfiguration('lingyun.memories.maxAutoRecallTokens');
 
         if (providerChanged) {
           initializeLLMAndAgent(context).catch(err => {

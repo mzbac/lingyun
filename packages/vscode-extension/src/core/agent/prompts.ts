@@ -21,7 +21,7 @@ You may see <system-reminder>...</system-reminder> blocks inserted by the system
 - For symbol/code-intelligence tasks (definitions/references/types), prefer symbols_search → symbols_peek; use lsp as fallback
 - After grep, prefer symbols_peek on the matched matchId (or fileId + line/character); avoid reading whole files
 - Prefer read_range (1-based) for small snippets; use read offset+limit for larger files
-- For durable project/user context, use get_memory first (summary -> MEMORY.md -> targeted rollout summaries)
+- Memory may be auto-recalled before a run; use get_memory when you need deeper search/browsing or want to inspect the backing memory artifacts directly
 - bash is slower than file tools; prefer list/glob/grep/read when possible
 - Prefer lsp for symbol navigation/refactors; use grep for plain text search
 - Use todowrite to track a multi-step plan and keep it updated as you execute

@@ -16,11 +16,13 @@ import type {
 } from '@ai-sdk/provider';
 
 import { AgentLoop } from '../../core/agent';
+import { SessionStore } from '../../core/sessionStore';
 import { ToolRegistry } from '../../core/registry';
 import type { LLMProvider } from '../../core/types';
 import { getMessageText, TOOL_ERROR_CODES } from '@kooka/core';
 import { COMPACTED_TOOL_PLACEHOLDER, COMPACTION_AUTO_CONTINUE_TEXT, createHistoryForModel } from '../../core/compaction';
 import { PluginManager } from '../../core/hooks/pluginManager';
+import { createBlankSessionSignals } from '../../core/sessionSignals';
 import { taskHandler, taskTool } from '../../tools/builtin/task';
 
 type ScriptedResponse =
@@ -2167,6 +2169,102 @@ suite('AgentLoop', () => {
     }
   });
 
+  test('autoRecall - injects transcript-backed memory context into the next prompt', async () => {
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri;
+    assert.ok(root, 'Workspace folder must be available for agent memory tests');
+
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const prevEnabled = cfg.get<unknown>('features.memories');
+    const prevIdleHours = cfg.get<unknown>('memories.minRolloutIdleHours');
+    const prevAutoRecall = cfg.get<unknown>('memories.autoRecall');
+    const prevAutoResults = cfg.get<unknown>('memories.maxAutoRecallResults');
+    const prevAutoTokens = cfg.get<unknown>('memories.maxAutoRecallTokens');
+    const prevMemoryRoot = process.env.LINGYUN_MEMORIES_DIR;
+
+    const storageRoot = vscode.Uri.joinPath(root, '.lingyun-agent-memory-storage');
+    const memoriesDir = vscode.Uri.joinPath(storageRoot, 'memories');
+    await vscode.workspace.fs.createDirectory(storageRoot);
+
+    try {
+      process.env.LINGYUN_MEMORIES_DIR = memoriesDir.fsPath;
+      await cfg.update('features.memories', true, true);
+      await cfg.update('memories.minRolloutIdleHours', 0, true);
+      await cfg.update('memories.autoRecall', true, true);
+      await cfg.update('memories.maxAutoRecallResults', 3, true);
+      await cfg.update('memories.maxAutoRecallTokens', 400, true);
+
+      const now = Date.now();
+      const signals = createBlankSessionSignals(now);
+      signals.userIntents = ['Improve memory recall'];
+      signals.assistantOutcomes = ['Inject memory recall in AgentLoop.withRun before main execution'];
+      signals.filesTouched = ['packages/vscode-extension/src/core/agent/index.ts'];
+      signals.toolsUsed = ['get_memory'];
+
+      await seedAgentPersistedSessions(storageRoot, [
+        {
+          id: 'persisted-memory-session',
+          title: 'Prior memory design',
+          createdAt: now - 10_000,
+          updatedAt: now - 10_000,
+          signals,
+          mode: 'build',
+          stepCounter: 0,
+          currentModel: 'mock-model',
+          agentState: { history: [] },
+          messages: [
+            {
+              id: 'pm1',
+              role: 'user',
+              content: 'Where should auto recall be injected?',
+              timestamp: now - 10_000,
+              turnId: 'turn-a',
+            },
+            {
+              id: 'pm2',
+              role: 'assistant',
+              content: 'Inject it in AgentLoop.withRun near maybeRunExplorePrepass before the main agent execution.',
+              timestamp: now - 9_900,
+              turnId: 'turn-a',
+            },
+          ],
+          runtime: { wasRunning: false, updatedAt: now - 9_900 },
+        },
+      ]);
+
+      const writableContext = createWritableMockExtensionContext(storageRoot);
+      agent = new AgentLoop(mockLLM, writableContext, { model: 'mock-model' }, registry);
+      mockLLM.setNextResponse({ kind: 'text', content: 'Ok' });
+
+      await agent.run('Remind me where auto recall should be injected.');
+
+      const prompt = JSON.stringify(mockLLM.lastPrompt ?? '');
+      assert.ok(prompt.includes('memory_recall_context'), 'prompt should include auto-recall injected context');
+      assert.ok(prompt.includes('AgentLoop.withRun'), 'prompt should include recalled transcript text');
+
+      const history = agent.getHistory();
+      const injected = history.find(
+        (msg) => msg.role === 'assistant' && msg.metadata?.synthetic && String((msg.metadata as any).transientContext) === 'memoryRecall',
+      );
+      assert.ok(injected, 'history should include a synthetic assistant message for auto recall');
+    } finally {
+      if (prevMemoryRoot === undefined) {
+        delete process.env.LINGYUN_MEMORIES_DIR;
+      } else {
+        process.env.LINGYUN_MEMORIES_DIR = prevMemoryRoot;
+      }
+      await cfg.update('features.memories', prevEnabled as any, true);
+      await cfg.update('memories.minRolloutIdleHours', prevIdleHours as any, true);
+      await cfg.update('memories.autoRecall', prevAutoRecall as any, true);
+      await cfg.update('memories.maxAutoRecallResults', prevAutoResults as any, true);
+      await cfg.update('memories.maxAutoRecallTokens', prevAutoTokens as any, true);
+      try {
+        await vscode.workspace.fs.delete(storageRoot, { recursive: true, useTrash: false });
+      } catch {
+        // ignore
+      }
+    }
+  });
+
   test('run - fires onToken callback', async () => {
     const tokens: string[] = [];
 
@@ -2298,6 +2396,19 @@ function findDynamicToolResult(history: ReturnType<AgentLoop['getHistory']>, too
   return undefined;
 }
 
+async function seedAgentPersistedSessions(storageRoot: vscode.Uri, sessions: any[]): Promise<void> {
+  const store = new SessionStore<any>(storageRoot, {
+    maxSessions: 20,
+    maxSessionBytes: 2_000_000,
+  });
+  const sessionsById = new Map(sessions.map(session => [session.id, session]));
+  await store.save({
+    sessionsById,
+    activeSessionId: sessions[0]?.id ?? '',
+    order: sessions.map(session => session.id),
+  });
+}
+
 function createMockExtensionContext(): vscode.ExtensionContext {
   const envVarCollection: vscode.GlobalEnvironmentVariableCollection = {
     persistent: true,
@@ -2351,4 +2462,13 @@ function createMockExtensionContext(): vscode.ExtensionContext {
     log: undefined as any,
     extensionRuntime: undefined as any,
   } as unknown as vscode.ExtensionContext;
+}
+
+function createWritableMockExtensionContext(storageRoot: vscode.Uri): vscode.ExtensionContext {
+  const context = createMockExtensionContext() as any;
+  context.storageUri = storageRoot;
+  context.globalStorageUri = storageRoot;
+  context.storagePath = storageRoot.fsPath;
+  context.globalStoragePath = storageRoot.fsPath;
+  return context as vscode.ExtensionContext;
 }
