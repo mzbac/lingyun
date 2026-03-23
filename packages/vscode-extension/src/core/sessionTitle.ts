@@ -1,6 +1,6 @@
 import { convertToModelMessages, extractReasoningMiddleware, streamText, wrapLanguageModel } from 'ai';
 import type { LLMProvider } from './types';
-import { createUserHistoryMessage, stripThinkBlocks } from '@kooka/core';
+import { createUserHistoryMessage, normalizeTemperatureForModel, stripThinkBlocks } from '@kooka/core';
 
 const TITLE_SYSTEM_PROMPT = `You are a title generator. You output ONLY a thread title. Nothing else.
 
@@ -73,7 +73,7 @@ export async function generateSessionTitle(params: {
     model: model as unknown as Parameters<typeof streamText>[0]['model'],
     system: TITLE_SYSTEM_PROMPT,
     messages,
-    temperature: 0,
+    temperature: normalizeTemperatureForModel(params.modelId, 0),
     maxRetries,
     maxOutputTokens,
     abortSignal: params.abortSignal,

@@ -12,6 +12,7 @@ import {
   extractUsageTokens,
   finalizeStreamingParts,
   getMessageText,
+  normalizeTemperatureForModel,
   getReservedOutputTokens,
   isOverflow as isContextOverflow,
   markPreviousAssistantToolOutputs,
@@ -93,6 +94,7 @@ export async function runOnce(params: {
   const { session, callbacks, signal, modelId, mode, llm, plugins, registry, providerBehavior } = params;
   const sessionId = params.sessionId;
   const retryWithPartialOutput = !!params.retryWithPartialOutput;
+  const temperature = normalizeTemperatureForModel(modelId, params.temperature);
 
   const semanticHandles = new SemanticHandleRegistry();
   semanticHandles.importState(session.semanticHandles);
@@ -156,7 +158,7 @@ export async function runOnce(params: {
         })(),
       },
       {
-        temperature: params.temperature,
+        temperature,
         topP: undefined,
         topK: undefined,
         options: providerBehavior.getChatProviderOptions(modelId, {

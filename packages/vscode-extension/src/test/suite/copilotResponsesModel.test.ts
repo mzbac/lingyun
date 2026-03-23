@@ -17,6 +17,41 @@ function encodeSseEvents(events: unknown[]): ReadableStream<Uint8Array> {
 }
 
 suite('CopilotResponsesModel', () => {
+  test('forces temperature=1 for fixed-temperature responses models', async () => {
+    const originalFetch = globalThis.fetch;
+    let capturedBody: Record<string, unknown> | undefined;
+
+    try {
+      globalThis.fetch = async (_input, init) => {
+        capturedBody = JSON.parse(String(init?.body ?? '{}'));
+        return new Response(encodeSseEvents([{ type: 'response.completed', response: { id: 'resp_1', model: 'gpt-5.4' } }]), {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        });
+      };
+
+      const model = createCopilotResponsesModel({
+        baseURL: 'https://example.invalid',
+        apiKey: 'test',
+        modelId: 'gpt-5.4',
+        headers: {},
+      });
+
+      await model.doStream({
+        prompt: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+        tools: [],
+        toolChoice: undefined,
+        temperature: 0.2,
+        topP: undefined,
+        maxOutputTokens: 16,
+      } as any);
+
+      assert.strictEqual(capturedBody?.temperature, 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test('does not duplicate assistant text when message.done also includes full content', async () => {
     const originalFetch = globalThis.fetch;
 
@@ -95,4 +130,3 @@ suite('CopilotResponsesModel', () => {
     }
   });
 });
-

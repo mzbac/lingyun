@@ -11,6 +11,7 @@ import type {
   LanguageModelV3Usage,
 } from '@ai-sdk/provider';
 import { Buffer } from 'buffer';
+import { normalizeTemperatureForModel } from '@kooka/core';
 
 type CopilotResponsesModelOptions = {
   baseURL: string;
@@ -302,7 +303,7 @@ function createResponsesBody(modelId: string, options: LanguageModelV3CallOption
     include: ['reasoning.encrypted_content'],
     tools: toolsToResponses(options.tools),
     tool_choice: toolChoiceToResponses(options.toolChoice),
-    temperature: options.temperature,
+    temperature: normalizeTemperatureForModel(modelId, options.temperature),
     top_p: options.topP,
     max_output_tokens: options.maxOutputTokens,
     text: verbosity ? { verbosity } : undefined,

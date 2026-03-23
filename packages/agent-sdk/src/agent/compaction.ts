@@ -8,6 +8,7 @@ import {
   createUserHistoryMessage,
   extractUsageTokens,
   getEffectiveHistory,
+  normalizeTemperatureForModel,
   stripThinkBlocks,
   type AgentHistoryMessage,
   type CompactionConfig,
@@ -114,7 +115,7 @@ export async function compactSessionInternal(params: {
       system: COMPACTION_SYSTEM_PROMPT,
       messages: compactionModelMessages,
       maxRetries: 0,
-      temperature: 0.0,
+      temperature: normalizeTemperatureForModel(params.modelId, 0.0),
       maxOutputTokens: params.maxOutputTokens,
       abortSignal: signal,
     });

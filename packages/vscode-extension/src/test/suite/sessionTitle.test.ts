@@ -35,6 +35,7 @@ function streamPartsForText(text: string): LanguageModelV3StreamPart[] {
 class MockStreamLLMProvider implements LLMProvider {
   readonly id = 'mock';
   readonly name = 'Mock';
+  lastTemperature: number | undefined;
 
   constructor(private responseText: string) {}
 
@@ -47,7 +48,8 @@ class MockStreamLLMProvider implements LLMProvider {
       doGenerate: async () => {
         throw new Error('Not implemented');
       },
-      doStream: async (): Promise<LanguageModelV3StreamResult> => {
+      doStream: async (options): Promise<LanguageModelV3StreamResult> => {
+        this.lastTemperature = options.temperature;
         return {
           stream: simulateReadableStream<LanguageModelV3StreamPart>({
             chunks: streamPartsForText(this.responseText),
@@ -85,5 +87,16 @@ suite('sessionTitle', () => {
     assert.ok(title!.length <= 50);
     assert.ok(title!.endsWith('...'));
   });
-});
 
+  test('forces temperature=1 for fixed-temperature models', async () => {
+    const llm = new MockStreamLLMProvider('Title');
+    const title = await generateSessionTitle({
+      llm,
+      modelId: 'gpt-5.3-codex',
+      message: 'x',
+    });
+
+    assert.strictEqual(title, 'Title');
+    assert.strictEqual(llm.lastTemperature, 1);
+  });
+});

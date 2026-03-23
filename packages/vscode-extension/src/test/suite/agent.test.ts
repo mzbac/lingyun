@@ -325,6 +325,19 @@ suite('AgentLoop', () => {
     }
   });
 
+  test('run - forces temperature=1 for fixed-temperature GPT-5 models', async () => {
+    for (const modelId of ['gpt-5.3-codex', 'gpt-5.4']) {
+      const copilotLLM = new MockCopilotProvider();
+      agent = new AgentLoop(copilotLLM, mockContext, { model: modelId, temperature: 0.2 }, registry);
+      copilotLLM.setNextResponse({ kind: 'text', content: 'OK' });
+
+      await agent.run('Hi');
+
+      const options = copilotLLM.lastCallOptions as any;
+      assert.strictEqual(options?.temperature, 1);
+    }
+  });
+
   test('run - forwards configured maxOutputTokens to the model request', async () => {
     const openaiCompatibleLLM = new MockOpenAICompatibleProvider();
     agent = new AgentLoop(
