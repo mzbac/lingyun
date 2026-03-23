@@ -2,7 +2,7 @@
   "name": "lingyun",
   "displayName": "LingYun",
   "description": "Agentic AI assistant for VS Code",
-  "version": "2.1.10",
+  "version": "2.1.11",
   "publisher": "mzbac",
   "icon": "images/icon.png",
   "license": "MIT",
@@ -156,7 +156,7 @@
         },
         "lingyun.copilot.reasoningEffort": {
           "type": "string",
-          "default": "xhigh",
+          "default": "high",
           "enum": [
             "",
             "low",
@@ -492,6 +492,7 @@
             ".opencode/skills",
             "~/.config/lingyun/skills",
             "~/.agent/skills",
+            "~/.agents/skills",
             "~/.codex/skills",
             "~/.claude/skills"
           ],

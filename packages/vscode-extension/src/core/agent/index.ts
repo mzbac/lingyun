@@ -151,7 +151,7 @@ export class AgentLoop {
     const maxChars = Number.isFinite(maxCharsRaw) && maxCharsRaw > 0 ? Math.floor(maxCharsRaw) : 8000;
 
     const allowExternalPaths = cfg.get<boolean>('security.allowExternalPaths', false) ?? false;
-    const reasoningEffort = cfg.get<string>('copilot.reasoningEffort', 'xhigh') ?? 'xhigh';
+    const reasoningEffort = cfg.get<string>('copilot.reasoningEffort', 'high') ?? 'high';
     const taskMaxOutputChars = cfg.get<number>('subagents.task.maxOutputChars', 8000) ?? 8000;
 
     let exploreModelId = (this.config.model || '').trim();
@@ -394,7 +394,7 @@ export class AgentLoop {
     const allowExternalPaths = cfg.get<boolean>('security.allowExternalPaths', false) ?? false;
     this.agent.setAllowExternalPaths(allowExternalPaths);
 
-    const reasoningEffort = cfg.get<string>('copilot.reasoningEffort', 'xhigh') ?? 'xhigh';
+    const reasoningEffort = cfg.get<string>('copilot.reasoningEffort', 'high') ?? 'high';
     this.agent.setCopilotReasoningEffort(reasoningEffort);
 
     const taskMaxOutputChars = cfg.get<number>('subagents.task.maxOutputChars', 8000) ?? 8000;

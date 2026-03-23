@@ -26,6 +26,8 @@ export const DEFAULT_SKILL_PATHS = [
   '.opencode/skill',
   '.opencode/skills',
   '~/.config/lingyun/skills',
+  '~/.agent/skills',
+  '~/.agents/skills',
   '~/.codex/skills',
   '~/.claude/skills',
 ];

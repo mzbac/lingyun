@@ -308,7 +308,7 @@ suite('AgentLoop', () => {
     await agent.run('Hi');
 
     const options = copilotLLM.lastCallOptions as any;
-    assert.strictEqual(options?.providerOptions?.copilot?.reasoningEffort, 'xhigh');
+    assert.strictEqual(options?.providerOptions?.copilot?.reasoningEffort, 'high');
   });
 
   test('run - injects OpenAI reasoningEffort for Copilot Responses-only models', async () => {
@@ -320,8 +320,8 @@ suite('AgentLoop', () => {
       await agent.run('Hi');
 
       const options = copilotLLM.lastCallOptions as any;
-      assert.strictEqual(options?.providerOptions?.openai?.reasoningEffort, 'xhigh');
-      assert.strictEqual(options?.providerOptions?.copilot?.reasoningEffort, 'xhigh');
+      assert.strictEqual(options?.providerOptions?.openai?.reasoningEffort, 'high');
+      assert.strictEqual(options?.providerOptions?.copilot?.reasoningEffort, 'high');
     }
   });
 

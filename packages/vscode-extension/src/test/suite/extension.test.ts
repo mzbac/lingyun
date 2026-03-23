@@ -58,6 +58,7 @@ suite('Extension Integration', () => {
     assert.strictEqual(config.get('llmProvider'), 'copilot');
     assert.strictEqual(config.get('model'), 'gpt-4o');
     assert.strictEqual(config.get('mode'), 'build');
+    assert.strictEqual(config.get('copilot.reasoningEffort'), 'high');
     assert.strictEqual(config.get('temperature'), 0);
     assert.strictEqual(config.get('llm.timeoutMs'), 0);
     assert.strictEqual(config.get('toolTimeoutMs'), 0);
@@ -66,6 +67,17 @@ suite('Extension Integration', () => {
     assert.strictEqual(config.get('loop.enabled'), false);
     assert.strictEqual(config.get('loop.intervalMinutes'), 5);
     assert.strictEqual(config.get('sessions.persist'), true);
+    assert.deepStrictEqual(config.get('skills.paths'), [
+      '.lingyun/skills',
+      '.claude/skills',
+      '.opencode/skill',
+      '.opencode/skills',
+      '~/.config/lingyun/skills',
+      '~/.agent/skills',
+      '~/.agents/skills',
+      '~/.codex/skills',
+      '~/.claude/skills',
+    ]);
   });
 
   test('configuration should be updatable', async () => {
