@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { readTodos } from '../../core/todo';
 import { appendErrorLog, appendLog } from '../../core/logger';
-import type { ModelInfo } from '../../providers/copilot';
+import type { ModelInfo } from '../../providers/modelCatalog';
 import type { LLMProviderWithUi, ProviderAuthUiState } from '../../providers/providerUi';
 import { formatErrorForUser, getNonce } from './utils';
 import { getWorkspaceFolderUrisByPriority, resolveExistingFilePath } from './fileLinks';

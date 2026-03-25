@@ -1,7 +1,7 @@
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import type { FetchFunction } from '@ai-sdk/provider-utils';
 import type { LLMProvider } from '../core/types';
-import type { ModelInfo } from './copilot';
+import type { ModelInfo } from './modelCatalog';
 import { createFetchWithStreamingDefaults, normalizeBaseURL } from './openaiFetch';
 
 export interface OpenAICompatibleProviderOptions {

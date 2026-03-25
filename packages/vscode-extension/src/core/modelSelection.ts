@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 
 import { MODELS } from '../providers/copilot';
+import { CODEX_SUBSCRIPTION_DEFAULT_MODEL_ID } from '../providers/codexSubscriptionModels';
 
 export type LingyunProviderId = 'copilot' | 'openaiCompatible' | 'codexSubscription' | string;
 
@@ -22,7 +23,7 @@ export function resolveModelIdForProvider(options: ResolveModelOptions): string 
   const configuredModel = normalizeModelId(options.configuredModel);
   const openaiCompatibleDefaultModelId = normalizeModelId(options.openaiCompatibleDefaultModelId);
   const codexSubscriptionDefaultModelId =
-    normalizeModelId(options.codexSubscriptionDefaultModelId) || 'gpt-5.3-codex';
+    normalizeModelId(options.codexSubscriptionDefaultModelId) || CODEX_SUBSCRIPTION_DEFAULT_MODEL_ID;
 
   if (providerId === 'codexSubscription') {
     if (!configuredModel || configuredModel === MODELS.GPT_4O) {

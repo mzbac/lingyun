@@ -8,7 +8,7 @@ import { appendErrorLog } from '../../core/logger';
 import { resolveConfiguredModelId } from '../../core/modelSelection';
 import { createBlankSessionSignals } from '../../core/sessionSignals';
 import type { LLMProvider } from '../../core/types';
-import type { ModelInfo } from '../../providers/copilot';
+import type { ModelInfo } from '../../providers/modelCatalog';
 import type { OfficeSync } from '../office/sync';
 import { bindChatControllerService } from './controllerService';
 import { createDefaultSessionTitle } from './sessionTitle';

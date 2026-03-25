@@ -5,6 +5,7 @@ import type { LLMProvider } from '../core/types';
 import { appendErrorLog } from '../core/logger';
 import { normalizeResponsesStreamModel } from '../core/utils/normalizeResponsesStream';
 import { createCopilotResponsesModel } from './copilotResponsesModel';
+import type { ModelInfo } from './modelCatalog';
 
 const COPILOT_TOKEN_URL = 'https://api.github.com/copilot_internal/v2/token';
 const COPILOT_BASE_URL = 'https://api.githubcopilot.com';
@@ -15,15 +16,6 @@ export const FALLBACK_MODELS = {
 } as const;
 
 export const MODELS = FALLBACK_MODELS;
-
-export interface ModelInfo {
-  id: string;
-  name: string;
-  vendor: string;
-  family: string;
-  maxInputTokens?: number;
-  maxOutputTokens?: number;
-}
 
 export class CopilotProvider implements LLMProvider {
   readonly id = 'copilot';

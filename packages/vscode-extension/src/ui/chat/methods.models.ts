@@ -3,7 +3,8 @@ import * as vscode from 'vscode';
 import { appendErrorLog } from '../../core/logger';
 import type { AgentLoop } from '../../core/agent';
 import { resolveConfiguredModelId } from '../../core/modelSelection';
-import type { ModelInfo } from '../../providers/copilot';
+import { createFallbackModelInfo, type ModelInfo } from '../../providers/modelCatalog';
+import type { LLMProviderWithUi } from '../../providers/providerUi';
 
 import { bindChatControllerService } from './controllerService';
 import type { ChatSessionsService } from './methods.sessions';
@@ -38,11 +39,7 @@ export interface ChatModelsService {
 
 export interface ChatModelsDeps {
   context: { globalState: GlobalStateLike };
-  llmProvider?: {
-    id?: string;
-    getModels?: () => Promise<ModelInfo[]>;
-    clearModelCache?: () => void;
-  };
+  llmProvider?: LLMProviderWithUi;
   availableModels: ModelInfo[];
   currentModel: string;
   agent: Pick<AgentLoop, 'updateConfig'>;
@@ -126,17 +123,17 @@ export function createChatModelsService(controller: ChatModelsDeps): ChatModelsS
           ]);
         } else {
           const fallback = this.currentModel || 'gpt-4o';
-          this.availableModels = [{ id: fallback, name: fallback, vendor: 'local', family: 'unknown' }];
+          this.availableModels = [createFallbackModelInfo(fallback)];
         }
       } catch (error) {
         appendErrorLog(this.outputChannel, 'Failed to load models', error, { tag: 'Models' });
         const fallback = this.currentModel || 'gpt-4o';
-        this.availableModels = [{ id: fallback, name: fallback, vendor: 'local', family: 'unknown' }];
+        this.availableModels = [createFallbackModelInfo(fallback)];
       }
 
       if (this.availableModels.length === 0) {
         const fallback = this.currentModel || 'gpt-4o';
-        this.availableModels = [{ id: fallback, name: fallback, vendor: 'local', family: 'unknown' }];
+        this.availableModels = [createFallbackModelInfo(fallback)];
       }
 
       this.currentModel = resolveConfiguredModelId(this.llmProvider?.id) || this.currentModel;
@@ -256,7 +253,7 @@ export function createChatModelsService(controller: ChatModelsDeps): ChatModelsS
         ...this.availableModels,
         ...(this.availableModels.some((model) => model.id === fallbackModelId)
           ? []
-          : [{ id: fallbackModelId, name: fallbackModelId, vendor: 'configured', family: 'unknown' }]),
+          : [createFallbackModelInfo(fallbackModelId, { vendor: 'configured' })]),
       ]);
 
       const favoriteButtonOn: vscode.QuickInputButton = {

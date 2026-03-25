@@ -1,5 +1,5 @@
 import type { LLMProvider } from '../core/types';
-import type { ModelInfo } from './copilot';
+import type { ModelCatalogProvider, ModelInfo } from './modelCatalog';
 
 export interface ProviderAuthStatus {
   supported: boolean;
@@ -17,10 +17,10 @@ export interface ProviderAuthUiState extends ProviderAuthStatus {
   providerName: string;
 }
 
-export type LLMProviderWithUi = LLMProvider & {
-  getModels?: () => Promise<ModelInfo[]>;
-  clearModelCache?: () => void;
+export type LLMProviderWithUi = LLMProvider & ModelCatalogProvider & {
   getAuthStatus?: () => Promise<ProviderAuthStatus>;
   authenticate?: () => Promise<void>;
   disconnect?: () => Promise<void>;
 };
+
+export type { ModelCatalogProvider, ModelInfo };

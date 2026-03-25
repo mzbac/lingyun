@@ -6,7 +6,7 @@ import type { InputHistoryStore } from '../../core/inputHistoryStore';
 import type { SessionStore } from '../../core/sessionStore';
 import { createBlankSessionSignals, type SessionSignals } from '../../core/sessionSignals';
 import type { WorkspaceSnapshot } from '../../core/snapshot';
-import type { ModelInfo } from '../../providers/copilot';
+import type { ModelInfo } from '../../providers/modelCatalog';
 import type { LLMProviderWithUi } from '../../providers/providerUi';
 import type { OfficeSync } from '../office/sync';
 
@@ -27,11 +27,6 @@ import type { ChatMessage, ChatMode, ChatSessionInfo } from './types';
 import type { ChatLoopManager } from './loopManager';
 import type { ChatQueueManager } from './queueManager';
 import type { RunCoordinator } from './runner/runCoordinator';
-
-export type LLMProviderWithModels = LLMProviderWithUi & {
-  getModels?: () => Promise<ModelInfo[]>;
-  clearModelCache?: () => void;
-};
 
 export class ChatController {
   view?: vscode.WebviewView;
@@ -110,7 +105,7 @@ export class ChatController {
   constructor(
     public context: vscode.ExtensionContext,
     public agent: AgentLoop,
-    public llmProvider?: LLMProviderWithModels,
+    public llmProvider?: LLMProviderWithUi,
     public outputChannel?: vscode.OutputChannel
   ) {
     installChatControllerComposition(this);

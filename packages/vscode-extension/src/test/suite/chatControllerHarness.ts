@@ -1,8 +1,8 @@
 import * as vscode from 'vscode';
 
 import type { AgentLoop } from '../../core/agent';
+import type { LLMProviderWithUi } from '../../providers/providerUi';
 import { ChatController } from '../../ui/chat';
-import type { LLMProviderWithModels } from '../../ui/chat/controller';
 
 function createMockMemento(): vscode.Memento {
   const values = new Map<string, unknown>();
@@ -43,7 +43,7 @@ export function createWritableChatTestExtensionContext(storageRoot: vscode.Uri):
 export function createStandaloneChatController(options?: {
   context?: vscode.ExtensionContext;
   agent?: AgentLoop;
-  llmProvider?: LLMProviderWithModels;
+  llmProvider?: LLMProviderWithUi;
   outputChannel?: vscode.OutputChannel;
 }): ChatController {
   const agent =

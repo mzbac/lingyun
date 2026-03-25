@@ -1,26 +1,22 @@
 import * as vscode from 'vscode';
 
 import { normalizeResponsesStreamModel } from '../core/utils/normalizeResponsesStream';
-import type { ModelInfo } from './copilot';
 import { createCodexResponsesModel } from './codexResponsesModel';
+import {
+  CODEX_SUBSCRIPTION_DEFAULT_MODEL_ID,
+  CODEX_SUBSCRIPTION_FALLBACK_MODELS,
+  type CodexModelsResponse,
+  normalizeCodexModelsResponse,
+} from './codexSubscriptionModels';
 import { OpenAIAccountAuth } from './openaiAccountAuth';
 import { createFetchWithStreamingDefaults } from './openaiFetch';
+import type { ModelInfo } from './modelCatalog';
 import type { LLMProviderWithUi, ProviderAuthStatus } from './providerUi';
 
 const OPENAI_AUTH_ISSUER = 'https://auth.openai.com';
 const CODEX_BASE_URL = 'https://chatgpt.com/backend-api/codex';
 const CODEX_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
 const AUTH_SECRET_STORAGE_KEY = 'providers.codexSubscription.auth';
-
-const FALLBACK_MODELS: ModelInfo[] = [
-  { id: 'gpt-5.4', name: 'GPT-5.4', vendor: 'chatgpt', family: 'gpt-5' },
-  { id: 'gpt-5.3-codex', name: 'GPT-5.3 Codex', vendor: 'chatgpt', family: 'gpt-codex' },
-  { id: 'gpt-5.2', name: 'GPT-5.2', vendor: 'chatgpt', family: 'gpt-5' },
-  { id: 'gpt-5.2-codex', name: 'GPT-5.2 Codex', vendor: 'chatgpt', family: 'gpt-codex' },
-  { id: 'gpt-5.1-codex', name: 'GPT-5.1 Codex', vendor: 'chatgpt', family: 'gpt-codex' },
-  { id: 'gpt-5.1-codex-max', name: 'GPT-5.1 Codex Max', vendor: 'chatgpt', family: 'gpt-codex' },
-  { id: 'gpt-5.1-codex-mini', name: 'GPT-5.1 Codex Mini', vendor: 'chatgpt', family: 'gpt-codex' },
-];
 
 export interface CodexSubscriptionProviderOptions {
   context: vscode.ExtensionContext;
@@ -39,10 +35,11 @@ export class CodexSubscriptionProvider implements LLMProviderWithUi {
   private readonly disposeFetch: () => void;
 
   private cachedModels: ModelInfo[] | null = null;
+  private modelLoadPromise: Promise<ModelInfo[]> | null = null;
 
   constructor(options: CodexSubscriptionProviderOptions) {
     this.context = options.context;
-    this.defaultModelId = options.defaultModelId || 'gpt-5.3-codex';
+    this.defaultModelId = options.defaultModelId || CODEX_SUBSCRIPTION_DEFAULT_MODEL_ID;
     const fetchWithDefaults = createFetchWithStreamingDefaults(options.timeoutMs);
     this.fetchFn = fetchWithDefaults.fetch;
     this.disposeFetch = fetchWithDefaults.dispose;
@@ -106,16 +103,37 @@ export class CodexSubscriptionProvider implements LLMProviderWithUi {
 
   async authenticate(): Promise<void> {
     await this.auth.authenticate();
+    this.clearModelCache();
   }
 
   async disconnect(): Promise<void> {
     await this.auth.disconnect();
+    this.clearModelCache();
   }
 
   onRequestError(error: unknown, _context?: { modelId: string; mode: 'plan' | 'build' }): void {
     if (this.isAuthError(error)) {
       this.auth.invalidateAccessToken();
+      this.clearModelCache();
     }
+  }
+
+  private getExtensionVersion(): string {
+    return typeof this.context.extension?.packageJSON?.version === 'string'
+      ? this.context.extension.packageJSON.version.trim() || '0.0.0'
+      : '0.0.0';
+  }
+
+  private createRequestHeaders(session: { accountId?: string }): Record<string, string> {
+    const headers: Record<string, string> = {
+      originator: 'opencode',
+      'User-Agent': `lingyun/${this.getExtensionVersion()}`,
+      session_id: crypto.randomUUID(),
+    };
+    if (session.accountId) {
+      headers['ChatGPT-Account-Id'] = session.accountId;
+    }
+    return headers;
   }
 
   async getModel(modelId: string): Promise<unknown> {
@@ -125,25 +143,11 @@ export class CodexSubscriptionProvider implements LLMProviderWithUi {
       throw new Error('No model configured. Set lingyun.model or lingyun.codexSubscription.defaultModelId.');
     }
 
-    const extensionVersion =
-      typeof this.context.extension?.packageJSON?.version === 'string'
-        ? this.context.extension.packageJSON.version.trim()
-        : '0.0.0';
-
-    const headers: Record<string, string> = {
-      originator: 'opencode',
-      'User-Agent': `lingyun/${extensionVersion}`,
-      session_id: crypto.randomUUID(),
-    };
-    if (session.accountId) {
-      headers['ChatGPT-Account-Id'] = session.accountId;
-    }
-
     const raw = createCodexResponsesModel({
       baseURL: CODEX_BASE_URL,
       apiKey: session.accessToken,
       modelId: resolved,
-      headers,
+      headers: this.createRequestHeaders(session),
       fetch: this.fetchFn,
       errorLabel: this.name,
       provider: this.id,
@@ -153,16 +157,57 @@ export class CodexSubscriptionProvider implements LLMProviderWithUi {
 
   async getModels(): Promise<ModelInfo[]> {
     if (this.cachedModels) return this.cachedModels;
-    this.cachedModels = [...FALLBACK_MODELS];
-    return this.cachedModels;
+    if (this.modelLoadPromise) return this.modelLoadPromise;
+
+    this.modelLoadPromise = (async () => {
+      try {
+        const session = await this.auth.getValidSession();
+        const url = new URL(`${CODEX_BASE_URL}/models`);
+        url.searchParams.set('client_version', this.getExtensionVersion());
+
+        const response = await this.fetchFn(url.toString(), {
+          headers: {
+            ...this.createRequestHeaders(session),
+            Authorization: `Bearer ${session.accessToken}`,
+            Accept: 'application/json',
+          },
+        });
+
+        if (!response.ok) {
+          const text = await response.text();
+          throw Object.assign(new Error(`Failed to list Codex models: ${response.status} ${text}`), {
+            status: response.status,
+          });
+        }
+
+        const payload = (await response.json()) as CodexModelsResponse;
+        this.cachedModels = normalizeCodexModelsResponse(payload);
+        return this.cachedModels;
+      } catch (error) {
+        if (this.isAuthError(error)) {
+          this.auth.invalidateAccessToken();
+        }
+      }
+
+      this.cachedModels = CODEX_SUBSCRIPTION_FALLBACK_MODELS.map((model) => ({ ...model }));
+      return this.cachedModels;
+    })();
+
+    try {
+      return await this.modelLoadPromise;
+    } finally {
+      this.modelLoadPromise = null;
+    }
   }
 
   clearModelCache(): void {
     this.cachedModels = null;
+    this.modelLoadPromise = null;
   }
 
   dispose(): void {
     this.cachedModels = null;
+    this.modelLoadPromise = null;
     this.disposeFetch();
   }
 }
