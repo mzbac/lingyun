@@ -11,7 +11,8 @@ import type {
   AgentConfig,
 } from './core/types';
 
-import { CopilotProvider, MODELS } from './providers/copilot';
+import { CopilotProvider } from './providers/copilot';
+import { CodexSubscriptionProvider } from './providers/codexSubscription';
 import { OpenAICompatibleProvider } from './providers/openaiCompatible';
 import { WorkspaceToolProvider, createSampleToolsConfig } from './providers/workspace';
 import type { LLMProvider } from './core/types';
@@ -22,6 +23,7 @@ import { PluginManager } from './core/hooks/pluginManager';
 import { PluginToolProvider } from './core/hooks/pluginToolProvider';
 import { getSkillIndex } from './core/skills';
 import { WorkspaceMemories, getMemoriesConfig } from './core/memories';
+import { resolveConfiguredModelId } from './core/modelSelection';
 import { redactSensitive, summarizeToolArgsForDebug } from './core/agent/debug';
 import { getPrimaryWorkspaceFolderUri, getPrimaryWorkspaceRootPath } from './core/workspaceContext';
 
@@ -139,7 +141,7 @@ export function createAgentConfig(): AgentConfig {
       : undefined;
 
   return {
-    model: getConfig('model') || MODELS.GPT_4O,
+    model: resolveConfiguredModelId(),
     subagentModel: getConfig('subagents.model') || undefined,
     mode: (getConfig<'build' | 'plan'>('mode') || 'build'),
     temperature,
@@ -151,7 +153,7 @@ export function createAgentConfig(): AgentConfig {
   };
 }
 
-function createLLMProviderFromConfig(): LLMProvider {
+function createLLMProviderFromConfig(context: vscode.ExtensionContext): LLMProvider {
   const selection = getConfig<string>('llmProvider') || 'copilot';
 
   if (selection === 'openaiCompatible') {
@@ -191,6 +193,28 @@ function createLLMProviderFromConfig(): LLMProvider {
     });
   }
 
+  if (selection === 'codexSubscription') {
+    const defaultModelId = getConfig<string>('codexSubscription.defaultModelId') || undefined;
+    const timeoutMsRaw = getConfig<unknown>('llm.timeoutMs');
+    const timeoutMsParsed =
+      typeof timeoutMsRaw === 'number'
+        ? timeoutMsRaw
+        : typeof timeoutMsRaw === 'string'
+          ? Number(timeoutMsRaw)
+          : undefined;
+    const timeoutMs =
+      Number.isFinite(timeoutMsParsed as number) && (timeoutMsParsed as number) >= 0
+        ? Math.floor(timeoutMsParsed as number)
+        : undefined;
+
+    log('Using Codex subscription provider');
+    return new CodexSubscriptionProvider({
+      context,
+      defaultModelId,
+      timeoutMs,
+    });
+  }
+
   log('Using GitHub Copilot provider');
   return new CopilotProvider({ outputChannel: extensionState?.outputChannel });
 }
@@ -201,7 +225,7 @@ async function initializeLLMAndAgent(context: vscode.ExtensionContext): Promise<
   }
 
   extensionState.llmProvider?.dispose?.();
-  extensionState.llmProvider = createLLMProviderFromConfig();
+  extensionState.llmProvider = createLLMProviderFromConfig(context);
   extensionState.agent = createAgent(extensionState.llmProvider, context, createAgentConfig(), extensionState.plugins);
   extensionState.chatProvider?.controller.sessionApi.setBackend(
     extensionState.agent,
@@ -405,6 +429,7 @@ export async function activate(
       if (e.affectsConfiguration('lingyun') && extensionState?.agent) {
         const providerChanged =
           e.affectsConfiguration('lingyun.llmProvider') ||
+          e.affectsConfiguration('lingyun.codexSubscription.defaultModelId') ||
           e.affectsConfiguration('lingyun.openaiCompatible.baseURL') ||
           e.affectsConfiguration('lingyun.openaiCompatible.defaultModelId') ||
           e.affectsConfiguration('lingyun.openaiCompatible.modelDisplayNames') ||

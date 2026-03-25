@@ -41,6 +41,60 @@
 	      }
 	    }
 
+	    function normalizeProviderAuthState(state) {
+	      const next = state && typeof state === 'object' ? state : {};
+	      return {
+	        providerId: next.providerId ? String(next.providerId) : '',
+	        providerName: next.providerName ? String(next.providerName) : '',
+	        supported: !!next.supported,
+	        authenticated: !!next.authenticated,
+	        status: next.status ? String(next.status) : 'hidden',
+	        label: next.label ? String(next.label) : '',
+	        detail: next.detail ? String(next.detail) : '',
+	        accountLabel: next.accountLabel ? String(next.accountLabel) : '',
+	        primaryActionLabel: next.primaryActionLabel ? String(next.primaryActionLabel) : '',
+	        secondaryActionLabel: next.secondaryActionLabel ? String(next.secondaryActionLabel) : '',
+	      };
+	    }
+
+	    function updateProviderAuthHeader(state) {
+	      currentProviderAuth = normalizeProviderAuthState(state);
+
+	      if (!providerAuthGroup) return;
+
+	      const visible =
+	        !!currentProviderAuth.supported &&
+	        currentProviderAuth.status !== 'hidden';
+	      providerAuthGroup.classList.toggle('hidden', !visible);
+	      if (!visible) return;
+
+	      const connected = !!currentProviderAuth.authenticated;
+	      const primaryLabel = providerAuthBusy
+	        ? (connected ? 'Updating…' : 'Signing in…')
+	        : (connected
+	          ? (currentProviderAuth.accountLabel || currentProviderAuth.label || 'Connected')
+	          : (currentProviderAuth.primaryActionLabel || currentProviderAuth.label || 'Sign in'));
+	      const detailParts = [];
+	      if (currentProviderAuth.providerName) detailParts.push(currentProviderAuth.providerName);
+	      if (currentProviderAuth.detail) detailParts.push(currentProviderAuth.detail);
+	      const title = detailParts.join(' • ') || primaryLabel;
+
+	      if (providerAuthPrimary) {
+	        providerAuthPrimary.textContent = primaryLabel;
+	        providerAuthPrimary.title = title;
+	        providerAuthPrimary.classList.toggle('connected', connected);
+	      }
+
+	      if (providerAuthSecondary) {
+	        const secondaryLabel = currentProviderAuth.secondaryActionLabel || 'Disconnect';
+	        providerAuthSecondary.textContent = secondaryLabel;
+	        providerAuthSecondary.title = currentProviderAuth.providerName
+	          ? (secondaryLabel + ' from ' + currentProviderAuth.providerName)
+	          : secondaryLabel;
+	        providerAuthSecondary.classList.toggle('hidden', !connected);
+	      }
+	    }
+
 	    function formatInt(value) {
 	      try {
 	        return Number(value).toLocaleString();

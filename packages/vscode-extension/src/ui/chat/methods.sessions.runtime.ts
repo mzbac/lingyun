@@ -5,6 +5,7 @@ import { getMessageText } from '@kooka/core';
 import type { AgentLoop, AgentSessionState } from '../../core/agent';
 import { getModelLimit } from '../../core/compaction';
 import { appendErrorLog } from '../../core/logger';
+import { resolveConfiguredModelId } from '../../core/modelSelection';
 import { createBlankSessionSignals } from '../../core/sessionSignals';
 import type { LLMProvider } from '../../core/types';
 import type { ModelInfo } from '../../providers/copilot';
@@ -317,7 +318,7 @@ export function createChatSessionRuntimeService(
       this.isProcessing = false;
       this.loopManager.clearAllRuntimeData();
       this.availableModels = [];
-      this.currentModel = vscode.workspace.getConfiguration('lingyun').get('model') || this.currentModel;
+      this.currentModel = resolveConfiguredModelId(this.llmProvider?.id);
       this.mode =
         (vscode.workspace.getConfiguration('lingyun').get<string>('mode') || this.mode) === 'plan'
           ? 'plan'
@@ -329,6 +330,9 @@ export function createChatSessionRuntimeService(
       this.initAcked = false;
 
       await this.persistence.ensureSessionsLoaded();
+      for (const session of this.sessions.values()) {
+        session.currentModel = this.currentModel;
+      }
 
       if (this.sessions.size === 0) {
         this.activeSessionId = crypto.randomUUID();

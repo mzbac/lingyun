@@ -1,12 +1,13 @@
 import * as vscode from 'vscode';
 
 import type { AgentLoop } from '../../core/agent';
+import { resolveConfiguredModelId } from '../../core/modelSelection';
 import type { InputHistoryStore } from '../../core/inputHistoryStore';
 import type { SessionStore } from '../../core/sessionStore';
 import { createBlankSessionSignals, type SessionSignals } from '../../core/sessionSignals';
 import type { WorkspaceSnapshot } from '../../core/snapshot';
-import type { LLMProvider } from '../../core/types';
 import type { ModelInfo } from '../../providers/copilot';
+import type { LLMProviderWithUi } from '../../providers/providerUi';
 import type { OfficeSync } from '../office/sync';
 
 import { installChatControllerComposition } from './controllerComposition';
@@ -27,7 +28,7 @@ import type { ChatLoopManager } from './loopManager';
 import type { ChatQueueManager } from './queueManager';
 import type { RunCoordinator } from './runner/runCoordinator';
 
-export type LLMProviderWithModels = LLMProvider & {
+export type LLMProviderWithModels = LLMProviderWithUi & {
   getModels?: () => Promise<ModelInfo[]>;
   clearModelCache?: () => void;
 };
@@ -114,7 +115,7 @@ export class ChatController {
   ) {
     installChatControllerComposition(this);
 
-    this.currentModel = vscode.workspace.getConfiguration('lingyun').get('model') || 'gpt-4o';
+    this.currentModel = resolveConfiguredModelId(this.llmProvider?.id);
     this.mode =
       (vscode.workspace.getConfiguration('lingyun').get<string>('mode') || 'build') === 'plan'
         ? 'plan'

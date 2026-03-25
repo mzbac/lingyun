@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 
 import { appendErrorLog } from '../../core/logger';
 import type { AgentLoop } from '../../core/agent';
+import { resolveConfiguredModelId } from '../../core/modelSelection';
 import type { ModelInfo } from '../../providers/copilot';
 
 import { bindChatControllerService } from './controllerService';
@@ -138,8 +139,7 @@ export function createChatModelsService(controller: ChatModelsDeps): ChatModelsS
         this.availableModels = [{ id: fallback, name: fallback, vendor: 'local', family: 'unknown' }];
       }
 
-      const configured = vscode.workspace.getConfiguration('lingyun').get<string>('model') || this.currentModel;
-      this.currentModel = configured || this.currentModel;
+      this.currentModel = resolveConfiguredModelId(this.llmProvider?.id) || this.currentModel;
 
       if (!this.availableModels.some((model) => model.id === this.currentModel)) {
         this.currentModel = this.availableModels[0].id;

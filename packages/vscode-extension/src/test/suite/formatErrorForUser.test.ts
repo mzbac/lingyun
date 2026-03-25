@@ -29,5 +29,14 @@ suite('formatErrorForUser', () => {
       'expected OpenAI-compatible auth hint when provider is openaiCompatible',
     );
   });
-});
 
+  test('uses Codex-specific auth tip for 401/403', () => {
+    const err: any = new Error('Unauthorized');
+    err.statusCode = 401;
+    err.url = 'https://chatgpt.com/backend-api/codex/responses';
+
+    const message = formatErrorForUser(err, { llmProviderId: 'codexSubscription' });
+
+    assert.ok(message.includes('ChatGPT Codex auth expired'), 'expected Codex auth hint');
+  });
+});

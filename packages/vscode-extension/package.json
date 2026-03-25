@@ -145,6 +145,7 @@
           "default": "copilot",
           "enum": [
             "copilot",
+            "codexSubscription",
             "openaiCompatible"
           ],
           "description": "LLM provider backend to use"
@@ -215,6 +216,11 @@
           "type": "number",
           "default": 0,
           "description": "LLM request timeout in milliseconds (0 = no timeout). If you see 'The operation was aborted due to timeout', increase this value or set it to 0."
+        },
+        "lingyun.codexSubscription.defaultModelId": {
+          "type": "string",
+          "default": "gpt-5.3-codex",
+          "description": "Fallback model id for the ChatGPT Codex subscription provider when lingyun.model is empty or still points at the Copilot default."
         },
         "lingyun.toolTimeoutMs": {
           "type": "number",

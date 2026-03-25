@@ -174,6 +174,8 @@
 		        label: data.currentModelLabel || data.currentModel || 'Pick model',
 		        isFavorite: !!data.currentModelIsFavorite,
 		      });
+		      providerAuthBusy = false;
+		      updateProviderAuthHeader(data.providerAuth || null);
 			      setLoopState(data.loop);
 			      updateContextIndicatorState(data.context);
 			      closeContextPopover();
@@ -453,6 +455,11 @@
             label: data.label || data.model || currentModel || 'Pick model',
             isFavorite: !!data.isFavorite,
           });
+          break;
+        case 'providerState':
+          providerAuthBusy = false;
+          updateProviderAuthHeader(data.providerAuth || null);
+          syncInputState();
           break;
         case 'modeChanged':
           setMode(data.mode || 'build');

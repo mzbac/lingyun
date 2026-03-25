@@ -4,7 +4,9 @@ import * as path from 'path';
 import * as os from 'os';
 import { readTodos } from '../../core/todo';
 import { appendErrorLog, appendLog } from '../../core/logger';
-import { getNonce } from './utils';
+import type { ModelInfo } from '../../providers/copilot';
+import type { LLMProviderWithUi, ProviderAuthUiState } from '../../providers/providerUi';
+import { formatErrorForUser, getNonce } from './utils';
 import { getWorkspaceFolderUrisByPriority, resolveExistingFilePath } from './fileLinks';
 import type { ChatImageAttachment, ChatUserInput } from './types';
 import { bindChatControllerService } from './controllerService';
@@ -85,10 +87,23 @@ function parseWebviewImageAttachments(raw: unknown): ChatImageAttachment[] {
   return normalized;
 }
 
+function getToastErrorMessage(error: unknown, llmProviderId?: string): string {
+  const formatted = formatErrorForUser(error, { llmProviderId });
+  const firstLine = formatted
+    .split('\n')
+    .map(line => line.trim())
+    .find(Boolean);
+  return firstLine || 'Unknown error';
+}
+
 export interface ChatWebviewService {
   resolveWebviewView(webviewView: vscode.WebviewView): void;
   startInitPusher(): void;
   sendInit(force?: boolean): Promise<void>;
+  getProviderAuthStateForUI(): Promise<ProviderAuthUiState>;
+  postProviderState(): Promise<void>;
+  authenticateProvider(): Promise<void>;
+  disconnectProvider(): Promise<void>;
   postMessage(message: unknown): void;
   getHtml(webview: vscode.Webview): string;
 }
@@ -98,6 +113,7 @@ export interface ChatWebviewDeps {
   outputChannel?: vscode.OutputChannel;
   view?: vscode.WebviewView;
   viewDisposables: vscode.Disposable[];
+  availableModels: ModelInfo[];
   currentModel: string;
   activeSessionId: string;
   inputHistoryEntries: string[];
@@ -112,6 +128,10 @@ export interface ChatWebviewDeps {
   initInFlight: boolean;
   webviewClientInstanceId?: string;
   webviewErrorShown: boolean;
+  llmProvider?: Pick<
+    LLMProviderWithUi,
+    'id' | 'name' | 'getAuthStatus' | 'authenticate' | 'disconnect' | 'clearModelCache'
+  >;
   toolDiffBeforeByToolCallId: Map<
     string,
     {
@@ -150,6 +170,7 @@ export interface ChatWebviewDeps {
   rejectAllPendingApprovals(reason: string): void;
   clearCurrentSession(): Promise<void>;
   executePendingPlan(planMessageId?: string): Promise<void>;
+  loadModels(): Promise<void>;
   pickModel(): Promise<void>;
   setCurrentModel(modelId: string): Promise<void>;
   toggleFavoriteModel(modelId: string): Promise<void>;
@@ -491,6 +512,12 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
           case 'pickModel':
             await this.pickModel();
             break;
+          case 'authenticateProvider':
+            await service.authenticateProvider();
+            break;
+          case 'disconnectProvider':
+            await service.disconnectProvider();
+            break;
           case 'changeModel':
             if (typeof data.model === 'string') {
               await this.setCurrentModel(data.model);
@@ -625,12 +652,16 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
     this.initInFlight = true;
     try {
       await this.ensureSessionsLoaded();
+      if (this.availableModels.length === 0) {
+        await this.loadModels();
+      }
 
       const modelLabel = this.getModelLabel(this.currentModel) || this.currentModel;
       const currentModelIsFavorite = await this.isModelFavorite(this.currentModel);
 
       const todos = await readTodos(this.context, this.activeSessionId);
       const skills = await this.getSkillNamesForUI();
+      const providerAuth = await service.getProviderAuthStateForUI();
 
       this.postMessage({
         type: 'init',
@@ -645,6 +676,7 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
         currentModel: this.currentModel,
         currentModelLabel: modelLabel,
         currentModelIsFavorite,
+        providerAuth,
         mode: this.mode,
         planPending: !!this.getActiveSession().pendingPlan,
 	        activePlanMessageId: this.getActiveSession().pendingPlan?.planMessageId ?? '',
@@ -671,6 +703,7 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
       try {
         const todos = await readTodos(this.context, this.activeSessionId);
         const skills = await this.getSkillNamesForUI();
+        const providerAuth = await service.getProviderAuthStateForUI();
         this.postMessage({
           type: 'init',
           sessions: this.getSessionsForUI(),
@@ -682,9 +715,10 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
           todos,
           loop: this.getLoopStateForUI(),
           currentModel: this.currentModel,
-        currentModelLabel: modelLabel,
-        currentModelIsFavorite,
-        mode: this.mode,
+          currentModelLabel: modelLabel,
+          currentModelIsFavorite,
+          providerAuth,
+          mode: this.mode,
           planPending: !!this.getActiveSession().pendingPlan,
 	          activePlanMessageId: this.getActiveSession().pendingPlan?.planMessageId ?? '',
 	          processing: this.isProcessing,
@@ -699,9 +733,88 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
           tag: 'Webview',
         });
       }
-    } finally {
+  } finally {
       this.initInFlight = false;
       void this.queueManager.flushAutosendForActiveSession();
+    }
+  },
+
+  async getProviderAuthStateForUI(this: ChatWebviewRuntime): Promise<ProviderAuthUiState> {
+    const provider = this.llmProvider;
+    const providerId = typeof provider?.id === 'string' ? provider.id : '';
+    const providerName = typeof provider?.name === 'string' ? provider.name : '';
+
+    if (!provider?.getAuthStatus) {
+      return {
+        providerId,
+        providerName,
+        supported: false,
+        authenticated: false,
+        status: 'hidden',
+        label: '',
+      };
+    }
+
+    const status = await provider.getAuthStatus().catch(() => undefined);
+    if (!status) {
+      return {
+        providerId,
+        providerName,
+        supported: true,
+        authenticated: false,
+        status: 'signed_out',
+        label: 'Sign in',
+      };
+    }
+
+    return {
+      providerId,
+      providerName,
+      supported: status.supported !== false,
+      authenticated: !!status.authenticated,
+      status: status.status || (status.authenticated ? 'signed_in' : 'signed_out'),
+      label: status.label || '',
+      ...(status.detail ? { detail: status.detail } : {}),
+      ...(status.accountLabel ? { accountLabel: status.accountLabel } : {}),
+      ...(status.primaryActionLabel ? { primaryActionLabel: status.primaryActionLabel } : {}),
+      ...(status.secondaryActionLabel ? { secondaryActionLabel: status.secondaryActionLabel } : {}),
+    };
+  },
+
+  async postProviderState(this: ChatWebviewRuntime): Promise<void> {
+    const providerAuth = await service.getProviderAuthStateForUI();
+    this.postMessage({ type: 'providerState', providerAuth });
+  },
+
+  async authenticateProvider(this: ChatWebviewRuntime): Promise<void> {
+    const provider = this.llmProvider;
+    if (!provider?.authenticate) return;
+
+    try {
+      await provider.authenticate();
+      provider.clearModelCache?.();
+      await this.loadModels();
+      await service.postProviderState();
+      void vscode.window.showInformationMessage(`LingYun: Connected to ${provider.name}.`);
+    } catch (error) {
+      await service.postProviderState().catch(() => {});
+      void vscode.window.showErrorMessage(`LingYun: ${getToastErrorMessage(error, this.llmProvider?.id)}`);
+    }
+  },
+
+  async disconnectProvider(this: ChatWebviewRuntime): Promise<void> {
+    const provider = this.llmProvider;
+    if (!provider?.disconnect) return;
+
+    try {
+      await provider.disconnect();
+      provider.clearModelCache?.();
+      await this.loadModels();
+      await service.postProviderState();
+      void vscode.window.showInformationMessage(`LingYun: Disconnected ${provider.name}.`);
+    } catch (error) {
+      await service.postProviderState().catch(() => {});
+      void vscode.window.showErrorMessage(`LingYun: ${getToastErrorMessage(error, this.llmProvider?.id)}`);
     }
   },
 
@@ -772,6 +885,12 @@ function createChatWebviewDepsForController(controller: ChatController): ChatWeb
     set currentModel(value) {
       controller.currentModel = value;
     },
+    get availableModels() {
+      return controller.availableModels;
+    },
+    set availableModels(value) {
+      controller.availableModels = value;
+    },
     get activeSessionId() {
       return controller.activeSessionId;
     },
@@ -832,6 +951,9 @@ function createChatWebviewDepsForController(controller: ChatController): ChatWeb
     set webviewErrorShown(value) {
       controller.webviewErrorShown = value;
     },
+    get llmProvider() {
+      return controller.llmProvider;
+    },
     get toolDiffBeforeByToolCallId() {
       return controller.toolDiffBeforeByToolCallId;
     },
@@ -861,6 +983,7 @@ function createChatWebviewDepsForController(controller: ChatController): ChatWeb
     rejectAllPendingApprovals: (reason: string) => controller.approvalsApi.rejectAllPendingApprovals(reason),
     clearCurrentSession: () => controller.sessionApi.clearCurrentSession(),
     executePendingPlan: (planMessageId?: string) => controller.runnerPlanApi.executePendingPlan(planMessageId),
+    loadModels: () => controller.modelApi.loadModels(),
     pickModel: () => controller.modelApi.pickModel(),
     setCurrentModel: (modelId: string) => controller.modelApi.setCurrentModel(modelId),
     toggleFavoriteModel: (modelId: string) => controller.modelApi.toggleFavoriteModel(modelId),

@@ -116,7 +116,9 @@
     }
 
     .session-select,
-    .model-select {
+    .model-select,
+    .provider-auth-btn,
+    .provider-auth-secondary {
       min-width: 100px;
       max-width: 140px;
       padding: 4px 8px;
@@ -138,6 +140,25 @@
       align-items: center;
       justify-content: space-between;
       gap: 6px;
+    }
+
+    .provider-auth-btn {
+      max-width: 180px;
+      text-align: left;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .provider-auth-btn.connected {
+      cursor: default;
+      background: var(--vscode-editor-inactiveSelectionBackground, var(--vscode-dropdown-background));
+    }
+
+    .provider-auth-secondary {
+      min-width: auto;
+      max-width: none;
+      padding: 0 8px;
     }
 
     .context-wrap {
@@ -566,7 +587,9 @@
       }
 
       .session-select,
-      .model-select {
+      .model-select,
+      .provider-auth-btn,
+      .provider-auth-secondary {
         min-width: 80px;
         max-width: 100px;
         padding: 3px 6px;
@@ -576,6 +599,10 @@
 
       .model-select {
         max-width: 90px;
+      }
+
+      .provider-auth-btn {
+        max-width: 120px;
       }
 
       .header-btn {
@@ -614,7 +641,9 @@
       }
 
       .session-select,
-      .model-select {
+      .model-select,
+      .provider-auth-btn,
+      .provider-auth-secondary {
         min-width: 70px;
         max-width: 85px;
         padding: 2px 4px;
@@ -624,6 +653,10 @@
 
       .model-select {
         max-width: 75px;
+      }
+
+      .provider-auth-btn {
+        max-width: 96px;
       }
 
       .header-btn {
@@ -3083,6 +3116,10 @@
       display: none;
     }
 
+    .hidden {
+      display: none !important;
+    }
+
     @keyframes spin {
       from {
         transform: rotate(0deg);
@@ -3281,6 +3318,11 @@
         <span aria-hidden="true" style="opacity:0.7;flex-shrink:0;">▾</span>
       </button>
       <button id="modelFavoriteToggle" class="header-btn" type="button" aria-label="Toggle favorite model" title="Favorite model" disabled>☆</button>
+    </div>
+    <div id="providerAuthGroup" class="header-title hidden">
+      <span class="header-label">Account</span>
+      <button id="providerAuthPrimary" class="provider-auth-btn" type="button" aria-label="Provider account" disabled>Loading…</button>
+      <button id="providerAuthSecondary" class="provider-auth-secondary hidden" type="button" aria-label="Disconnect provider" title="Disconnect provider" disabled>Disconnect</button>
     </div>
     <div class="context-wrap">
       <button id="contextIndicator" class="context-indicator hidden" type="button" title="Context usage"

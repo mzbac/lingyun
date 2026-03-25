@@ -28,6 +28,9 @@
 	    const modelPicker = document.getElementById('modelPicker');
 	    const modelPickerLabel = document.getElementById('modelPickerLabel');
 	    const modelFavoriteToggle = document.getElementById('modelFavoriteToggle');
+	    const providerAuthGroup = document.getElementById('providerAuthGroup');
+	    const providerAuthPrimary = document.getElementById('providerAuthPrimary');
+	    const providerAuthSecondary = document.getElementById('providerAuthSecondary');
 	    const modePlanBtn = document.getElementById('modePlan');
 	    const modeBuildBtn = document.getElementById('modeBuild');
 	    const operationBanner = document.getElementById('operationBanner');
@@ -75,6 +78,19 @@
 	    let currentRevertState = null;
 		    let currentSessionId = '';
 			    let currentModel = '';
+			    let currentProviderAuth = {
+			      providerId: '',
+			      providerName: '',
+			      supported: false,
+			      authenticated: false,
+			      status: 'hidden',
+			      label: '',
+			      detail: '',
+			      accountLabel: '',
+			      primaryActionLabel: '',
+			      secondaryActionLabel: '',
+			    };
+			    let providerAuthBusy = false;
 			    let currentMode = 'build';
 		    let currentLoop = {
 		      available: true,
@@ -476,6 +492,9 @@
 	      modelFavoriteToggle.disabled = true;
 	      modelFavoriteToggle.textContent = '☆';
 	    }
+	    if (providerAuthGroup) {
+	      providerAuthGroup.classList.add('hidden');
+	    }
 
 		    const toolIcons = {
 		      'read': '📝',
@@ -690,6 +709,41 @@
 			        if (!initReceived || isProcessing) return;
 			        if (!currentModel) return;
 			        try { vscode.postMessage({ type: 'toggleFavoriteModel', model: currentModel }); } catch {}
+			      });
+			    }
+
+			    if (providerAuthPrimary) {
+			      providerAuthPrimary.addEventListener('click', () => {
+			        if (!initReceived || isProcessing || providerAuthBusy) return;
+			        if (!currentProviderAuth || currentProviderAuth.status === 'hidden') return;
+			        if (currentProviderAuth.authenticated) return;
+			        providerAuthBusy = true;
+			        updateProviderAuthHeader(currentProviderAuth);
+			        syncInputState();
+			        try {
+			          vscode.postMessage({ type: 'authenticateProvider' });
+			        } catch {
+			          providerAuthBusy = false;
+			          updateProviderAuthHeader(currentProviderAuth);
+			          syncInputState();
+			        }
+			      });
+			    }
+
+			    if (providerAuthSecondary) {
+			      providerAuthSecondary.addEventListener('click', () => {
+			        if (!initReceived || isProcessing || providerAuthBusy) return;
+			        if (!currentProviderAuth || !currentProviderAuth.authenticated) return;
+			        providerAuthBusy = true;
+			        updateProviderAuthHeader(currentProviderAuth);
+			        syncInputState();
+			        try {
+			          vscode.postMessage({ type: 'disconnectProvider' });
+			        } catch {
+			          providerAuthBusy = false;
+			          updateProviderAuthHeader(currentProviderAuth);
+			          syncInputState();
+			        }
 			      });
 			    }
 
@@ -1183,7 +1237,27 @@
 			      if (modePlanBtn) modePlanBtn.disabled = !connected || isProcessing;
 			      if (modeBuildBtn) modeBuildBtn.disabled = !connected || isProcessing;
 			      if (contextIndicator) contextIndicator.disabled = !connected;
-			      if (contextCompactNowBtn) contextCompactNowBtn.disabled = !connected || isProcessing;
+		      if (contextCompactNowBtn) contextCompactNowBtn.disabled = !connected || isProcessing;
+		      if (providerAuthPrimary) {
+		        const canAuthenticate =
+		          connected &&
+		          !isProcessing &&
+		          !providerAuthBusy &&
+		          !!currentProviderAuth &&
+		          currentProviderAuth.status !== 'hidden' &&
+		          !currentProviderAuth.authenticated;
+		        providerAuthPrimary.disabled =
+		          providerAuthPrimary.classList.contains('connected') || !canAuthenticate;
+		      }
+		      if (providerAuthSecondary) {
+		        const canDisconnect =
+		          connected &&
+		          !isProcessing &&
+		          !providerAuthBusy &&
+		          !!currentProviderAuth &&
+		          currentProviderAuth.authenticated;
+		        providerAuthSecondary.disabled = !canDisconnect;
+		      }
 		      if (operationStopBtn) {
 		        operationStopBtn.disabled =
 		          !connected ||

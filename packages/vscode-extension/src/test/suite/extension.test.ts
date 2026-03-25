@@ -57,6 +57,7 @@ suite('Extension Integration', () => {
 
     assert.strictEqual(config.get('llmProvider'), 'copilot');
     assert.strictEqual(config.get('model'), 'gpt-4o');
+    assert.strictEqual(config.get('codexSubscription.defaultModelId'), 'gpt-5.3-codex');
     assert.strictEqual(config.get('mode'), 'build');
     assert.strictEqual(config.get('copilot.reasoningEffort'), 'high');
     assert.strictEqual(config.get('temperature'), 0);
@@ -103,6 +104,23 @@ suite('Extension Integration', () => {
       assert.strictEqual(agentConfig.maxOutputTokens, 12345);
     } finally {
       await config.update('openaiCompatible.maxTokens', undefined, vscode.ConfigurationTarget.Global);
+      await config.update('llmProvider', undefined, vscode.ConfigurationTarget.Global);
+    }
+  });
+
+  test('createAgentConfig should use the codex default when codex provider is selected with the copilot default model', async () => {
+    const config = vscode.workspace.getConfiguration('lingyun');
+
+    await config.update('llmProvider', 'codexSubscription', vscode.ConfigurationTarget.Global);
+    await config.update('model', 'gpt-4o', vscode.ConfigurationTarget.Global);
+    await config.update('codexSubscription.defaultModelId', 'gpt-5.4', vscode.ConfigurationTarget.Global);
+
+    try {
+      const agentConfig = createAgentConfig();
+      assert.strictEqual(agentConfig.model, 'gpt-5.4');
+    } finally {
+      await config.update('codexSubscription.defaultModelId', undefined, vscode.ConfigurationTarget.Global);
+      await config.update('model', undefined, vscode.ConfigurationTarget.Global);
       await config.update('llmProvider', undefined, vscode.ConfigurationTarget.Global);
     }
   });

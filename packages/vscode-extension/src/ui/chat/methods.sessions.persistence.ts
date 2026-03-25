@@ -4,6 +4,7 @@ import { parseUserHistoryInput } from '@kooka/core';
 
 import type { AgentSessionState } from '../../core/agent';
 import { appendErrorLog } from '../../core/logger';
+import { resolveModelIdWithWorkspaceDefaults } from '../../core/modelSelection';
 import { createBlankSessionSignals, normalizeSessionSignals } from '../../core/sessionSignals';
 import { SessionStore } from '../../core/sessionStore';
 import { bindChatControllerService } from './controllerService';
@@ -38,6 +39,7 @@ export interface ChatSessionPersistenceDeps {
   context: vscode.ExtensionContext;
   outputChannel?: vscode.OutputChannel;
   view?: vscode.WebviewView;
+  llmProviderId?: string;
   currentModel: string;
   activeSessionId: string;
   sessions: Map<string, ChatSessionInfo>;
@@ -255,7 +257,10 @@ export function createChatSessionPersistenceService(
         signals: normalizeSessionSignals((raw as any).signals, now),
         messages: Array.isArray(raw.messages) ? raw.messages : [],
         agentState: this.normalizeLoadedAgentState((raw as any).agentState),
-        currentModel: typeof raw.currentModel === 'string' ? raw.currentModel : this.currentModel,
+        currentModel: resolveModelIdWithWorkspaceDefaults(
+          this.llmProviderId,
+          typeof raw.currentModel === 'string' ? raw.currentModel : this.currentModel,
+        ),
         mode: raw.mode === 'plan' ? 'plan' : 'build',
         stepCounter: typeof raw.stepCounter === 'number' ? raw.stepCounter : 0,
         activeStepId: typeof raw.activeStepId === 'string' ? raw.activeStepId : undefined,

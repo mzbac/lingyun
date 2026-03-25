@@ -167,6 +167,8 @@ export function formatErrorForUser(error: unknown, options?: FormatErrorForUserO
     } else if (statusCode === 401 || statusCode === 403) {
       if (options?.llmProviderId === 'copilot') {
         tips.push('Tip: GitHub Copilot auth expired — please sign in again and retry.');
+      } else if (options?.llmProviderId === 'codexSubscription') {
+        tips.push('Tip: ChatGPT Codex auth expired — click Sign in again in the LingYun chat header and retry.');
       } else if (options?.llmProviderId === 'openaiCompatible') {
         tips.push(
           'Tip: check authentication. Ensure the env var configured by `lingyun.openaiCompatible.apiKeyEnv` is set (or disable auth on the server).',

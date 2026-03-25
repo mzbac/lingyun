@@ -152,4 +152,36 @@ suite('Chat webview loop integration', () => {
       }
     }
   });
+
+  test('provider auth state is capability-based instead of provider-id-based', async () => {
+    const controller = createStandaloneChatController({
+      llmProvider: {
+        id: 'customAuthProvider',
+        name: 'Custom Provider',
+        async getAuthStatus() {
+          return {
+            supported: true,
+            authenticated: true,
+            status: 'signed_in',
+            label: 'Connected',
+            accountLabel: 'user@example.com',
+            secondaryActionLabel: 'Disconnect',
+          };
+        },
+      } as any,
+    });
+
+    const providerAuth = await controller.webviewApi.getProviderAuthStateForUI();
+
+    assert.deepStrictEqual(providerAuth, {
+      providerId: 'customAuthProvider',
+      providerName: 'Custom Provider',
+      supported: true,
+      authenticated: true,
+      status: 'signed_in',
+      label: 'Connected',
+      accountLabel: 'user@example.com',
+      secondaryActionLabel: 'Disconnect',
+    });
+  });
 });

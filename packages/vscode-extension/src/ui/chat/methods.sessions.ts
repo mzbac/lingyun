@@ -152,6 +152,9 @@ function createChatSessionPersistenceDeps(
     get view() {
       return controller.view;
     },
+    get llmProviderId() {
+      return controller.llmProvider?.id;
+    },
     get currentModel() {
       return controller.currentModel;
     },
