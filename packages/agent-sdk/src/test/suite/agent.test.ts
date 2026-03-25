@@ -311,22 +311,29 @@ suite('LingYun Agent SDK', () => {
     const agent = new LingyunAgent(llm, { model: 'mock-model' }, registry, { allowExternalPaths: false });
     const session = new LingyunSession({ pendingInputs: ['first pending', 'second pending'] });
     const abortController = new AbortController();
+    const execution = (agent as any).resolveExecutionContext({ model: 'mock-model' });
 
     const originalInject = (agent as any).injectSkillsForUserText;
     (agent as any).injectSkillsForUserText = async (
       scopedSession: LingyunSession,
+      scopedExecution: unknown,
       text: string,
       callbacks: unknown,
       signal: AbortSignal | undefined,
     ) => {
-      await originalInject.call(agent, scopedSession, text, callbacks, signal);
+      await originalInject.call(agent, scopedSession, scopedExecution, text, callbacks, signal);
       if (text === 'first pending') {
         abortController.abort();
       }
     };
 
     try {
-      const drained = await (agent as any).drainPendingInputs(session, undefined, abortController.signal);
+      const drained = await (agent as any).drainPendingInputs(
+        session,
+        execution,
+        undefined,
+        abortController.signal,
+      );
       assert.strictEqual(drained, 1);
     } finally {
       (agent as any).injectSkillsForUserText = originalInject;
@@ -1426,15 +1433,10 @@ suite('LingYun Agent SDK', () => {
   });
 
   test('task tool subagent inherits parent mode (plan) and disables autoApprove', async () => {
-    const llm = new MockLLMProvider();
     const parentSession = new LingyunSession({ sessionId: 'parent' });
 
     let capturedSubagentConfig: any;
     const runner = new TaskSubagentRunner({
-      llm,
-      getConfig: () => ({ model: 'parent-model', mode: 'plan', autoApprove: true } as any),
-      getMode: () => 'plan',
-      getTaskMaxOutputChars: () => 0,
       taskSessions: new Map<string, LingyunSession>(),
       maxTaskSessions: 10,
       createSubagentAgent: (subagentConfig) => {
@@ -1449,11 +1451,23 @@ suite('LingYun Agent SDK', () => {
     });
 
     const result = await runner.executeTaskTool({
+      mode: 'plan',
       def: { id: 'task' } as any,
       session: parentSession,
       callbacks: undefined,
       args: { description: 'desc', prompt: 'prompt', subagent_type: 'explore' },
       options: { toolCallId: 'call_task', abortSignal: new AbortController().signal } as any,
+      prepareSubagentExecution: async ({ childSessionId }) => ({
+        config: {
+          model: 'parent-model',
+          mode: 'plan',
+          autoApprove: false,
+          sessionId: childSessionId,
+        } as any,
+        childModelId: 'parent-model',
+        desiredChildModelId: 'parent-model',
+        taskMaxOutputChars: 0,
+      }),
     });
 
     assert.strictEqual(result.success, true);

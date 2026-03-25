@@ -1,3 +1,4 @@
+import type { ChatQueueHost } from './controllerPorts';
 import type { ChatController } from './controller';
 import type { ChatImageAttachment, ChatMessage, ChatQueuedInput, ChatSessionInfo, ChatUserInput } from './types';
 
@@ -18,7 +19,7 @@ export class ChatQueueManager {
   private readonly autosendTimers = new Map<string, NodeJS.Timeout>();
   private readonly pendingAutosendSessionIds = new Set<string>();
 
-  constructor(private readonly controller: ChatController) {}
+  constructor(private readonly controller: ChatQueueHost) {}
 
   getQueuedInputs(session: ChatSessionInfo = this.controller.getActiveSession()): ChatQueuedInput[] {
     if (!Array.isArray(session.queuedInputs)) {
@@ -242,4 +243,33 @@ export class ChatQueueManager {
       this.controller.persistActiveSession();
     }
   }
+}
+
+export function createChatQueueManager(controller: ChatController): ChatQueueManager {
+  return new ChatQueueManager({
+    get activeSessionId() {
+      return controller.activeSessionId;
+    },
+    get isProcessing() {
+      return controller.isProcessing;
+    },
+    get messages() {
+      return controller.messages;
+    },
+    get sessions() {
+      return controller.sessions;
+    },
+    get view() {
+      return controller.view;
+    },
+    runner: {
+      handleUserMessage: (
+        content: string | ChatUserInput,
+        options?: { fromQueue?: boolean; synthetic?: boolean; displayContent?: string }
+      ) => controller.runner.handleUserMessage(content, options),
+    },
+    getActiveSession: () => controller.sessionApi.getActiveSession(),
+    postMessage: (message: unknown) => controller.webviewApi.postMessage(message),
+    persistActiveSession: () => controller.sessionApi.persistActiveSession(),
+  });
 }

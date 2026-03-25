@@ -1,11 +1,23 @@
 import * as vscode from 'vscode';
+
 import { getSkillIndex } from '../../core/skills';
 import { getPrimaryWorkspaceRootPath } from '../../core/workspaceContext';
-import type { ChatController } from './controller';
 
-export function installSkillsMethods(controller: ChatController): void {
-  Object.assign(controller, {
-    async getSkillNamesForUI(this: ChatController): Promise<string[]> {
+import { bindChatControllerService } from './controllerService';
+
+export interface ChatSkillsService {
+  getSkillNamesForUI(): Promise<string[]>;
+  postUnknownSkillWarnings(content: string, turnId?: string): Promise<void>;
+}
+
+export interface ChatSkillsDeps {
+  context: vscode.ExtensionContext;
+  skillNamesForUiPromise?: Promise<string[]>;
+}
+
+export function createChatSkillsService(controller: ChatSkillsDeps): ChatSkillsService {
+  return bindChatControllerService(controller, {
+    async getSkillNamesForUI(this: ChatSkillsDeps): Promise<string[]> {
       if (this.skillNamesForUiPromise) return this.skillNamesForUiPromise;
 
       const enabled =
@@ -33,15 +45,14 @@ export function installSkillsMethods(controller: ChatController): void {
         allowExternalPaths,
         watchWorkspace: true,
       })
-        .then((index) => index.skills.map((s) => s.name))
+        .then((index) => index.skills.map((skill) => skill.name))
         .catch(() => []);
 
       return this.skillNamesForUiPromise;
     },
 
-    async postUnknownSkillWarnings(this: ChatController, content: string, turnId?: string): Promise<void> {
-      // Unknown `$...` tokens are ignored: only discovered skills are applied.
-      // This avoids false positives when users paste shell env vars like `$PATH` or `$GITHUB_OUTPUT`.
+    async postUnknownSkillWarnings(this: ChatSkillsDeps, content: string, turnId?: string): Promise<void> {
+      void this;
       void content;
       void turnId;
     },

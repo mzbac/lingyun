@@ -1,22 +1,33 @@
-import type { ChatController } from './controller';
+import { bindChatControllerService } from './controllerService';
+import type { RunCoordinator } from './runner/runCoordinator';
 
-export function installRunnerPlanMethods(controller: ChatController): void {
-  Object.assign(controller, {
-    async executePendingPlan(this: ChatController, planMessageId?: string): Promise<void> {
+export interface ChatRunnerPlanService {
+  executePendingPlan(planMessageId?: string): Promise<void>;
+  regeneratePendingPlan(planMessageId: string, reason?: string): Promise<void>;
+  cancelPendingPlan(planMessageId: string): Promise<void>;
+  revisePendingPlan(planMessageId: string, instructions: string): Promise<void>;
+}
+
+export interface ChatRunnerPlanDeps {
+  runner: Pick<RunCoordinator, 'executePendingPlan' | 'regeneratePendingPlan' | 'cancelPendingPlan' | 'revisePendingPlan'>;
+}
+
+export function createChatRunnerPlanService(controller: ChatRunnerPlanDeps): ChatRunnerPlanService {
+  return bindChatControllerService(controller, {
+    async executePendingPlan(this: ChatRunnerPlanDeps, planMessageId?: string): Promise<void> {
       await this.runner.executePendingPlan(planMessageId);
     },
 
-    async regeneratePendingPlan(this: ChatController, planMessageId: string, reason?: string): Promise<void> {
+    async regeneratePendingPlan(this: ChatRunnerPlanDeps, planMessageId: string, reason?: string): Promise<void> {
       await this.runner.regeneratePendingPlan(planMessageId, reason);
     },
 
-    async cancelPendingPlan(this: ChatController, planMessageId: string): Promise<void> {
+    async cancelPendingPlan(this: ChatRunnerPlanDeps, planMessageId: string): Promise<void> {
       await this.runner.cancelPendingPlan(planMessageId);
     },
 
-    async revisePendingPlan(this: ChatController, planMessageId: string, instructions: string): Promise<void> {
+    async revisePendingPlan(this: ChatRunnerPlanDeps, planMessageId: string, instructions: string): Promise<void> {
       await this.runner.revisePendingPlan(planMessageId, instructions);
     },
   });
 }
-

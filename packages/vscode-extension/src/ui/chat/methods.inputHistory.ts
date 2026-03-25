@@ -1,18 +1,40 @@
+import * as vscode from 'vscode';
+
 import {
-  InputHistoryStore,
-  addInputHistoryEntry,
   DEFAULT_INPUT_HISTORY_MAX_ENTRIES,
   DEFAULT_INPUT_HISTORY_MAX_ENTRY_CHARS,
+  InputHistoryStore,
+  addInputHistoryEntry,
 } from '../../core/inputHistoryStore';
 import { appendErrorLog } from '../../core/logger';
-import type { ChatController } from './controller';
 
-export function installInputHistoryMethods(controller: ChatController): void {
-  Object.assign(controller, {
-    getOrCreateInputHistoryStore(this: ChatController): InputHistoryStore | undefined {
-      if (!this.isSessionPersistenceEnabled()) return undefined;
+import { bindChatControllerService } from './controllerService';
+import type { ChatSessionsService } from './methods.sessions';
+import type { ChatWebviewService } from './methods.webview';
 
-      const baseUri = this.context.storageUri ?? this.context.globalStorageUri;
+export interface ChatInputHistoryService {
+  getOrCreateInputHistoryStore(): InputHistoryStore | undefined;
+  ensureInputHistoryLoaded(): Promise<void>;
+  recordInputHistory(content: string): void;
+  postInputHistory(): void;
+}
+
+export interface ChatInputHistoryDeps {
+  context: { storageUri?: vscode.Uri; globalStorageUri?: vscode.Uri };
+  inputHistoryStore?: InputHistoryStore;
+  inputHistoryLoadedFromDisk: boolean;
+  inputHistoryEntries: string[];
+  outputChannel?: vscode.OutputChannel;
+  sessionApi: Pick<ChatSessionsService, 'isSessionPersistenceEnabled'>;
+  webviewApi: Pick<ChatWebviewService, 'postMessage'>;
+}
+
+export function createChatInputHistoryService(controller: ChatInputHistoryDeps): ChatInputHistoryService {
+  const service = bindChatControllerService(controller, {
+    getOrCreateInputHistoryStore(this: ChatInputHistoryDeps): InputHistoryStore | undefined {
+      if (!this.sessionApi.isSessionPersistenceEnabled()) return undefined;
+
+      const baseUri = this.context?.storageUri ?? this.context?.globalStorageUri;
       if (!baseUri) return undefined;
 
       if (this.inputHistoryStore) return this.inputHistoryStore;
@@ -20,7 +42,7 @@ export function installInputHistoryMethods(controller: ChatController): void {
       this.inputHistoryStore = new InputHistoryStore(baseUri, {
         maxEntries: DEFAULT_INPUT_HISTORY_MAX_ENTRIES,
         maxEntryChars: DEFAULT_INPUT_HISTORY_MAX_ENTRY_CHARS,
-        log: message => {
+        log: (message) => {
           try {
             this.outputChannel?.appendLine(message);
           } catch {
@@ -32,18 +54,16 @@ export function installInputHistoryMethods(controller: ChatController): void {
       return this.inputHistoryStore;
     },
 
-    async ensureInputHistoryLoaded(this: ChatController): Promise<void> {
+    async ensureInputHistoryLoaded(this: ChatInputHistoryDeps): Promise<void> {
       if (this.inputHistoryLoadedFromDisk) return;
 
-      const store = this.getOrCreateInputHistoryStore();
+      const store = service.getOrCreateInputHistoryStore();
       if (!store) return;
 
       try {
         const loaded = await store.load();
-        if (loaded?.entries?.length) {
-          if (!this.inputHistoryEntries.length) {
-            this.inputHistoryEntries = loaded.entries;
-          }
+        if (loaded?.entries?.length && !this.inputHistoryEntries.length) {
+          this.inputHistoryEntries = loaded.entries;
         }
       } catch (error) {
         appendErrorLog(this.outputChannel, 'Failed to load input history', error, {
@@ -54,7 +74,7 @@ export function installInputHistoryMethods(controller: ChatController): void {
       }
     },
 
-    recordInputHistory(this: ChatController, content: string): void {
+    recordInputHistory(this: ChatInputHistoryDeps, content: string): void {
       const next = addInputHistoryEntry(this.inputHistoryEntries, content, {
         maxEntries: DEFAULT_INPUT_HISTORY_MAX_ENTRIES,
         maxEntryChars: DEFAULT_INPUT_HISTORY_MAX_ENTRY_CHARS,
@@ -62,15 +82,17 @@ export function installInputHistoryMethods(controller: ChatController): void {
 
       if (next === this.inputHistoryEntries) return;
       this.inputHistoryEntries = next;
-      this.postInputHistory();
+      service.postInputHistory();
 
-      const store = this.getOrCreateInputHistoryStore();
+      const store = service.getOrCreateInputHistoryStore();
       if (!store) return;
       void store.save(next);
     },
 
-    postInputHistory(this: ChatController): void {
-      this.postMessage({ type: 'inputHistory', entries: this.inputHistoryEntries });
+    postInputHistory(this: ChatInputHistoryDeps): void {
+      this.webviewApi.postMessage({ type: 'inputHistory', entries: this.inputHistoryEntries });
     },
   });
+
+  return service;
 }

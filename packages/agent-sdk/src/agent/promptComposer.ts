@@ -18,11 +18,17 @@ export class SkillsPromptProvider {
     },
   ) {}
 
-  getSkillsPromptText(options?: { signal?: AbortSignal }): Promise<string | undefined> {
+  getSkillsPromptText(options?: {
+    signal?: AbortSignal;
+    allowExternalPaths?: boolean;
+  }): Promise<string | undefined> {
     if (!this.params.getEnabled()) return Promise.resolve(undefined);
 
     const workspaceRoot = this.params.getWorkspaceRoot();
-    const allowExternalPaths = this.params.getAllowExternalPaths();
+    const allowExternalPaths =
+      typeof options?.allowExternalPaths === 'boolean'
+        ? options.allowExternalPaths
+        : this.params.getAllowExternalPaths();
     const paths = this.params.getPaths();
     const maxPromptSkills = this.params.getMaxPromptSkills();
 
@@ -49,21 +55,31 @@ export class PromptComposer {
       plugins: PluginManagerLike;
       providerBehavior: ProviderBehavior;
       skills: SkillsPromptProvider;
-      getBasePrompt: () => string;
-      getSessionId: () => string | undefined;
-      getMode: () => 'build' | 'plan';
     },
   ) {}
 
-  async composeSystemPrompts(modelId: string, options?: { signal?: AbortSignal }): Promise<string[]> {
-    const basePrompt = this.params.getBasePrompt();
-    const skillsPromptText = await this.params.skills.getSkillsPromptText({ signal: options?.signal });
+  async composeSystemPrompts(modelId: string, options?: {
+    signal?: AbortSignal;
+    basePrompt?: string;
+    sessionId?: string;
+    mode?: 'build' | 'plan';
+    allowExternalPaths?: boolean;
+  }): Promise<string[]> {
+    const basePrompt = typeof options?.basePrompt === 'string' ? options.basePrompt : '';
+    const skillsPromptText = await this.params.skills.getSkillsPromptText({
+      signal: options?.signal,
+      allowExternalPaths: options?.allowExternalPaths,
+    });
     let system = [[basePrompt, skillsPromptText].filter(Boolean).join('\n')].filter(Boolean) as string[];
     const header = system[0] ?? '';
 
     const out = await this.params.plugins.trigger(
       'experimental.chat.system.transform',
-      { sessionId: this.params.getSessionId(), mode: this.params.getMode(), modelId },
+      {
+        sessionId: options?.sessionId,
+        mode: options?.mode === 'plan' ? 'plan' : 'build',
+        modelId,
+      },
       { system },
     );
 

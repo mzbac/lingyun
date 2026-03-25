@@ -2,14 +2,20 @@ import * as vscode from 'vscode';
 import { getMessageText } from '@kooka/core';
 import { EDIT_TOOL_IDS } from '../../core/agent/constants';
 import type { AgentCallbacks, ToolDefinition, ToolCall } from '../../core/types';
+import type { AgentLoop } from '../../core/agent';
 import { cleanAssistantPreamble, formatErrorForUser, formatWorkspacePathForUI } from './utils';
 import type { ChatMessage } from './types';
 import { buildToolDiffView, createUnifiedDiff, computeUnifiedDiffStats, trimUnifiedDiff } from './toolDiff';
 import { resolveToolPath } from '../../tools/builtin/workspace';
 import { summarizeErrorForDebug } from '../../core/agent/debug';
 import { recordAssistantOutcome, recordFileTouch, recordToolUse } from '../../core/sessionSignals';
-import type { ChatController } from './controller';
+import { bindChatControllerService } from './controllerService';
 import { decorateAgentCallbacksWithOfficeSync } from '../office/sync';
+import type { OfficeSync } from '../office/sync';
+import type { WorkspaceSnapshot } from '../../core/snapshot';
+import type { SessionSignals } from '../../core/sessionSignals';
+import type { ChatSessionInfo } from './types';
+import type { ChatController } from './controller';
 import {
   appendDebugLog,
   applyCommonToolResultFields,
@@ -23,9 +29,76 @@ import {
 const MAX_TOOL_DIFF_FILE_BYTES = 400_000;
 const TOOL_DIFF_CONTEXT_LINES = 3;
 
-export function installRunnerCallbacksMethods(controller: ChatController): void {
-  Object.assign(controller, {
-  createPlanningCallbacks(this: ChatController, planMsg: ChatMessage): AgentCallbacks {
+export interface ChatRunnerCallbacksService {
+  createPlanningCallbacks(planMsg: ChatMessage): AgentCallbacks;
+  createAgentCallbacks(): AgentCallbacks;
+}
+
+export interface ChatRunnerCallbacksDeps {
+  activeSessionId: string;
+  sessions: Map<string, ChatSessionInfo>;
+  agent: Pick<AgentLoop, 'getHistory' | 'resolveFileId'>;
+  currentModel: string;
+  currentTurnId?: string;
+  activeStepId?: string;
+  stepCounter: number;
+  mode: 'build' | 'plan';
+  llmProvider?: { id?: string };
+  messages: ChatMessage[];
+  abortRequested: boolean;
+  signals: SessionSignals;
+  officeSync?: OfficeSync;
+  outputChannel?: vscode.OutputChannel;
+  snapshot?: WorkspaceSnapshot;
+  snapshotUnavailableReason?: string;
+  toolDiffBeforeByToolCallId: Map<
+    string,
+    {
+      absPath: string;
+      displayPath: string;
+      beforeText: string;
+      isExternal: boolean;
+      skippedReason?: 'too_large' | 'binary';
+    }
+  >;
+  toolDiffSnapshotsByToolCallId: Map<
+    string,
+    {
+      absPath: string;
+      displayPath: string;
+      beforeText: string;
+      afterText: string;
+      isExternal: boolean;
+      truncated: boolean;
+    }
+  >;
+  isSessionPersistenceEnabled(): boolean;
+  normalizeLoadedSession(raw: ChatSessionInfo): ChatSessionInfo;
+  persistActiveSession(): void;
+  postMessage(message: unknown): void;
+  postSessions(): void;
+  markSessionDirty(sessionId: string): void;
+  flushSessionSave(): Promise<void>;
+  getContextForUI(): {
+    totalTokens?: number;
+    inputTokens?: number;
+    outputTokens?: number;
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
+    contextLimitTokens?: number;
+    outputLimitTokens?: number;
+    percent?: number;
+  };
+  requestInlineApproval(tc: ToolCall, def: ToolDefinition, parentMessageId?: string): Promise<boolean>;
+  getWorkspaceSnapshot(): Promise<WorkspaceSnapshot | undefined>;
+}
+
+type ChatRunnerCallbacksRuntime = ChatRunnerCallbacksDeps & ChatRunnerCallbacksService;
+
+export function createChatRunnerCallbacksService(controller: ChatRunnerCallbacksDeps): ChatRunnerCallbacksService {
+  const runtime = controller as ChatRunnerCallbacksRuntime;
+  const service = bindChatControllerService(runtime, {
+  createPlanningCallbacks(this: ChatRunnerCallbacksRuntime, planMsg: ChatMessage): AgentCallbacks {
     const persistSessions = this.isSessionPersistenceEnabled();
     const planContainerId = planMsg.id;
     const planTurnId = planMsg.turnId ?? this.currentTurnId;
@@ -220,7 +293,7 @@ export function installRunnerCallbacksMethods(controller: ChatController): void 
     return this.officeSync ? decorateAgentCallbacksWithOfficeSync(callbacks, this.officeSync) : callbacks;
   },
 
-  createAgentCallbacks(this: ChatController): AgentCallbacks {
+  createAgentCallbacks(this: ChatRunnerCallbacksRuntime): AgentCallbacks {
     const showThinking =
       vscode.workspace.getConfiguration('lingyun').get<boolean>('showThinking', false) ?? false;
     const debugLlm = vscode.workspace.getConfiguration('lingyun').get<boolean>('debug.llm') ?? false;
@@ -923,4 +996,105 @@ export function installRunnerCallbacksMethods(controller: ChatController): void 
     return this.officeSync ? decorateAgentCallbacksWithOfficeSync(callbacks, this.officeSync) : callbacks;
   },
   });
+  Object.assign(runtime, service);
+  return service;
+}
+
+function createChatRunnerCallbacksDepsForController(
+  controller: ChatController
+): ChatRunnerCallbacksDeps {
+  return {
+    get activeSessionId() {
+      return controller.activeSessionId;
+    },
+    get sessions() {
+      return controller.sessions;
+    },
+    get agent() {
+      return controller.agent;
+    },
+    get currentModel() {
+      return controller.currentModel;
+    },
+    get currentTurnId() {
+      return controller.currentTurnId;
+    },
+    set currentTurnId(value) {
+      controller.currentTurnId = value;
+    },
+    get activeStepId() {
+      return controller.activeStepId;
+    },
+    set activeStepId(value) {
+      controller.activeStepId = value;
+    },
+    get stepCounter() {
+      return controller.stepCounter;
+    },
+    set stepCounter(value) {
+      controller.stepCounter = value;
+    },
+    get mode() {
+      return controller.mode;
+    },
+    get llmProvider() {
+      return controller.llmProvider;
+    },
+    get messages() {
+      return controller.messages;
+    },
+    get abortRequested() {
+      return controller.abortRequested;
+    },
+    set abortRequested(value) {
+      controller.abortRequested = value;
+    },
+    get signals() {
+      return controller.signals;
+    },
+    get officeSync() {
+      return controller.officeSync;
+    },
+    get outputChannel() {
+      return controller.outputChannel;
+    },
+    get snapshot() {
+      return controller.snapshot;
+    },
+    set snapshot(value) {
+      controller.snapshot = value;
+    },
+    get snapshotUnavailableReason() {
+      return controller.snapshotUnavailableReason;
+    },
+    set snapshotUnavailableReason(value) {
+      controller.snapshotUnavailableReason = value;
+    },
+    get toolDiffBeforeByToolCallId() {
+      return controller.toolDiffBeforeByToolCallId;
+    },
+    get toolDiffSnapshotsByToolCallId() {
+      return controller.toolDiffSnapshotsByToolCallId;
+    },
+    isSessionPersistenceEnabled: () => controller.sessionApi.isSessionPersistenceEnabled(),
+    normalizeLoadedSession: (raw: ChatSessionInfo) => controller.sessionApi.normalizeLoadedSession(raw),
+    persistActiveSession: () => controller.sessionApi.persistActiveSession(),
+    postMessage: (message: unknown) => controller.webviewApi.postMessage(message),
+    postSessions: () => controller.sessionApi.postSessions(),
+    markSessionDirty: (sessionId: string) => controller.sessionApi.markSessionDirty(sessionId),
+    flushSessionSave: () => controller.sessionApi.flushSessionSave(),
+    getContextForUI: () => controller.sessionApi.getContextForUI(),
+    requestInlineApproval: (
+      tc: Parameters<ChatRunnerCallbacksDeps['requestInlineApproval']>[0],
+      def: Parameters<ChatRunnerCallbacksDeps['requestInlineApproval']>[1],
+      parentMessageId?: string
+    ) => controller.approvalsApi.requestInlineApproval(tc, def, parentMessageId),
+    getWorkspaceSnapshot: () => controller.revertApi.getWorkspaceSnapshot(),
+  };
+}
+
+export function createChatRunnerCallbacksServiceForController(
+  controller: ChatController
+): ChatRunnerCallbacksService {
+  return createChatRunnerCallbacksService(createChatRunnerCallbacksDepsForController(controller));
 }

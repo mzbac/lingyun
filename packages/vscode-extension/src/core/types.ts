@@ -53,9 +53,16 @@ export interface ToolProvider {
 
 export interface AgentConfig extends SdkAgentConfig {
   planFirst?: boolean;
+}
+
+export type AgentSessionMetadata = {
   parentSessionId?: string;
   subagentType?: string;
-}
+};
+
+export type AgentSessionSeed = AgentSessionMetadata & {
+  sessionId?: string;
+};
 
 export type AgentCallbacks = SdkAgentCallbacks;
 export type SubagentEvent = SdkSubagentEvent;

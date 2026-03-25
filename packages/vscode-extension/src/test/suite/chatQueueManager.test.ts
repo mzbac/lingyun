@@ -1,13 +1,13 @@
 import * as assert from 'assert';
 
-import { ChatController, installChatControllerMethods } from '../../ui/chat';
+import { ChatController } from '../../ui/chat';
 import { createBlankSessionSignals } from '../../core/sessionSignals';
 import type { ChatSessionInfo } from '../../ui/chat/types';
+import { createStandaloneChatController } from './chatControllerHarness';
 
 suite('Chat queue manager', () => {
   function createProvider() {
-    const provider = Object.create(ChatController.prototype) as ChatController;
-    installChatControllerMethods(provider);
+    const provider = createStandaloneChatController();
 
     provider.mode = 'build';
     provider.currentModel = 'mock-model';
@@ -25,7 +25,7 @@ suite('Chat queue manager', () => {
           updatedAt: Date.now(),
           signals: provider.signals,
           messages: provider.messages,
-          agentState: provider.getBlankAgentState(),
+          agentState: provider.sessionApi.getBlankAgentState(),
           currentModel: provider.currentModel,
           mode: provider.mode,
           stepCounter: 0,
@@ -37,7 +37,7 @@ suite('Chat queue manager', () => {
     provider.view = {} as any;
     provider.agent = {
       syncSession: () => {},
-      exportState: () => provider.getBlankAgentState(),
+      exportState: () => provider.sessionApi.getBlankAgentState(),
     } as any;
     provider.runner = {
       handleUserMessage: async () => {},
@@ -47,10 +47,10 @@ suite('Chat queue manager', () => {
 
     const posted: any[] = [];
     let persisted = 0;
-    provider.postMessage = (message: unknown) => {
+    provider.webviewApi.postMessage = (message: unknown) => {
       posted.push(message);
     };
-    provider.persistActiveSession = () => {
+    provider.sessionApi.persistActiveSession = () => {
       persisted++;
     };
 
@@ -66,7 +66,7 @@ suite('Chat queue manager', () => {
       updatedAt: Date.now(),
       signals,
       messages: [],
-      agentState: provider.getBlankAgentState(),
+      agentState: provider.sessionApi.getBlankAgentState(),
       currentModel: provider.currentModel,
       mode: provider.mode,
       stepCounter: 0,
@@ -86,9 +86,9 @@ suite('Chat queue manager', () => {
     });
 
     posted.length = 0;
-    await provider.clearCurrentSession();
+    await provider.sessionApi.clearCurrentSession();
 
-    const session = provider.getActiveSession();
+    const session = provider.sessionApi.getActiveSession();
     assert.deepStrictEqual(session.queuedInputs, []);
     assert.strictEqual(provider.queueManager.getRuntimeAttachmentCount(), 0);
     assert.ok(posted.some((message) => message && (message as any).type === 'queueState' && Array.isArray((message as any).queuedInputs) && (message as any).queuedInputs.length === 0));
@@ -98,7 +98,7 @@ suite('Chat queue manager', () => {
 
   test('takeNextRunnableFromActiveSession drops broken image-only items and continues FIFO', () => {
     const { provider, posted } = createProvider();
-    const session = provider.getActiveSession();
+    const session = provider.sessionApi.getActiveSession();
 
     session.queuedInputs = [
       {
@@ -128,7 +128,7 @@ suite('Chat queue manager', () => {
 
   test('session-scoped autosend waits for the originating session to become active again', async () => {
     const { provider } = createProvider();
-    const session1 = provider.getActiveSession();
+    const session1 = provider.sessionApi.getActiveSession();
     const session2 = createSession(provider, 'session-2');
     provider.sessions.set(session2.id, session2);
 
@@ -147,7 +147,7 @@ suite('Chat queue manager', () => {
     } as any;
 
     provider.queueManager.scheduleAutosendForSession(session1.id);
-    provider.switchToSessionSync(session2.id);
+    provider.sessionApi.switchToSessionSync(session2.id);
 
     await new Promise((resolve) => setTimeout(resolve, 5));
 
@@ -155,7 +155,7 @@ suite('Chat queue manager', () => {
     assert.strictEqual(session1.queuedInputs?.length, 1);
     assert.strictEqual(session2.queuedInputs?.length, 1);
 
-    provider.switchToSessionSync(session1.id);
+    provider.sessionApi.switchToSessionSync(session1.id);
     await provider.queueManager.flushAutosendForActiveSession();
 
     assert.strictEqual(handled.length, 1);
@@ -170,7 +170,7 @@ suite('Chat queue manager', () => {
   test('normalizeLoadedAgentState keeps persisted pending steers', () => {
     const { provider } = createProvider();
 
-    const state = provider.normalizeLoadedAgentState({
+    const state = provider.sessionApi.normalizeLoadedAgentState({
       history: [],
       pendingInputs: [
         'queued follow-up',

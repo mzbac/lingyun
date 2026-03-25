@@ -7,8 +7,21 @@ import { appendErrorLog, appendLog } from '../../core/logger';
 import { getNonce } from './utils';
 import { getWorkspaceFolderUrisByPriority, resolveExistingFilePath } from './fileLinks';
 import type { ChatImageAttachment, ChatUserInput } from './types';
-import type { ChatController } from './controller';
+import { bindChatControllerService } from './controllerService';
 import { createLingyunDiffUri } from './diffContentProvider';
+import type { AgentLoop } from '../../core/agent';
+import type { ChatLoopService } from './methods.loop';
+import type { ChatModeService } from './methods.mode';
+import type { ChatModelsService } from './methods.models';
+import type { ChatApprovalsService } from './methods.approvals';
+import type { ChatRevertService } from './methods.revert';
+import type { ChatRunnerInputService } from './methods.runner.input';
+import type { ChatRunnerPlanService } from './methods.runner.plan';
+import type { ChatSessionsService } from './methods.sessions';
+import type { ChatSkillsService } from './methods.skills';
+import type { ChatQueueManager } from './queueManager';
+import type { RunCoordinator } from './runner/runCoordinator';
+import type { ChatController } from './controller';
 
 function stripWrappingQuotes(value: string): string {
   const trimmed = value.trim();
@@ -72,9 +85,104 @@ function parseWebviewImageAttachments(raw: unknown): ChatImageAttachment[] {
   return normalized;
 }
 
-export function installWebviewMethods(controller: ChatController): void {
-  Object.assign(controller, {
-  resolveWebviewView(this: ChatController, webviewView: vscode.WebviewView): void {
+export interface ChatWebviewService {
+  resolveWebviewView(webviewView: vscode.WebviewView): void;
+  startInitPusher(): void;
+  sendInit(force?: boolean): Promise<void>;
+  postMessage(message: unknown): void;
+  getHtml(webview: vscode.Webview): string;
+}
+
+export interface ChatWebviewDeps {
+  context: vscode.ExtensionContext;
+  outputChannel?: vscode.OutputChannel;
+  view?: vscode.WebviewView;
+  viewDisposables: vscode.Disposable[];
+  currentModel: string;
+  activeSessionId: string;
+  inputHistoryEntries: string[];
+  mode: 'build' | 'plan';
+  isProcessing: boolean;
+  abortRequested: boolean;
+  autoApproveThisRun: boolean;
+  pendingApprovals: Map<string, { resolve: (approved: boolean) => void; toolName: string; stepId?: string }>;
+  autoApprovedTools: Set<string>;
+  initAcked: boolean;
+  initInterval?: NodeJS.Timeout;
+  initInFlight: boolean;
+  webviewClientInstanceId?: string;
+  webviewErrorShown: boolean;
+  toolDiffBeforeByToolCallId: Map<
+    string,
+    {
+      absPath: string;
+      displayPath: string;
+      beforeText: string;
+      isExternal: boolean;
+      skippedReason?: 'too_large' | 'binary';
+    }
+  >;
+  toolDiffSnapshotsByToolCallId: Map<
+    string,
+    {
+      absPath: string;
+      displayPath: string;
+      beforeText: string;
+      afterText: string;
+      isExternal: boolean;
+      truncated: boolean;
+    }
+  >;
+  agent: Pick<AgentLoop, 'abort'>;
+  queueManager: Pick<ChatQueueManager, 'clearActiveSession' | 'flushAutosendForActiveSession' | 'getQueuedInputs'>;
+  runner: Pick<RunCoordinator, 'steerQueuedInput'>;
+  createNewSession(): Promise<void>;
+  compactCurrentSession(): Promise<void>;
+  undo(): Promise<void>;
+  redo(): Promise<void>;
+  redoAll(): Promise<void>;
+  discardUndone(): Promise<void>;
+  viewRevertDiff(): Promise<void>;
+  switchToSession(sessionId: string): Promise<void>;
+  handleUserMessage(content: string | ChatUserInput): Promise<void>;
+  configureLoopForActiveSession(): Promise<void>;
+  approveAllPendingApprovals(): void;
+  rejectAllPendingApprovals(reason: string): void;
+  clearCurrentSession(): Promise<void>;
+  executePendingPlan(planMessageId?: string): Promise<void>;
+  pickModel(): Promise<void>;
+  setCurrentModel(modelId: string): Promise<void>;
+  toggleFavoriteModel(modelId: string): Promise<void>;
+  getActiveSession(): ReturnType<ChatSessionsService['getActiveSession']>;
+  setModeAndPersist(
+    mode: 'build' | 'plan',
+    options?: { persistConfig?: boolean; notifyWebview?: boolean; persistSession?: boolean }
+  ): Promise<void>;
+  cancelPendingPlan(planMessageId: string): Promise<void>;
+  revisePendingPlan(planMessageId: string, instructions: string): Promise<void>;
+  handleApprovalResponse(approvalId: string, approved: boolean): void;
+  retryToolCall(approvalId: string): Promise<void>;
+  markActiveStepStatus(status: 'running' | 'done' | 'error' | 'canceled'): void;
+  ensureSessionsLoaded(): Promise<void>;
+  getModelLabel(modelId: string): string;
+  getRenderableMessages(): ReturnType<ChatSessionsService['getRenderableMessages']>;
+  getRevertBarStateForUI(): ReturnType<ChatRevertService['getRevertBarStateForUI']>;
+  getContextForUI(): ReturnType<ChatSessionsService['getContextForUI']>;
+  getLoopStateForUI(): ReturnType<ChatLoopService['getLoopStateForUI']>;
+  getSessionsForUI(): ReturnType<ChatSessionsService['getSessionsForUI']>;
+  getSkillNamesForUI(): Promise<Awaited<ReturnType<ChatSkillsService['getSkillNamesForUI']>>>;
+  getUndoRedoAvailability(): ReturnType<ChatRevertService['getUndoRedoAvailability']>;
+  isModelFavorite(modelId: string): Promise<boolean>;
+  persistActiveSession(): void;
+  postMessage(message: unknown): void;
+}
+
+type ChatWebviewRuntime = ChatWebviewDeps & ChatWebviewService;
+
+export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebviewService {
+  const runtime = controller as ChatWebviewRuntime;
+  const service = bindChatControllerService(runtime, {
+  resolveWebviewView(this: ChatWebviewRuntime, webviewView: vscode.WebviewView): void {
     for (const d of this.viewDisposables) {
       d.dispose();
     }
@@ -496,7 +604,7 @@ export function installWebviewMethods(controller: ChatController): void {
     this.startInitPusher();
   },
 
-  startInitPusher(this: ChatController): void {
+  startInitPusher(this: ChatWebviewRuntime): void {
     if (this.initInterval) {
       clearInterval(this.initInterval);
       this.initInterval = undefined;
@@ -509,7 +617,7 @@ export function installWebviewMethods(controller: ChatController): void {
     void this.sendInit();
   },
 
-  async sendInit(this: ChatController, force = false): Promise<void> {
+  async sendInit(this: ChatWebviewRuntime, force = false): Promise<void> {
     if (!this.view) return;
     if (!force && this.initAcked) return;
     if (this.initInFlight) return;
@@ -597,11 +705,11 @@ export function installWebviewMethods(controller: ChatController): void {
     }
   },
 
-  postMessage(this: ChatController, message: unknown): void {
+  postMessage(this: ChatWebviewRuntime, message: unknown): void {
     this.view?.webview.postMessage(message);
   },
 
-  getHtml(this: ChatController, webview: vscode.Webview): string {
+  getHtml(this: ChatWebviewRuntime, webview: vscode.Webview): string {
     const nonce = getNonce();
     const version = String((this.context as any)?.extension?.packageJSON?.version || '');
     const versionSuffix = version ? `(${version})` : '';
@@ -636,4 +744,154 @@ export function installWebviewMethods(controller: ChatController): void {
       .replace(/{{VERSION_SUFFIX}}/g, versionSuffix);
   },
   });
+  Object.assign(runtime, service);
+  return service;
+}
+
+function createChatWebviewDepsForController(controller: ChatController): ChatWebviewDeps {
+  return {
+    context: controller.context,
+    get outputChannel() {
+      return controller.outputChannel;
+    },
+    get view() {
+      return controller.view;
+    },
+    set view(value) {
+      controller.view = value;
+    },
+    get viewDisposables() {
+      return controller.viewDisposables;
+    },
+    set viewDisposables(value) {
+      controller.viewDisposables = value;
+    },
+    get currentModel() {
+      return controller.currentModel;
+    },
+    set currentModel(value) {
+      controller.currentModel = value;
+    },
+    get activeSessionId() {
+      return controller.activeSessionId;
+    },
+    get inputHistoryEntries() {
+      return controller.inputHistoryEntries;
+    },
+    get mode() {
+      return controller.mode;
+    },
+    get isProcessing() {
+      return controller.isProcessing;
+    },
+    get abortRequested() {
+      return controller.abortRequested;
+    },
+    set abortRequested(value) {
+      controller.abortRequested = value;
+    },
+    get autoApproveThisRun() {
+      return controller.autoApproveThisRun;
+    },
+    set autoApproveThisRun(value) {
+      controller.autoApproveThisRun = value;
+    },
+    get pendingApprovals() {
+      return controller.pendingApprovals;
+    },
+    get autoApprovedTools() {
+      return controller.autoApprovedTools;
+    },
+    get initAcked() {
+      return controller.initAcked;
+    },
+    set initAcked(value) {
+      controller.initAcked = value;
+    },
+    get initInterval() {
+      return controller.initInterval;
+    },
+    set initInterval(value) {
+      controller.initInterval = value;
+    },
+    get initInFlight() {
+      return controller.initInFlight;
+    },
+    set initInFlight(value) {
+      controller.initInFlight = value;
+    },
+    get webviewClientInstanceId() {
+      return controller.webviewClientInstanceId;
+    },
+    set webviewClientInstanceId(value) {
+      controller.webviewClientInstanceId = value;
+    },
+    get webviewErrorShown() {
+      return controller.webviewErrorShown;
+    },
+    set webviewErrorShown(value) {
+      controller.webviewErrorShown = value;
+    },
+    get toolDiffBeforeByToolCallId() {
+      return controller.toolDiffBeforeByToolCallId;
+    },
+    get toolDiffSnapshotsByToolCallId() {
+      return controller.toolDiffSnapshotsByToolCallId;
+    },
+    get agent() {
+      return controller.agent;
+    },
+    get queueManager() {
+      return controller.queueManager;
+    },
+    get runner() {
+      return controller.runner;
+    },
+    createNewSession: () => controller.sessionApi.createNewSession(),
+    compactCurrentSession: () => controller.sessionApi.compactCurrentSession(),
+    undo: () => controller.revertApi.undo(),
+    redo: () => controller.revertApi.redo(),
+    redoAll: () => controller.revertApi.redoAll(),
+    discardUndone: () => controller.revertApi.discardUndone(),
+    viewRevertDiff: () => controller.revertApi.viewRevertDiff(),
+    switchToSession: (sessionId: string) => controller.sessionApi.switchToSession(sessionId),
+    handleUserMessage: (content: string | ChatUserInput) => controller.runnerInputApi.handleUserMessage(content),
+    configureLoopForActiveSession: () => controller.loopApi.configureLoopForActiveSession(),
+    approveAllPendingApprovals: () => controller.approvalsApi.approveAllPendingApprovals(),
+    rejectAllPendingApprovals: (reason: string) => controller.approvalsApi.rejectAllPendingApprovals(reason),
+    clearCurrentSession: () => controller.sessionApi.clearCurrentSession(),
+    executePendingPlan: (planMessageId?: string) => controller.runnerPlanApi.executePendingPlan(planMessageId),
+    pickModel: () => controller.modelApi.pickModel(),
+    setCurrentModel: (modelId: string) => controller.modelApi.setCurrentModel(modelId),
+    toggleFavoriteModel: (modelId: string) => controller.modelApi.toggleFavoriteModel(modelId),
+    getActiveSession: () => controller.sessionApi.getActiveSession(),
+    setModeAndPersist: (
+      mode: 'build' | 'plan',
+      options?: { persistConfig?: boolean; notifyWebview?: boolean; persistSession?: boolean }
+    ) => controller.modeApi.setModeAndPersist(mode, options),
+    cancelPendingPlan: (planMessageId: string) => controller.runnerPlanApi.cancelPendingPlan(planMessageId),
+    revisePendingPlan: (planMessageId: string, instructions: string) =>
+      controller.runnerPlanApi.revisePendingPlan(planMessageId, instructions),
+    handleApprovalResponse: (approvalId: string, approved: boolean) =>
+      controller.approvalsApi.handleApprovalResponse(approvalId, approved),
+    retryToolCall: (approvalId: string) => controller.runnerInputApi.retryToolCall(approvalId),
+    markActiveStepStatus: (status: 'running' | 'done' | 'error' | 'canceled') =>
+      controller.approvalsApi.markActiveStepStatus(status),
+    ensureSessionsLoaded: () => controller.sessionApi.ensureSessionsLoaded(),
+    getModelLabel: (modelId: string) => controller.modelApi.getModelLabel(modelId),
+    getRenderableMessages: () => controller.sessionApi.getRenderableMessages(),
+    getRevertBarStateForUI: () => controller.revertApi.getRevertBarStateForUI(),
+    getContextForUI: () => controller.sessionApi.getContextForUI(),
+    getLoopStateForUI: () => controller.loopApi.getLoopStateForUI(),
+    getSessionsForUI: () => controller.sessionApi.getSessionsForUI(),
+    getSkillNamesForUI: () => controller.skillsApi.getSkillNamesForUI(),
+    getUndoRedoAvailability: () => controller.revertApi.getUndoRedoAvailability(),
+    isModelFavorite: (modelId: string) => controller.modelApi.isModelFavorite(modelId),
+    persistActiveSession: () => controller.sessionApi.persistActiveSession(),
+    postMessage: (message: unknown) => controller.webviewApi.postMessage(message),
+  };
+}
+
+export function createChatWebviewServiceForController(controller: ChatController): ChatWebviewService {
+  return createChatWebviewService(createChatWebviewDepsForController(controller));
 }

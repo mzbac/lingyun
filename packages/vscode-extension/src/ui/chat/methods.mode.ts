@@ -1,11 +1,34 @@
 import * as vscode from 'vscode';
-import type { ChatMode } from './types';
-import type { ChatController } from './controller';
 
-export function installModeMethods(controller: ChatController): void {
-  Object.assign(controller, {
+import type { AgentLoop } from '../../core/agent';
+
+import { bindChatControllerService } from './controllerService';
+import type { ChatLoopManager } from './loopManager';
+import type { ChatLoopService } from './methods.loop';
+import type { ChatSessionsService } from './methods.sessions';
+import type { ChatWebviewService } from './methods.webview';
+import type { ChatMode } from './types';
+
+export interface ChatModeService {
+  setModeAndPersist(
+    mode: ChatMode,
+    options?: { persistConfig?: boolean; notifyWebview?: boolean; persistSession?: boolean }
+  ): Promise<void>;
+}
+
+export interface ChatModeDeps {
+  mode: ChatMode;
+  agent: Pick<AgentLoop, 'setMode'>;
+  loopManager: Pick<ChatLoopManager, 'syncActiveSession'>;
+  loopApi: Pick<ChatLoopService, 'postLoopState'>;
+  sessionApi: Pick<ChatSessionsService, 'persistActiveSession'>;
+  webviewApi: Pick<ChatWebviewService, 'postMessage'>;
+}
+
+export function createChatModeService(controller: ChatModeDeps): ChatModeService {
+  return bindChatControllerService(controller, {
     async setModeAndPersist(
-      this: ChatController,
+      this: ChatModeDeps,
       mode: ChatMode,
       options?: { persistConfig?: boolean; notifyWebview?: boolean; persistSession?: boolean }
     ): Promise<void> {
@@ -14,28 +37,25 @@ export function installModeMethods(controller: ChatController): void {
       this.mode = nextMode;
       this.agent.setMode(nextMode);
 
-      const persistConfig = options?.persistConfig !== false;
-      if (persistConfig && changed) {
+      if (changed && options?.persistConfig !== false) {
         try {
           await vscode.workspace.getConfiguration('lingyun').update('mode', nextMode, true);
         } catch {
-          // Ignore persistence errors; mode still updated for this session.
+          // Ignore persistence errors; mode still updates for this session.
         }
       }
 
-      const notifyWebview = options?.notifyWebview !== false;
-      if (notifyWebview && changed) {
-        this.postMessage({ type: 'modeChanged', mode: nextMode });
+      if (changed && options?.notifyWebview !== false) {
+        this.webviewApi.postMessage({ type: 'modeChanged', mode: nextMode });
       }
 
       if (changed) {
         this.loopManager.syncActiveSession();
-        this.postLoopState();
+        this.loopApi.postLoopState();
       }
 
-      const persistSession = options?.persistSession !== false;
-      if (persistSession && changed) {
-        this.persistActiveSession();
+      if (changed && options?.persistSession !== false) {
+        this.sessionApi.persistActiveSession();
       }
     },
   });

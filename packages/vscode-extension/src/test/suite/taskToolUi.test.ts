@@ -1,13 +1,13 @@
 import * as assert from 'assert';
-import { ChatController, installChatControllerMethods } from '../../ui/chat';
+import { ChatController } from '../../ui/chat';
 import type { ToolCall, ToolResult } from '../../core/types';
 import type { ChatMessage } from '../../ui/chat/types';
 import { createBlankSessionSignals } from '../../core/sessionSignals';
+import { createStandaloneChatController } from './chatControllerHarness';
 
 suite('Task tool UI', () => {
   test('upserts child session from agent-sdk snapshot metadata', () => {
-    const provider = Object.create(ChatController.prototype) as ChatController;
-    installChatControllerMethods(provider);
+    const provider = createStandaloneChatController();
 
     provider.mode = 'build';
     provider.currentModel = 'mock-model';
@@ -26,18 +26,18 @@ suite('Task tool UI', () => {
     const dirty: string[] = [];
     let flushed = false;
 
-    provider.postMessage = (message: unknown) => {
+    provider.webviewApi.postMessage = (message: unknown) => {
       posted.push(message);
     };
-    provider.postSessions = () => {};
-    provider.markSessionDirty = (sessionId: string) => {
+    provider.sessionApi.postSessions = () => {};
+    provider.sessionApi.markSessionDirty = (sessionId: string) => {
       dirty.push(sessionId);
     };
-    provider.flushSessionSave = async () => {
+    provider.sessionApi.flushSessionSave = async () => {
       flushed = true;
     };
-    provider.isSessionPersistenceEnabled = () => false;
-    provider.getContextForUI = () => ({}) as any;
+    provider.sessionApi.isSessionPersistenceEnabled = () => false;
+    provider.sessionApi.getContextForUI = () => ({}) as any;
 
     const toolMsg: ChatMessage = {
       id: 'tool-1',
@@ -56,7 +56,7 @@ suite('Task tool UI', () => {
     };
     provider.messages.push(toolMsg);
 
-    const callbacks = provider.createAgentCallbacks();
+    const callbacks = provider.runnerCallbacksApi.createAgentCallbacks();
 
     const tc: ToolCall = {
       id: 'call_task',

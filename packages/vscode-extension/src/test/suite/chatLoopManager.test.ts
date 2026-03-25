@@ -1,15 +1,14 @@
 import * as assert from 'assert';
 
-import { ChatController, installChatControllerMethods } from '../../ui/chat';
+import { ChatController } from '../../ui/chat';
 import { createBlankSessionSignals } from '../../core/sessionSignals';
 import type { ChatSessionInfo } from '../../ui/chat/types';
-import { RunCoordinator } from '../../ui/chat/runner/runCoordinator';
+import { createStandaloneChatController } from './chatControllerHarness';
 
 suite('Chat loop manager', () => {
   function createProvider() {
-    const provider = Object.create(ChatController.prototype) as ChatController;
-    installChatControllerMethods(provider);
-    let exportedState = provider.getBlankAgentState();
+    const provider = createStandaloneChatController();
+    let exportedState = provider.sessionApi.getBlankAgentState();
     let agentRunning = false;
 
     provider.mode = 'build';
@@ -44,8 +43,8 @@ suite('Chat loop manager', () => {
     ]);
     provider.view = {} as any;
     provider.agent = {
-      syncSession: ({ state }: { state?: ReturnType<ChatController['getBlankAgentState']> } = {}) => {
-        exportedState = state ?? provider.getBlankAgentState();
+      syncSession: ({ state }: { state?: ReturnType<ChatController['sessionApi']['getBlankAgentState']> } = {}) => {
+        exportedState = state ?? provider.sessionApi.getBlankAgentState();
       },
       exportState: () => exportedState,
       getHistory: () => exportedState.history,
@@ -53,13 +52,8 @@ suite('Chat loop manager', () => {
         return agentRunning;
       },
       clear: async () => {
-        exportedState = provider.getBlankAgentState();
+        exportedState = provider.sessionApi.getBlankAgentState();
       },
-    } as any;
-    provider.runner = {
-      handleUserMessage: async () => {},
-      triggerLoopPrompt: async () => true,
-      canAcceptLoopSteer: () => provider.isProcessing && agentRunning && !!provider.currentTurnId,
     } as any;
     provider.toolDiffBeforeByToolCallId = new Map();
     provider.toolDiffSnapshotsByToolCallId = new Map();
@@ -68,25 +62,25 @@ suite('Chat loop manager', () => {
     provider.autoApprovedTools = new Set();
     provider.sessionsLoadedFromDisk = true;
     provider.inputHistoryLoadedFromDisk = true;
-    provider.scheduleSessionSave = () => {};
-    provider.sendInit = async () => {};
+    provider.sessionApi.scheduleSessionSave = () => {};
+    provider.webviewApi.sendInit = async () => {};
 
     const posted: any[] = [];
     let persisted = 0;
-    provider.postMessage = (message: unknown) => {
+    provider.webviewApi.postMessage = (message: unknown) => {
       posted.push(message);
     };
-    provider.persistActiveSession = () => {
+    provider.sessionApi.persistActiveSession = () => {
       persisted++;
     };
 
     const setHistoryLength = (length: number) => {
-      exportedState = provider.getBlankAgentState();
+      exportedState = provider.sessionApi.getBlankAgentState();
       exportedState.history = Array.from({ length }, (_, index) => ({
         role: 'assistant',
         content: `message-${index}`,
       })) as any;
-      const session = provider.getActiveSession();
+      const session = provider.sessionApi.getActiveSession();
       session.agentState = exportedState;
     };
 
@@ -114,7 +108,7 @@ suite('Chat loop manager', () => {
       updatedAt: Date.now(),
       signals,
       messages: [],
-      agentState: provider.getBlankAgentState(),
+      agentState: provider.sessionApi.getBlankAgentState(),
       currentModel: provider.currentModel,
       mode: provider.mode,
       stepCounter: 0,
@@ -136,7 +130,7 @@ suite('Chat loop manager', () => {
       subagentType: 'general',
     });
 
-    const state = provider.getLoopStateForUI(subagentSession);
+    const state = provider.loopApi.getLoopStateForUI(subagentSession);
 
     assert.strictEqual(state.available, false);
     assert.strictEqual(state.enabled, false);
@@ -146,7 +140,7 @@ suite('Chat loop manager', () => {
 
   test('loop manager fires prompt into active build run', async () => {
     const { provider, posted, getPersisted, setAgentRunning } = createProvider();
-    const session = provider.getActiveSession();
+    const session = provider.sessionApi.getActiveSession();
     session.loop = {
       enabled: true,
       intervalMinutes: 1,
@@ -155,10 +149,11 @@ suite('Chat loop manager', () => {
     };
     provider.isProcessing = true;
     provider.currentTurnId = 'turn-1';
+    (provider.runner as any).loopSteerableDuringProcessing = true;
     setAgentRunning(true);
 
     let injectedPrompt = '';
-    provider.injectLoopPrompt = async (prompt?: string) => {
+    provider.loopApi.injectLoopPrompt = async (prompt?: string) => {
       injectedPrompt = String(prompt || '');
       return true;
     };
@@ -178,7 +173,7 @@ suite('Chat loop manager', () => {
 
   test('loop manager fires prompt while session is idle', async () => {
     const { provider, posted, setHistoryLength } = createProvider();
-    const session = provider.getActiveSession();
+    const session = provider.sessionApi.getActiveSession();
     session.loop = {
       enabled: true,
       intervalMinutes: 1,
@@ -189,7 +184,7 @@ suite('Chat loop manager', () => {
     setHistoryLength(1);
 
     let injected = false;
-    provider.injectLoopPrompt = async () => {
+    provider.loopApi.injectLoopPrompt = async () => {
       injected = true;
       return true;
     };
@@ -208,7 +203,7 @@ suite('Chat loop manager', () => {
 
   test('enabling loop while idle arms the active session schedule', () => {
     const { provider, setHistoryLength } = createProvider();
-    const session = provider.getActiveSession();
+    const session = provider.sessionApi.getActiveSession();
     setHistoryLength(1);
 
     try {
@@ -227,7 +222,7 @@ suite('Chat loop manager', () => {
 
   test('stale rendered messages do not keep the loop armed after agent history is cleared', () => {
     const { provider, setHistoryLength } = createProvider();
-    const session = provider.getActiveSession();
+    const session = provider.sessionApi.getActiveSession();
     session.messages.push({
       id: 'user-1',
       role: 'user',
@@ -255,10 +250,10 @@ suite('Chat loop manager', () => {
 
   test('disabling session persistence does not clear an armed loop timer', async () => {
     const { provider, setHistoryLength } = createProvider();
-    const session = provider.getActiveSession();
+    const session = provider.sessionApi.getActiveSession();
     setHistoryLength(1);
     provider.sessionSaveTimer = setTimeout(() => {}, 60_000);
-    provider.isSessionPersistenceEnabled = () => false;
+    provider.sessionApi.isSessionPersistenceEnabled = () => false;
 
     try {
       provider.loopManager.updateSessionState(session.id, current => ({
@@ -270,7 +265,7 @@ suite('Chat loop manager', () => {
       assert.ok(typeof session.loop?.nextFireAt === 'number');
       assert.strictEqual((provider.loopManager as any).timers.size, 1);
 
-      await provider.onSessionPersistenceConfigChanged();
+      await provider.sessionApi.onSessionPersistenceConfigChanged();
 
       assert.ok(typeof session.loop?.nextFireAt === 'number');
       assert.strictEqual((provider.loopManager as any).timers.size, 1);
@@ -285,7 +280,7 @@ suite('Chat loop manager', () => {
 
   test('loop status pauses in plan mode instead of arming a timer', () => {
     const { provider, setHistoryLength } = createProvider();
-    const session = provider.getActiveSession();
+    const session = provider.sessionApi.getActiveSession();
     provider.mode = 'plan';
     setHistoryLength(1);
 
@@ -296,7 +291,7 @@ suite('Chat loop manager', () => {
         intervalMinutes: 1,
       }));
 
-      const state = provider.getLoopStateForUI(session);
+      const state = provider.loopApi.getLoopStateForUI(session);
       assert.strictEqual(state.enabled, true);
       assert.strictEqual(state.canRunNow, false);
       assert.strictEqual(state.reason, 'plan_mode');
@@ -308,7 +303,7 @@ suite('Chat loop manager', () => {
 
   test('loop status pauses while a pending plan exists', () => {
     const { provider, setHistoryLength } = createProvider();
-    const session = provider.getActiveSession();
+    const session = provider.sessionApi.getActiveSession();
     setHistoryLength(1);
     session.pendingPlan = { task: 'Test task', planMessageId: 'plan-1' };
 
@@ -319,7 +314,7 @@ suite('Chat loop manager', () => {
         intervalMinutes: 1,
       }));
 
-      const state = provider.getLoopStateForUI(session);
+      const state = provider.loopApi.getLoopStateForUI(session);
       assert.strictEqual(state.enabled, true);
       assert.strictEqual(state.canRunNow, false);
       assert.strictEqual(state.reason, 'pending_plan');
@@ -331,18 +326,18 @@ suite('Chat loop manager', () => {
 
   test('loop state reads do not replace the stored session loop object', () => {
     const { provider } = createProvider();
-    const session = provider.getActiveSession();
+    const session = provider.sessionApi.getActiveSession();
     const original = session.loop;
 
     provider.loopManager.getSessionStatus(session);
-    provider.getLoopStateForUI(session);
+    provider.loopApi.getLoopStateForUI(session);
 
     assert.strictEqual(session.loop, original);
   });
 
   test('loop status pauses during non-steerable processing without dropping the schedule', () => {
     const { provider, setHistoryLength, setAgentRunning } = createProvider();
-    const session = provider.getActiveSession();
+    const session = provider.sessionApi.getActiveSession();
     setHistoryLength(1);
     provider.isProcessing = true;
     provider.currentTurnId = 'stale-turn';
@@ -355,7 +350,7 @@ suite('Chat loop manager', () => {
         intervalMinutes: 1,
       }));
 
-      const state = provider.getLoopStateForUI(session);
+      const state = provider.loopApi.getLoopStateForUI(session);
       assert.strictEqual(state.enabled, true);
       assert.strictEqual(state.canRunNow, false);
       assert.strictEqual(state.reason, 'busy');
@@ -368,7 +363,7 @@ suite('Chat loop manager', () => {
 
   test('stored loop state drops runtime nextFireAt on save and load', () => {
     const { provider } = createProvider();
-    const session = provider.getActiveSession();
+    const session = provider.sessionApi.getActiveSession();
     session.loop = {
       enabled: true,
       intervalMinutes: 5,
@@ -377,11 +372,11 @@ suite('Chat loop manager', () => {
       nextFireAt: Date.now() + 60_000,
     };
 
-    const stored = provider.pruneSessionForStorage(session, 200_000);
+    const stored = provider.sessionApi.pruneSessionForStorage(session, 200_000);
     assert.strictEqual(stored.loop?.nextFireAt, undefined);
     assert.ok(typeof stored.loop?.lastFiredAt === 'number');
 
-    const loaded = provider.normalizeLoadedSession({
+    const loaded = provider.sessionApi.normalizeLoadedSession({
       ...session,
       loop: {
         ...session.loop,
@@ -397,7 +392,6 @@ suite('Chat loop manager', () => {
     provider.isProcessing = true;
     provider.currentTurnId = 'stale-turn';
     setAgentRunning(false);
-    provider.runner = new RunCoordinator(provider);
 
     const triggered = await provider.runner.triggerLoopPrompt('review activity now');
 
@@ -407,7 +401,6 @@ suite('Chat loop manager', () => {
 
   test('loop steer into an active run keeps the original prompt text', async () => {
     const { provider, setAgentRunning } = createProvider();
-    provider.runner = new RunCoordinator(provider);
     provider.isProcessing = true;
     provider.currentTurnId = 'turn-1';
     (provider.runner as any).loopSteerableDuringProcessing = true;
@@ -429,7 +422,6 @@ suite('Chat loop manager', () => {
   test('idle loop turns keep the original prompt text', async () => {
     const { provider, setHistoryLength } = createProvider();
     setHistoryLength(1);
-    provider.runner = new RunCoordinator(provider);
     (provider.agent as any).continue = async () => {};
 
     const triggered = await provider.runner.triggerLoopPrompt('review activity now');
@@ -441,7 +433,7 @@ suite('Chat loop manager', () => {
 
   test('busy loop ticks preserve the pending schedule until the session becomes runnable again', async () => {
     const { provider, setHistoryLength, setAgentRunning } = createProvider();
-    const session = provider.getActiveSession();
+    const session = provider.sessionApi.getActiveSession();
     setHistoryLength(1);
     session.loop = {
       enabled: true,
@@ -471,7 +463,7 @@ suite('Chat loop manager', () => {
 
   test('compaction pauses and rearms the active loop schedule', async () => {
     const { provider, setHistoryLength } = createProvider();
-    const session = provider.getActiveSession();
+    const session = provider.sessionApi.getActiveSession();
     setHistoryLength(1);
     provider.loopManager.updateSessionState(session.id, current => ({
       ...current,
@@ -491,7 +483,7 @@ suite('Chat loop manager', () => {
 
     let compactionPromise: Promise<void> | undefined;
     try {
-      compactionPromise = provider.compactCurrentSession();
+      compactionPromise = provider.sessionApi.compactCurrentSession();
       await new Promise(resolve => setTimeout(resolve, 0));
 
       assert.strictEqual(provider.isProcessing, true);

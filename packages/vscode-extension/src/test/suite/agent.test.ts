@@ -2174,8 +2174,13 @@ suite('AgentLoop', () => {
       assert.ok(prompt.includes('Found relevant files'), 'prompt should include explore subagent output');
 
       const history = agent.getHistory();
-      const injected = history.find((msg) => msg.role === 'assistant' && msg.metadata?.synthetic);
-      assert.ok(injected, 'history should include a synthetic assistant message for auto-explore');
+      const injected = history.find(
+        (msg) =>
+          msg.role === 'assistant' &&
+          msg.metadata?.synthetic &&
+          String((msg.metadata as any).transientContext) === 'explore',
+      );
+      assert.strictEqual(injected, undefined, 'transient explore context should be injected into the prompt without persisting in history');
     } finally {
       await cfg.update('subagents.explorePrepass.enabled', prevEnabled as any, true);
       await cfg.update('subagents.explorePrepass.maxChars', prevMaxChars as any, true);
@@ -2256,9 +2261,16 @@ suite('AgentLoop', () => {
 
       const history = agent.getHistory();
       const injected = history.find(
-        (msg) => msg.role === 'assistant' && msg.metadata?.synthetic && String((msg.metadata as any).transientContext) === 'memoryRecall',
+        (msg) =>
+          msg.role === 'assistant' &&
+          msg.metadata?.synthetic &&
+          String((msg.metadata as any).transientContext) === 'memoryRecall',
       );
-      assert.ok(injected, 'history should include a synthetic assistant message for auto recall');
+      assert.strictEqual(
+        injected,
+        undefined,
+        'transient memory recall context should be injected into the prompt without persisting in history',
+      );
     } finally {
       if (prevMemoryRoot === undefined) {
         delete process.env.LINGYUN_MEMORIES_DIR;

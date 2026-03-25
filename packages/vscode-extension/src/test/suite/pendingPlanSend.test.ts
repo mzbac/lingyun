@@ -1,12 +1,12 @@
 import * as assert from 'assert';
-import { ChatController, installChatControllerMethods } from '../../ui/chat';
+import { ChatController } from '../../ui/chat';
 import type { ChatMessage } from '../../ui/chat/types';
 import { createBlankSessionSignals } from '../../core/sessionSignals';
+import { createStandaloneChatController } from './chatControllerHarness';
 
 suite('Pending plan send', () => {
   test('handleUserMessage routes to revisePendingPlan in build mode', async () => {
-    const provider = Object.create(ChatController.prototype) as ChatController;
-    installChatControllerMethods(provider);
+    const provider = createStandaloneChatController();
 
     provider.isProcessing = false;
     provider.view = {} as any;
@@ -35,7 +35,7 @@ suite('Pending plan send', () => {
           updatedAt: Date.now(),
           signals: provider.signals,
           messages: provider.messages,
-          agentState: provider.getBlankAgentState(),
+          agentState: provider.sessionApi.getBlankAgentState(),
           currentModel: provider.currentModel,
           mode: provider.mode,
           stepCounter: 0,
@@ -49,13 +49,13 @@ suite('Pending plan send', () => {
     let receivedPlanId = '';
     let receivedInstructions = '';
 
-    provider.revisePendingPlan = async (planMessageId: string, instructions: string): Promise<void> => {
+    provider.runnerPlanApi.revisePendingPlan = async (planMessageId: string, instructions: string): Promise<void> => {
       called = true;
       receivedPlanId = planMessageId;
       receivedInstructions = instructions;
     };
 
-    await provider.handleUserMessage('User clarification');
+    await provider.runnerInputApi.handleUserMessage('User clarification');
 
     assert.ok(called);
     assert.strictEqual(receivedPlanId, 'plan-1');

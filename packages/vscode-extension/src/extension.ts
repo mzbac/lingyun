@@ -203,7 +203,7 @@ async function initializeLLMAndAgent(context: vscode.ExtensionContext): Promise<
   extensionState.llmProvider?.dispose?.();
   extensionState.llmProvider = createLLMProviderFromConfig();
   extensionState.agent = createAgent(extensionState.llmProvider, context, createAgentConfig(), extensionState.plugins);
-  extensionState.chatProvider?.setBackend(
+  extensionState.chatProvider?.controller.sessionApi.setBackend(
     extensionState.agent,
     extensionState.llmProvider
   );
@@ -379,7 +379,7 @@ export async function activate(
     vscode.workspace.registerTextDocumentContentProvider(
       LINGYUN_DIFF_SCHEME,
       new LingyunDiffContentProvider(toolCallId =>
-        extensionState?.chatProvider?.toolDiffSnapshotsByToolCallId.get(toolCallId)
+        extensionState?.chatProvider?.controller.toolDiffSnapshotsByToolCallId.get(toolCallId)
       )
     )
   );
@@ -443,11 +443,11 @@ export async function activate(
         log('Configuration updated');
 
         if (e.affectsConfiguration('lingyun.autoApprove') && nextConfig.autoApprove) {
-          extensionState.chatProvider?.onAutoApproveEnabled();
+          extensionState.chatProvider?.controller.approvalsApi.onAutoApproveEnabled();
         }
 
         if (sessionsChanged) {
-          extensionState.chatProvider?.onSessionPersistenceConfigChanged().catch(err => {
+          extensionState.chatProvider?.controller.sessionApi.onSessionPersistenceConfigChanged().catch((err: unknown) => {
             log(`Failed to update session persistence: ${err instanceof Error ? err.message : String(err)}`);
           });
           void maybeWarnSessionPersistence(context);
@@ -538,7 +538,7 @@ async function cmdStart(): Promise<void> {
   if (!task) return;
 
   await cmdOpenAgent();
-  extensionState?.chatProvider?.sendMessage(task);
+  extensionState?.chatProvider?.controller.runnerInputApi.sendMessage(task);
 }
 
 async function cmdOpenAgent(sessionId?: string): Promise<void> {
@@ -552,7 +552,7 @@ async function cmdOpenAgent(sessionId?: string): Promise<void> {
   await vscode.commands.executeCommand('lingyun.chatView.focus');
 
   if (typeof sessionId === 'string' && sessionId.trim()) {
-    await controller.switchToSession(sessionId.trim());
+    await controller.sessionApi.switchToSession(sessionId.trim());
   }
 }
 
@@ -604,7 +604,7 @@ function cmdAbort(): void {
 
 async function cmdClear(): Promise<void> {
   if (extensionState?.chatProvider) {
-    await extensionState.chatProvider.clearCurrentSession();
+    await extensionState.chatProvider.controller.sessionApi.clearCurrentSession();
   } else {
     await extensionState?.agent?.clear();
   }
@@ -618,7 +618,7 @@ async function cmdUndo(): Promise<void> {
     vscode.window.showInformationMessage('LINGYUN: AGENT view is not ready.');
     return;
   }
-  await extensionState.chatProvider.undo();
+  await extensionState.chatProvider.controller.revertApi.undo();
 }
 
 async function cmdRedo(): Promise<void> {
@@ -627,11 +627,11 @@ async function cmdRedo(): Promise<void> {
     vscode.window.showInformationMessage('LINGYUN: AGENT view is not ready.');
     return;
   }
-  await extensionState.chatProvider.redo();
+  await extensionState.chatProvider.controller.revertApi.redo();
 }
 
 async function cmdClearSavedSessions(): Promise<void> {
-  await extensionState?.chatProvider?.clearSavedSessions();
+  await extensionState?.chatProvider?.controller.sessionApi.clearSavedSessions();
 }
 
 async function cmdCompactSession(): Promise<void> {
@@ -640,7 +640,7 @@ async function cmdCompactSession(): Promise<void> {
     vscode.window.showInformationMessage('LINGYUN: AGENT view is not ready.');
     return;
   }
-  await extensionState.chatProvider.compactCurrentSession();
+  await extensionState.chatProvider.controller.sessionApi.compactCurrentSession();
 }
 
 async function cmdUpdateMemories(): Promise<void> {

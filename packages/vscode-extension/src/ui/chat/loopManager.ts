@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 
+import type { ChatLoopHost } from './controllerPorts';
 import type { ChatController } from './controller';
 import type { ChatLoopUiState, ChatMode, ChatSessionInfo, ChatSessionLoopState } from './types';
 
@@ -85,7 +86,7 @@ export function normalizeSessionLoopState(
 export class ChatLoopManager {
   private readonly timers = new Map<string, NodeJS.Timeout>();
 
-  constructor(private readonly controller: ChatController) {}
+  constructor(private readonly controller: ChatLoopHost) {}
 
   getDefaults(): ChatLoopDefaults {
     return getLoopDefaults();
@@ -468,4 +469,31 @@ export class ChatLoopManager {
 
     loop.nextFireAt = Date.now() + loop.intervalMinutes * 60_000;
   }
+}
+
+export function createChatLoopManager(controller: ChatController): ChatLoopManager {
+  return new ChatLoopManager({
+    get activeSessionId() {
+      return controller.activeSessionId;
+    },
+    get isProcessing() {
+      return controller.isProcessing;
+    },
+    get mode() {
+      return controller.mode;
+    },
+    get sessions() {
+      return controller.sessions;
+    },
+    agent: {
+      exportState: () => controller.agent.exportState(),
+    },
+    runner: {
+      canAcceptLoopSteer: () => controller.runner.canAcceptLoopSteer(),
+    },
+    getActiveSession: () => controller.sessionApi.getActiveSession(),
+    postLoopState: (session?: ChatSessionInfo) => controller.loopApi.postLoopState(session),
+    injectLoopPrompt: (prompt?: string) => controller.loopApi.injectLoopPrompt(prompt),
+    persistActiveSession: () => controller.sessionApi.persistActiveSession(),
+  });
 }

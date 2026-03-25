@@ -105,7 +105,7 @@ export class OfficeViewProvider implements vscode.WebviewViewProvider {
         const settingsLoaded: OfficeToWebviewMessage = { type: 'settingsLoaded', soundEnabled };
         webviewView.webview.postMessage(settingsLoaded);
 
-        await this.chat.ensureSessionsLoaded();
+        await this.chat.sessionApi.ensureSessionsLoaded();
         if (this.chat.officeSync) {
           this.chat.officeSync.onWebviewReady();
         } else {
@@ -128,7 +128,7 @@ export class OfficeViewProvider implements vscode.WebviewViewProvider {
       }
 
       if (type === 'focusAgent') {
-        await this.chat.ensureSessionsLoaded();
+        await this.chat.sessionApi.ensureSessionsLoaded();
         const sessionId = this.findSessionIdForAgentId(message.id);
         if (!sessionId) return;
         await vscode.commands.executeCommand('lingyun.openAgent', sessionId);
@@ -136,7 +136,7 @@ export class OfficeViewProvider implements vscode.WebviewViewProvider {
       }
 
       if (type === 'closeAgent') {
-        await this.chat.ensureSessionsLoaded();
+        await this.chat.sessionApi.ensureSessionsLoaded();
         const sessionId = this.findSessionIdForAgentId(message.id);
         if (!sessionId) return;
         await this.deleteSession(sessionId);
@@ -267,13 +267,13 @@ export class OfficeViewProvider implements vscode.WebviewViewProvider {
     if (active === sessionId) {
       const fallback = this.chat.sessions.keys().next().value as string | undefined;
       if (fallback) {
-        this.chat.switchToSessionSync(fallback);
+        this.chat.sessionApi.switchToSessionSync(fallback);
       }
     }
 
-    this.chat.postSessions();
-    await this.chat.sendInit(true);
-    this.chat.markSessionDirty(this.chat.activeSessionId);
-    await this.chat.flushSessionSave();
+    this.chat.sessionApi.postSessions();
+    await this.chat.webviewApi.sendInit(true);
+    this.chat.sessionApi.markSessionDirty(this.chat.activeSessionId);
+    await this.chat.sessionApi.flushSessionSave();
   }
 }

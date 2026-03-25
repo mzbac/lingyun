@@ -1,13 +1,13 @@
 import * as assert from 'assert';
 import * as vscode from 'vscode';
 
-import { ChatController, installChatControllerMethods } from '../../ui/chat';
+import { ChatController } from '../../ui/chat';
 import { createBlankSessionSignals } from '../../core/sessionSignals';
+import { createStandaloneChatController } from './chatControllerHarness';
 
 suite('Chat webview loop integration', () => {
   test('configureLoop webview message routes to the active-session loop configurator', async () => {
-    const controller = Object.create(ChatController.prototype) as ChatController;
-    installChatControllerMethods(controller);
+    const controller = createStandaloneChatController();
 
     controller.viewDisposables = [];
     controller.activeSessionId = 'session-1';
@@ -28,7 +28,7 @@ suite('Chat webview loop integration', () => {
           updatedAt: Date.now(),
           signals: controller.signals,
           messages: controller.messages,
-          agentState: controller.getBlankAgentState(),
+          agentState: controller.sessionApi.getBlankAgentState(),
           currentModel: controller.currentModel,
           mode: controller.mode,
           stepCounter: 0,
@@ -44,11 +44,11 @@ suite('Chat webview loop integration', () => {
     ]);
 
     let configureCalls = 0;
-    controller.configureLoopForActiveSession = async () => {
+    controller.loopApi.configureLoopForActiveSession = async () => {
       configureCalls++;
     };
-    controller.getHtml = () => '';
-    controller.startInitPusher = () => {};
+    controller.webviewApi.getHtml = () => '';
+    controller.webviewApi.startInitPusher = () => {};
 
     let onMessage: ((data: unknown) => void | Promise<void>) | undefined;
     const disposable = { dispose() {} };
@@ -70,11 +70,86 @@ suite('Chat webview loop integration', () => {
       onDidDispose: () => disposable,
     } as unknown as vscode.WebviewView;
 
-    controller.resolveWebviewView(view);
+    controller.webviewApi.resolveWebviewView(view);
     assert.ok(onMessage, 'expected resolveWebviewView to register a webview message handler');
 
     await onMessage?.({ type: 'configureLoop' });
 
     assert.strictEqual(configureCalls, 1);
+  });
+
+  test('resolveWebviewView writes lifecycle state through the controller adapter', async () => {
+    const controller = createStandaloneChatController();
+    let previousDisposed = 0;
+    controller.viewDisposables = [{ dispose: () => previousDisposed++ } as vscode.Disposable];
+    controller.initAcked = true;
+    controller.webviewClientInstanceId = 'stale-client';
+
+    let onMessage: ((data: unknown) => void | Promise<void>) | undefined;
+    let onVisibility: (() => void) | undefined;
+    let onDispose: (() => void) | undefined;
+    const disposable = { dispose() {} };
+    const webview = {
+      options: {},
+      html: '',
+      cspSource: 'test-csp',
+      postMessage: () => true,
+      asWebviewUri: (uri: unknown) => uri,
+      onDidReceiveMessage: (listener: (data: unknown) => void | Promise<void>) => {
+        onMessage = listener;
+        return disposable;
+      },
+    } as unknown as vscode.Webview;
+    const view = {
+      webview,
+      visible: true,
+      onDidChangeVisibility: (listener: () => void) => {
+        onVisibility = listener;
+        return disposable;
+      },
+      onDidDispose: (listener: () => void) => {
+        onDispose = listener;
+        return disposable;
+      },
+    } as unknown as vscode.WebviewView;
+
+    try {
+      controller.webviewApi.resolveWebviewView(view);
+
+      assert.strictEqual(previousDisposed, 1);
+      assert.strictEqual(controller.view, view);
+      assert.strictEqual(controller.initAcked, false);
+      assert.strictEqual(controller.webviewClientInstanceId, undefined);
+      assert.ok(typeof onMessage === 'function');
+      assert.ok(typeof onVisibility === 'function');
+      assert.ok(typeof onDispose === 'function');
+      assert.ok(controller.viewDisposables.length >= 3);
+      assert.ok(controller.initInterval, 'expected resolveWebviewView to start the init pusher');
+
+      const firstInterval = controller.initInterval;
+      (view as any).visible = false;
+      onVisibility?.();
+      assert.strictEqual(controller.initInterval, undefined);
+
+      controller.initAcked = false;
+      (view as any).visible = true;
+      onVisibility?.();
+      assert.ok(controller.initInterval, 'expected visible webview to restart init pusher');
+      assert.notStrictEqual(controller.initInterval, firstInterval);
+
+      controller.webviewClientInstanceId = 'client-1';
+      controller.initAcked = true;
+      onDispose?.();
+
+      assert.strictEqual(controller.view, undefined);
+      assert.strictEqual(controller.initAcked, false);
+      assert.strictEqual(controller.webviewClientInstanceId, undefined);
+      assert.strictEqual(controller.initInterval, undefined);
+    } finally {
+      if (controller.initInterval) {
+        clearInterval(controller.initInterval);
+        controller.initInterval = undefined;
+      }
+    }
   });
 });

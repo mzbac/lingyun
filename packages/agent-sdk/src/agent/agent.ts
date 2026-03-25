@@ -19,6 +19,7 @@ import {
   isOverflow as isContextOverflow,
   loadSkillFile,
   redactFsPathForPrompt,
+  resolveBuiltinSubagent,
   selectSkillsForText,
   stripSkillInjectedMessages,
   type AgentHistoryMessage,
@@ -47,8 +48,14 @@ import { AsyncQueue } from './asyncQueue.js';
 import { invokeCallbackSafely } from './callbacks.js';
 import { LingyunSession } from './session.js';
 import { TaskSubagentRunner } from './taskSubagentRunner.js';
+import {
+  appendSyntheticContextMessage,
+  stripTransientSyntheticMessages,
+  type LingyunAgentSyntheticContext,
+} from './transientSyntheticContext.js';
 
 export { LingyunSession };
+export type { LingyunAgentSyntheticContext } from './transientSyntheticContext.js';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
@@ -91,6 +98,7 @@ export type LingyunAgentRuntimeOptions = {
   };
   modelLimits?: Record<string, ModelLimit>;
   compaction?: Partial<CompactionConfig>;
+  runtimePolicy?: LingyunAgentRuntimePolicy;
 };
 
 export type LingyunPluginManager = {
@@ -98,12 +106,86 @@ export type LingyunPluginManager = {
   getPluginTools?: () => Promise<LingyunPluginToolEntry[]>;
 };
 
+export type LingyunAgentRuntimeSnapshot = {
+  systemPrompt?: string;
+  allowExternalPaths?: boolean;
+  copilotReasoningEffort?: string;
+  taskMaxOutputChars?: number;
+  modelLimits?: Record<string, ModelLimit>;
+  compaction?: Partial<CompactionConfig>;
+};
+
+export type LingyunAgentPreparedRun = {
+  runtime?: LingyunAgentRuntimeSnapshot;
+  syntheticContexts?: LingyunAgentSyntheticContext[];
+};
+
+type LingyunAgentExecutionRuntime = {
+  systemPrompt: string;
+  allowExternalPaths: boolean;
+  copilotReasoningEffort: string;
+  taskMaxOutputChars: number;
+  modelLimits?: Record<string, ModelLimit>;
+  compactionConfig: CompactionConfig;
+};
+
+type LingyunAgentExecutionContext = {
+  config: Readonly<AgentConfig>;
+  runtime: LingyunAgentExecutionRuntime;
+};
+
+type LingyunAgentChildRunSeed = {
+  sessionId: string;
+  modelId: string;
+  mode?: 'build' | 'plan';
+  toolFilter?: string[];
+  systemPrompt?: string;
+  runtime?: LingyunAgentRuntimeSnapshot;
+  parentSessionId?: string;
+  subagentType?: string;
+};
+
+type LingyunAgentPreparedChildRun = {
+  session: LingyunSession;
+  config: AgentConfig;
+  runtimeOptions: LingyunAgentRuntimeOptions;
+};
+
+export type LingyunAgentSyntheticRunParams = {
+  input: UserHistoryInput;
+  modelId: string;
+  mode?: 'build' | 'plan';
+  systemPrompt?: string;
+  toolFilter?: string[];
+  sessionId?: string;
+  parentSessionId?: string;
+  subagentType?: string;
+  callbacks?: AgentCallbacks;
+  signal?: AbortSignal;
+  runtime?: LingyunAgentRuntimeSnapshot;
+};
+
+export type LingyunAgentRuntimeContext = {
+  session: LingyunSession;
+  input?: UserHistoryInput;
+  signal?: AbortSignal;
+  config: Readonly<AgentConfig>;
+  llm: LLMProvider;
+  warmModelLimit: (modelId: string) => Promise<ModelLimit | undefined>;
+  runSyntheticPass: (params: LingyunAgentSyntheticRunParams) => Promise<string>;
+};
+
+export type LingyunAgentRuntimePolicy = {
+  prepareRun?: (context: LingyunAgentRuntimeContext) => Promise<LingyunAgentPreparedRun | void>;
+};
+
 export class LingyunAgent {
   private readonly plugins: LingyunPluginManager;
   private readonly workspaceRoot?: string;
   private readonly fileHandles: FileHandleRegistry;
-  private allowExternalPaths: boolean;
-  private copilotReasoningEffort: string;
+  private readonly runtimePolicy?: LingyunAgentRuntimePolicy;
+  private readonly allowExternalPaths: boolean;
+  private readonly copilotReasoningEffort: string;
   private readonly reminderPrompts?: {
     planPrompt?: string;
     buildSwitchPrompt?: string;
@@ -117,9 +199,9 @@ export class LingyunAgent {
   };
   private readonly skillsPromptProvider: SkillsPromptProvider;
   private readonly promptComposer: PromptComposer;
-  private taskMaxOutputChars: number;
-  private modelLimits?: Record<string, ModelLimit>;
-  private compactionConfig: CompactionConfig;
+  private readonly taskMaxOutputChars: number;
+  private readonly modelLimits?: Record<string, ModelLimit>;
+  private readonly compactionConfig: CompactionConfig;
   private readonly derivedModelLimits = new Map<string, ModelLimit>();
   private registeredPluginTools = new Set<string>();
   private readonly taskSessions = new Map<string, LingyunSession>();
@@ -136,6 +218,7 @@ export class LingyunAgent {
     this.plugins = runtime?.plugins ?? new PluginManager({ workspaceRoot: runtime?.workspaceRoot });
     this.workspaceRoot = runtime?.workspaceRoot ? path.resolve(runtime.workspaceRoot) : undefined;
     this.fileHandles = new FileHandleRegistry({ workspaceRoot: this.workspaceRoot });
+    this.runtimePolicy = runtime?.runtimePolicy;
     this.allowExternalPaths = !!runtime?.allowExternalPaths;
     this.copilotReasoningEffort = typeof runtime?.copilot?.reasoningEffort === 'string' ? runtime.copilot.reasoningEffort.trim() : '';
     this.reminderPrompts = runtime?.prompts;
@@ -201,28 +284,245 @@ export class LingyunAgent {
       plugins: this.plugins,
       providerBehavior: this.providerBehavior,
       skills: this.skillsPromptProvider,
-      getBasePrompt: () => this.config.systemPrompt || DEFAULT_SYSTEM_PROMPT,
-      getSessionId: () => this.config.sessionId,
-      getMode: () => this.getMode(),
     });
 
     this.taskSubagentRunner = new TaskSubagentRunner({
-      llm: this.llm,
-      getConfig: () => this.config,
-      getMode: () => this.getMode(),
-      getTaskMaxOutputChars: () => this.taskMaxOutputChars,
       taskSessions: this.taskSessions,
       maxTaskSessions: this.maxTaskSessions,
-      createSubagentAgent: (subagentConfig) =>
-        new LingyunAgent(this.llm, subagentConfig, this.registry, {
-          plugins: this.plugins,
-          workspaceRoot: this.workspaceRoot,
-          allowExternalPaths: this.allowExternalPaths,
-          skills: this.skillsConfig,
-          modelLimits: this.modelLimits,
-          compaction: this.compactionConfig,
-        }),
+      createSubagentAgent: (subagentConfig, runtime) =>
+        new LingyunAgent(this.llm, subagentConfig, this.registry, runtime),
     });
+  }
+
+  private mergeCompactionConfig(
+    current: CompactionConfig,
+    next?: Partial<CompactionConfig>
+  ): CompactionConfig {
+    if (!next) return current;
+    const toolOutputMode =
+      next.toolOutputMode === 'afterToolCall' || next.toolOutputMode === 'onCompaction'
+        ? next.toolOutputMode
+        : current.toolOutputMode;
+
+    return {
+      auto: typeof next.auto === 'boolean' ? next.auto : current.auto,
+      prune: typeof next.prune === 'boolean' ? next.prune : current.prune,
+      pruneProtectTokens:
+        typeof next.pruneProtectTokens === 'number' && Number.isFinite(next.pruneProtectTokens)
+          ? Math.max(0, Math.floor(next.pruneProtectTokens))
+          : current.pruneProtectTokens,
+      pruneMinimumTokens:
+        typeof next.pruneMinimumTokens === 'number' && Number.isFinite(next.pruneMinimumTokens)
+          ? Math.max(0, Math.floor(next.pruneMinimumTokens))
+          : current.pruneMinimumTokens,
+      toolOutputMode,
+    };
+  }
+
+  private resolveExecutionContext(
+    config: Readonly<AgentConfig>,
+    snapshot?: LingyunAgentRuntimeSnapshot
+  ): LingyunAgentExecutionContext {
+    const systemPromptRaw =
+      typeof snapshot?.systemPrompt === 'string' ? snapshot.systemPrompt : config.systemPrompt;
+    const systemPrompt =
+      typeof systemPromptRaw === 'string' && systemPromptRaw.trim()
+        ? systemPromptRaw
+        : DEFAULT_SYSTEM_PROMPT;
+
+    return {
+      config,
+      runtime: {
+        systemPrompt,
+        allowExternalPaths:
+          typeof snapshot?.allowExternalPaths === 'boolean'
+            ? snapshot.allowExternalPaths
+            : this.allowExternalPaths,
+        copilotReasoningEffort:
+          typeof snapshot?.copilotReasoningEffort === 'string'
+            ? snapshot.copilotReasoningEffort.trim()
+            : this.copilotReasoningEffort,
+        taskMaxOutputChars:
+          typeof snapshot?.taskMaxOutputChars === 'number' &&
+          Number.isFinite(snapshot.taskMaxOutputChars) &&
+          snapshot.taskMaxOutputChars > 0
+            ? Math.floor(snapshot.taskMaxOutputChars)
+            : this.taskMaxOutputChars,
+        modelLimits: snapshot?.modelLimits ?? this.modelLimits,
+        compactionConfig: this.mergeCompactionConfig(this.compactionConfig, snapshot?.compaction),
+      },
+    };
+  }
+
+  private createRuntimeOptions(
+    runtime: LingyunAgentExecutionRuntime,
+    includeRuntimePolicy = false,
+  ): LingyunAgentRuntimeOptions {
+    return {
+      plugins: this.plugins,
+      workspaceRoot: this.workspaceRoot,
+      allowExternalPaths: runtime.allowExternalPaths,
+      copilot: { reasoningEffort: runtime.copilotReasoningEffort },
+      prompts: this.reminderPrompts,
+      skills: this.skillsConfig,
+      subagents: { taskMaxOutputChars: runtime.taskMaxOutputChars },
+      modelLimits: runtime.modelLimits,
+      compaction: runtime.compactionConfig,
+      ...(includeRuntimePolicy && this.runtimePolicy ? { runtimePolicy: this.runtimePolicy } : {}),
+    };
+  }
+
+  private prepareChildRun(
+    parentSession: LingyunSession,
+    parentExecution: LingyunAgentExecutionContext,
+    seed: LingyunAgentChildRunSeed,
+    session?: LingyunSession,
+  ): LingyunAgentPreparedChildRun {
+    const childSession =
+      session ??
+      new LingyunSession({
+        history: [],
+        sessionId: seed.sessionId,
+        parentSessionId: seed.parentSessionId,
+        subagentType: seed.subagentType,
+        modelId: seed.modelId,
+        mentionedSkills: [...(parentSession.mentionedSkills || [])],
+      });
+
+    childSession.sessionId = seed.sessionId;
+    childSession.parentSessionId = seed.parentSessionId;
+    childSession.subagentType = seed.subagentType;
+    childSession.modelId = seed.modelId;
+
+    const mode = seed.mode ?? this.getModeForConfig(parentExecution.config);
+    const childConfig: AgentConfig = {
+      model: seed.modelId,
+      mode,
+      temperature: parentExecution.config.temperature,
+      maxRetries: parentExecution.config.maxRetries,
+      retryWithPartialOutput: parentExecution.config.retryWithPartialOutput,
+      maxOutputTokens: parentExecution.config.maxOutputTokens,
+      toolFilter: seed.toolFilter,
+      autoApprove: mode === 'plan' ? false : parentExecution.config.autoApprove,
+      systemPrompt: seed.systemPrompt,
+      sessionId: childSession.sessionId,
+    };
+    const childRuntime = this.resolveExecutionContext(childConfig, seed.runtime);
+
+    return {
+      session: childSession,
+      config: childConfig,
+      runtimeOptions: this.createRuntimeOptions(childRuntime.runtime),
+    };
+  }
+
+  private async runPreparedChildRun(
+    prepared: LingyunAgentPreparedChildRun,
+    input: UserHistoryInput,
+    callbacks?: AgentCallbacks,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    const childAgent = new LingyunAgent(
+      this.llm,
+      prepared.config,
+      this.registry,
+      prepared.runtimeOptions,
+    );
+
+    const run = childAgent.run({
+      session: prepared.session,
+      input,
+      callbacks,
+      signal,
+    });
+
+    const drain = (async () => {
+      for await (const _event of run.events) {
+        // drain
+      }
+    })();
+
+    const result = await run.done;
+    await drain;
+    return String(result.text || '');
+  }
+
+  private async prepareTaskSubagentExecution(
+    mode: 'build' | 'plan',
+    execution: LingyunAgentExecutionContext,
+    params: {
+      childSessionId: string;
+      childSession: LingyunSession;
+      subagent: NonNullable<ReturnType<typeof resolveBuiltinSubagent>>;
+      prompt: string;
+      callbacks?: AgentCallbacks;
+      signal?: AbortSignal;
+    }
+  ): Promise<{
+    config: AgentConfig;
+    runtimeOptions: LingyunAgentRuntimeOptions;
+    childModelId: string;
+    desiredChildModelId: string;
+    childModelWarning?: string;
+    taskMaxOutputChars: number;
+  }> {
+    const parentModelId = execution.config.model;
+    if (!parentModelId) {
+      throw new Error('No model configured. Set AgentConfig.model.');
+    }
+
+    const configuredSubagentModel =
+      typeof execution.config.subagentModel === 'string' ? execution.config.subagentModel.trim() : '';
+    const desiredChildModelId =
+      params.childSession.modelId || configuredSubagentModel || parentModelId;
+
+    let childModelId = parentModelId;
+    let childModelWarning: string | undefined;
+    if (desiredChildModelId !== parentModelId) {
+      try {
+        await this.llm.getModel(desiredChildModelId);
+        childModelId = desiredChildModelId;
+      } catch (error) {
+        childModelWarning =
+          `Subagent model "${desiredChildModelId}" is unavailable; ` +
+          `using parent model "${parentModelId}".`;
+        invokeCallbackSafely(
+          params.callbacks?.onNotice,
+          { label: 'onNotice subagent_model_fallback', onDebug: params.callbacks?.onDebug },
+          { level: 'warning', message: childModelWarning },
+        );
+        invokeCallbackSafely(
+          params.callbacks?.onDebug,
+          { label: 'onDebug subagent_model_fallback' },
+          `[Task] subagent model fallback requested=${desiredChildModelId} using=${parentModelId} error=${error instanceof Error ? error.name : typeof error}`,
+        );
+      }
+    }
+
+    params.childSession.modelId = childModelId;
+    const prepared = this.prepareChildRun(
+      params.childSession,
+      execution,
+      {
+        sessionId: params.childSessionId,
+        modelId: childModelId,
+        mode,
+        toolFilter: params.subagent.toolFilter?.length ? params.subagent.toolFilter : undefined,
+        systemPrompt: `${execution.runtime.systemPrompt}\n\n${params.subagent.prompt}`,
+        parentSessionId: params.childSession.parentSessionId,
+        subagentType: params.childSession.subagentType,
+      },
+      params.childSession,
+    );
+
+    return {
+      config: prepared.config,
+      runtimeOptions: prepared.runtimeOptions,
+      childModelId,
+      desiredChildModelId,
+      ...(childModelWarning ? { childModelWarning } : {}),
+      taskMaxOutputChars: execution.runtime.taskMaxOutputChars,
+    };
   }
 
   updateConfig(next: Partial<AgentConfig>): void {
@@ -233,51 +533,10 @@ export class LingyunAgent {
     this.config = { ...this.config, mode };
   }
 
-  setModelLimits(modelLimits?: Record<string, ModelLimit>): void {
-    this.modelLimits = modelLimits;
-  }
-
-  setCompactionConfig(compaction?: Partial<CompactionConfig>): void {
-    if (!compaction) return;
-    const current = this.compactionConfig;
-    const toolOutputMode =
-      compaction.toolOutputMode === 'afterToolCall' || compaction.toolOutputMode === 'onCompaction'
-        ? compaction.toolOutputMode
-        : current.toolOutputMode;
-
-    this.compactionConfig = {
-      auto: typeof compaction.auto === 'boolean' ? compaction.auto : current.auto,
-      prune: typeof compaction.prune === 'boolean' ? compaction.prune : current.prune,
-      pruneProtectTokens:
-        typeof compaction.pruneProtectTokens === 'number' && Number.isFinite(compaction.pruneProtectTokens)
-          ? Math.max(0, Math.floor(compaction.pruneProtectTokens))
-          : current.pruneProtectTokens,
-      pruneMinimumTokens:
-        typeof compaction.pruneMinimumTokens === 'number' && Number.isFinite(compaction.pruneMinimumTokens)
-          ? Math.max(0, Math.floor(compaction.pruneMinimumTokens))
-          : current.pruneMinimumTokens,
-      toolOutputMode,
-    };
-  }
-
-  setTaskMaxOutputChars(maxOutputChars: number): void {
-    if (typeof maxOutputChars !== 'number' || !Number.isFinite(maxOutputChars) || maxOutputChars <= 0) return;
-    this.taskMaxOutputChars = Math.floor(maxOutputChars);
-  }
-
-  setCopilotReasoningEffort(reasoningEffort: string | undefined): void {
-    this.copilotReasoningEffort = typeof reasoningEffort === 'string' ? reasoningEffort.trim() : '';
-  }
-
-  setAllowExternalPaths(allowExternalPaths: boolean): void {
-    const next = !!allowExternalPaths;
-    if (this.allowExternalPaths === next) return;
-    this.allowExternalPaths = next;
-  }
-
   async compactSession(session: LingyunSession, callbacks?: AgentCallbacks, options?: { modelId?: string; auto?: boolean }): Promise<void> {
     if (!session.history.length) return;
-    const modelId = (options?.modelId ?? this.config.model ?? '').trim();
+    const prepared = await this.prepareRun(session, undefined, undefined);
+    const modelId = (options?.modelId ?? prepared.execution.config.model ?? '').trim();
     if (!modelId) {
       throw new Error('No model configured');
     }
@@ -285,23 +544,26 @@ export class LingyunAgent {
       session,
       auto: options?.auto === true,
       modelId,
-      mode: this.getMode(),
-      sessionIdFallback: this.config.sessionId,
+      mode: prepared.execution.config.mode === 'plan' ? 'plan' : 'build',
+      sessionIdFallback: prepared.execution.config.sessionId,
       callbacks,
       llm: this.llm,
       plugins: this.plugins,
       providerBehavior: this.providerBehavior,
-      compactionConfig: this.compactionConfig,
-      maxOutputTokens: this.getMaxOutputTokens(),
+      compactionConfig: prepared.execution.runtime.compactionConfig,
+      maxOutputTokens: this.getMaxOutputTokens(prepared.execution.config),
     });
   }
 
-  private getMode(): 'build' | 'plan' {
-    return this.config.mode === 'plan' ? 'plan' : 'build';
+  private getModeForConfig(config: Readonly<AgentConfig>): 'build' | 'plan' {
+    return config.mode === 'plan' ? 'plan' : 'build';
   }
 
-  private getModelLimit(modelId: string): ModelLimit | undefined {
-    return this.modelLimits?.[modelId] ?? this.derivedModelLimits.get(modelId);
+  private getModelLimit(
+    modelId: string,
+    runtime?: Pick<LingyunAgentExecutionRuntime, 'modelLimits'>
+  ): ModelLimit | undefined {
+    return runtime?.modelLimits?.[modelId] ?? this.modelLimits?.[modelId] ?? this.derivedModelLimits.get(modelId);
   }
 
   async warmModelLimit(modelId: string): Promise<ModelLimit | undefined> {
@@ -340,8 +602,61 @@ export class LingyunAgent {
     }
   }
 
-  private getMaxOutputTokens(): number {
-    const max = this.config.maxOutputTokens;
+  private async runSyntheticPass(
+    parentSession: LingyunSession,
+    parentConfig: Readonly<AgentConfig>,
+    params: LingyunAgentSyntheticRunParams
+  ): Promise<string> {
+    const parentExecution = this.resolveExecutionContext(parentConfig);
+    const prepared = this.prepareChildRun(parentSession, parentExecution, {
+      sessionId:
+        params.sessionId ??
+        `${parentSession.sessionId ?? this.config.sessionId ?? 'session'}:synthetic:${Date.now()}`,
+      modelId: params.modelId,
+      mode: params.mode,
+      toolFilter: params.toolFilter,
+      systemPrompt: params.systemPrompt,
+      runtime: params.runtime,
+      parentSessionId: params.parentSessionId,
+      subagentType: params.subagentType,
+    });
+
+    return await this.runPreparedChildRun(
+      prepared,
+      params.input,
+      params.callbacks,
+      params.signal,
+    );
+  }
+
+  private async prepareRun(
+    session: LingyunSession,
+    input?: UserHistoryInput,
+    signal?: AbortSignal,
+    configOverride?: Partial<AgentConfig>
+  ): Promise<{
+    execution: LingyunAgentExecutionContext;
+    syntheticContexts: LingyunAgentSyntheticContext[];
+  }> {
+    session.history = stripTransientSyntheticMessages(session.history);
+    const config = { ...this.config, ...(configOverride ?? {}) };
+    const prepared = await this.runtimePolicy?.prepareRun?.({
+      session,
+      input,
+      signal,
+      config,
+      llm: this.llm,
+      warmModelLimit: (modelId) => this.warmModelLimit(modelId),
+      runSyntheticPass: (params) => this.runSyntheticPass(session, config, params),
+    });
+    return {
+      execution: this.resolveExecutionContext(config, prepared?.runtime),
+      syntheticContexts: [...(prepared?.syntheticContexts ?? [])],
+    };
+  }
+
+  private getMaxOutputTokens(config: Readonly<AgentConfig>): number {
+    const max = config.maxOutputTokens;
     if (typeof max === 'number' && Number.isFinite(max) && max > 0) return Math.floor(max);
     return 4096;
   }
@@ -396,18 +711,31 @@ export class LingyunAgent {
     }
   }
 
-  private async toModelMessages(session: LingyunSession, tools: Record<string, unknown>, modelId: string): Promise<ModelMessage[]> {
-    const effective = getEffectiveHistory(session.history);
+  private async toModelMessages(
+    session: LingyunSession,
+    tools: Record<string, unknown>,
+    modelId: string,
+    execution: LingyunAgentExecutionContext,
+    syntheticContexts: readonly LingyunAgentSyntheticContext[] = [],
+  ): Promise<ModelMessage[]> {
+    const effective = [...getEffectiveHistory(session.history)];
+    for (const context of syntheticContexts) {
+      appendSyntheticContextMessage(effective, context);
+    }
     const prepared = createHistoryForModel(effective);
-    const reminded = insertModeReminders(prepared, this.getMode(), {
-      allowExternalPaths: this.allowExternalPaths,
+    const reminded = insertModeReminders(prepared, this.getModeForConfig(execution.config), {
+      allowExternalPaths: execution.runtime.allowExternalPaths,
       prompts: this.reminderPrompts,
     });
     const withoutIds = reminded.map(({ id: _id, ...rest }) => rest);
 
     const messagesOutput = await this.plugins.trigger(
       'experimental.chat.messages.transform',
-      { sessionId: session.sessionId ?? this.config.sessionId, mode: this.getMode(), modelId },
+      {
+        sessionId: session.sessionId ?? execution.config.sessionId,
+        mode: this.getModeForConfig(execution.config),
+        modelId,
+      },
       { messages: [...withoutIds] as unknown[] }
     );
 
@@ -417,11 +745,16 @@ export class LingyunAgent {
     return this.providerBehavior.transformModelMessages(modelId, converted);
   }
 
-  private createToolContext(signal: AbortSignal, session: LingyunSession, callbacks?: AgentCallbacks) {
+  private createToolContext(
+    signal: AbortSignal,
+    session: LingyunSession,
+    execution: LingyunAgentExecutionContext,
+    callbacks?: AgentCallbacks
+  ) {
     return {
       workspaceRoot: this.workspaceRoot,
-      allowExternalPaths: this.allowExternalPaths,
-      sessionId: session.sessionId ?? this.config.sessionId,
+      allowExternalPaths: execution.runtime.allowExternalPaths,
+      sessionId: session.sessionId ?? execution.config.sessionId,
       signal,
       log: (message: string) => {
         try {
@@ -496,6 +829,7 @@ export class LingyunAgent {
     mode: 'build' | 'plan',
     session: LingyunSession,
     semanticHandles: SemanticHandleRegistry,
+    execution: LingyunAgentExecutionContext,
     callbacks: AgentCallbacks | undefined,
     toolNameToDefinition: Map<string, ToolDefinition>
   ): Record<string, unknown> {
@@ -506,7 +840,7 @@ export class LingyunAgent {
       toolNameToDefinition.set(toolName, def);
 
       if (toolName === 'task') {
-        out[toolName] = this.createTaskTool(def, session, callbacks);
+        out[toolName] = this.createTaskTool(def, session, mode, execution, callbacks);
         continue;
       }
 
@@ -518,14 +852,14 @@ export class LingyunAgent {
           const abortSignal = options.abortSignal ?? new AbortController().signal;
           return executeToolWithPolicies({
             host: {
-              config: this.config,
+              config: execution.config,
               plugins: this.plugins,
               registry: this.registry,
               fileHandles: this.fileHandles,
-              allowExternalPaths: this.allowExternalPaths,
+              allowExternalPaths: execution.runtime.allowExternalPaths,
               workspaceRoot: this.workspaceRoot,
               createToolContext: (signal, scopedSession, scopedCallbacks) =>
-                this.createToolContext(signal, scopedSession, scopedCallbacks),
+                this.createToolContext(signal, scopedSession, execution, scopedCallbacks),
               formatToolResult: (result, toolLabel) => this.formatToolResult(result, toolLabel),
             },
             def,
@@ -549,7 +883,13 @@ export class LingyunAgent {
     return out;
   }
 
-  private createTaskTool(def: ToolDefinition, session: LingyunSession, callbacks: AgentCallbacks | undefined): unknown {
+  private createTaskTool(
+    def: ToolDefinition,
+    session: LingyunSession,
+    mode: 'build' | 'plan',
+    execution: LingyunAgentExecutionContext,
+    callbacks: AgentCallbacks | undefined
+  ): unknown {
     const toolName = def.id;
     return aiTool({
       id: toolName as any,
@@ -557,7 +897,30 @@ export class LingyunAgent {
       inputSchema: jsonSchema(def.parameters as any),
       execute: async (args: any, options: ToolExecutionOptions) => {
         const resolvedArgs: Record<string, unknown> = isRecord(args) ? args : {};
-        return this.taskSubagentRunner.executeTaskTool({ def, session, callbacks, args: resolvedArgs, options });
+        return this.taskSubagentRunner.executeTaskTool({
+          mode,
+          def,
+          session,
+          callbacks,
+          args: resolvedArgs,
+          options,
+          prepareSubagentExecution: async ({
+            childSessionId,
+            childSession,
+            subagent,
+            prompt,
+            callbacks: subagentCallbacks,
+            signal,
+          }) =>
+            await this.prepareTaskSubagentExecution(mode, execution, {
+              childSessionId,
+              childSession,
+              subagent,
+              prompt,
+              callbacks: subagentCallbacks,
+              signal,
+            }),
+        });
       },
       toModelOutput: async (options: any) => {
         const output = options.output as ToolResult;
@@ -567,8 +930,8 @@ export class LingyunAgent {
     });
   }
 
-  private filterTools(tools: ToolDefinition[]): ToolDefinition[] {
-    const filter = this.config.toolFilter;
+  private filterTools(tools: ToolDefinition[], config: Readonly<AgentConfig>): ToolDefinition[] {
+    const filter = config.toolFilter;
     if (!filter || filter.length === 0) {
       return tools;
     }
@@ -584,18 +947,39 @@ export class LingyunAgent {
     });
   }
 
-  private async composeSystemPrompt(modelId: string, options?: { signal?: AbortSignal }): Promise<string[]> {
-    return this.promptComposer.composeSystemPrompts(modelId, { signal: options?.signal });
+  private async composeSystemPrompt(
+    modelId: string,
+    execution: LingyunAgentExecutionContext,
+    options?: { signal?: AbortSignal }
+  ): Promise<string[]> {
+    return this.promptComposer.composeSystemPrompts(modelId, {
+      signal: options?.signal,
+      basePrompt: execution.runtime.systemPrompt,
+      sessionId: execution.config.sessionId,
+      mode: this.getModeForConfig(execution.config),
+      allowExternalPaths: execution.runtime.allowExternalPaths,
+    });
   }
 
-  private async drainPendingInputs(session: LingyunSession, callbacks?: AgentCallbacks, signal?: AbortSignal): Promise<number> {
+  private async drainPendingInputs(
+    session: LingyunSession,
+    execution: LingyunAgentExecutionContext,
+    callbacks?: AgentCallbacks,
+    signal?: AbortSignal
+  ): Promise<number> {
     let drained = 0;
 
     while (!signal?.aborted) {
       const input = session.peekPendingInput();
       if (input === undefined) break;
 
-      await this.injectSkillsForUserText(session, getUserHistoryInputText(input), callbacks, signal);
+      await this.injectSkillsForUserText(
+        session,
+        execution,
+        getUserHistoryInputText(input),
+        callbacks,
+        signal
+      );
       session.history.push(createUserHistoryMessage(input));
       session.shiftPendingInput();
       drained++;
@@ -604,16 +988,22 @@ export class LingyunAgent {
     return drained;
   }
 
-  private async runOnce(session: LingyunSession, callbacks?: AgentCallbacks, signal?: AbortSignal): Promise<string> {
-    const modelId = (this.config.model || '').trim();
+  private async runOnce(
+    session: LingyunSession,
+    execution: LingyunAgentExecutionContext,
+    syntheticContexts: readonly LingyunAgentSyntheticContext[] = [],
+    callbacks?: AgentCallbacks,
+    signal?: AbortSignal
+  ): Promise<string> {
+    const modelId = (execution.config.model || '').trim();
     if (!modelId) {
       throw new Error('No model configured');
     }
 
     await this.ensurePluginToolsRegistered();
 
-    const mode = this.getMode();
-    const sessionId = session.sessionId ?? this.config.sessionId;
+    const mode = this.getModeForConfig(execution.config);
+    const sessionId = session.sessionId ?? execution.config.sessionId;
 
     return runOnceLoop({
       session,
@@ -622,38 +1012,41 @@ export class LingyunAgent {
       modelId,
       mode,
       sessionId,
-      sessionIdFallback: this.config.sessionId,
+      sessionIdFallback: execution.config.sessionId,
       llm: this.llm,
       plugins: this.plugins,
       registry: this.registry,
       providerBehavior: this.providerBehavior,
-      copilotReasoningEffort: this.copilotReasoningEffort,
-      compactionConfig: this.compactionConfig,
-      temperature: this.config.temperature ?? 0.0,
-      maxRetries: this.config.maxRetries ?? 0,
-      retryWithPartialOutput: this.config.retryWithPartialOutput === true,
-      getMaxOutputTokens: () => this.getMaxOutputTokens(),
-      getModelLimit: (id) => this.getModelLimit(id),
-      composeSystemPrompt: (id, options) => this.composeSystemPrompt(id, options),
-      filterTools: (tools) => this.filterTools(tools),
+      copilotReasoningEffort: execution.runtime.copilotReasoningEffort,
+      compactionConfig: execution.runtime.compactionConfig,
+      temperature: execution.config.temperature ?? 0.0,
+      maxRetries: execution.config.maxRetries ?? 0,
+      retryWithPartialOutput: execution.config.retryWithPartialOutput === true,
+      getMaxOutputTokens: () => this.getMaxOutputTokens(execution.config),
+      getModelLimit: (id) => this.getModelLimit(id, execution.runtime),
+      composeSystemPrompt: (id, options) => this.composeSystemPrompt(id, execution, options),
+      filterTools: (tools) => this.filterTools(tools, execution.config),
       createAISDKTools: (tools, toolMode, scopedSession, semanticHandles, scopedCallbacks, toolNameToDefinition) =>
         this.createAISDKTools(
           tools,
           toolMode,
           scopedSession,
           semanticHandles,
+          execution,
           scopedCallbacks,
           toolNameToDefinition,
         ),
-      toModelMessages: (scopedSession, tools, id) => this.toModelMessages(scopedSession, tools, id),
+      toModelMessages: (scopedSession, tools, id) =>
+        this.toModelMessages(scopedSession, tools, id, execution, syntheticContexts),
       pruneToolResultForHistory: (output, toolLabel) => this.pruneToolResultForHistory(output, toolLabel),
       drainPendingInputs: (scopedSession, scopedCallbacks, scopedSignal) =>
-        this.drainPendingInputs(scopedSession, scopedCallbacks, scopedSignal),
+        this.drainPendingInputs(scopedSession, execution, scopedCallbacks, scopedSignal),
     });
   }
 
   private async injectSkillsForUserText(
     session: LingyunSession,
+    execution: LingyunAgentExecutionContext,
     text: string,
     callbacks?: AgentCallbacks,
     signal?: AbortSignal,
@@ -666,7 +1059,7 @@ export class LingyunAgent {
     const index = await getSkillIndex({
       workspaceRoot: this.workspaceRoot,
       searchPaths: this.skillsConfig.paths,
-      allowExternalPaths: this.allowExternalPaths,
+      allowExternalPaths: execution.runtime.allowExternalPaths,
       signal,
     });
 
@@ -731,7 +1124,13 @@ export class LingyunAgent {
     }
   }
 
-  run(params: { session: LingyunSession; input: UserHistoryInput; callbacks?: AgentCallbacks; signal?: AbortSignal }): LingyunRun {
+  run(params: {
+    session: LingyunSession;
+    input: UserHistoryInput;
+    callbacks?: AgentCallbacks;
+    signal?: AbortSignal;
+    configOverride?: Partial<AgentConfig>;
+  }): LingyunRun {
     const queue = new AsyncQueue<LingyunEvent>();
 
     const callbacks = params.callbacks;
@@ -812,11 +1211,14 @@ export class LingyunAgent {
 
     const done = (async () => {
       try {
-        const modelId = (this.config.model ?? '').trim();
-        const modelLimit = modelId ? this.getModelLimit(modelId) : undefined;
+        const prepared = await this.prepareRun(params.session, params.input, params.signal, params.configOverride);
+        const { execution, syntheticContexts } = prepared;
+
+        const modelId = (execution.config.model ?? '').trim();
+        const modelLimit = modelId ? this.getModelLimit(modelId, execution.runtime) : undefined;
         const reservedOutputTokens = getReservedOutputTokens({
           modelLimit,
-          maxOutputTokens: this.getMaxOutputTokens(),
+          maxOutputTokens: this.getMaxOutputTokens(execution.config),
         });
         const lastTokens = getLastAssistantTokens(params.session.history);
 
@@ -834,20 +1236,32 @@ export class LingyunAgent {
             auto: true,
             appendContinue: false,
             modelId,
-            mode: this.getMode(),
-            sessionIdFallback: this.config.sessionId,
+            mode: this.getModeForConfig(execution.config),
+            sessionIdFallback: execution.config.sessionId,
             callbacks: proxy,
             llm: this.llm,
             plugins: this.plugins,
             providerBehavior: this.providerBehavior,
-            compactionConfig: this.compactionConfig,
-            maxOutputTokens: this.getMaxOutputTokens(),
+            compactionConfig: execution.runtime.compactionConfig,
+            maxOutputTokens: this.getMaxOutputTokens(execution.config),
           });
         }
 
-        await this.injectSkillsForUserText(params.session, getUserHistoryInputText(params.input), proxy, params.signal);
+        await this.injectSkillsForUserText(
+          params.session,
+          execution,
+          getUserHistoryInputText(params.input),
+          proxy,
+          params.signal
+        );
         params.session.history.push(createUserHistoryMessage(params.input));
-        const text = await this.runOnce(params.session, proxy, params.signal);
+        const text = await this.runOnce(
+          params.session,
+          execution,
+          syntheticContexts,
+          proxy,
+          params.signal
+        );
         queue.push({ type: 'status', status: { type: 'done', message: '' } as any });
         queue.close();
         return { text, session: params.session };
@@ -866,6 +1280,13 @@ export class LingyunAgent {
   }
 
   async resume(params: { session: LingyunSession; callbacks?: AgentCallbacks; signal?: AbortSignal }): Promise<string> {
-    return this.runOnce(params.session, params.callbacks, params.signal);
+    const prepared = await this.prepareRun(params.session, undefined, params.signal);
+    return this.runOnce(
+      params.session,
+      prepared.execution,
+      prepared.syntheticContexts,
+      params.callbacks,
+      params.signal
+    );
   }
 }

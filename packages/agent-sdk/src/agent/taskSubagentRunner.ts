@@ -3,12 +3,12 @@ import type { ToolExecutionOptions } from 'ai';
 import type {
   AgentCallbacks,
   AgentConfig,
-  LLMProvider,
   LingyunRun,
   ToolCall,
   ToolDefinition,
   ToolResult,
 } from '../types.js';
+import type { LingyunAgentRuntimeOptions } from './agent.js';
 import {
   TOOL_ERROR_CODES,
   listBuiltinSubagents,
@@ -19,19 +19,25 @@ import {
   type UserHistoryInput,
 } from '@kooka/core';
 
-import { DEFAULT_SYSTEM_PROMPT } from './prompts.js';
 import { invokeCallbackSafely } from './callbacks.js';
 import { LingyunSession } from './session.js';
 import { snapshotSession } from '../persistence/sessionSnapshot.js';
 
+type ResolvedBuiltinSubagent = NonNullable<ReturnType<typeof resolveBuiltinSubagent>>;
+
+export type PreparedTaskSubagentExecution = {
+  config: AgentConfig;
+  runtimeOptions?: LingyunAgentRuntimeOptions;
+  childModelId: string;
+  desiredChildModelId: string;
+  childModelWarning?: string;
+  taskMaxOutputChars: number;
+};
+
 export type TaskSubagentRunnerDeps = {
-  llm: LLMProvider;
-  getConfig: () => AgentConfig;
-  getMode: () => 'build' | 'plan';
-  getTaskMaxOutputChars: () => number;
   taskSessions: Map<string, LingyunSession>;
   maxTaskSessions: number;
-  createSubagentAgent: (config: AgentConfig) => {
+  createSubagentAgent: (config: AgentConfig, runtime?: LingyunAgentRuntimeOptions) => {
     run: (params: {
       session: LingyunSession;
       input: UserHistoryInput;
@@ -42,19 +48,11 @@ export type TaskSubagentRunnerDeps = {
 };
 
 export class TaskSubagentRunner {
-  private readonly llm: LLMProvider;
-  private readonly getConfig: () => AgentConfig;
-  private readonly getMode: () => 'build' | 'plan';
-  private readonly getTaskMaxOutputChars: () => number;
   private readonly taskSessions: Map<string, LingyunSession>;
   private readonly maxTaskSessions: number;
   private readonly createSubagentAgent: TaskSubagentRunnerDeps['createSubagentAgent'];
 
   constructor(deps: TaskSubagentRunnerDeps) {
-    this.llm = deps.llm;
-    this.getConfig = deps.getConfig;
-    this.getMode = deps.getMode;
-    this.getTaskMaxOutputChars = deps.getTaskMaxOutputChars;
     this.taskSessions = deps.taskSessions;
     this.maxTaskSessions = deps.maxTaskSessions;
     this.createSubagentAgent = deps.createSubagentAgent;
@@ -98,8 +96,7 @@ export class TaskSubagentRunner {
     subagentType: string;
     sessionIdRaw: string;
   }): { parentSessionId: string | undefined; childSessionId: string; childSession: LingyunSession } {
-    const config = this.getConfig();
-    const parentSessionId = params.parentSession.sessionId ?? config.sessionId;
+    const parentSessionId = params.parentSession.sessionId;
     const requestedSessionId = normalizeSessionId(params.sessionIdRaw) || '';
     const childSessionId = requestedSessionId || crypto.randomUUID();
 
@@ -131,49 +128,11 @@ export class TaskSubagentRunner {
     return { parentSessionId, childSessionId, childSession };
   }
 
-  private async resolveTaskChildModel(params: {
-    childSession: LingyunSession;
-    parentModelId: string;
-    callbacks?: AgentCallbacks;
-  }): Promise<{ childModelId: string; desiredChildModelId: string; childModelWarning?: string }> {
-    const config = this.getConfig();
-    const configuredSubagentModel = typeof config.subagentModel === 'string' ? config.subagentModel.trim() : '';
-
-    const desiredChildModelId = params.childSession.modelId || configuredSubagentModel || params.parentModelId;
-    let childModelId = params.parentModelId;
-    let childModelWarning: string | undefined;
-    if (desiredChildModelId !== params.parentModelId) {
-      try {
-        await this.llm.getModel(desiredChildModelId);
-        childModelId = desiredChildModelId;
-      } catch (error) {
-        childModelWarning =
-          `Subagent model "${desiredChildModelId}" is unavailable; ` +
-          `using parent model "${params.parentModelId}".`;
-        invokeCallbackSafely(
-          params.callbacks?.onNotice,
-          { label: 'onNotice subagent_model_fallback', onDebug: params.callbacks?.onDebug },
-          { level: 'warning', message: childModelWarning },
-        );
-        invokeCallbackSafely(
-          params.callbacks?.onDebug,
-          { label: 'onDebug subagent_model_fallback' },
-          `[Task] subagent model fallback requested=${desiredChildModelId} using=${params.parentModelId} error=${error instanceof Error ? error.name : typeof error}`,
-        );
-        childModelId = params.parentModelId;
-      }
-    }
-
-    params.childSession.modelId = childModelId;
-    return { childModelId, desiredChildModelId, ...(childModelWarning ? { childModelWarning } : {}) };
-  }
-
-  private formatTaskOutputText(text: string, childSessionId: string): string {
+  private formatTaskOutputText(text: string, childSessionId: string, maxChars: number): string {
     const baseText = String(text || '').trimEnd();
     const metadataBlock =
       '\n\n' + ['<task_metadata>', `session_id: ${childSessionId}`, '</task_metadata>'].join('\n');
 
-    const maxChars = this.getTaskMaxOutputChars();
     if (!maxChars || !Number.isFinite(maxChars) || maxChars <= 0) {
       return baseText + metadataBlock;
     }
@@ -194,14 +153,21 @@ export class TaskSubagentRunner {
   }
 
   async executeTaskTool(params: {
+    mode: 'build' | 'plan';
     def: ToolDefinition;
     session: LingyunSession;
     callbacks: AgentCallbacks | undefined;
     args: Record<string, unknown>;
     options: ToolExecutionOptions;
+    prepareSubagentExecution: (params: {
+      childSessionId: string;
+      childSession: LingyunSession;
+      subagent: ResolvedBuiltinSubagent;
+      prompt: string;
+      callbacks?: AgentCallbacks;
+      signal?: AbortSignal;
+    }) => Promise<PreparedTaskSubagentExecution>;
   }): Promise<ToolResult> {
-    const config = this.getConfig();
-
     if (params.session.parentSessionId || params.session.subagentType) {
       return {
         success: false,
@@ -210,7 +176,7 @@ export class TaskSubagentRunner {
       };
     }
 
-    const parentMode = this.getMode();
+    const parentMode = params.mode;
     const spec = this.resolveTaskToolSpec(params.args, parentMode);
     if ('success' in spec) return spec;
 
@@ -226,21 +192,16 @@ export class TaskSubagentRunner {
     });
 
     const parentToolCallId = params.options.toolCallId;
-
-    const parentModelId = config.model;
-    if (!parentModelId) {
-      return {
-        success: false,
-        error: 'No model configured. Set AgentConfig.model.',
-        metadata: { errorCode: TOOL_ERROR_CODES.missing_model },
-      };
-    }
-
-    const { childModelId, desiredChildModelId, childModelWarning } = await this.resolveTaskChildModel({
+    const prepared = await params.prepareSubagentExecution({
+      childSessionId,
       childSession,
-      parentModelId,
+      subagent: spec.subagent,
+      prompt: spec.prompt,
       callbacks: params.callbacks,
+      signal: params.options.abortSignal,
     });
+
+    const subagentRunner = this.createSubagentAgent(prepared.config, prepared.runtimeOptions);
 
     invokeCallbackSafely(
       params.callbacks?.onSubagentEvent,
@@ -252,24 +213,9 @@ export class TaskSubagentRunner {
         sessionId: childSessionId,
         subagentType: spec.subagent.name,
         description: spec.description,
-        modelId: childModelId,
+        modelId: prepared.childModelId,
       },
     );
-
-    const basePrompt = config.systemPrompt || DEFAULT_SYSTEM_PROMPT;
-    const subagentConfig: AgentConfig = {
-      model: childModelId,
-      mode: parentMode,
-      temperature: config.temperature,
-      maxRetries: config.maxRetries,
-      maxOutputTokens: config.maxOutputTokens,
-      autoApprove: parentMode === 'plan' ? false : config.autoApprove,
-      toolFilter: spec.subagent.toolFilter?.length ? spec.subagent.toolFilter : undefined,
-      systemPrompt: `${basePrompt}\n\n${spec.subagent.prompt}`,
-      sessionId: childSessionId,
-    };
-
-    const subagentRunner = this.createSubagentAgent(subagentConfig);
 
     const toolSummary = new Map<string, { id: string; tool: string; status: 'running' | 'success' | 'error' }>();
 
@@ -388,7 +334,7 @@ export class TaskSubagentRunner {
         },
       );
 
-      const outputText = this.formatTaskOutputText(text, childSessionId);
+      const outputText = this.formatTaskOutputText(text, childSessionId, prepared.taskMaxOutputChars);
       const summary = [...toolSummary.values()].sort((a, b) => a.id.localeCompare(b.id));
 
       return {
@@ -407,9 +353,9 @@ export class TaskSubagentRunner {
             session_id: childSessionId,
             parent_session_id: parentSessionId,
             summary,
-            model_id: childModelId,
-            ...(childModelWarning
-              ? { model_warning: childModelWarning, requested_model_id: desiredChildModelId }
+            model_id: prepared.childModelId,
+            ...(prepared.childModelWarning
+              ? { model_warning: prepared.childModelWarning, requested_model_id: prepared.desiredChildModelId }
               : {}),
           },
           childSession: snapshotSession(childSession, {

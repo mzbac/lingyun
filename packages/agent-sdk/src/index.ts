@@ -36,7 +36,21 @@ export type {
   LingyunPluginTool,
   LingyunPluginToolEntry,
 } from './plugins/types.js';
-export { LingyunAgent, LingyunSession, type LingyunAgentRuntimeOptions } from './agent/agent.js';
+export {
+  LingyunAgent,
+  LingyunSession,
+  type LingyunAgentPreparedRun,
+  type LingyunAgentRuntimeContext,
+  type LingyunAgentRuntimeOptions,
+  type LingyunAgentRuntimePolicy,
+  type LingyunAgentRuntimeSnapshot,
+  type LingyunAgentSyntheticContext,
+  type LingyunAgentSyntheticRunParams,
+} from './agent/agent.js';
+export {
+  isTransientSyntheticMessage,
+  stripTransientSyntheticMessages,
+} from './agent/transientSyntheticContext.js';
 export { buildStreamReplay, type StreamReplayNamespace, type StreamReplayUpdate } from './agent/streamAdapters.js';
 export { registerBuiltinTools, getBuiltinTools, DEFAULT_SKILL_PATHS, type BuiltinToolsOptions } from './tools/builtin/index.js';
 export type { SkillInfo, SkillIndex } from '@kooka/core';
@@ -44,7 +58,21 @@ export { getSkillIndex, loadSkillFile } from '@kooka/core';
 export * from './persistence/index.js';
 
 // Neutral API aliases for hosts that don't want product-specific naming.
-export { LingyunAgent as Agent, LingyunSession as AgentSession, type LingyunAgentRuntimeOptions as AgentRuntimeOptions } from './agent/agent.js';
+export {
+  LingyunAgent as Agent,
+  LingyunSession as AgentSession,
+  type LingyunAgentPreparedRun as AgentPreparedRun,
+  type LingyunAgentRuntimeContext as AgentRuntimeContext,
+  type LingyunAgentRuntimeOptions as AgentRuntimeOptions,
+  type LingyunAgentRuntimePolicy as AgentRuntimePolicy,
+  type LingyunAgentRuntimeSnapshot as AgentRuntimeSnapshot,
+  type LingyunAgentSyntheticContext as AgentSyntheticContext,
+  type LingyunAgentSyntheticRunParams as AgentSyntheticRunParams,
+} from './agent/agent.js';
+export {
+  isTransientSyntheticMessage as isAgentTransientSyntheticMessage,
+  stripTransientSyntheticMessages as stripAgentTransientSyntheticMessages,
+} from './agent/transientSyntheticContext.js';
 export type {
   LingyunEvent as AgentEvent,
   LingyunNotice as AgentNotice,

@@ -1,7 +1,10 @@
 import * as vscode from 'vscode';
 
-import { formatLoopIntervalLabel } from './loopManager';
-import type { ChatController } from './controller';
+import { formatLoopIntervalLabel, type ChatLoopManager } from './loopManager';
+import { bindChatControllerService } from './controllerService';
+import type { RunCoordinator } from './runner/runCoordinator';
+import type { ChatSessionsService } from './methods.sessions';
+import type { ChatWebviewService } from './methods.webview';
 import type { ChatSessionInfo } from './types';
 
 type LoopAction = 'enable' | 'disable' | 'interval' | 'prompt' | 'reset';
@@ -28,13 +31,11 @@ function formatNextFire(nextFireAt: number | undefined): string | undefined {
 
 async function pickLoopInterval(currentMinutes: number): Promise<number | undefined> {
   const presets = [5, 10, 15, 30, 60, 120];
-  const items: Array<vscode.QuickPickItem & { minutes?: number; custom?: true }> = presets.map(
-    minutes => ({
-      label: `${minutes} minutes`,
-      description: minutes === currentMinutes ? 'Current' : undefined,
-      minutes,
-    })
-  );
+  const items: Array<vscode.QuickPickItem & { minutes?: number; custom?: true }> = presets.map((minutes) => ({
+    label: `${minutes} minutes`,
+    description: minutes === currentMinutes ? 'Current' : undefined,
+    minutes,
+  }));
 
   items.push({
     label: 'Custom…',
@@ -55,7 +56,7 @@ async function pickLoopInterval(currentMinutes: number): Promise<number | undefi
       prompt: 'Enter the loop interval in minutes',
       value: String(currentMinutes || 5),
       ignoreFocusOut: true,
-      validateInput: value => {
+      validateInput: (value) => {
         const parsed = Number(value.trim());
         if (!Number.isFinite(parsed) || parsed < 1) {
           return 'Enter a whole number of minutes greater than or equal to 1.';
@@ -80,32 +81,45 @@ async function pickLoopPrompt(currentPrompt: string): Promise<string | undefined
     prompt: 'Prompt injected into the active run on each loop tick',
     value: currentPrompt,
     ignoreFocusOut: true,
-    validateInput: value => {
-      if (!value.trim()) return 'Prompt cannot be empty.';
-      return undefined;
-    },
+    validateInput: (value) => (!value.trim() ? 'Prompt cannot be empty.' : undefined),
   });
 
   if (!input) return undefined;
   return input.trim();
 }
 
-export function installLoopMethods(controller: ChatController): void {
-  Object.assign(controller, {
-    getLoopStateForUI(this: ChatController, session: ChatSessionInfo = this.getActiveSession()) {
+export interface ChatLoopService {
+  getLoopStateForUI(session?: ChatSessionInfo): ReturnType<ChatLoopManager['getSessionStatus']>;
+  postLoopState(session?: ChatSessionInfo): void;
+  injectLoopPrompt(prompt?: string): Promise<boolean>;
+  configureLoopForActiveSession(): Promise<void>;
+}
+
+export interface ChatLoopDeps {
+  view?: vscode.WebviewView;
+  activeSessionId: string;
+  loopManager: ChatLoopManager;
+  runner: Pick<RunCoordinator, 'triggerLoopPrompt'>;
+  sessionApi: Pick<ChatSessionsService, 'getActiveSession' | 'persistActiveSession'>;
+  webviewApi: Pick<ChatWebviewService, 'postMessage'>;
+}
+
+export function createChatLoopService(controller: ChatLoopDeps): ChatLoopService {
+  const service = bindChatControllerService(controller, {
+    getLoopStateForUI(this: ChatLoopDeps, session: ChatSessionInfo = this.sessionApi.getActiveSession()) {
       return this.loopManager.getSessionStatus(session);
     },
 
-    postLoopState(this: ChatController, session: ChatSessionInfo = this.getActiveSession()): void {
+    postLoopState(this: ChatLoopDeps, session: ChatSessionInfo = this.sessionApi.getActiveSession()): void {
       if (session.id !== this.activeSessionId) return;
-      this.postMessage({
+      this.webviewApi.postMessage({
         type: 'loopState',
-        loop: this.getLoopStateForUI(session),
+        loop: service.getLoopStateForUI(session),
       });
     },
 
-    async injectLoopPrompt(this: ChatController, prompt?: string): Promise<boolean> {
-      const session = this.getActiveSession();
+    async injectLoopPrompt(this: ChatLoopDeps, prompt?: string): Promise<boolean> {
+      const session = this.sessionApi.getActiveSession();
       const status = this.loopManager.getSessionStatus(session);
       if (!this.view) return false;
       if (this.activeSessionId !== session.id) return false;
@@ -115,14 +129,14 @@ export function installLoopMethods(controller: ChatController): void {
       return await this.runner.triggerLoopPrompt(raw);
     },
 
-    async configureLoopForActiveSession(this: ChatController): Promise<void> {
-      const session = this.getActiveSession();
+    async configureLoopForActiveSession(this: ChatLoopDeps): Promise<void> {
+      const session = this.sessionApi.getActiveSession();
       const loopState = this.loopManager.getSessionStatus(session);
 
       if (session.parentSessionId || session.subagentType) {
         void vscode.window.showInformationMessage(
           'LingYun: Loop steering is only available for top-level sessions.'
-          );
+        );
         return;
       }
 
@@ -159,35 +173,22 @@ export function installLoopMethods(controller: ChatController): void {
       if (!picked) return;
 
       let changed = false;
-      let nextLoop = loopState;
 
       if (picked.action === 'enable') {
-        this.loopManager.updateSessionState(session.id, current => ({
-          ...current,
-          enabled: true,
-        }));
+        this.loopManager.updateSessionState(session.id, (current) => ({ ...current, enabled: true }));
         changed = true;
       } else if (picked.action === 'disable') {
-        this.loopManager.updateSessionState(session.id, current => ({
-          ...current,
-          enabled: false,
-        }));
+        this.loopManager.updateSessionState(session.id, (current) => ({ ...current, enabled: false }));
         changed = true;
       } else if (picked.action === 'interval') {
         const minutes = await pickLoopInterval(loopState.intervalMinutes);
         if (!minutes) return;
-        this.loopManager.updateSessionState(session.id, current => ({
-          ...current,
-          intervalMinutes: minutes,
-        }));
+        this.loopManager.updateSessionState(session.id, (current) => ({ ...current, intervalMinutes: minutes }));
         changed = true;
       } else if (picked.action === 'prompt') {
         const prompt = await pickLoopPrompt(loopState.prompt);
         if (!prompt) return;
-        this.loopManager.updateSessionState(session.id, current => ({
-          ...current,
-          prompt,
-        }));
+        this.loopManager.updateSessionState(session.id, (current) => ({ ...current, prompt }));
         changed = true;
       } else if (picked.action === 'reset') {
         const defaults = this.loopManager.getDefaults();
@@ -201,10 +202,9 @@ export function installLoopMethods(controller: ChatController): void {
 
       if (!changed) return;
 
-      nextLoop = this.loopManager.getSessionStatus(session);
-
-      this.postLoopState(session);
-      this.persistActiveSession();
+      const nextLoop = this.loopManager.getSessionStatus(session);
+      service.postLoopState(session);
+      this.sessionApi.persistActiveSession();
 
       const stateLabel = nextLoop.enabled ? 'enabled' : 'disabled';
       const pausedSuffix = nextLoop.enabled && !nextLoop.canRunNow ? ` ${nextLoop.statusText}` : '';
@@ -213,4 +213,6 @@ export function installLoopMethods(controller: ChatController): void {
       );
     },
   });
+
+  return service;
 }
