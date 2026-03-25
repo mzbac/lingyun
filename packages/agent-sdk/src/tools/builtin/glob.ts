@@ -4,7 +4,7 @@ import { glob } from 'glob';
 
 import type { ToolDefinition, ToolHandler } from '../../types.js';
 import { optionalString, requireString } from '@kooka/core';
-import { getWorkspaceRoot, resolveToolPath } from './workspace.js';
+import { formatToolPathForOutput, getWorkspaceRoot, resolveToolPath } from './workspace.js';
 
 export const globTool: ToolDefinition = {
   id: 'glob',
@@ -79,7 +79,7 @@ export const globHandler: ToolHandler = async (args, context) => {
     );
 
     entries.sort((a, b) => b.mtime - a.mtime);
-    const files = entries.map((e) => e.abs).slice(0, 100);
+    const files = entries.map((e) => formatToolPathForOutput(e.abs, context)).slice(0, 100);
     const truncated = files.length >= 100 || relMatches.length > files.length;
 
     return {

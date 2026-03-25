@@ -6,7 +6,7 @@ import {
   InputHistoryStore,
   addInputHistoryEntry,
 } from '../../core/inputHistoryStore';
-import { appendErrorLog } from '../../core/logger';
+import { appendErrorLog, appendLog } from '../../core/logger';
 
 import { bindChatControllerService } from './controllerService';
 import type { ChatSessionsService } from './methods.sessions';
@@ -43,11 +43,7 @@ export function createChatInputHistoryService(controller: ChatInputHistoryDeps):
         maxEntries: DEFAULT_INPUT_HISTORY_MAX_ENTRIES,
         maxEntryChars: DEFAULT_INPUT_HISTORY_MAX_ENTRY_CHARS,
         log: (message) => {
-          try {
-            this.outputChannel?.appendLine(message);
-          } catch {
-            // ignore
-          }
+          appendLog(this.outputChannel, message, { level: 'debug', tag: 'InputHistory' });
         },
       });
 

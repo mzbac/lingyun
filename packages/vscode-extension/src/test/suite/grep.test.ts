@@ -39,7 +39,7 @@ suite('Grep Tool', () => {
       assert.ok(data.matches.length >= 1);
 
       const first = data.matches[0];
-      assert.strictEqual(first.filePath, fileUri.fsPath);
+      assert.strictEqual(first.filePath, fileRel);
       assert.strictEqual(first.line, 2);
       assert.strictEqual(typeof first.column, 'number');
       assert.ok(first.column >= 1);
@@ -59,4 +59,3 @@ suite('Grep Tool', () => {
     }
   });
 });
-

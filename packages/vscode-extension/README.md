@@ -1,101 +1,95 @@
 # LingYun
 
-Agentic AI assistant for VS Code. LingYun can plan, use tools (files/shell/language features), and execute multi-step tasks in your workspace.
+LingYun is a VS Code extension for agentic coding work. It can inspect your workspace, edit files, run shell commands, use VS Code language features, delegate to subagents, persist sessions, compact long context, and optionally build transcript-backed memories.
 
-## Platform support
+## Providers
 
-LingYun is currently supported on **macOS** and **Linux**. **Windows is not supported** yet because the built-in tools rely heavily on a `bash` shell environment.
+LingYun currently supports three LLM backends:
+
+- GitHub Copilot
+- ChatGPT Codex Subscription
+- OpenAI-compatible servers
+
+Provider selection is controlled by `lingyun.llmProvider`.
 
 ## Quickstart
 
-1. Open the **LingYun** view (Activity Bar → **LingYun** → **Chat**).
-2. Pick a model from the model dropdown.
-3. Describe a goal, for example:
+1. Open the **LingYun** view.
+2. Choose a provider and model from the chat header.
+3. Describe a task, for example:
    - “Find where this function is defined and explain it.”
    - “Refactor this file and run tests.”
    - “Search the repo for X and update the docs.”
 
-By default LingYun starts in **Plan** mode:
+New tasks run with:
 
-- It drafts a short plan first.
-- Click **Execute** to switch to **Build** mode and let it run.
-- Use **Stop** anytime to cancel.
+- `lingyun.mode = build` by default
+- `lingyun.planFirst = true` by default
 
-## Plan vs Build
+That means LingYun normally drafts a plan first for a new top-level task, then you can continue into execution. If you want strict read-only behavior, switch the mode to **Plan**.
 
-- **Plan** (read-only): can inspect the workspace (list/glob/grep/read/lsp) and propose steps.
-- **Build**: can edit/write files and run commands. Some tools require approval.
+## Modes
 
-You can toggle modes from the header, and **Execute** in Plan switches to Build automatically.
+- **Build**: full tool use, including edits and shell commands, subject to approvals.
+- **Plan**: read-only. Write/edit tools are denied and auto-approve is disabled.
+- **Plan First**: a UI behavior controlled by `lingyun.planFirst`. This is separate from `lingyun.mode`.
 
-## Tools & approvals
+## Built-in tools
 
-LingYun uses tools to do real work:
+LingYun ships with these built-in tools:
 
-- Workspace discovery: `list`, `glob`, `grep`, `read`
+- Workspace discovery: `list`, `glob`, `grep`, `read`, `read_range`
 - Editing: `edit`, `write`
-- Commands: `bash`
-- Code intelligence: `lsp` (definition/references/symbols via VS Code)
-- Subagents: `task` (spawn a specialized subagent like `explore` or `general`)
+- Code intelligence: `lsp`, `symbols_search`, `symbols_peek`
+- Shell: `bash`
+- Reusable instructions: `skill`
+- Delegation: `task`
+- Todos: `todoread`, `todowrite`
+- Memory access: `get_memory`
 
-When a tool needs approval you’ll see **Allow/Deny** (and **Allow all** for the current run). You can also enable:
+Workspace-defined tools can also be loaded from:
 
-- `lingyun.autoApprove` (not recommended)
+- `.vscode/agent-tools.json`
+- `.vscode/agent-tools/*.json`
 
-## Subagents (optional)
+Schema: `schemas/agent-tools.schema.json`
 
-The agent can delegate work to a separate “subagent” via the `task` tool. This can help reduce main-session context bloat by running exploration in a separate session and only returning a short summary.
+## Approvals and path safety
 
-Auto-run the **explore** subagent before each user turn (runtime-driven prepass):
+- Tool approvals are driven by tool metadata plus `lingyun.autoApprove`.
+- `lingyun.autoApprove` only affects Build mode.
+- External paths are blocked by default, even when auto-approve is enabled.
+- External-path access is controlled by `lingyun.security.allowExternalPaths`.
 
-```json
-{
-  "lingyun.subagents.explorePrepass.enabled": true,
-  "lingyun.subagents.explorePrepass.maxChars": 8000,
-  "lingyun.subagents.model": ""
-}
-```
+## Providers and setup
 
-## Skills (SKILL.md)
+### GitHub Copilot
 
-LingYun supports reusable “skills” (task playbooks) stored as `SKILL.md` files with YAML frontmatter (`name`, `description`).
-
-- Workspace skills: `.lingyun/skills/**/SKILL.md` (also scans `.claude/skills` by default)
-- Global skills: `~/.config/lingyun/skills/**/SKILL.md` and `~/.claude/skills/**/SKILL.md` (only when `lingyun.security.allowExternalPaths=true`)
-- Auto-apply: mention `$skill-name` in your message to auto-inject that skill’s instructions for the current turn
-- Tool: use `skill` with no args to list, or `skill { "name": "..." }` to load into the current conversation
-
-Configure discovery with:
+Copilot is the default provider:
 
 ```json
 {
-  "lingyun.skills.enabled": true,
-  "lingyun.skills.paths": [".lingyun/skills", "~/.config/lingyun/skills"],
-  "lingyun.skills.maxPromptSkills": 50,
-  "lingyun.skills.maxInjectSkills": 5,
-  "lingyun.skills.maxInjectChars": 20000
+  "lingyun.llmProvider": "copilot",
+  "lingyun.model": "gpt-4o"
 }
 ```
 
-## Sessions
+`lingyun.copilot.reasoningEffort` defaults to `high` and is used for GPT-5-family Copilot requests.
 
-Each chat runs in a session. Use the **Session** dropdown to switch sessions and **+** to start a new one.
+### ChatGPT Codex Subscription
 
-Optional: persist sessions to disk so they restore after restarting VS Code:
+The Codex subscription provider uses a ChatGPT account session and exposes sign-in/sign-out in the chat header when auth UI is available.
+
+If `lingyun.model` is empty or still set to the Copilot default, LingYun falls back to `lingyun.codexSubscription.defaultModelId`, which defaults to `gpt-5.3-codex`.
 
 ```json
 {
-  "lingyun.sessions.persist": true
+  "lingyun.llmProvider": "codexSubscription",
+  "lingyun.codexSubscription.defaultModelId": "gpt-5.4"
 }
 ```
 
-Clear persisted sessions with **LingYun: Clear Saved Sessions**.
-
-## Use a local OpenAI-compatible server (optional)
-
-LingYun can connect to local servers that implement the OpenAI API. The server must return models from `GET /v1/models`.
-
-In VS Code settings:
+### OpenAI-compatible server
 
 ```json
 {
@@ -106,32 +100,143 @@ In VS Code settings:
 }
 ```
 
-If your server requires an API key, set it in your environment (default env var: `OPENAI_API_KEY`). You can override the env var name with `lingyun.openaiCompatible.apiKeyEnv`.
+If your server needs a key, LingYun reads it from `OPENAI_API_KEY` by default. Override that env var name with `lingyun.openaiCompatible.apiKeyEnv`.
+
+## Sessions, compaction, and memories
+
+### Sessions
+
+- `lingyun.sessions.persist` defaults to `true`
+- Persisted sessions are workspace-scoped
+- Clear them with `LingYun: Clear Saved Sessions`
+
+### Context compaction
+
+LingYun automatically compacts long sessions by default:
+
+```json
+{
+  "lingyun.compaction.auto": true,
+  "lingyun.compaction.prune": true,
+  "lingyun.compaction.toolOutputMode": "afterToolCall"
+}
+```
+
+You can also compact the current session manually with `LingYun: Compact Session`.
+
+Per-model context limits live under `lingyun.modelLimits`. Keys can be either plain model ids or provider-scoped keys:
+
+```json
+{
+  "lingyun.modelLimits": {
+    "gpt-4o": { "context": 128000, "output": 32000 },
+    "codexSubscription:gpt-5.4": { "context": 272000, "output": 32000 }
+  }
+}
+```
+
+Provider-scoped entries take precedence, and plain model-id entries still work as the backward-compatible fallback.
+
+### Memories
+
+The memory pipeline is enabled by default:
+
+- `lingyun.features.memories = true`
+- `lingyun.memories.autoRecall = true`
+
+LingYun can extract transcript-backed memory from persisted sessions, auto-recall relevant context before top-level turns, and expose memory artifacts through the `get_memory` tool.
+
+Useful commands:
+
+- `LingYun: Update Memories`
+- `LingYun: Drop Memories`
+
+## Skills
+
+LingYun supports reusable `SKILL.md` files.
+
+Default search paths include:
+
+- Workspace-relative: `.lingyun/skills`, `.claude/skills`, `.opencode/skill`, `.opencode/skills`
+- Home-directory paths: `~/.config/lingyun/skills`, `~/.agent/skills`, `~/.agents/skills`, `~/.codex/skills`, `~/.claude/skills`
+
+Home-directory paths are ignored unless `lingyun.security.allowExternalPaths = true`.
+
+Mention `$skill-name` in a prompt to auto-inject that skill for the current turn.
+
+Relevant settings:
+
+```json
+{
+  "lingyun.skills.enabled": true,
+  "lingyun.skills.maxPromptSkills": 50,
+  "lingyun.skills.maxInjectSkills": 5,
+  "lingyun.skills.maxInjectChars": 20000
+}
+```
+
+## Subagents
+
+LingYun can delegate work through the `task` tool. It also supports an optional automatic explore prepass before each user turn:
+
+```json
+{
+  "lingyun.subagents.explorePrepass.enabled": true,
+  "lingyun.subagents.explorePrepass.maxChars": 8000,
+  "lingyun.subagents.model": ""
+}
+```
+
+Task-subagent output injected back into the main session is capped by `lingyun.subagents.task.maxOutputChars`.
 
 ## Commands
 
-- `LingYun: Start Task` (`Ctrl+Shift+.` / `Cmd+Shift+.`)
+Main commands:
+
+- `LingYun: Start Task`
+- `LingYun: Open Agent`
+- `LingYun: Open Office`
 - `LingYun: Abort`
 - `LingYun: Clear History`
 - `LingYun: Show Logs`
 
+Session and context commands:
+
+- `LingYun: Clear Saved Sessions`
+- `LingYun: Compact Session`
+- `LingYun: Update Memories`
+- `LingYun: Drop Memories`
+
+History commands:
+
+- `LingYun: Undo`
+- `LingYun: Redo`
+
+Tooling commands:
+
+- `LingYun: List Tools`
+- `LingYun: Create Tools Config`
+- `LingYun: Run Tool`
+
+Default keybinding:
+
+- `Cmd+Shift+.` on macOS
+- `Ctrl+Shift+.` elsewhere
+
 ## Troubleshooting
 
-- **Model shows “Loading…” forever**: make sure `lingyun.openaiCompatible.baseURL` includes `/v1` and the server responds to `GET /v1/models`.
-- **Responses cut off**: increase `lingyun.openaiCompatible.maxTokens`.
-- **See what’s happening**: run `LingYun: Show Logs` and enable `lingyun.debug.llm`.
-- **Debug plugins**: enable `lingyun.debug.plugins` (workspace plugins live under `.lingyun/plugin/`).
+- **OpenAI-compatible models do not load**: make sure `lingyun.openaiCompatible.baseURL` includes `/v1` and the server answers `GET /v1/models`.
+- **Responses cut off**: increase `lingyun.openaiCompatible.maxTokens` or configure `lingyun.modelLimits`.
+- **Compaction is too aggressive or not aggressive enough**: set `lingyun.modelLimits` for the exact model, or use a provider-scoped key like `codexSubscription:gpt-5.4`.
+- **Need more visibility**: use `LingYun: Show Logs` and enable `lingyun.debug.llm`, `lingyun.debug.tools`, or `lingyun.debug.plugins`.
 
 ## Advanced
 
-- Custom workspace tools: `.vscode/agent-tools.json` (schema: `schemas/agent-tools.schema.json`)
-- Workspace plugins/hooks: `.lingyun/plugin/*.cjs` (see `docs/PLUGINS.md`)
-- Skills: `docs/SKILLS.md`
-- Implementation details and dev notes: `AGENTS.md` and `docs/`
-
-## Credits
-
-LingYun is inspired by OpenCode. Thanks to the OpenCode open-source project and contributors for making this possible.
+- Workspace tools: `.vscode/agent-tools.json` and `.vscode/agent-tools/*.json`
+- Workspace plugins: `.lingyun/plugin/*.js`
+- Skills docs: `../../docs/SKILLS.md`
+- Plugin docs: `../../docs/PLUGINS.md`
+- Development and architecture notes: `../../AGENTS.md`
 
 ## License
 

@@ -237,6 +237,11 @@ class MockOpenAICompatibleProvider extends MockLLMProvider {
   override readonly name: string = 'OpenAI-Compatible';
 }
 
+class MockCodexSubscriptionProvider extends MockLLMProvider {
+  override readonly id: string = 'codexSubscription';
+  override readonly name: string = 'ChatGPT Codex Subscription';
+}
+
 class MockProviderWithModelMetadata extends MockLLMProvider {
   async getModels(): Promise<
     Array<{ id: string; name: string; vendor: string; family: string; maxInputTokens: number; maxOutputTokens: number }>
@@ -1702,6 +1707,72 @@ suite('AgentLoop', () => {
       const history = agent.getHistory();
       assert.ok(history.some(m => m.role === 'assistant' && m.metadata?.summary === true), 'summary message exists');
       assert.ok(history.some(m => m.role === 'user' && m.metadata?.compaction), 'compaction marker exists');
+
+      const start = compactionEvents.find(e => e.type === 'start');
+      const end = compactionEvents.find(e => e.type === 'end');
+      assert.ok(start && start.auto === true, 'compaction start event exists');
+      assert.ok(end && end.auto === true && end.status === 'done', 'compaction end event exists');
+    } finally {
+      await cfg.update('modelLimits', previousLimits as any, true);
+    }
+  });
+
+  test('auto compaction - prefers provider-scoped modelLimits over plain model keys', async () => {
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const previousLimits = cfg.get('modelLimits');
+    const codexLLM = new MockCodexSubscriptionProvider();
+    agent = new AgentLoop(codexLLM, mockContext, { model: 'gpt-5.4' }, registry);
+
+    await cfg.update(
+      'modelLimits',
+      {
+        'gpt-5.4': { context: 1000, output: 5 },
+        'codexSubscription:gpt-5.4': { context: 10, output: 5 },
+      },
+      true
+    );
+
+    try {
+      const compactionEvents: Array<
+        | { type: 'start'; auto: boolean; markerMessageId: string }
+        | {
+          type: 'end';
+          auto: boolean;
+          markerMessageId: string;
+          summaryMessageId?: string;
+          status: 'done' | 'error' | 'canceled';
+          error?: string;
+        }
+      > = [];
+
+      codexLLM.setNextResponse({
+        kind: 'tool-call',
+        toolCallId: 'call_provider_scoped_overflow',
+        toolName: 'test_echo',
+        input: { message: 'Hello World' },
+        usage: { inputNoCache: 10, cacheRead: 0, outputTotal: 1 },
+      });
+      codexLLM.queueResponse({ kind: 'text', content: 'Summary of progress' });
+      codexLLM.queueResponse({ kind: 'text', content: 'Done' });
+
+      const result = await agent.run('Do a thing', {
+        onCompactionStart: (event) => {
+          compactionEvents.push({ type: 'start', auto: event.auto, markerMessageId: event.markerMessageId });
+        },
+        onCompactionEnd: (event) => {
+          compactionEvents.push({
+            type: 'end',
+            auto: event.auto,
+            markerMessageId: event.markerMessageId,
+            summaryMessageId: event.summaryMessageId,
+            status: event.status,
+            error: event.error,
+          });
+        },
+      });
+
+      assert.strictEqual(result, 'Done');
+      assert.strictEqual(codexLLM.callCount, 3, 'tool call + compaction + final response');
 
       const start = compactionEvents.find(e => e.type === 'start');
       const end = compactionEvents.find(e => e.type === 'end');

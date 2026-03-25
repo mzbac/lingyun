@@ -1,3 +1,4 @@
+import * as os from 'node:os';
 import * as crypto from 'crypto';
 import type { ToolResult } from '../types';
 import { TOOL_ERROR_CODES } from '@kooka/core';
@@ -9,7 +10,10 @@ export function truncateForDebug(value: string, max = 500): string {
 }
 
 const URL_REGEX = /\bhttps?:\/\/[^\s"'<>]+/gi;
+const FILE_URL_REGEX = /\bfile:\/\/[^\s"'<>]+/gi;
 const IPV4_REGEX = /\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b/g;
+const LOCALHOST_REGEX = /\blocalhost\b(?::\d{1,5})?/gi;
+const LOCAL_DOMAIN_REGEX = /\b(?:[a-z0-9-]+\.)+(?:local|localhost)\b(?::\d{1,5})?/gi;
 const BEARER_REGEX = /Bearer\s+[A-Za-z0-9._-]+/gi;
 const BASIC_AUTH_REGEX = /Basic\s+[A-Za-z0-9+/=]+/gi;
 const JSON_SECRET_KV_REGEX =
@@ -50,8 +54,32 @@ export function redactSensitive(text: string): string {
   out = out.replace(JSON_SECRET_KV_REGEX, '$1"<redacted>"');
   out = out.replace(INLINE_SECRET_KV_REGEX, '$1$2<redacted>');
   out = out.replace(URL_REGEX, '<url>');
+  out = out.replace(FILE_URL_REGEX, '<file-url>');
+  out = out.replace(LOCAL_DOMAIN_REGEX, '<local-host>');
+  out = out.replace(LOCALHOST_REGEX, '<local-host>');
   out = out.replace(IPV4_REGEX, '<ip>');
+  out = redactHomePath(out);
   return out;
+}
+
+function redactHomePath(text: string): string {
+  const homeDir = String(os.homedir() || '').trim();
+  if (!homeDir) return text;
+
+  const variants = new Set<string>([homeDir]);
+  if (homeDir.includes('\\')) variants.add(homeDir.replace(/\\/g, '/'));
+  if (homeDir.includes('/')) variants.add(homeDir.replace(/\//g, '\\'));
+
+  let out = text;
+  for (const variant of variants) {
+    if (!variant) continue;
+    out = out.replace(new RegExp(escapeRegex(variant), 'gi'), '~');
+  }
+  return out;
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 export function summarizeErrorForDebug(error: unknown): string {

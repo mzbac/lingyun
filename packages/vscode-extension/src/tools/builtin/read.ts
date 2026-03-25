@@ -4,7 +4,7 @@ import * as vscode from 'vscode';
 import type { ToolDefinition, ToolHandler } from '../../core/types';
 import { getLspAdapter } from '../../core/lsp';
 import { TOOL_ERROR_CODES, requireString, optionalNumber } from '@kooka/core';
-import { BINARY_EXTENSIONS, containsBinaryData, resolveToolPath } from './workspace';
+import { BINARY_EXTENSIONS, containsBinaryData, formatToolPathForOutput, resolveToolPath } from './workspace';
 import { recordFileRead } from './fileTime';
 import { suggestSiblingPaths } from './pathSuggestions';
 
@@ -53,10 +53,11 @@ export const readHandler: ToolHandler = async (args, context) => {
     const filePath = filePathResult.value;
 
     const { uri, absPath, isExternal } = resolveToolPath(filePath, context);
+    const displayPath = formatToolPathForOutput(absPath, context);
 
     const ext = path.extname(absPath).toLowerCase();
     if (BINARY_EXTENSIONS.has(ext)) {
-      return { success: false, error: `Cannot read binary file: ${absPath}` };
+      return { success: false, error: `Cannot read binary file: ${displayPath}` };
     }
 
     let bytes: Uint8Array;
@@ -77,19 +78,20 @@ export const readHandler: ToolHandler = async (args, context) => {
 
       if (isNotFound) {
         const suggestions = await suggestSiblingPaths(absPath);
+        const displaySuggestions = suggestions.map((candidate) => formatToolPathForOutput(candidate, context));
         if (suggestions.length > 0) {
           return {
             success: false,
-            error: `File not found: ${absPath}\n\nDid you mean one of these?\n${suggestions.join('\n')}`,
+            error: `File not found: ${displayPath}\n\nDid you mean one of these?\n${displaySuggestions.join('\n')}`,
           };
         }
-        return { success: false, error: `File not found: ${absPath}` };
+        return { success: false, error: `File not found: ${displayPath}` };
       }
 
       throw error;
     }
     if (containsBinaryData(bytes)) {
-      return { success: false, error: `Cannot read binary file: ${absPath}` };
+      return { success: false, error: `Cannot read binary file: ${displayPath}` };
     }
 
     const text = new TextDecoder().decode(bytes);

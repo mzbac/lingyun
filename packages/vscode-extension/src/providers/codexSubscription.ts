@@ -1,4 +1,3 @@
-import * as os from 'node:os';
 import * as vscode from 'vscode';
 
 import { normalizeResponsesStreamModel } from '../core/utils/normalizeResponsesStream';
@@ -133,7 +132,7 @@ export class CodexSubscriptionProvider implements LLMProviderWithUi {
 
     const headers: Record<string, string> = {
       originator: 'opencode',
-      'User-Agent': `lingyun/${extensionVersion} (${os.platform()} ${os.release()}; ${os.arch()})`,
+      'User-Agent': `lingyun/${extensionVersion}`,
       session_id: crypto.randomUUID(),
     };
     if (session.accountId) {

@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 
 import type { ToolDefinition, ToolHandler } from '../../core/types';
 import { TOOL_ERROR_CODES, optionalNumber, requireString } from '@kooka/core';
-import { BINARY_EXTENSIONS, resolveToolPath } from './workspace';
+import { BINARY_EXTENSIONS, formatToolPathForOutput, resolveToolPath } from './workspace';
 
 const DEFAULT_MAX_LINES = 200;
 const MAX_LINE_LENGTH = 2000;
@@ -71,10 +71,11 @@ export const readRangeHandler: ToolHandler = async (args, context) => {
     }
 
     const { uri, absPath } = resolveToolPath(filePath, context);
+    const displayPath = formatToolPathForOutput(absPath, context);
 
     const ext = path.extname(absPath).toLowerCase();
     if (BINARY_EXTENSIONS.has(ext)) {
-      return { success: false, error: `Cannot read binary file: ${absPath}` };
+      return { success: false, error: `Cannot read binary file: ${displayPath}` };
     }
 
     const doc = await vscode.workspace.openTextDocument(uri);
@@ -94,7 +95,7 @@ export const readRangeHandler: ToolHandler = async (args, context) => {
       success: true,
       data: output,
       metadata: {
-        filePath,
+        filePath: displayPath,
         startLine: clampedStart,
         endLine: clampedEnd,
         totalLines,

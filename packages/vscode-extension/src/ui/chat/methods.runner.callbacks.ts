@@ -7,8 +7,8 @@ import { cleanAssistantPreamble, formatErrorForUser, formatWorkspacePathForUI } 
 import type { ChatMessage } from './types';
 import { buildToolDiffView, createUnifiedDiff, computeUnifiedDiffStats, trimUnifiedDiff } from './toolDiff';
 import { resolveToolPath } from '../../tools/builtin/workspace';
-import { summarizeErrorForDebug } from '../../core/agent/debug';
 import { recordAssistantOutcome, recordFileTouch, recordToolUse } from '../../core/sessionSignals';
+import { appendErrorLog, appendLog } from '../../core/logger';
 import { bindChatControllerService } from './controllerService';
 import { decorateAgentCallbacksWithOfficeSync } from '../office/sync';
 import type { OfficeSync } from '../office/sync';
@@ -313,8 +313,7 @@ export function createChatRunnerCallbacksService(controller: ChatRunnerCallbacks
 
     const debug = (message: string) => {
       if (!debugLlm || !message) return;
-      const timestamp = new Date().toLocaleTimeString();
-      this.outputChannel?.appendLine(`[${timestamp}] [UI] ${message}`);
+      appendLog(this.outputChannel, message, { level: 'debug', tag: 'UI' });
     };
 
     debug(
@@ -954,13 +953,7 @@ export function createChatRunnerCallbacksService(controller: ChatRunnerCallbacks
         const debugEnabled =
           vscode.workspace.getConfiguration('lingyun').get<boolean>('debug.llm') ?? false;
         if (debugEnabled) {
-          try {
-            const timestamp = new Date().toLocaleTimeString();
-            const summary = summarizeErrorForDebug(error);
-            this.outputChannel?.appendLine(`[${timestamp}] [Agent] Error ${summary}`);
-          } catch {
-            // ignore logging failures
-          }
+          appendErrorLog(this.outputChannel, 'Agent error', error, { tag: 'Agent' });
         }
 
         if (this.currentTurnId) {

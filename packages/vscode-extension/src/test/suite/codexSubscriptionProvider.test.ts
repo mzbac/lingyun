@@ -107,7 +107,7 @@ suite('CodexSubscriptionProvider', () => {
       assert.strictEqual(requestHeaders?.get('authorization'), 'Bearer test-access-token');
       assert.strictEqual(requestHeaders?.get('ChatGPT-Account-Id'), 'org_123');
       assert.strictEqual(requestHeaders?.get('originator'), 'opencode');
-      assert.ok((requestHeaders?.get('user-agent') || '').includes('lingyun/2.2.0-test'));
+      assert.strictEqual(requestHeaders?.get('user-agent'), 'lingyun/2.2.0-test');
       assert.strictEqual(requestHeaders?.get('accept'), 'text/event-stream');
       assert.strictEqual(requestBody?.model, 'gpt-5.3-codex');
       assert.strictEqual(requestBody?.store, false);

@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 
 import type { ToolDefinition, ToolHandler } from '../../core/types';
 import { optionalString } from '@kooka/core';
-import { getWorkspaceRootUri, resolveWorkspacePath, toPosixPath } from './workspace';
+import { formatToolPathForOutput, getWorkspaceRootUri, resolveWorkspacePath, toPosixPath } from './workspace';
 
 export const listTool: ToolDefinition = {
   id: 'list',
@@ -124,7 +124,10 @@ export const listHandler: ToolHandler = async (args, context) => {
       header.push(`Note: ${notes.join(' ')}`, '');
     }
     const output =
-      header.join('\n') + `${base.fsPath}/\n` + renderDir('.', 0) + (truncated ? '\n(Results are truncated.)\n' : '');
+      header.join('\n') +
+      `${formatToolPathForOutput(base.fsPath, context)}/\n` +
+      renderDir('.', 0) +
+      (truncated ? '\n(Results are truncated.)\n' : '');
     return { success: true, data: output.trimEnd() };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) };

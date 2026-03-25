@@ -5,7 +5,7 @@ import * as vscode from 'vscode';
 
 import type { ToolDefinition, ToolHandler } from '../../core/types';
 import { requireString, optionalString } from '@kooka/core';
-import { getWorkspaceRootUri, resolveWorkspacePath } from './workspace';
+import { formatToolPathForOutput, getWorkspaceRootUri, resolveWorkspacePath } from './workspace';
 
 const MAX_MATCHES = 100;
 const MAX_RAW_MATCHES = 2000;
@@ -325,7 +325,7 @@ export const grepHandler: ToolHandler = async (args, context) => {
     }
 
     const matches = finalMatches.map(match => ({
-      filePath: match.path,
+      filePath: formatToolPathForOutput(match.path, context),
       line: match.lineNum,
       ...(Number.isFinite(match.colNum as number) ? { column: match.colNum } : {}),
       text: match.lineText.trim(),

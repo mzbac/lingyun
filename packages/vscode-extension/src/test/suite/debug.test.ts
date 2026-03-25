@@ -1,4 +1,5 @@
 import * as assert from 'assert';
+import * as os from 'os';
 
 import { redactSensitive, summarizeErrorForDebug, summarizeToolArgsForDebug } from '../../core/agent/debug';
 
@@ -46,5 +47,18 @@ suite('Debug Redaction', () => {
     assert.ok(!redacted.includes('xyz'));
     assert.ok(redacted.includes('<url>'));
     assert.ok(redacted.includes('<redacted>'));
+  });
+
+  test('redactSensitive redacts home paths and local hosts', () => {
+    const home = os.homedir();
+    const input = `Failed to connect to localhost:3000 from ${home}/projects/demo using file://${home}/token.txt and printer.local:631`;
+    const redacted = redactSensitive(input);
+
+    assert.ok(!redacted.includes(home));
+    assert.ok(!redacted.includes('localhost:3000'));
+    assert.ok(!redacted.includes('printer.local:631'));
+    assert.ok(redacted.includes('~'));
+    assert.ok(redacted.includes('<local-host>'));
+    assert.ok(redacted.includes('<file-url>'));
   });
 });

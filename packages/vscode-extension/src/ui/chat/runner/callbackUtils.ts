@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 import { TOOL_ERROR_CODES, containsBinaryData } from '@kooka/core';
 import type { AgentCallbacks, ToolCall, ToolDefinition, ToolResult } from '../../../core/types';
 import type { AgentSessionState } from '../../../core/agent';
-import { appendErrorLog } from '../../../core/logger';
+import { appendErrorLog, appendLog } from '../../../core/logger';
 import type { ChatMessage, ChatSessionInfo } from '../types';
 import { formatWorkspacePathForUI } from '../utils';
 import { createBlankSessionSignals } from '../../../core/sessionSignals';
@@ -240,8 +240,7 @@ export function appendDebugLog(view: { outputChannel?: vscode.OutputChannel }, m
   if (!isTool && !debugLlm) return;
   if (!message) return;
 
-  const timestamp = new Date().toLocaleTimeString();
-  view.outputChannel?.appendLine(`[${timestamp}] ${message}`);
+  appendLog(view.outputChannel, message, { level: 'debug' });
 }
 
 export function postTurnStatus(view: { postMessage(message: unknown): void }, turnId: string | undefined, status: AgentStatusEvent): void {

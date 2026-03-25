@@ -3,7 +3,7 @@ import * as path from 'path';
 
 import type { ToolDefinition, ToolHandler } from '../../types.js';
 import { optionalNumber, requireString } from '@kooka/core';
-import { BINARY_EXTENSIONS, containsBinaryData, resolveToolPath } from './workspace.js';
+import { BINARY_EXTENSIONS, containsBinaryData, formatToolPathForOutput, resolveToolPath } from './workspace.js';
 
 const DEFAULT_READ_LIMIT = 2000;
 const MAX_LINE_LENGTH = 2000;
@@ -48,22 +48,22 @@ export const readHandler: ToolHandler = async (args, context) => {
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) };
   }
+  const displayPath = formatToolPathForOutput(absPath, context);
 
   const ext = path.extname(absPath).toLowerCase();
   if (BINARY_EXTENSIONS.has(ext)) {
-    return { success: false, error: `Cannot read binary file: ${absPath}` };
+    return { success: false, error: `Cannot read binary file: ${displayPath}` };
   }
 
   let bytes: Uint8Array;
   try {
     bytes = await fs.readFile(absPath);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return { success: false, error: `File not found: ${absPath}\n\n${message}` };
+    return { success: false, error: `File not found: ${displayPath}` };
   }
 
   if (containsBinaryData(bytes)) {
-    return { success: false, error: `Cannot read binary file: ${absPath}` };
+    return { success: false, error: `Cannot read binary file: ${displayPath}` };
   }
 
   const text = new TextDecoder().decode(bytes);

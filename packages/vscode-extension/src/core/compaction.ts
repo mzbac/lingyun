@@ -26,6 +26,12 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === 'object' ? (value as Record<string, unknown>) : undefined;
 }
 
+function normalizeConfigKeyPart(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed || undefined;
+}
+
 export function getCompactionConfig(): CompactionConfig {
   const cfg = vscode.workspace.getConfiguration('lingyun');
 
@@ -39,13 +45,25 @@ export function getCompactionConfig(): CompactionConfig {
   return { auto, prune, pruneProtectTokens, pruneMinimumTokens, toolOutputMode };
 }
 
-export function getModelLimit(modelId: string): ModelLimit | undefined {
+export function getModelLimit(modelId: string, providerId?: string): ModelLimit | undefined {
   const cfg = vscode.workspace.getConfiguration('lingyun');
   const raw = cfg.get<unknown>('modelLimits');
   if (!raw || typeof raw !== 'object') return undefined;
 
-  const entry = (raw as Record<string, unknown>)[modelId];
-  const entryRecord = asRecord(entry);
+  const normalizedModelId = normalizeConfigKeyPart(modelId);
+  if (!normalizedModelId) return undefined;
+
+  const normalizedProviderId = normalizeConfigKeyPart(providerId);
+  const records = raw as Record<string, unknown>;
+  const candidateKeys = normalizedProviderId
+    ? [`${normalizedProviderId}:${normalizedModelId}`, normalizedModelId]
+    : [normalizedModelId];
+
+  let entryRecord: Record<string, unknown> | undefined;
+  for (const key of candidateKeys) {
+    entryRecord = asRecord(records[key]);
+    if (entryRecord) break;
+  }
   if (!entryRecord) return undefined;
 
   const context = asFiniteNumber(entryRecord.context);

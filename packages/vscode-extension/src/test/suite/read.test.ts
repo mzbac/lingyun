@@ -91,4 +91,17 @@ suite('Read Tool', () => {
       }
     }
   });
+
+  test('does not expose absolute workspace paths in read errors', async () => {
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri;
+    assert.ok(root, 'Workspace folder must be available for Read tool tests');
+
+    const context = createToolContext();
+    const fileRel = '.lingyun-test/missing-read-file.txt';
+    const result = await readHandler({ filePath: fileRel }, context);
+
+    assert.strictEqual(result.success, false);
+    assert.ok(result.error?.includes(fileRel));
+    assert.ok(!result.error?.includes(root.fsPath));
+  });
 });

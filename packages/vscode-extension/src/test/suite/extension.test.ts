@@ -6,6 +6,7 @@ import * as assert from 'assert';
 import * as vscode from 'vscode';
 
 import { createAgentConfig } from '../../extension';
+import { getModelLimit } from '../../core/compaction';
 import { WorkspaceToolProvider } from '../../providers/workspace';
 
 suite('Extension Integration', () => {
@@ -122,6 +123,31 @@ suite('Extension Integration', () => {
       await config.update('codexSubscription.defaultModelId', undefined, vscode.ConfigurationTarget.Global);
       await config.update('model', undefined, vscode.ConfigurationTarget.Global);
       await config.update('llmProvider', undefined, vscode.ConfigurationTarget.Global);
+    }
+  });
+
+  test('getModelLimit should prefer provider-scoped entries and fall back to model-only entries', async () => {
+    const config = vscode.workspace.getConfiguration('lingyun');
+    const previousLimits = config.get('modelLimits');
+
+    await config.update(
+      'modelLimits',
+      {
+        'gpt-5.4': { context: 28_000, output: 4_000 },
+        'codexSubscription:gpt-5.4': { context: 272_000, output: 32_000 },
+      },
+      vscode.ConfigurationTarget.Global,
+    );
+
+    try {
+      assert.deepStrictEqual(getModelLimit('gpt-5.4'), { context: 28_000, output: 4_000 });
+      assert.deepStrictEqual(getModelLimit('gpt-5.4', 'copilot'), { context: 28_000, output: 4_000 });
+      assert.deepStrictEqual(getModelLimit('gpt-5.4', 'codexSubscription'), {
+        context: 272_000,
+        output: 32_000,
+      });
+    } finally {
+      await config.update('modelLimits', previousLimits, vscode.ConfigurationTarget.Global);
     }
   });
 

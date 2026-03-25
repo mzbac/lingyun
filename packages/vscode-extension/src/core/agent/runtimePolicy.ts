@@ -69,7 +69,7 @@ export class VsCodeAgentRuntimePolicy implements LingyunAgentRuntimePolicy {
 
     const modelId = String(ctx.config.model || '').trim();
     const modelLimit =
-      modelId ? getModelLimit(modelId) ?? (await ctx.warmModelLimit(modelId)) : undefined;
+      modelId ? getModelLimit(modelId, ctx.llm.id) ?? (await ctx.warmModelLimit(modelId)) : undefined;
     const systemPrompt = this.composeSystemPromptText(ctx.config.systemPrompt);
     const compaction = getCompactionConfig();
 
@@ -174,7 +174,7 @@ export class VsCodeAgentRuntimePolicy implements LingyunAgentRuntimePolicy {
     if (!exploreModelId || !ctx.input) return undefined;
 
     const exploreModelLimit =
-      getModelLimit(exploreModelId) ?? (await ctx.warmModelLimit(exploreModelId));
+      getModelLimit(exploreModelId, ctx.llm.id) ?? (await ctx.warmModelLimit(exploreModelId));
     let exploreText = await ctx.runSyntheticPass({
       input: ctx.input,
       modelId: exploreModelId,

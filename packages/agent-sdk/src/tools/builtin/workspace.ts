@@ -1,5 +1,14 @@
 import type { ToolContext } from '../../types.js';
-import { BINARY_EXTENSIONS, containsBinaryData, resolveToolPath as resolveCoreToolPath, toPosixPath } from '@kooka/core';
+import * as path from 'path';
+
+import {
+  BINARY_EXTENSIONS,
+  containsBinaryData,
+  isSubPath,
+  redactFsPathForPrompt,
+  resolveToolPath as resolveCoreToolPath,
+  toPosixPath,
+} from '@kooka/core';
 
 export { BINARY_EXTENSIONS, containsBinaryData, toPosixPath };
 
@@ -20,3 +29,14 @@ export function resolveToolPath(
   });
 }
 
+export function formatToolPathForOutput(
+  absPath: string,
+  context?: Pick<ToolContext, 'workspaceRoot'>
+): string {
+  const workspaceRoot = getWorkspaceRoot(context);
+  const resolved = path.resolve(absPath);
+  if (isSubPath(resolved, workspaceRoot)) {
+    return toPosixPath(path.relative(workspaceRoot, resolved) || '.');
+  }
+  return redactFsPathForPrompt(resolved, { workspaceRoot });
+}

@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 
 import type { ToolDefinition, ToolHandler } from '../../core/types';
 import { requireString, optionalString } from '@kooka/core';
-import { getWorkspaceRootUri, resolveWorkspacePath } from './workspace';
+import { formatToolPathForOutput, getWorkspaceRootUri, resolveWorkspacePath } from './workspace';
 
 export const globTool: ToolDefinition = {
   id: 'glob',
@@ -68,7 +68,7 @@ export const globHandler: ToolHandler = async (args, context) => {
     );
 
     entries.sort((a, b) => b.mtime - a.mtime);
-    const files = entries.map(e => e.uri.fsPath);
+    const files = entries.map(e => formatToolPathForOutput(e.uri.fsPath, context));
     const truncated = files.length >= 100;
 
     return {

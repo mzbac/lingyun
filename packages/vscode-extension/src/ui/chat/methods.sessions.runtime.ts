@@ -162,7 +162,7 @@ export function createChatSessionRuntimeService(
           }
         }
 
-        const modelLimit = getModelLimit(this.currentModel);
+        const modelLimit = getModelLimit(this.currentModel, this.llmProvider?.id);
         const maxOutputTokens =
           vscode.workspace.getConfiguration('lingyun').get<number>('openaiCompatible.maxTokens') ??
           32000;

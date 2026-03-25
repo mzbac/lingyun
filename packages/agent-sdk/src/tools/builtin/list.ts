@@ -4,7 +4,7 @@ import * as path from 'path';
 
 import type { ToolDefinition, ToolHandler } from '../../types.js';
 import { optionalString } from '@kooka/core';
-import { getWorkspaceRoot, resolveToolPath, toPosixPath } from './workspace.js';
+import { formatToolPathForOutput, getWorkspaceRoot, resolveToolPath, toPosixPath } from './workspace.js';
 
 export const listTool: ToolDefinition = {
   id: 'list',
@@ -174,7 +174,7 @@ export const listHandler: ToolHandler = async (args, context) => {
     }
     const output =
       header.join('\n') +
-      `${base}/\n` +
+      `${formatToolPathForOutput(base, context)}/\n` +
       renderDir('.', 0) +
       (truncated ? '\n(Results are truncated.)\n' : '');
 

@@ -3,7 +3,9 @@ import * as vscode from 'vscode';
 import {
   BINARY_EXTENSIONS,
   containsBinaryData,
+  isSubPath,
   isToolPathError,
+  redactFsPathForPrompt,
   resolveToolPath as resolveCoreToolPath,
   toPosixPath,
 } from '@kooka/core';
@@ -60,4 +62,16 @@ export function resolveToolPath(
   const relPath = resolved.isExternal ? absPath : path.relative(rootUri.fsPath, absPath) || '.';
 
   return { uri: vscode.Uri.file(absPath), absPath, relPath, isExternal: resolved.isExternal };
+}
+
+export function formatToolPathForOutput(
+  absPath: string,
+  context?: { workspaceFolder?: vscode.Uri }
+): string {
+  const rootUri = getWorkspaceRootUri(context);
+  const resolved = path.resolve(absPath);
+  if (isSubPath(resolved, rootUri.fsPath)) {
+    return toPosixPath(path.relative(rootUri.fsPath, resolved) || '.');
+  }
+  return redactFsPathForPrompt(resolved, { workspaceRoot: rootUri.fsPath });
 }
