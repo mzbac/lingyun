@@ -13,6 +13,7 @@ import { getUserHistoryInputText, resolveBuiltinSubagent } from '@kooka/core';
 import { getCompactionConfig, getModelLimit } from '../compaction';
 import { findGitRoot, loadInstructions } from '../instructions';
 import { WorkspaceMemories, getMemoriesConfig } from '../memories';
+import { getConfiguredReasoningEffort } from '../reasoningEffort';
 import { getPrimaryWorkspaceFolderUri } from '../workspaceContext';
 
 import { DEFAULT_SYSTEM_PROMPT } from './prompts';
@@ -64,7 +65,7 @@ export class VsCodeAgentRuntimePolicy implements LingyunAgentRuntimePolicy {
     const cfg = vscode.workspace.getConfiguration('lingyun');
     const allowExternalPaths =
       cfg.get<boolean>('security.allowExternalPaths', false) ?? false;
-    const reasoningEffort = cfg.get<string>('copilot.reasoningEffort', 'high') ?? 'high';
+    const reasoningEffort = getConfiguredReasoningEffort();
     const taskMaxOutputChars = cfg.get<number>('subagents.task.maxOutputChars', 8000) ?? 8000;
 
     const modelId = String(ctx.config.model || '').trim();
@@ -81,7 +82,7 @@ export class VsCodeAgentRuntimePolicy implements LingyunAgentRuntimePolicy {
       snapshot: {
         systemPrompt,
         allowExternalPaths,
-        copilotReasoningEffort: reasoningEffort,
+        reasoningEffort,
         taskMaxOutputChars,
         compaction,
         ...(modelId && modelLimit ? { modelLimits: { [modelId]: modelLimit } } : { modelLimits: undefined }),
@@ -187,7 +188,7 @@ export class VsCodeAgentRuntimePolicy implements LingyunAgentRuntimePolicy {
       signal: ctx.signal,
       runtime: {
         allowExternalPaths: runtime.allowExternalPaths,
-        copilotReasoningEffort: runtime.reasoningEffort,
+        reasoningEffort: runtime.reasoningEffort,
         taskMaxOutputChars: runtime.taskMaxOutputChars,
         compaction: runtime.snapshot.compaction,
         ...(exploreModelLimit ? { modelLimits: { [exploreModelId]: exploreModelLimit } } : {}),

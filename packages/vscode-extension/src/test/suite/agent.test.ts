@@ -330,6 +330,20 @@ suite('AgentLoop', () => {
     }
   });
 
+  test('run - injects reasoningEffort for Codex Subscription GPT-5 models', async () => {
+    for (const modelId of ['gpt-5.3-codex', 'gpt-5.4']) {
+      const codexLLM = new MockCodexSubscriptionProvider();
+      agent = new AgentLoop(codexLLM, mockContext, { model: modelId }, registry);
+      codexLLM.setNextResponse({ kind: 'text', content: 'OK' });
+
+      await agent.run('Hi');
+
+      const options = codexLLM.lastCallOptions as any;
+      assert.strictEqual(options?.providerOptions?.codexSubscription?.reasoningEffort, 'high');
+      assert.strictEqual(options?.providerOptions?.openai?.reasoningEffort, 'high');
+    }
+  });
+
   test('run - forces temperature=1 for fixed-temperature GPT-5 models', async () => {
     for (const modelId of ['gpt-5.3-codex', 'gpt-5.4']) {
       const copilotLLM = new MockCopilotProvider();

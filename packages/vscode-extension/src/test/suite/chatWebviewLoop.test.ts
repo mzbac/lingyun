@@ -6,6 +6,44 @@ import { createBlankSessionSignals } from '../../core/sessionSignals';
 import { createStandaloneChatController } from './chatControllerHarness';
 
 suite('Chat webview loop integration', () => {
+  test('sendInit includes the configured reasoning effort in the header payload', async () => {
+    const config = vscode.workspace.getConfiguration('lingyun');
+    const previousEffort = config.get('copilot.reasoningEffort');
+    await config.update('copilot.reasoningEffort', 'low', vscode.ConfigurationTarget.Global);
+
+    try {
+      const controller = createStandaloneChatController();
+      const posted: unknown[] = [];
+
+      controller.view = {
+        webview: {
+          postMessage(message: unknown) {
+            posted.push(message);
+            return true;
+          },
+        },
+      } as unknown as vscode.WebviewView;
+      controller.currentModel = 'gpt-5.4';
+      controller.availableModels = [{ id: 'gpt-5.4', name: 'GPT-5.4' } as any];
+      controller.sessionApi.ensureSessionsLoaded = async () => {};
+      controller.skillsApi.getSkillNamesForUI = async () => [];
+
+      await controller.webviewApi.sendInit(true);
+
+      const initMessage = posted.find(message => (message as any)?.type === 'init') as any;
+      assert.ok(initMessage, 'expected sendInit to post an init message');
+      assert.strictEqual(initMessage.currentModel, 'gpt-5.4');
+      assert.strictEqual(initMessage.currentModelLabel, 'GPT-5.4');
+      assert.strictEqual(initMessage.currentReasoningEffort, 'low');
+    } finally {
+      if (previousEffort === undefined) {
+        await config.update('copilot.reasoningEffort', undefined, vscode.ConfigurationTarget.Global);
+      } else {
+        await config.update('copilot.reasoningEffort', previousEffort, vscode.ConfigurationTarget.Global);
+      }
+    }
+  });
+
   test('configureLoop webview message routes to the active-session loop configurator', async () => {
     const controller = createStandaloneChatController();
 

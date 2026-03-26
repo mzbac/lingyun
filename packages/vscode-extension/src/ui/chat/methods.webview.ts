@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { readTodos } from '../../core/todo';
 import { appendErrorLog, appendLog } from '../../core/logger';
+import { getConfiguredReasoningEffort } from '../../core/reasoningEffort';
 import type { ModelInfo } from '../../providers/modelCatalog';
 import type { LLMProviderWithUi, ProviderAuthUiState } from '../../providers/providerUi';
 import { formatErrorForUser, getNonce } from './utils';
@@ -676,6 +677,7 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
         currentModel: this.currentModel,
         currentModelLabel: modelLabel,
         currentModelIsFavorite,
+        currentReasoningEffort: getConfiguredReasoningEffort(),
         providerAuth,
         mode: this.mode,
         planPending: !!this.getActiveSession().pendingPlan,
@@ -717,6 +719,7 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
           currentModel: this.currentModel,
           currentModelLabel: modelLabel,
           currentModelIsFavorite,
+          currentReasoningEffort: getConfiguredReasoningEffort(),
           providerAuth,
           mode: this.mode,
           planPending: !!this.getActiveSession().pendingPlan,

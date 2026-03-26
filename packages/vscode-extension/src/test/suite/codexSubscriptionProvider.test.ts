@@ -255,6 +255,9 @@ suite('CodexSubscriptionProvider', () => {
           { role: 'system', content: 'Follow the workspace instructions exactly.' },
           { role: 'user', content: [{ type: 'text', text: 'Say hello' }] },
         ],
+        providerOptions: {
+          codexSubscription: { reasoningEffort: 'high' },
+        },
         tools: [],
         toolChoice: undefined,
         temperature: 0.2,
@@ -273,6 +276,7 @@ suite('CodexSubscriptionProvider', () => {
       assert.strictEqual(requestBody?.stream, true);
       assert.deepStrictEqual(requestBody?.include, ['reasoning.encrypted_content']);
       assert.strictEqual(requestBody?.instructions, 'Follow the workspace instructions exactly.');
+      assert.deepStrictEqual(requestBody?.reasoning, { effort: 'high' });
       assert.ok(!Object.prototype.hasOwnProperty.call(requestBody || {}, 'temperature'));
       assert.ok(!Object.prototype.hasOwnProperty.call(requestBody || {}, 'top_p'));
       assert.ok(!Object.prototype.hasOwnProperty.call(requestBody || {}, 'max_output_tokens'));

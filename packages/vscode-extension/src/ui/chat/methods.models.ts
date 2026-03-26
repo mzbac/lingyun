@@ -3,6 +3,7 @@ import * as vscode from 'vscode';
 import { appendErrorLog } from '../../core/logger';
 import type { AgentLoop } from '../../core/agent';
 import { resolveConfiguredModelId } from '../../core/modelSelection';
+import { getConfiguredReasoningEffort } from '../../core/reasoningEffort';
 import { createFallbackModelInfo, type ModelInfo } from '../../providers/modelCatalog';
 import type { LLMProviderWithUi } from '../../providers/providerUi';
 
@@ -187,6 +188,7 @@ export function createChatModelsService(controller: ChatModelsDeps): ChatModelsS
         model,
         label: service.getModelLabel(model) || model,
         isFavorite,
+        reasoningEffort: getConfiguredReasoningEffort(),
       });
     },
 
@@ -233,6 +235,7 @@ export function createChatModelsService(controller: ChatModelsDeps): ChatModelsS
         model: id,
         label: service.getModelLabel(id) || id,
         isFavorite,
+        reasoningEffort: getConfiguredReasoningEffort(),
       });
 
       this.sessionApi.persistActiveSession();

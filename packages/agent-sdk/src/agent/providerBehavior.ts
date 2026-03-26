@@ -15,7 +15,7 @@ export type ProviderBehavior = {
   /**
    * Provider-specific providerOptions to pass to `streamText()`.
    */
-  getChatProviderOptions: (modelId: string, params: { copilotReasoningEffort: string }) => unknown;
+  getChatProviderOptions: (modelId: string, params: { reasoningEffort: string }) => unknown;
   /**
    * Provider-specific history transforms before `convertToModelMessages()`.
    */
@@ -35,14 +35,19 @@ export type ProviderBehavior = {
 };
 
 export function createProviderBehavior(llmId: string): ProviderBehavior {
+  function getGpt5ReasoningEffort(modelId: string, params: { reasoningEffort: string }): string | undefined {
+    const reasoningEffort = String(params.reasoningEffort || '').trim();
+    if (!reasoningEffort) return undefined;
+
+    const lower = String(modelId || '').trim().toLowerCase();
+    return lower.startsWith('gpt-5') ? reasoningEffort : undefined;
+  }
+
   if (llmId === 'copilot') {
     return {
       getChatProviderOptions(modelId, params) {
-        const reasoningEffort = String(params.copilotReasoningEffort || '').trim();
+        const reasoningEffort = getGpt5ReasoningEffort(modelId, params);
         if (!reasoningEffort) return undefined;
-
-        const lower = String(modelId || '').trim().toLowerCase();
-        if (!lower.startsWith('gpt-5')) return undefined;
 
         const providerOptions: Record<string, unknown> = {
           copilot: { reasoningEffort },
@@ -64,6 +69,32 @@ export function createProviderBehavior(llmId: string): ProviderBehavior {
       },
       createStreamAdapter(modelId) {
         return createStreamAdapter({ llmId: 'copilot', modelId });
+      },
+      normalizeSystemPrompts(system) {
+        return system;
+      },
+    };
+  }
+
+  if (llmId === 'codexSubscription') {
+    return {
+      getChatProviderOptions(modelId, params) {
+        const reasoningEffort = getGpt5ReasoningEffort(modelId, params);
+        if (!reasoningEffort) return undefined;
+
+        return {
+          codexSubscription: { reasoningEffort },
+          openai: { reasoningEffort },
+        };
+      },
+      prepareHistoryForPrompt(history) {
+        return applyAssistantReplayForPrompt(history);
+      },
+      transformModelMessages(_modelId, messages) {
+        return messages;
+      },
+      createStreamAdapter(modelId) {
+        return createStreamAdapter({ llmId: 'codexSubscription', modelId });
       },
       normalizeSystemPrompts(system) {
         return system;

@@ -173,6 +173,7 @@
 		        model: data.currentModel || '',
 		        label: data.currentModelLabel || data.currentModel || 'Pick model',
 		        isFavorite: !!data.currentModelIsFavorite,
+		        reasoningEffort: data.currentReasoningEffort || '',
 		      });
 		      providerAuthBusy = false;
 		      updateProviderAuthHeader(data.providerAuth || null);
@@ -447,6 +448,7 @@
             model: data.model || '',
             label: data.label || data.model || 'Pick model',
             isFavorite: !!data.isFavorite,
+            reasoningEffort: data.reasoningEffort || '',
           });
           break;
         case 'modelState':
@@ -454,6 +456,7 @@
             model: data.model || currentModel || '',
             label: data.label || data.model || currentModel || 'Pick model',
             isFavorite: !!data.isFavorite,
+            reasoningEffort: data.reasoningEffort || '',
           });
           break;
         case 'providerState':

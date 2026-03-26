@@ -60,7 +60,7 @@ export async function runOnce(params: {
   plugins: PluginManagerLike;
   registry: Pick<ToolRegistry, 'getTools'>;
   providerBehavior: ProviderBehavior;
-  copilotReasoningEffort: string;
+  reasoningEffort: string;
   compactionConfig: CompactionConfig;
 
   temperature: number;
@@ -162,7 +162,7 @@ export async function runOnce(params: {
         topP: undefined,
         topK: undefined,
         options: providerBehavior.getChatProviderOptions(modelId, {
-          copilotReasoningEffort: params.copilotReasoningEffort,
+          reasoningEffort: params.reasoningEffort,
         }),
       },
     );

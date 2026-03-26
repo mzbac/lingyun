@@ -165,7 +165,7 @@
             "high",
             "xhigh"
           ],
-          "description": "Copilot-only: reasoning effort hint to send for GPT-5 family models. Set to empty to disable."
+          "description": "Reasoning effort hint to send for GPT-5 family models on Copilot and Codex Subscription. Set to empty to disable."
         },
         "lingyun.subagents.model": {
           "type": "string",

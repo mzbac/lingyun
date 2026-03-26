@@ -79,8 +79,8 @@ export type LingyunAgentRuntimeOptions = {
   plugins?: LingyunPluginManager;
   workspaceRoot?: string;
   allowExternalPaths?: boolean;
-  copilot?: {
-    reasoningEffort?: string;
+  reasoning?: {
+    effort?: string;
   };
   prompts?: {
     planPrompt?: string;
@@ -109,7 +109,7 @@ export type LingyunPluginManager = {
 export type LingyunAgentRuntimeSnapshot = {
   systemPrompt?: string;
   allowExternalPaths?: boolean;
-  copilotReasoningEffort?: string;
+  reasoningEffort?: string;
   taskMaxOutputChars?: number;
   modelLimits?: Record<string, ModelLimit>;
   compaction?: Partial<CompactionConfig>;
@@ -123,7 +123,7 @@ export type LingyunAgentPreparedRun = {
 type LingyunAgentExecutionRuntime = {
   systemPrompt: string;
   allowExternalPaths: boolean;
-  copilotReasoningEffort: string;
+  reasoningEffort: string;
   taskMaxOutputChars: number;
   modelLimits?: Record<string, ModelLimit>;
   compactionConfig: CompactionConfig;
@@ -185,7 +185,7 @@ export class LingyunAgent {
   private readonly fileHandles: FileHandleRegistry;
   private readonly runtimePolicy?: LingyunAgentRuntimePolicy;
   private readonly allowExternalPaths: boolean;
-  private readonly copilotReasoningEffort: string;
+  private readonly reasoningEffort: string;
   private readonly reminderPrompts?: {
     planPrompt?: string;
     buildSwitchPrompt?: string;
@@ -220,7 +220,7 @@ export class LingyunAgent {
     this.fileHandles = new FileHandleRegistry({ workspaceRoot: this.workspaceRoot });
     this.runtimePolicy = runtime?.runtimePolicy;
     this.allowExternalPaths = !!runtime?.allowExternalPaths;
-    this.copilotReasoningEffort = typeof runtime?.copilot?.reasoningEffort === 'string' ? runtime.copilot.reasoningEffort.trim() : '';
+    this.reasoningEffort = typeof runtime?.reasoning?.effort === 'string' ? runtime.reasoning.effort.trim() : '';
     this.reminderPrompts = runtime?.prompts;
 
     const skills = runtime?.skills ?? {};
@@ -338,10 +338,10 @@ export class LingyunAgent {
           typeof snapshot?.allowExternalPaths === 'boolean'
             ? snapshot.allowExternalPaths
             : this.allowExternalPaths,
-        copilotReasoningEffort:
-          typeof snapshot?.copilotReasoningEffort === 'string'
-            ? snapshot.copilotReasoningEffort.trim()
-            : this.copilotReasoningEffort,
+        reasoningEffort:
+          typeof snapshot?.reasoningEffort === 'string'
+            ? snapshot.reasoningEffort.trim()
+            : this.reasoningEffort,
         taskMaxOutputChars:
           typeof snapshot?.taskMaxOutputChars === 'number' &&
           Number.isFinite(snapshot.taskMaxOutputChars) &&
@@ -362,7 +362,7 @@ export class LingyunAgent {
       plugins: this.plugins,
       workspaceRoot: this.workspaceRoot,
       allowExternalPaths: runtime.allowExternalPaths,
-      copilot: { reasoningEffort: runtime.copilotReasoningEffort },
+      reasoning: { effort: runtime.reasoningEffort },
       prompts: this.reminderPrompts,
       skills: this.skillsConfig,
       subagents: { taskMaxOutputChars: runtime.taskMaxOutputChars },
@@ -1017,7 +1017,7 @@ export class LingyunAgent {
       plugins: this.plugins,
       registry: this.registry,
       providerBehavior: this.providerBehavior,
-      copilotReasoningEffort: execution.runtime.copilotReasoningEffort,
+      reasoningEffort: execution.runtime.reasoningEffort,
       compactionConfig: execution.runtime.compactionConfig,
       temperature: execution.config.temperature ?? 0.0,
       maxRetries: execution.config.maxRetries ?? 0,

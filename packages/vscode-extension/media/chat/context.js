@@ -25,14 +25,22 @@
 	      const modelId = state && (state.model || state.id) ? String(state.model || state.id) : '';
 	      const label = state && state.label ? String(state.label) : (modelId || 'Pick model');
 	      const isFavorite = !!(state && state.isFavorite);
+	      const reasoningEffort = state && state.reasoningEffort ? String(state.reasoningEffort) : '';
+	      const displayLabel = reasoningEffort ? (label + ' · ' + reasoningEffort) : label;
+	      const title = reasoningEffort ? (label + ' • reasoning ' + reasoningEffort) : label;
 
 	      if (modelPickerLabel) {
-	        modelPickerLabel.textContent = label;
+	        modelPickerLabel.textContent = displayLabel;
+	        modelPickerLabel.title = title;
 	      } else if (modelPicker) {
-	        modelPicker.textContent = label;
+	        modelPicker.textContent = displayLabel;
 	      }
 
 	      currentModel = modelId;
+
+	      if (modelPicker) {
+	        modelPicker.title = title;
+	      }
 
 	      if (modelFavoriteToggle) {
 	        modelFavoriteToggle.disabled = !currentModel;
