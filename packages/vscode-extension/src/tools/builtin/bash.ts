@@ -28,6 +28,7 @@ import {
   removeBackgroundJob,
 } from '@kooka/core';
 import { backgroundTerminalManager } from '../../core/terminal/backgroundTerminal';
+import { resolveVscodeShellCommandInvocation } from '../../core/terminal/shellLaunch';
 import { getWorkspaceRootUri, resolveToolPath } from './workspace';
 
 const MAX_BASH_OUTPUT = 50000;
@@ -68,13 +69,21 @@ async function runBackgroundSpawn(args: {
   }
 
   const env = buildSafeChildProcessEnv({ baseEnv: process.env });
-  const proc = cp.spawn(args.command, {
-    cwd: args.cwd,
-    shell: true,
-    env,
-    detached: process.platform !== 'win32',
-    stdio: 'ignore',
-  });
+  const invocation = resolveVscodeShellCommandInvocation(args.command);
+  const proc = invocation
+    ? cp.spawn(invocation.executable, invocation.args, {
+        cwd: args.cwd,
+        env,
+        detached: process.platform !== 'win32',
+        stdio: 'ignore',
+      })
+    : cp.spawn(args.command, {
+        cwd: args.cwd,
+        shell: true,
+        env,
+        detached: process.platform !== 'win32',
+        stdio: 'ignore',
+      });
 
   const pid = proc.pid;
   if (typeof pid !== 'number') {
@@ -321,13 +330,21 @@ export const bashHandler: ToolHandler = async (args, context) => {
 
   return new Promise((resolve) => {
     const env = buildSafeChildProcessEnv({ baseEnv: process.env });
-    const proc = cp.spawn(commandToRun, {
-      cwd,
-      shell: true,
-      env,
-      detached: process.platform !== 'win32',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    const invocation = resolveVscodeShellCommandInvocation(commandToRun);
+    const proc = invocation
+      ? cp.spawn(invocation.executable, invocation.args, {
+          cwd,
+          env,
+          detached: process.platform !== 'win32',
+          stdio: ['ignore', 'pipe', 'pipe'],
+        })
+      : cp.spawn(commandToRun, {
+          cwd,
+          shell: true,
+          env,
+          detached: process.platform !== 'win32',
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
 
     let output = '';
     let truncated = false;
