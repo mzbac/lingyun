@@ -50,6 +50,7 @@ import { LingyunSession } from './session.js';
 import { TaskSubagentRunner } from './taskSubagentRunner.js';
 import {
   appendSyntheticContextMessage,
+  snapshotSyntheticContextsForCompaction,
   stripTransientSyntheticMessages,
   type LingyunAgentSyntheticContext,
 } from './transientSyntheticContext.js';
@@ -1262,6 +1263,7 @@ export class LingyunAgent {
           proxy,
           params.signal
         );
+        params.session.compactionSyntheticContexts = snapshotSyntheticContextsForCompaction(syntheticContexts);
         queue.push({ type: 'status', status: { type: 'done', message: '' } as any });
         queue.close();
         return { text, session: params.session };

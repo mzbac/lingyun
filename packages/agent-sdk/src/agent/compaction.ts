@@ -24,6 +24,10 @@ import type { AgentCallbacks, LLMProvider } from '../types.js';
 import type { LingyunHookName } from '../plugins/types.js';
 import type { ProviderBehavior } from './providerBehavior.js';
 import { LingyunSession } from './session.js';
+import {
+  appendCompactionRestoredSyntheticMessage,
+  stripCompactionRestoredSyntheticMessages,
+} from './transientSyntheticContext.js';
 
 type PluginManagerLike = {
   trigger: <Name extends LingyunHookName, Output>(
@@ -32,6 +36,50 @@ type PluginManagerLike = {
     output: Output,
   ) => Promise<Output>;
 };
+
+const TRUNCATED_SUFFIX = '\n\n... [TRUNCATED]';
+const MAX_PENDING_PLAN_CHARS = 2000;
+const MAX_SKILLS = 10;
+const MAX_FILE_HANDLES = 10;
+
+function trimCompactionStateText(text: string, maxChars: number): string {
+  const trimmed = String(text || '').trim();
+  if (!trimmed) return '';
+  if (trimmed.length <= maxChars) return trimmed;
+  const keep = Math.max(0, maxChars - TRUNCATED_SUFFIX.length);
+  return `${trimmed.slice(0, keep).trimEnd()}${TRUNCATED_SUFFIX}`;
+}
+
+function buildSessionStateRestoreText(session: LingyunSession): string | undefined {
+  const sections: string[] = [];
+
+  const pendingPlan = trimCompactionStateText(session.pendingPlan || '', MAX_PENDING_PLAN_CHARS);
+  if (pendingPlan) {
+    sections.push(['Pending plan:', pendingPlan].join('\n'));
+  }
+
+  const mentionedSkills = (session.mentionedSkills || []).filter(Boolean).slice(-MAX_SKILLS);
+  if (mentionedSkills.length > 0) {
+    sections.push(`Mentioned skills: ${mentionedSkills.join(', ')}`);
+  }
+
+  const fileEntries = Object.entries(session.fileHandles?.byId || {}).slice(-MAX_FILE_HANDLES);
+  if (fileEntries.length > 0) {
+    sections.push(
+      ['Active file handles:', ...fileEntries.map(([id, filePath]) => `- ${id}: ${filePath}`)].join('\n'),
+    );
+  }
+
+  if (sections.length === 0) return undefined;
+
+  return [
+    '<compaction_session_state>',
+    'Keep this current session state available after compaction.',
+    '',
+    sections.join('\n\n'),
+    '</compaction_session_state>',
+  ].join('\n');
+}
 
 export async function compactSessionInternal(params: {
   session: LingyunSession;
@@ -97,7 +145,10 @@ export async function compactSessionInternal(params: {
     });
 
     const effective = getEffectiveHistory(params.session.history);
-    const prepared = createHistoryForCompactionPrompt(effective, params.compactionConfig);
+    const prepared = createHistoryForCompactionPrompt(
+      stripCompactionRestoredSyntheticMessages(effective),
+      params.compactionConfig,
+    );
     const withoutIds = prepared.map(({ id: _id, ...rest }: AgentHistoryMessage) => rest);
 
     const compactionUser = createUserHistoryMessage(promptText, { synthetic: true });
@@ -137,6 +188,21 @@ export async function compactSessionInternal(params: {
       summaryMessage.parts.push({ type: 'text', text: summaryText, state: 'done' });
     }
     params.session.history.push(summaryMessage);
+
+    const sessionStateRestoreText = buildSessionStateRestoreText(params.session);
+    if (sessionStateRestoreText) {
+      appendCompactionRestoredSyntheticMessage(params.session.history, {
+        source: 'sessionState',
+        text: sessionStateRestoreText,
+      });
+    }
+
+    for (const context of params.session.compactionSyntheticContexts) {
+      appendCompactionRestoredSyntheticMessage(params.session.history, {
+        source: context.transientContext,
+        text: context.text,
+      });
+    }
 
     if ((params.appendContinue ?? params.auto) === true) {
       params.session.history.push(

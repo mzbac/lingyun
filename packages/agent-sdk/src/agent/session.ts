@@ -2,11 +2,13 @@ import type { AgentHistoryMessage } from '@kooka/core';
 import { cloneUserHistoryInput, parseUserHistoryInput } from '@kooka/core';
 import type { UserHistoryInput } from '@kooka/core';
 import type { SemanticHandlesState } from './semanticHandles.js';
+import type { LingyunCompactionSyntheticContext } from './transientSyntheticContext.js';
 
 export class LingyunSession {
   history: AgentHistoryMessage[] = [];
   pendingPlan?: string;
   pendingInputs: UserHistoryInput[] = [];
+  compactionSyntheticContexts: LingyunCompactionSyntheticContext[] = [];
   sessionId?: string;
   parentSessionId?: string;
   subagentType?: string;
@@ -25,6 +27,7 @@ export class LingyunSession {
         | 'history'
         | 'pendingPlan'
         | 'pendingInputs'
+        | 'compactionSyntheticContexts'
         | 'sessionId'
         | 'parentSessionId'
         | 'subagentType'
@@ -38,6 +41,9 @@ export class LingyunSession {
     if (init?.history) this.history = [...init.history];
     if (init?.pendingPlan) this.pendingPlan = init.pendingPlan;
     if (init?.pendingInputs) this.setPendingInputs(init.pendingInputs);
+    if (init?.compactionSyntheticContexts) {
+      this.compactionSyntheticContexts = init.compactionSyntheticContexts.map((context) => ({ ...context }));
+    }
     if (init?.sessionId) this.sessionId = init.sessionId;
     if (init?.parentSessionId) this.parentSessionId = init.parentSessionId;
     if (init?.subagentType) this.subagentType = init.subagentType;

@@ -49,7 +49,12 @@ export {
 } from './agent/agent.js';
 export {
   isTransientSyntheticMessage,
+  isCompactionRestoredSyntheticMessage,
+  snapshotSyntheticContextsForCompaction,
+  stripCompactionRestoredSyntheticMessages,
   stripTransientSyntheticMessages,
+  type LingyunCompactionRestoreSource,
+  type LingyunCompactionSyntheticContext,
 } from './agent/transientSyntheticContext.js';
 export { buildStreamReplay, type StreamReplayNamespace, type StreamReplayUpdate } from './agent/streamAdapters.js';
 export { registerBuiltinTools, getBuiltinTools, DEFAULT_SKILL_PATHS, type BuiltinToolsOptions } from './tools/builtin/index.js';
@@ -70,6 +75,9 @@ export {
   type LingyunAgentSyntheticRunParams as AgentSyntheticRunParams,
 } from './agent/agent.js';
 export {
+  isCompactionRestoredSyntheticMessage as isAgentCompactionRestoredSyntheticMessage,
+  snapshotSyntheticContextsForCompaction as snapshotAgentSyntheticContextsForCompaction,
+  stripCompactionRestoredSyntheticMessages as stripAgentCompactionRestoredSyntheticMessages,
   isTransientSyntheticMessage as isAgentTransientSyntheticMessage,
   stripTransientSyntheticMessages as stripAgentTransientSyntheticMessages,
 } from './agent/transientSyntheticContext.js';

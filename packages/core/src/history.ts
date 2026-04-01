@@ -6,7 +6,11 @@ export type AgentHistoryMetadata = {
   synthetic?: boolean;
   skill?: boolean;
   summary?: boolean;
+  transientContext?: 'explore' | 'memoryRecall';
   compaction?: { auto: boolean };
+  compactionRestore?: {
+    source: 'sessionState' | 'explore' | 'memoryRecall';
+  };
   replay?: {
     text?: string;
     reasoning?: string;

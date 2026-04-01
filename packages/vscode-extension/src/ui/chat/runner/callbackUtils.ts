@@ -48,6 +48,7 @@ type AgentSdkChildSessionSnapshot = {
   modelId?: string;
   history?: unknown;
   mentionedSkills?: unknown;
+  compactionSyntheticContexts?: unknown;
   fileHandles?: unknown;
   semanticHandles?: unknown;
 };
@@ -95,6 +96,7 @@ function coerceAgentSdkChildSessionSnapshot(value: unknown): AgentSdkChildSessio
     sessionId,
     history: (value as any).history,
     mentionedSkills: (value as any).mentionedSkills,
+    compactionSyntheticContexts: (value as any).compactionSyntheticContexts,
     fileHandles: (value as any).fileHandles,
     semanticHandles: (value as any).semanticHandles,
   };
@@ -106,6 +108,22 @@ function toAgentSessionStateFromSnapshot(snapshot: AgentSdkChildSessionSnapshot)
   const mentionedSkills = Array.isArray(mentionedSkillsRaw)
     ? (mentionedSkillsRaw.filter(item => typeof item === 'string') as string[])
     : undefined;
+  const compactionSyntheticContextsRaw = snapshot.compactionSyntheticContexts;
+  const compactionSyntheticContexts = Array.isArray(compactionSyntheticContextsRaw)
+    ? compactionSyntheticContextsRaw
+        .filter(
+          (item): item is NonNullable<AgentSessionState['compactionSyntheticContexts']>[number] =>
+            !!item &&
+            typeof item === 'object' &&
+            (((item as any).transientContext === 'explore' ||
+              (item as any).transientContext === 'memoryRecall') &&
+              typeof (item as any).text === 'string'),
+        )
+        .map(item => ({
+          transientContext: item.transientContext,
+          text: item.text,
+        }))
+    : undefined;
   const fileHandles = snapshot.fileHandles as AgentSessionState['fileHandles'] | undefined;
   const semanticHandles = snapshot.semanticHandles as AgentSessionState['semanticHandles'] | undefined;
   return {
@@ -113,6 +131,9 @@ function toAgentSessionStateFromSnapshot(snapshot: AgentSdkChildSessionSnapshot)
     ...(fileHandles ? { fileHandles } : {}),
     ...(semanticHandles ? { semanticHandles } : {}),
     ...(mentionedSkills && mentionedSkills.length > 0 ? { mentionedSkills } : {}),
+    ...(compactionSyntheticContexts && compactionSyntheticContexts.length > 0
+      ? { compactionSyntheticContexts }
+      : {}),
   };
 }
 

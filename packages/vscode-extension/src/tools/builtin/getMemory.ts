@@ -173,15 +173,8 @@ export const getMemoryHandler: ToolHandler = async (args, context) => {
       });
 
       if (search.hits.length === 0) {
-        await manager.updateFromSessions(context.workspaceFolder);
-        search = await manager.searchMemory({
-          query,
-          workspaceFolder: context.workspaceFolder,
-          ...(kind ? { kind } : {}),
-          ...(Number.isFinite(limit as number) ? { limit: Math.max(1, Math.floor(limit as number)) } : {}),
-          ...(Number.isFinite(neighborWindow as number)
-            ? { neighborWindow: Math.max(0, Math.floor(neighborWindow as number)) }
-            : {}),
+        void manager.scheduleUpdateFromSessions(context.workspaceFolder, { delayMs: 250 }).catch(() => {
+          // Ignore background refresh failures for search misses.
         });
       }
 

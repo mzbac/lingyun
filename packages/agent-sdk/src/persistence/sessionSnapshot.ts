@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { AgentHistoryMessage } from '@kooka/core';
 import { LingyunSession, type LingyunSession as LingyunSessionType } from '../agent/agent.js';
 import type { SemanticHandlesState } from '../agent/semanticHandles.js';
+import type { LingyunCompactionSyntheticContext } from '../agent/transientSyntheticContext.js';
 
 export type LingyunSessionSnapshotV1 = {
   version: 1;
@@ -14,6 +15,7 @@ export type LingyunSessionSnapshotV1 = {
   pendingPlan?: string;
   history: AgentHistoryMessage[];
   mentionedSkills?: string[];
+  compactionSyntheticContexts?: LingyunCompactionSyntheticContext[];
   fileHandles?: {
     nextId: number;
     byId: Record<string, string>;
@@ -39,6 +41,14 @@ export const LingyunSessionSnapshotSchema = z
     pendingPlan: z.string().optional(),
     history: z.array(z.unknown()),
     mentionedSkills: z.array(z.string()).optional(),
+    compactionSyntheticContexts: z
+      .array(
+        z.object({
+          transientContext: z.enum(['explore', 'memoryRecall']),
+          text: z.string(),
+        }),
+      )
+      .optional(),
     fileHandles: FileHandlesSchema.optional(),
     semanticHandles: z.unknown().optional(),
   })
@@ -62,6 +72,11 @@ export function snapshotSession(
     ...(session.pendingPlan ? { pendingPlan: session.pendingPlan } : {}),
     history: session.getHistory(),
     ...(session.mentionedSkills.length > 0 ? { mentionedSkills: [...session.mentionedSkills] } : {}),
+    ...(session.compactionSyntheticContexts.length > 0
+      ? {
+          compactionSyntheticContexts: session.compactionSyntheticContexts.map((context) => ({ ...context })),
+        }
+      : {}),
     ...(includeFileHandles && session.fileHandles ? { fileHandles: session.fileHandles } : {}),
     ...(session.semanticHandles ? { semanticHandles: session.semanticHandles } : {}),
   };
@@ -76,6 +91,7 @@ export function restoreSession(snapshot: LingyunSessionSnapshot): LingyunSession
     subagentType: snapshot.subagentType,
     modelId: snapshot.modelId,
     mentionedSkills: snapshot.mentionedSkills,
+    compactionSyntheticContexts: snapshot.compactionSyntheticContexts,
     fileHandles: snapshot.fileHandles,
     semanticHandles: snapshot.semanticHandles,
   });
@@ -99,6 +115,9 @@ export function parseSessionSnapshot(input: unknown): LingyunSessionSnapshot {
     ...(parsed.pendingPlan ? { pendingPlan: parsed.pendingPlan } : {}),
     history: parsed.history as AgentHistoryMessage[],
     ...(Array.isArray(parsed.mentionedSkills) ? { mentionedSkills: parsed.mentionedSkills } : {}),
+    ...(Array.isArray(parsed.compactionSyntheticContexts)
+      ? { compactionSyntheticContexts: parsed.compactionSyntheticContexts }
+      : {}),
     ...(parsed.fileHandles ? { fileHandles: parsed.fileHandles } : {}),
     ...(parsed.semanticHandles ? { semanticHandles: parsed.semanticHandles as SemanticHandlesState } : {}),
   };

@@ -3,6 +3,7 @@ import * as vscode from 'vscode';
 import { parseUserHistoryInput } from '@kooka/core';
 
 import type { AgentSessionState } from '../../core/agent';
+import { WorkspaceMemories } from '../../core/memories';
 import { appendErrorLog } from '../../core/logger';
 import { resolveModelIdWithWorkspaceDefaults } from '../../core/modelSelection';
 import { createBlankSessionSignals, normalizeSessionSignals } from '../../core/sessionSignals';
@@ -223,6 +224,12 @@ export function createChatSessionPersistenceService(
         order: [...this.sessions.keys()],
         dirtySessionIds: dirtyIds.length > 0 ? dirtyIds : undefined,
       });
+
+      if (dirtyIds.length > 0) {
+        void new WorkspaceMemories(this.context).scheduleUpdateFromSessions(undefined, { delayMs: 1500 }).catch(() => {
+          // Ignore background refresh failures during session persistence.
+        });
+      }
     },
 
     normalizeLoadedSession(this: ChatSessionPersistenceRuntime, raw: ChatSessionInfo): ChatSessionInfo {
@@ -338,11 +345,30 @@ export function createChatSessionPersistenceService(
               .filter((input): input is NonNullable<AgentSessionState['pendingInputs']>[number] => input !== undefined)
           : undefined;
 
+      const compactionSyntheticContextsRaw = (state as any).compactionSyntheticContexts;
+      const compactionSyntheticContexts =
+        Array.isArray(compactionSyntheticContextsRaw)
+          ? compactionSyntheticContextsRaw
+              .filter(
+                (context: unknown): context is NonNullable<AgentSessionState['compactionSyntheticContexts']>[number] =>
+                  !!context &&
+                  typeof context === 'object' &&
+                  (((context as any).transientContext === 'explore' ||
+                    (context as any).transientContext === 'memoryRecall') &&
+                    typeof (context as any).text === 'string'),
+              )
+              .map((context) => ({
+                transientContext: context.transientContext,
+                text: context.text,
+              }))
+          : undefined;
+
       return {
         history,
         fileHandles,
         semanticHandles,
         ...(pendingInputs ? { pendingInputs } : {}),
+        ...(compactionSyntheticContexts ? { compactionSyntheticContexts } : {}),
       };
     },
 

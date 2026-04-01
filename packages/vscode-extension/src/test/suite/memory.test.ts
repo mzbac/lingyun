@@ -229,6 +229,72 @@ suite('Memory Tool', () => {
     }
   });
 
+  test('workspace memories scheduled refresh dedupes across instances', async () => {
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri;
+    assert.ok(root, 'Workspace folder must be available for memory tests');
+
+    const prevMemoryRoot = process.env.LINGYUN_MEMORIES_DIR;
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const prevEnabled = cfg.get('features.memories');
+    const prevIdleHours = cfg.get('memories.minRolloutIdleHours');
+
+    const storageRoot = vscode.Uri.joinPath(root, '.lingyun-test-storage-scheduled-refresh');
+    const memoriesDir = vscode.Uri.joinPath(storageRoot, 'memories');
+    await vscode.workspace.fs.createDirectory(storageRoot);
+
+    try {
+      process.env.LINGYUN_MEMORIES_DIR = memoriesDir.fsPath;
+      await cfg.update('features.memories', true, true);
+      await cfg.update('memories.minRolloutIdleHours', 0, true);
+
+      const now = Date.now();
+      await seedPersistedSessions(storageRoot, [buildPersistedSession(now)]);
+
+      const context = {
+        storageUri: storageRoot,
+        globalStorageUri: storageRoot,
+      } as unknown as vscode.ExtensionContext;
+      const managerA = new WorkspaceMemories(context);
+      const managerB = new WorkspaceMemories(context);
+
+      const refreshA = managerA.scheduleUpdateFromSessions(root, { delayMs: 10 });
+      const refreshB = managerB.scheduleUpdateFromSessions(root, { delayMs: 10 });
+      assert.strictEqual(refreshA, refreshB, 'background refresh should coalesce across instances');
+
+      const result = await refreshA;
+      assert.strictEqual(result.enabled, true);
+
+      const search = await managerA.searchMemory({
+        query: 'maybeRunExplorePrepass',
+        workspaceFolder: root,
+        limit: 3,
+      });
+      assert.ok(search.hits.length > 0);
+      assert.ok(search.hits.some(hit => hit.record.text.includes('AgentLoop.withRun')));
+    } finally {
+      if (prevMemoryRoot === undefined) {
+        delete process.env.LINGYUN_MEMORIES_DIR;
+      } else {
+        process.env.LINGYUN_MEMORIES_DIR = prevMemoryRoot;
+      }
+      try {
+        await cfg.update('features.memories', prevEnabled, true);
+      } catch {
+        // ignore
+      }
+      try {
+        await cfg.update('memories.minRolloutIdleHours', prevIdleHours, true);
+      } catch {
+        // ignore
+      }
+      try {
+        await vscode.workspace.fs.delete(storageRoot, { recursive: true, useTrash: false });
+      } catch {
+        // ignore
+      }
+    }
+  });
+
   test('get_memory search returns transcript-backed matches', async () => {
     const root = vscode.workspace.workspaceFolders?.[0]?.uri;
     assert.ok(root, 'Workspace folder must be available for memory tests');
@@ -249,6 +315,12 @@ suite('Memory Tool', () => {
 
       const now = Date.now();
       await seedPersistedSessions(storageRoot, [buildPersistedSession(now)]);
+
+      const manager = new WorkspaceMemories({
+        storageUri: storageRoot,
+        globalStorageUri: storageRoot,
+      } as unknown as vscode.ExtensionContext);
+      await manager.updateFromSessions(root);
 
       const context = createToolContext({ storageRoot });
       const result = await getMemoryHandler(
@@ -273,6 +345,80 @@ suite('Memory Tool', () => {
       }
       try {
         await cfg.update('memories.minRolloutIdleHours', prevIdleHours, true);
+      } catch {
+        // ignore
+      }
+      try {
+        await vscode.workspace.fs.delete(storageRoot, { recursive: true, useTrash: false });
+      } catch {
+        // ignore
+      }
+    }
+  });
+
+  test('get_memory search miss schedules a background refresh and returns immediately', async () => {
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri;
+    assert.ok(root, 'Workspace folder must be available for memory tests');
+
+    const prevMemoryRoot = process.env.LINGYUN_MEMORIES_DIR;
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const prevEnabled = cfg.get('features.memories');
+
+    const storageRoot = vscode.Uri.joinPath(root, '.lingyun-test-storage-search-miss');
+    const memoriesDir = vscode.Uri.joinPath(storageRoot, 'memories');
+    await vscode.workspace.fs.createDirectory(storageRoot);
+
+    const originalSearchMemory = WorkspaceMemories.prototype.searchMemory;
+    const originalScheduleUpdateFromSessions = WorkspaceMemories.prototype.scheduleUpdateFromSessions;
+    let scheduledRefreshes = 0;
+
+    try {
+      process.env.LINGYUN_MEMORIES_DIR = memoriesDir.fsPath;
+      await cfg.update('features.memories', true, true);
+
+      WorkspaceMemories.prototype.searchMemory = async function (params) {
+        return {
+          query: params.query,
+          workspaceId: 'test-workspace',
+          hits: [],
+          totalTokens: 0,
+          truncated: false,
+        };
+      };
+      WorkspaceMemories.prototype.scheduleUpdateFromSessions = async function () {
+        scheduledRefreshes += 1;
+        return {
+          enabled: true,
+          scannedSessions: 0,
+          processedSessions: 0,
+          insertedOutputs: 0,
+          updatedOutputs: 0,
+          retainedOutputs: 0,
+          skippedRecentSessions: 0,
+          skippedPlanOrSubagentSessions: 0,
+          skippedNoSignalSessions: 0,
+        };
+      };
+
+      const context = createToolContext({ storageRoot });
+      const result = await getMemoryHandler(
+        { view: 'search', query: 'still indexing', limit: 3, neighborWindow: 0 },
+        context,
+      );
+
+      assert.strictEqual(result.success, true);
+      assert.ok(String(result.data).includes('(no matching memory)'));
+      assert.strictEqual(scheduledRefreshes, 1, 'search miss should schedule one background refresh');
+    } finally {
+      WorkspaceMemories.prototype.searchMemory = originalSearchMemory;
+      WorkspaceMemories.prototype.scheduleUpdateFromSessions = originalScheduleUpdateFromSessions;
+      if (prevMemoryRoot === undefined) {
+        delete process.env.LINGYUN_MEMORIES_DIR;
+      } else {
+        process.env.LINGYUN_MEMORIES_DIR = prevMemoryRoot;
+      }
+      try {
+        await cfg.update('features.memories', prevEnabled, true);
       } catch {
         // ignore
       }

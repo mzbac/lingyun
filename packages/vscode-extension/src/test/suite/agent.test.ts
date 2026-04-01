@@ -16,6 +16,7 @@ import type {
 } from '@ai-sdk/provider';
 
 import { AgentLoop } from '../../core/agent';
+import { WorkspaceMemories } from '../../core/memories';
 import { SessionStore } from '../../core/sessionStore';
 import { ToolRegistry } from '../../core/registry';
 import type { LLMProvider } from '../../core/types';
@@ -2335,6 +2336,8 @@ suite('AgentLoop', () => {
       ]);
 
       const writableContext = createWritableMockExtensionContext(storageRoot);
+      const memoryManager = new WorkspaceMemories(writableContext);
+      await memoryManager.updateFromSessions(root);
       agent = new AgentLoop(mockLLM, writableContext, { model: 'mock-model' }, registry);
       mockLLM.setNextResponse({ kind: 'text', content: 'Ok' });
 
@@ -2356,6 +2359,196 @@ suite('AgentLoop', () => {
         undefined,
         'transient memory recall context should be injected into the prompt without persisting in history',
       );
+    } finally {
+      if (prevMemoryRoot === undefined) {
+        delete process.env.LINGYUN_MEMORIES_DIR;
+      } else {
+        process.env.LINGYUN_MEMORIES_DIR = prevMemoryRoot;
+      }
+      await cfg.update('features.memories', prevEnabled as any, true);
+      await cfg.update('memories.minRolloutIdleHours', prevIdleHours as any, true);
+      await cfg.update('memories.autoRecall', prevAutoRecall as any, true);
+      await cfg.update('memories.maxAutoRecallResults', prevAutoResults as any, true);
+      await cfg.update('memories.maxAutoRecallTokens', prevAutoTokens as any, true);
+      try {
+        await vscode.workspace.fs.delete(storageRoot, { recursive: true, useTrash: false });
+      } catch {
+        // ignore
+      }
+    }
+  });
+
+  test('autoRecall - schedules a background refresh on miss instead of blocking the turn', async () => {
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const prevEnabled = cfg.get<unknown>('features.memories');
+    const prevAutoRecall = cfg.get<unknown>('memories.autoRecall');
+
+    const originalSearchMemory = WorkspaceMemories.prototype.searchMemory;
+    const originalUpdateFromSessions = WorkspaceMemories.prototype.updateFromSessions;
+    const originalScheduleUpdateFromSessions = WorkspaceMemories.prototype.scheduleUpdateFromSessions;
+
+    let scheduledRefreshes = 0;
+
+    try {
+      await cfg.update('features.memories', true, true);
+      await cfg.update('memories.autoRecall', true, true);
+
+      WorkspaceMemories.prototype.searchMemory = async function (params) {
+        return {
+          query: params.query,
+          workspaceId: 'test-workspace',
+          hits: [],
+          totalTokens: 0,
+          truncated: false,
+        };
+      };
+      WorkspaceMemories.prototype.updateFromSessions = async function () {
+        throw new Error('autoRecall miss should not synchronously rebuild memories');
+      };
+      WorkspaceMemories.prototype.scheduleUpdateFromSessions = async function () {
+        scheduledRefreshes += 1;
+        return {
+          enabled: true,
+          scannedSessions: 0,
+          processedSessions: 0,
+          insertedOutputs: 0,
+          updatedOutputs: 0,
+          retainedOutputs: 0,
+          skippedRecentSessions: 0,
+          skippedPlanOrSubagentSessions: 0,
+          skippedNoSignalSessions: 0,
+        };
+      };
+
+      mockLLM.setNextResponse({ kind: 'text', content: 'Ok' });
+      await agent.run('Try to recall something that is not indexed yet.');
+
+      assert.strictEqual(scheduledRefreshes, 1, 'memory recall miss should schedule one background refresh');
+
+      const prompt = JSON.stringify(mockLLM.lastPrompt ?? '');
+      assert.ok(
+        !prompt.includes('memory_recall_context'),
+        'prompt should not include synthetic recall context when no memory hit is available yet',
+      );
+    } finally {
+      WorkspaceMemories.prototype.searchMemory = originalSearchMemory;
+      WorkspaceMemories.prototype.updateFromSessions = originalUpdateFromSessions;
+      WorkspaceMemories.prototype.scheduleUpdateFromSessions = originalScheduleUpdateFromSessions;
+      await cfg.update('features.memories', prevEnabled as any, true);
+      await cfg.update('memories.autoRecall', prevAutoRecall as any, true);
+    }
+  });
+
+  test('compaction - restores session state and recalled memory context after summary', async () => {
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri;
+    assert.ok(root, 'Workspace folder must be available for agent memory tests');
+
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const prevEnabled = cfg.get<unknown>('features.memories');
+    const prevIdleHours = cfg.get<unknown>('memories.minRolloutIdleHours');
+    const prevAutoRecall = cfg.get<unknown>('memories.autoRecall');
+    const prevAutoResults = cfg.get<unknown>('memories.maxAutoRecallResults');
+    const prevAutoTokens = cfg.get<unknown>('memories.maxAutoRecallTokens');
+    const prevMemoryRoot = process.env.LINGYUN_MEMORIES_DIR;
+
+    const storageRoot = vscode.Uri.joinPath(root, '.lingyun-agent-compaction-memory-storage');
+    const memoriesDir = vscode.Uri.joinPath(storageRoot, 'memories');
+    await vscode.workspace.fs.createDirectory(storageRoot);
+
+    try {
+      process.env.LINGYUN_MEMORIES_DIR = memoriesDir.fsPath;
+      await cfg.update('features.memories', true, true);
+      await cfg.update('memories.minRolloutIdleHours', 0, true);
+      await cfg.update('memories.autoRecall', true, true);
+      await cfg.update('memories.maxAutoRecallResults', 3, true);
+      await cfg.update('memories.maxAutoRecallTokens', 400, true);
+
+      const now = Date.now();
+      const signals = createBlankSessionSignals(now);
+      signals.userIntents = ['Keep memory recall available after compaction'];
+      signals.assistantOutcomes = ['Resume with recalled memory context and session state intact'];
+      signals.filesTouched = ['packages/vscode-extension/src/core/agent/index.ts'];
+      signals.toolsUsed = ['get_memory'];
+
+      await seedAgentPersistedSessions(storageRoot, [
+        {
+          id: 'persisted-compaction-memory-session',
+          title: 'Prior recall design',
+          createdAt: now - 10_000,
+          updatedAt: now - 10_000,
+          signals,
+          mode: 'build',
+          stepCounter: 0,
+          currentModel: 'mock-model',
+          agentState: { history: [] },
+          messages: [
+            {
+              id: 'cm1',
+              role: 'user',
+              content: 'Where should auto recall be injected?',
+              timestamp: now - 10_000,
+              turnId: 'turn-a',
+            },
+            {
+              id: 'cm2',
+              role: 'assistant',
+              content: 'Inject it in AgentLoop.withRun near maybeRunExplorePrepass before the main agent execution.',
+              timestamp: now - 9_900,
+              turnId: 'turn-a',
+            },
+          ],
+          runtime: { wasRunning: false, updatedAt: now - 9_900 },
+        },
+      ]);
+
+      const writableContext = createWritableMockExtensionContext(storageRoot);
+      const memoryManager = new WorkspaceMemories(writableContext);
+      await memoryManager.updateFromSessions(root);
+      agent = new AgentLoop(mockLLM, writableContext, { model: 'mock-model' }, registry);
+
+      mockLLM.setNextResponse({ kind: 'text', content: 'Ok' });
+      await agent.run('Remind me where auto recall should be injected.');
+
+      const state = agent.exportState();
+      state.mentionedSkills = ['memory.skill'];
+      state.fileHandles = {
+        nextId: 3,
+        byId: {
+          F1: 'packages/vscode-extension/src/core/agent/index.ts',
+          F2: 'packages/vscode-extension/src/core/agent/runtimePolicy.ts',
+        },
+      };
+      agent.importState(state);
+
+      mockLLM.setNextResponse({ kind: 'text', content: 'Summary of progress' });
+      await agent.compactSession();
+
+      const historyAfterCompaction = agent.getHistory();
+      const restoredRecall = historyAfterCompaction.find(
+        (msg) => msg.role === 'assistant' && msg.metadata?.compactionRestore?.source === 'memoryRecall',
+      );
+      const restoredState = historyAfterCompaction.find(
+        (msg) => msg.role === 'assistant' && msg.metadata?.compactionRestore?.source === 'sessionState',
+      );
+      assert.ok(restoredRecall, 'compaction should rehydrate the recalled memory context');
+      assert.ok(restoredState, 'compaction should rehydrate current session state');
+      assert.ok(
+        getMessageText(restoredState as any).includes('memory.skill'),
+        'session-state rehydration should include mentioned skills',
+      );
+      assert.ok(
+        getMessageText(restoredState as any).includes('F1: packages/vscode-extension/src/core/agent/index.ts'),
+        'session-state rehydration should include active file handles',
+      );
+
+      mockLLM.setNextResponse({ kind: 'text', content: 'Continuing' });
+      await agent.resume();
+
+      const prompt = JSON.stringify(mockLLM.lastPrompt ?? '');
+      assert.ok(prompt.includes('memory_recall_context'), 'resume prompt should retain recalled memory context');
+      assert.ok(prompt.includes('compaction_session_state'), 'resume prompt should retain session state rehydration');
+      assert.ok(prompt.includes('memory.skill'), 'resume prompt should include mentioned skill state');
+      assert.ok(prompt.includes('AgentLoop.withRun'), 'resume prompt should include recalled transcript text');
     } finally {
       if (prevMemoryRoot === undefined) {
         delete process.env.LINGYUN_MEMORIES_DIR;

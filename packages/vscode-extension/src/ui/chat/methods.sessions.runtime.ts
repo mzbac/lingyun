@@ -124,6 +124,7 @@ export function createChatSessionRuntimeService(
           locations: {},
         },
         pendingInputs: [],
+        compactionSyntheticContexts: [],
       };
     },
 

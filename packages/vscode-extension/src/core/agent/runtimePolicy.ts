@@ -18,6 +18,9 @@ import { getPrimaryWorkspaceFolderUri } from '../workspaceContext';
 
 import { DEFAULT_SYSTEM_PROMPT } from './prompts';
 
+const EXPLORE_COMPACTION_RESTORE_MAX_CHARS = 6000;
+const MEMORY_RECALL_COMPACTION_RESTORE_MAX_CHARS = 4000;
+
 function dirnameUri(uri: vscode.Uri): vscode.Uri {
   const normalized = uri.path.replace(/\/+$/, '') || '/';
   const parent = path.posix.dirname(normalized);
@@ -214,6 +217,8 @@ export class VsCodeAgentRuntimePolicy implements LingyunAgentRuntimePolicy {
     return {
       transientContext: 'explore',
       text: injected,
+      persistAfterCompaction: true,
+      maxCharsAfterCompaction: Math.min(maxChars, EXPLORE_COMPACTION_RESTORE_MAX_CHARS),
     };
   }
 
@@ -242,18 +247,10 @@ export class VsCodeAgentRuntimePolicy implements LingyunAgentRuntimePolicy {
     });
 
     if (search.hits.length === 0) {
-      try {
-        await manager.updateFromSessions(workspaceFolder);
-      } catch {
-        // Ignore refresh failures during pre-run recall.
-      }
-      search = await manager.searchMemory({
-        query,
-        workspaceFolder,
-        limit: memoriesConfig.maxAutoRecallResults,
-        maxTokens: memoriesConfig.maxAutoRecallTokens,
-        neighborWindow: memoriesConfig.searchNeighborWindow,
+      void manager.scheduleUpdateFromSessions(workspaceFolder, { delayMs: 250 }).catch(() => {
+        // Ignore background refresh failures during pre-run recall.
       });
+      return undefined;
     }
 
     if (search.hits.length === 0) return undefined;
@@ -284,6 +281,8 @@ export class VsCodeAgentRuntimePolicy implements LingyunAgentRuntimePolicy {
     return {
       transientContext: 'memoryRecall',
       text: lines.join('\n'),
+      persistAfterCompaction: true,
+      maxCharsAfterCompaction: MEMORY_RECALL_COMPACTION_RESTORE_MAX_CHARS,
     };
   }
 }

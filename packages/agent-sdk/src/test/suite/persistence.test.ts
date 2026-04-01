@@ -77,6 +77,12 @@ suite('persistence', () => {
       subagentType: 'explore',
       modelId: 'mock-model',
       pendingPlan: 'do the thing',
+      compactionSyntheticContexts: [
+        {
+          transientContext: 'memoryRecall',
+          text: '<memory_recall_context>\nRemember this\n</memory_recall_context>',
+        },
+      ],
       history: [
         { id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hello' }] } as any,
         { id: 'm2', role: 'assistant', parts: [{ type: 'text', text: 'hi' }] } as any,
@@ -92,6 +98,12 @@ suite('persistence', () => {
     assert.equal(snapshot.modelId, 'mock-model');
     assert.equal(snapshot.pendingPlan, 'do the thing');
     assert.equal(snapshot.savedAt, '2020-01-01T00:00:00.000Z');
+    assert.deepEqual(snapshot.compactionSyntheticContexts, [
+      {
+        transientContext: 'memoryRecall',
+        text: '<memory_recall_context>\nRemember this\n</memory_recall_context>',
+      },
+    ]);
     assert.deepEqual(snapshot.fileHandles, { nextId: 2, byId: { F1: 'src/index.ts' } });
     assert.equal(snapshot.history.length, 2);
 
@@ -101,6 +113,12 @@ suite('persistence', () => {
     assert.equal(restored.subagentType, 'explore');
     assert.equal(restored.modelId, 'mock-model');
     assert.equal(restored.pendingPlan, 'do the thing');
+    assert.deepEqual(restored.compactionSyntheticContexts, [
+      {
+        transientContext: 'memoryRecall',
+        text: '<memory_recall_context>\nRemember this\n</memory_recall_context>',
+      },
+    ]);
     assert.deepEqual(restored.fileHandles, { nextId: 2, byId: { F1: 'src/index.ts' } });
     assert.equal(restored.getHistory().length, 2);
   });

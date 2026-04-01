@@ -1,6 +1,11 @@
 import * as vscode from 'vscode';
 
-import { LingyunAgent, LingyunSession, stripTransientSyntheticMessages } from '@kooka/agent-sdk';
+import {
+  LingyunAgent,
+  LingyunSession,
+  stripTransientSyntheticMessages,
+  type LingyunCompactionSyntheticContext,
+} from '@kooka/agent-sdk';
 import type { AgentConfig as SdkAgentConfig } from '@kooka/agent-sdk';
 import type { AgentHistoryMessage, UserHistoryInput } from '@kooka/core';
 import {
@@ -34,6 +39,7 @@ export type AgentSessionState = {
   semanticHandles?: SemanticHandlesState;
   mentionedSkills?: string[];
   pendingInputs?: UserHistoryInput[];
+  compactionSyntheticContexts?: LingyunCompactionSyntheticContext[];
 };
 
 function isAbortError(error: unknown): boolean {
@@ -152,6 +158,7 @@ export class AgentLoop {
       semanticHandles: this.session.semanticHandles,
       mentionedSkills: [...(this.session.mentionedSkills || [])],
       pendingInputs: this.session.getPendingInputs().map((input) => cloneUserHistoryInput(input)),
+      compactionSyntheticContexts: this.session.compactionSyntheticContexts.map((context) => ({ ...context })),
     };
   }
 
@@ -178,6 +185,18 @@ export class AgentLoop {
             .filter((input): input is UserHistoryInput => input !== undefined)
         : [],
     );
+    this.session.compactionSyntheticContexts = Array.isArray(state.compactionSyntheticContexts)
+      ? state.compactionSyntheticContexts
+          .filter(
+            (context): context is LingyunCompactionSyntheticContext =>
+              !!context &&
+              typeof context === 'object' &&
+              ((context as any).transientContext === 'explore' ||
+                (context as any).transientContext === 'memoryRecall') &&
+              typeof (context as any).text === 'string',
+          )
+          .map((context) => ({ ...context }))
+      : [];
 
     const fileHandlesRaw = state.fileHandles;
     if (fileHandlesRaw && typeof fileHandlesRaw === 'object') {
@@ -406,6 +425,7 @@ export class AgentLoop {
     this.session.fileHandles = { nextId: 1, byId: {} };
     this.session.semanticHandles = createBlankSemanticHandlesState();
     this.session.mentionedSkills = [];
+    this.session.compactionSyntheticContexts = [];
   }
 }
 

@@ -53,6 +53,15 @@ const DEFAULT_MAX_SEARCH_RESULTS = 8;
 const DEFAULT_SEARCH_NEIGHBOR_WINDOW = 1;
 const DEFAULT_MAX_AUTO_RECALL_RESULTS = 4;
 const DEFAULT_MAX_AUTO_RECALL_TOKENS = 1200;
+const DEFAULT_BACKGROUND_REFRESH_DELAY_MS = 1500;
+
+type ScheduledMemoryUpdate = {
+  timer: NodeJS.Timeout;
+  promise: Promise<MemoryUpdateResult>;
+  resolve: (result: MemoryUpdateResult) => void;
+  reject: (error: unknown) => void;
+  workspaceFolder?: vscode.Uri;
+};
 
 function getNumberConfig(key: string, fallback: number, min: number, max: number): number {
   const raw = vscode.workspace.getConfiguration('lingyun').get<unknown>(key);
@@ -146,10 +155,11 @@ export function getMemoriesConfig(): MemoriesConfig {
 export { deriveWorkspaceMemoryId };
 
 export class WorkspaceMemories {
+  private static readonly updateInFlightByKey = new Map<string, Promise<MemoryUpdateResult>>();
+  private static readonly scheduledUpdatesByKey = new Map<string, ScheduledMemoryUpdate>();
   private readonly storageRootUri: vscode.Uri | undefined;
   private readonly memoriesRootUri: vscode.Uri | undefined;
   private readonly stateUri: vscode.Uri | undefined;
-  private updateInFlight?: Promise<MemoryUpdateResult>;
 
   constructor(private readonly context: vscode.ExtensionContext) {
     this.storageRootUri = context.storageUri ?? context.globalStorageUri;
@@ -159,14 +169,89 @@ export class WorkspaceMemories {
       : undefined;
   }
 
+  private getCoordinationKey(): string | undefined {
+    return (
+      this.stateUri?.toString() ??
+      this.memoriesRootUri?.toString() ??
+      this.storageRootUri?.toString()
+    );
+  }
+
+  private static clearScheduledUpdate(key: string): void {
+    const scheduled = this.scheduledUpdatesByKey.get(key);
+    if (!scheduled) return;
+    clearTimeout(scheduled.timer);
+    this.scheduledUpdatesByKey.delete(key);
+  }
+
   async updateFromSessions(workspaceFolder?: vscode.Uri): Promise<MemoryUpdateResult> {
-    if (this.updateInFlight) return this.updateInFlight;
+    const key = this.getCoordinationKey();
+    if (!key) {
+      return this.updateFromSessionsInternal(workspaceFolder);
+    }
+
+    WorkspaceMemories.clearScheduledUpdate(key);
+
+    const inFlight = WorkspaceMemories.updateInFlightByKey.get(key);
+    if (inFlight) return inFlight;
 
     const run = this.updateFromSessionsInternal(workspaceFolder).finally(() => {
-      this.updateInFlight = undefined;
+      if (WorkspaceMemories.updateInFlightByKey.get(key) === run) {
+        WorkspaceMemories.updateInFlightByKey.delete(key);
+      }
     });
-    this.updateInFlight = run;
+    WorkspaceMemories.updateInFlightByKey.set(key, run);
     return run;
+  }
+
+  scheduleUpdateFromSessions(
+    workspaceFolder?: vscode.Uri,
+    options?: { delayMs?: number },
+  ): Promise<MemoryUpdateResult> {
+    const delayMsRaw = options?.delayMs;
+    const delayMs =
+      typeof delayMsRaw === 'number' && Number.isFinite(delayMsRaw)
+        ? Math.max(0, Math.floor(delayMsRaw))
+        : DEFAULT_BACKGROUND_REFRESH_DELAY_MS;
+
+    if (delayMs === 0) {
+      return this.updateFromSessions(workspaceFolder);
+    }
+
+    const key = this.getCoordinationKey();
+    if (!key) {
+      return this.updateFromSessions(workspaceFolder);
+    }
+
+    const inFlight = WorkspaceMemories.updateInFlightByKey.get(key);
+    if (inFlight) return inFlight;
+
+    const scheduled = WorkspaceMemories.scheduledUpdatesByKey.get(key);
+    if (scheduled) {
+      if (workspaceFolder) scheduled.workspaceFolder = workspaceFolder;
+      return scheduled.promise;
+    }
+
+    let resolve!: (result: MemoryUpdateResult) => void;
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<MemoryUpdateResult>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+
+    const entry: ScheduledMemoryUpdate = {
+      timer: setTimeout(() => {
+        WorkspaceMemories.scheduledUpdatesByKey.delete(key);
+        void this.updateFromSessions(entry.workspaceFolder).then(resolve, reject);
+      }, delayMs),
+      promise,
+      resolve,
+      reject,
+      workspaceFolder,
+    };
+
+    WorkspaceMemories.scheduledUpdatesByKey.set(key, entry);
+    return promise;
   }
 
   private async updateFromSessionsInternal(workspaceFolder?: vscode.Uri): Promise<MemoryUpdateResult> {
