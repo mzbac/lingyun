@@ -451,7 +451,8 @@ function createResponsesStream(
         const pendingToolCalls = new Map<number, PendingToolCall>();
         let lastReasoningReplay: { id: string; encryptedContent?: string } | undefined;
         const textIdByOutputIndex = new Map<number, string>();
-        let sawOutputTextDelta = false;
+        const textIdsWithDelta = new Set<string>();
+        const finalizedTextIds = new Set<string>();
 
         const closeOpenParts = () => {
           for (const id of Array.from(openTextIds)) {
@@ -462,6 +463,28 @@ function createResponsesStream(
             controller.enqueue({ type: 'reasoning-end', id });
             openReasoningIds.delete(id);
           }
+        };
+
+        const emitFinalText = (textId: string, text: string) => {
+          if (!textId || finalizedTextIds.has(textId)) return;
+
+          const sawDelta = textIdsWithDelta.has(textId);
+          const normalizedText = text || '';
+
+          if (!sawDelta && normalizedText) {
+            if (!openTextIds.has(textId)) {
+              openTextIds.add(textId);
+              controller.enqueue({ type: 'text-start', id: textId });
+            }
+            controller.enqueue({ type: 'text-delta', id: textId, delta: normalizedText });
+          }
+
+          if (openTextIds.has(textId)) {
+            controller.enqueue({ type: 'text-end', id: textId });
+            openTextIds.delete(textId);
+          }
+
+          finalizedTextIds.add(textId);
         };
 
         try {
@@ -508,12 +531,12 @@ function createResponsesStream(
               }
 
               if (eventType === 'response.output_text.delta') {
-                sawOutputTextDelta = true;
                 const itemId = asString(event['item_id']) ?? 'text_0';
                 const outputIndex = asNumber(event['output_index']);
                 if (outputIndex !== undefined && !textIdByOutputIndex.has(outputIndex)) {
                   textIdByOutputIndex.set(outputIndex, itemId);
                 }
+                textIdsWithDelta.add(itemId);
                 const delta = asString(event['delta']) ?? '';
                 if (!openTextIds.has(itemId)) {
                   openTextIds.add(itemId);
@@ -522,6 +545,19 @@ function createResponsesStream(
                 if (delta) {
                   controller.enqueue({ type: 'text-delta', id: itemId, delta });
                 }
+                continue;
+              }
+
+              if (eventType === 'response.output_text.done') {
+                const outputIndex = asNumber(event['output_index']);
+                const itemId =
+                  asString(event['item_id']) ??
+                  (outputIndex === undefined ? undefined : textIdByOutputIndex.get(outputIndex)) ??
+                  'text_0';
+                if (outputIndex !== undefined && !textIdByOutputIndex.has(outputIndex)) {
+                  textIdByOutputIndex.set(outputIndex, itemId);
+                }
+                emitFinalText(itemId, asString(event['text']) ?? '');
                 continue;
               }
 
@@ -585,10 +621,9 @@ function createResponsesStream(
                   const messageId = asString(item?.['id']);
                   const textIdFromIndex = outputIndex === undefined ? undefined : textIdByOutputIndex.get(outputIndex);
                   const textIdToClose = textIdFromIndex ?? messageId;
-                  if (textIdToClose && openTextIds.has(textIdToClose)) {
-                    controller.enqueue({ type: 'text-end', id: textIdToClose });
-                    openTextIds.delete(textIdToClose);
-                  } else if (!sawOutputTextDelta && messageId) {
+                  if (textIdToClose && (openTextIds.has(textIdToClose) || finalizedTextIds.has(textIdToClose))) {
+                    emitFinalText(textIdToClose, '');
+                  } else if (messageId) {
                     const content = Array.isArray(item?.['content']) ? item?.['content'] : [];
                     const textValue = content
                       .map((entry) => {
@@ -596,11 +631,7 @@ function createResponsesStream(
                         return asString(part?.['type']) === 'output_text' ? asString(part?.['text']) ?? '' : '';
                       })
                       .join('');
-                    if (textValue) {
-                      controller.enqueue({ type: 'text-start', id: messageId });
-                      controller.enqueue({ type: 'text-delta', id: messageId, delta: textValue });
-                      controller.enqueue({ type: 'text-end', id: messageId });
-                    }
+                    emitFinalText(messageId, textValue);
                   }
                 } else if (itemType === 'function_call') {
                   const pending = outputIndex === undefined ? undefined : pendingToolCalls.get(outputIndex);
@@ -656,6 +687,23 @@ function createResponsesStream(
                   }
                 }
 
+                continue;
+              }
+
+              if (eventType === 'response.content_part.done') {
+                const outputIndex = asNumber(event['output_index']);
+                const itemId =
+                  asString(event['item_id']) ??
+                  (outputIndex === undefined ? undefined : textIdByOutputIndex.get(outputIndex)) ??
+                  'text_0';
+                if (outputIndex !== undefined && !textIdByOutputIndex.has(outputIndex)) {
+                  textIdByOutputIndex.set(outputIndex, itemId);
+                }
+                const part = asRecord(event['part']);
+                const partType = asString(part?.['type']);
+                if (partType === 'output_text' || partType === 'text') {
+                  emitFinalText(itemId, asString(part?.['text']) ?? '');
+                }
                 continue;
               }
 

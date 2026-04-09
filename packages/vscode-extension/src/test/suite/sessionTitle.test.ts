@@ -9,6 +9,7 @@ import type {
 
 import type { LLMProvider } from '../../core/types';
 import { generateSessionTitle } from '../../core/sessionTitle';
+import { createResponsesModel } from '../../providers/responsesModel';
 
 function usage(): LanguageModelV3Usage {
   return {
@@ -30,6 +31,20 @@ function streamPartsForText(text: string): LanguageModelV3StreamPart[] {
       finishReason: { unified: 'stop', raw: 'stop' },
     },
   ];
+}
+
+function encodeSseEvents(events: unknown[]): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  const body = events
+    .map((event) => `data: ${JSON.stringify(event)}\n\n`)
+    .join('');
+
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(encoder.encode(body));
+      controller.close();
+    },
+  });
 }
 
 class MockStreamLLMProvider implements LLMProvider {
@@ -59,6 +74,36 @@ class MockStreamLLMProvider implements LLMProvider {
     };
 
     return model;
+  }
+}
+
+class MockResponsesLLMProvider implements LLMProvider {
+  readonly id = 'copilot';
+  readonly name = 'Mock Copilot';
+
+  constructor(private events: unknown[]) {}
+
+  async getModel(modelId: string): Promise<unknown> {
+    return createResponsesModel({
+      baseURL: 'https://example.invalid',
+      apiKey: 'test',
+      modelId,
+      headers: {},
+      provider: 'copilot',
+      errorLabel: 'Copilot Responses',
+      behavior: {
+        providerOptionKeys: ['openai', 'copilot'],
+        systemPromptMode: 'input',
+        includeSamplingOptions: true,
+        reasoningReplayProviderKey: 'copilot',
+        finishProviderMetadataKey: 'copilot',
+      },
+      fetch: async () =>
+        new Response(encodeSseEvents(this.events), {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        }),
+    });
   }
 }
 
@@ -98,5 +143,72 @@ suite('sessionTitle', () => {
 
     assert.strictEqual(title, 'Title');
     assert.strictEqual(llm.lastTemperature, 1);
+  });
+
+  test('extracts title text when Responses stream only sends output_text.done', async () => {
+    const llm = new MockResponsesLLMProvider([
+      {
+        type: 'response.output_text.done',
+        item_id: 'text_1',
+        output_index: 0,
+        text: 'Debugging Copilot session titles',
+      },
+      {
+        type: 'response.completed',
+        response: {
+          id: 'resp_1',
+          model: 'gpt-5.4',
+          usage: {
+            input_tokens: 0,
+            input_tokens_details: { cached_tokens: 0 },
+            output_tokens: 0,
+            output_tokens_details: { reasoning_tokens: 0 },
+          },
+        },
+      },
+    ]);
+
+    const title = await generateSessionTitle({
+      llm,
+      modelId: 'gpt-5.4',
+      message: 'the session title no longer summarised when using Copilot GPT-5.4',
+    });
+
+    assert.strictEqual(title, 'Debugging Copilot session titles');
+  });
+
+  test('extracts title text when Responses stream only sends content_part.done', async () => {
+    const llm = new MockResponsesLLMProvider([
+      {
+        type: 'response.content_part.done',
+        item_id: 'msg_1',
+        output_index: 0,
+        part: {
+          type: 'output_text',
+          text: 'Fixing session title fallback',
+        },
+      },
+      {
+        type: 'response.completed',
+        response: {
+          id: 'resp_2',
+          model: 'gpt-5.4',
+          usage: {
+            input_tokens: 0,
+            input_tokens_details: { cached_tokens: 0 },
+            output_tokens: 0,
+            output_tokens_details: { reasoning_tokens: 0 },
+          },
+        },
+      },
+    ]);
+
+    const title = await generateSessionTitle({
+      llm,
+      modelId: 'gpt-5.4',
+      message: 'copilot responses only returns the fallback session title',
+    });
+
+    assert.strictEqual(title, 'Fixing session title fallback');
   });
 });
