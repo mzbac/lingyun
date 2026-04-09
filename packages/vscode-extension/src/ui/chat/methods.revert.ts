@@ -10,7 +10,6 @@ import type { AgentLoop } from '../../core/agent';
 import type { ChatController } from './controller';
 import type { ChatLoopManager } from './loopManager';
 import type { ChatSessionsService } from './methods.sessions';
-import type { ChatWebviewService } from './methods.webview';
 
 function derivePendingPlanFromMessages(
   messages: ChatMessage[],

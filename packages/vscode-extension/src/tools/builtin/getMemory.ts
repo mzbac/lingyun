@@ -162,7 +162,7 @@ export const getMemoryHandler: ToolHandler = async (args, context) => {
       const limit = optionalNumber(args, 'limit');
       const neighborWindow = optionalNumber(args, 'neighborWindow');
 
-      let search = await manager.searchMemory({
+      const search = await manager.searchMemory({
         query,
         workspaceFolder: context.workspaceFolder,
         ...(kind ? { kind } : {}),

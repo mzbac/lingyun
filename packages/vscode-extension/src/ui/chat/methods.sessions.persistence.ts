@@ -6,7 +6,7 @@ import type { AgentSessionState } from '../../core/agent';
 import { WorkspaceMemories } from '../../core/memories';
 import { appendErrorLog } from '../../core/logger';
 import { resolveModelIdWithWorkspaceDefaults } from '../../core/modelSelection';
-import { createBlankSessionSignals, normalizeSessionSignals } from '../../core/sessionSignals';
+import { normalizeSessionSignals } from '../../core/sessionSignals';
 import { SessionStore } from '../../core/sessionStore';
 import { bindChatControllerService } from './controllerService';
 import { createDefaultSessionTitle } from './sessionTitle';

@@ -1,4 +1,8 @@
-type ChatControllerMethod<TController extends object> = (this: TController, ...args: any[]) => any;
+type ChatControllerMethod<
+  TController extends object,
+  TArgs extends unknown[] = never[],
+  TResult = unknown,
+> = (this: TController, ...args: TArgs) => TResult;
 
 export type BoundChatControllerService<
   TController extends object,

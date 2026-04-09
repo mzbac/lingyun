@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 
 import type { ToolCall, ToolDefinition, ToolResult } from '../../core/types';
-import type { OfficeAgentSeat, OfficeToWebviewMessage, OfficeWorkType } from '../../shared/officeProtocol';
+import type { OfficeAgentSeat, OfficeToWebviewMessage } from '../../shared/officeProtocol';
 import { classifyOfficeWorkType } from './workTypes';
 
 export type { OfficeAgentSeat, OfficeWorkType } from '../../shared/officeProtocol';

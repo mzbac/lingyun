@@ -238,7 +238,7 @@ export class VsCodeAgentRuntimePolicy implements LingyunAgentRuntimePolicy {
     const workspaceFolder = this.getWorkspaceRootForContext();
     const manager = new WorkspaceMemories(this.context);
 
-    let search = await manager.searchMemory({
+    const search = await manager.searchMemory({
       query,
       workspaceFolder,
       limit: memoriesConfig.maxAutoRecallResults,

@@ -4,7 +4,6 @@ import { getMessageText } from '@kooka/core';
 
 import type { AgentLoop, AgentSessionState } from '../../core/agent';
 import { getModelLimit } from '../../core/compaction';
-import { appendErrorLog } from '../../core/logger';
 import { resolveConfiguredModelId } from '../../core/modelSelection';
 import { createBlankSessionSignals } from '../../core/sessionSignals';
 import type { LLMProvider } from '../../core/types';

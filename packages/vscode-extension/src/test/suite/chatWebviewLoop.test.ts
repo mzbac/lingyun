@@ -1,7 +1,6 @@
 import * as assert from 'assert';
 import * as vscode from 'vscode';
 
-import { ChatController } from '../../ui/chat';
 import { createBlankSessionSignals } from '../../core/sessionSignals';
 import { createStandaloneChatController } from './chatControllerHarness';
 

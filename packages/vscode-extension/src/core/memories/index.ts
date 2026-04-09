@@ -6,7 +6,6 @@ import { getPrimaryWorkspaceRootPath } from '../workspaceContext';
 
 import { deriveWorkspaceMemoryId } from './ingest';
 import {
-  type MemoryArtifacts,
   type MemoryDropResult,
   type MemoryRecord,
   type MemoryRecordKind,
@@ -321,7 +320,7 @@ export class WorkspaceMemories {
     };
   }
 
-  async dropMemories(workspaceFolder?: vscode.Uri): Promise<MemoryDropResult> {
+  async dropMemories(_workspaceFolder?: vscode.Uri): Promise<MemoryDropResult> {
     const state = await readMemoriesState(this.stateUri);
     let removedArtifacts = false;
     if (this.memoriesRootUri) {
@@ -339,7 +338,7 @@ export class WorkspaceMemories {
     };
   }
 
-  async listRolloutSummaries(workspaceFolder?: vscode.Uri): Promise<string[]> {
+  async listRolloutSummaries(_workspaceFolder?: vscode.Uri): Promise<string[]> {
     const artifacts = getMemoryArtifacts(this.memoriesRootUri);
     if (!artifacts) return [];
     const names = await listMarkdownFiles(artifacts.rolloutSummariesDir);
@@ -349,7 +348,7 @@ export class WorkspaceMemories {
   async readMemoryFile(
     kind: 'summary' | 'memory' | 'raw' | 'rollout',
     rolloutFile?: string,
-    workspaceFolder?: vscode.Uri,
+    _workspaceFolder?: vscode.Uri,
   ): Promise<string | undefined> {
     const artifacts = getMemoryArtifacts(this.memoriesRootUri);
     if (!artifacts) return undefined;

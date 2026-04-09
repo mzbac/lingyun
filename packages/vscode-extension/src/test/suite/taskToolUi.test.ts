@@ -1,5 +1,4 @@
 import * as assert from 'assert';
-import { ChatController } from '../../ui/chat';
 import type { ToolCall, ToolResult } from '../../core/types';
 import type { ChatMessage } from '../../ui/chat/types';
 import { createBlankSessionSignals } from '../../core/sessionSignals';
