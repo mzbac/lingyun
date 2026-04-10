@@ -34,6 +34,33 @@ import { getWorkspaceRootUri, resolveToolPath } from './workspace';
 const MAX_BASH_OUTPUT = 50000;
 const KILL_GRACE_MS = 1500;
 
+function formatBackgroundTtl(ttlMs: number): string {
+  if (!Number.isFinite(ttlMs) || ttlMs <= 0) return 'disabled';
+
+  if (ttlMs % (60 * 60 * 1000) === 0) {
+    const hours = ttlMs / (60 * 60 * 1000);
+    return hours === 1 ? '1 hour' : `${hours} hours`;
+  }
+
+  if (ttlMs % (60 * 1000) === 0) {
+    const minutes = ttlMs / (60 * 1000);
+    return minutes === 1 ? '1 minute' : `${minutes} minutes`;
+  }
+
+  if (ttlMs % 1000 === 0) {
+    const seconds = ttlMs / 1000;
+    return seconds === 1 ? '1 second' : `${seconds} seconds`;
+  }
+
+  return `${ttlMs} ms`;
+}
+
+function buildAutoStopMessage(ttlMs: number): string {
+  return ttlMs > 0
+    ? `Auto-stop: after ${formatBackgroundTtl(ttlMs)} (set ttlMs: 0 to disable).`
+    : 'Auto-stop: disabled (ttlMs: 0).';
+}
+
 async function runBackgroundSpawn(args: {
   command: string;
   cwd: string;
@@ -50,7 +77,11 @@ async function runBackgroundSpawn(args: {
 
     return {
       success: true,
-      data: `Command already running in background (pid ${existing.pid}).${stopHint ? ` To stop: ${stopHint}` : ''}`,
+      data: [
+        `Command already running in background (pid ${existing.pid}).`,
+        ...(stopHint ? [`To stop: ${stopHint}`] : []),
+        buildAutoStopMessage(refreshed.ttlMs),
+      ].join('\n'),
       metadata: {
         background: true,
         reused: true,
@@ -111,7 +142,11 @@ async function runBackgroundSpawn(args: {
   const stopHint = computeStopHint(pid);
   return {
     success: true,
-    data: `Command started in background (pid ${pid}).${stopHint ? ` To stop: ${stopHint}` : ''}`,
+    data: [
+      `Command started in background (pid ${pid}).`,
+      ...(stopHint ? [`To stop: ${stopHint}`] : []),
+      buildAutoStopMessage(job.ttlMs),
+    ].join('\n'),
     metadata: {
       background: true,
       reused: false,
@@ -129,7 +164,7 @@ export const bashTool: ToolDefinition = {
   id: 'bash',
   name: 'Run Command',
   description:
-    'Execute a shell command. Use for git/npm/dev tools. Note: if lingyun.security.blockGitPush is enabled, `git push` is blocked; ask the user to push manually or disable the setting. For long-running commands (dev servers, watchers), pass { background: true } to run in the VS Code integrated terminal (auto-stops after a TTL, output written to a log file). For non-background commands, you can provide { timeout: <ms> } to bound execution. Background commands are deduplicated per (workdir + command) to avoid spawning multiple servers. Avoid using shell for file operations (reading, searching, editing, writing) — prefer the dedicated tools: read/list/glob/grep/edit/write. Use "workdir" instead of "cd". Output is captured and truncated if large.',
+    'Execute a shell command. Use for git/npm/dev tools. Note: if lingyun.security.blockGitPush is enabled, `git push` is blocked; ask the user to push manually or disable the setting. For long-running commands (dev servers, watchers, downloads), pass { background: true } to run in the VS Code integrated terminal (auto-stops after a TTL, output written to a log file). For long downloads or transfers, set { ttlMs: <longer-ms> } or { ttlMs: 0 } so LingYun does not stop the job too early. For non-background commands, you can provide { timeout: <ms> } to bound execution. Background commands are deduplicated per (workdir + command) to avoid spawning multiple servers. Avoid using shell for file operations (reading, searching, editing, writing) — prefer the dedicated tools: read/list/glob/grep/edit/write. Use "workdir" instead of "cd". Output is captured and truncated if large.',
   parameters: {
     type: 'object',
     properties: {
@@ -139,12 +174,12 @@ export const bashTool: ToolDefinition = {
       background: {
         type: 'boolean',
         description:
-          'Run the command in the background (integrated terminal) and return after capturing a short startup preview. Use this for long-running dev servers (e.g. `npx serve .`, `python -m http.server`).',
+          'Run the command in the background (integrated terminal) and return after capturing a short startup preview. Use this for long-running dev servers or downloads (e.g. `npx serve .`, `python -m http.server`, `yt-dlp ...`).',
       },
       ttlMs: {
         type: 'number',
         description:
-          'Time-to-live in milliseconds for background commands. When set, the process is automatically stopped after this duration. Defaults to lingyun.tools.bash.backgroundTtlMs.',
+          'Time-to-live in milliseconds for background commands. When set, the process is automatically stopped after this duration. Defaults to lingyun.tools.bash.backgroundTtlMs. Use 0 to disable auto-stop for long downloads or transfers.',
       },
       captureMs: {
         type: 'number',
@@ -323,7 +358,7 @@ export const bashHandler: ToolHandler = async (args, context) => {
       captureMs,
       captureLines,
       shellIntegrationTimeoutMs,
-      pidTimeoutMs: 2000,
+      pidTimeoutMs: 10_000,
       context,
     });
   }

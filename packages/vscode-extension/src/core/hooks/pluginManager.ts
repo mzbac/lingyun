@@ -9,6 +9,7 @@ import {
   type LingyunPluginToolEntry as SdkLingyunPluginToolEntry,
 } from '@kooka/agent-sdk';
 
+import { getDebugSettings } from '../debugSettings';
 import { findGitRoot } from '../instructions';
 import { getSnapshotProjectId } from '../snapshot';
 import { getPrimaryWorkspaceFolder } from '../workspaceContext';
@@ -192,8 +193,7 @@ export class PluginManager {
     const { plugins, autoDiscover, workspaceDirName } = this.getConfigSnapshot();
     const roots = await this.getWorkspaceRoots();
 
-    const cfg = vscode.workspace.getConfiguration('lingyun');
-    const debugPluginsEnabled = cfg.get<boolean>('debug.plugins') ?? false;
+    const debugPluginsEnabled = getDebugSettings().plugins;
 
     if (!roots.workspaceRoot) {
       const key = JSON.stringify({ trusted: roots.trusted, combined: [], workspaceRoot: '', gitRoot: '', projectId: '', storagePath: '' });

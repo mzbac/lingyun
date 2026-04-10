@@ -2,7 +2,7 @@
   "name": "lingyun",
   "displayName": "LingYun",
   "description": "Agentic AI assistant for VS Code",
-  "version": "2.2.5",
+  "version": "2.2.6",
   "publisher": "mzbac",
   "icon": "images/icon.png",
   "license": "MIT",
@@ -550,6 +550,11 @@
           "default": true,
           "description": "When enabled, the bash tool blocks `git push` to avoid accidentally pushing to remote. Disable this setting to allow the agent to run git push."
         },
+        "lingyun.debug.details": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable more detailed LingYun output-channel logs, including fuller error/cause/stack details. This also turns on the LLM, tools, and plugins debug streams and stops masking paths/URLs/hosts in those logs, while still hiding credential-like secrets."
+        },
         "lingyun.debug.llm": {
           "type": "boolean",
           "default": false,
@@ -579,10 +584,10 @@
     "build": "pnpm run bundle",
     "clean": "node scripts/clean.js",
     "compile": "pnpm run clean && pnpm run office:build && node ../../scripts/ensure-core-build.cjs && node ../../scripts/ensure-agent-sdk-build.cjs && tsc -p ./",
-    "bundle": "pnpm run clean && node scripts/bundle.js",
+    "bundle": "node ../../scripts/ensure-core-build.cjs && node ../../scripts/ensure-agent-sdk-build.cjs && pnpm run clean && node scripts/bundle.js",
     "office:build": "node scripts/build-office-webview.js",
     "office:watch": "node scripts/build-office-webview.js --watch",
-    "watch": "pnpm run office:build && tsc -watch -p ./",
+    "watch": "pnpm run office:build && node ../../scripts/ensure-core-build.cjs && node ../../scripts/ensure-agent-sdk-build.cjs && tsc -watch -p ./",
     "lint": "eslint src --ext ts",
     "test": "pnpm run compile && node ./dist/test/runTest.js",
     "test:unit": "pnpm run test",

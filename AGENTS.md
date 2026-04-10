@@ -60,8 +60,10 @@ This project is still in active development with no production users. Prefer bre
 
 ## Debugging
 
+- `lingyun.debug.details`: enables fuller output-channel logs and acts as a global debug switch for LLM/tool/plugin logging; paths/URLs/hosts stay visible, but credential-like secrets remain masked.
 - `lingyun.debug.llm`: logs redacted request/usage metadata to the “LingYun” output channel.
 - `lingyun.debug.tools`: logs tool execution/approval boundary events (no prompts/URLs).
+- `lingyun.debug.plugins`: logs plugin discovery/loading events.
 - `LingYun: Show Logs` opens the output channel.
 
 ## Minimal Local Model Config (Example)

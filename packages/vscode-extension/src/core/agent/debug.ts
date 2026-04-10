@@ -3,6 +3,8 @@ import * as crypto from 'crypto';
 import type { ToolResult } from '../types';
 import { TOOL_ERROR_CODES } from '@kooka/core';
 
+export type DebugRedactionLevel = 'full' | 'secrets-only';
+
 export function truncateForDebug(value: string, max = 500): string {
   const text = String(value ?? '');
   if (text.length <= max) return text;
@@ -47,12 +49,24 @@ const SENSITIVE_TOOL_ARG_KEYS = new Set([
   'credential',
 ]);
 
-export function redactSensitive(text: string): string {
+type DebugFormatOptions = {
+  redactionLevel?: DebugRedactionLevel;
+};
+
+function redactSecrets(text: string): string {
   let out = String(text ?? '');
   out = out.replace(BEARER_REGEX, 'Bearer <redacted>');
   out = out.replace(BASIC_AUTH_REGEX, 'Basic <redacted>');
   out = out.replace(JSON_SECRET_KV_REGEX, '$1"<redacted>"');
   out = out.replace(INLINE_SECRET_KV_REGEX, '$1$2<redacted>');
+  return out;
+}
+
+export function redactSensitive(text: string, options?: DebugFormatOptions): string {
+  let out = redactSecrets(text);
+  if ((options?.redactionLevel ?? 'full') === 'secrets-only') {
+    return out;
+  }
   out = out.replace(URL_REGEX, '<url>');
   out = out.replace(FILE_URL_REGEX, '<file-url>');
   out = out.replace(LOCAL_DOMAIN_REGEX, '<local-host>');
@@ -82,80 +96,62 @@ function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-export function summarizeErrorForDebug(error: unknown): string {
-  const asRecord = (value: unknown): Record<string, unknown> | undefined =>
-    value && typeof value === 'object' ? (value as Record<string, unknown>) : undefined;
-
-  const name =
-    error instanceof Error
-      ? error.name
-      : typeof asRecord(error)?.name === 'string'
-        ? (asRecord(error)?.name as string)
-        : 'UnknownError';
-
-  const message =
-    error instanceof Error
-      ? error.message
-      : typeof error === 'string'
-        ? error
-        : (() => {
-            try {
-              return JSON.stringify(error);
-            } catch {
-              return String(error);
-            }
-          })();
-
-  const codeCandidate =
-    typeof asRecord(error)?.code === 'string'
-      ? (asRecord(error)?.code as string)
-      : typeof asRecord(asRecord(error)?.cause)?.code === 'string'
-        ? (asRecord(asRecord(error)?.cause)?.code as string)
-        : '';
-
-  const statusCandidates = [
-    asRecord(error)?.status,
-    asRecord(error)?.statusCode,
-    asRecord(asRecord(error)?.response)?.status,
-    asRecord(asRecord(error)?.cause)?.status,
-    asRecord(asRecord(error)?.cause)?.statusCode,
-    asRecord(asRecord(asRecord(error)?.cause)?.response)?.status,
-  ];
-
-  const status = statusCandidates.find(v => typeof v === 'number' && Number.isFinite(v)) as number | undefined;
-
-  const cause = (error instanceof Error ? (error as Error & { cause?: unknown }).cause : undefined) ?? asRecord(error)?.cause;
-  const causeMessage =
-    cause instanceof Error
-      ? `${cause.name}: ${cause.message}`
-      : typeof cause === 'string'
-        ? cause
-        : (() => {
-            if (!cause) return '';
-            try {
-              return JSON.stringify(cause);
-            } catch {
-              return String(cause);
-            }
-          })();
+export function summarizeErrorForDebug(error: unknown, options?: DebugFormatOptions): string {
+  const redactionLevel = options?.redactionLevel ?? 'full';
+  const cause = getErrorCause(error);
+  const causeMessage = cause ? formatErrorMessageForDebug(cause, { includeName: true }) : '';
 
   const parts = [
-    `name=${name}`,
-    codeCandidate ? `code=${codeCandidate}` : '',
-    typeof status === 'number' ? `status=${String(status)}` : '',
-    `message=${truncateForDebug(redactSensitive(message), 500)}`,
-    causeMessage ? `cause=${truncateForDebug(redactSensitive(causeMessage), 500)}` : '',
+    `name=${getErrorName(error)}`,
+    getErrorCode(error) ? `code=${getErrorCode(error)}` : '',
+    typeof getErrorStatus(error) === 'number' ? `status=${String(getErrorStatus(error))}` : '',
+    `message=${truncateForDebug(redactSensitive(getErrorMessage(error), { redactionLevel }), 500)}`,
+    causeMessage
+      ? `cause=${truncateForDebug(redactSensitive(causeMessage, { redactionLevel }), 500)}`
+      : '',
   ].filter(Boolean);
 
   return parts.join(' ');
 }
 
-export function formatToolFailureForDebug(result: ToolResult): string {
+export function formatDetailedErrorForDebug(error: unknown, options?: DebugFormatOptions): string {
+  const redactionLevel = options?.redactionLevel ?? 'full';
+  const lines: string[] = [];
+
+  for (const [index, item] of getErrorChain(error).entries()) {
+    const label = index === 0 ? 'error' : `cause[${index}]`;
+    const parts = [
+      `name=${getErrorName(item)}`,
+      getErrorCode(item) ? `code=${getErrorCode(item)}` : '',
+      typeof getErrorStatus(item) === 'number' ? `status=${String(getErrorStatus(item))}` : '',
+      `message=${truncateForDebug(redactSensitive(getErrorMessage(item), { redactionLevel }), 1000)}`,
+    ].filter(Boolean);
+
+    lines.push(`${label}: ${parts.join(' ')}`);
+
+    const responseHeaders = getErrorResponseHeaders(item);
+    if (responseHeaders !== undefined) {
+      lines.push(
+        `${label}.headers=${truncateForDebug(redactSensitive(safeJsonStringify(responseHeaders), { redactionLevel }), 1000)}`,
+      );
+    }
+
+    const stack = getErrorStack(item);
+    if (stack) {
+      lines.push(`${label}.stack=${truncateForDebug(redactSensitive(stack, { redactionLevel }), 2000)}`);
+    }
+  }
+
+  return lines.join('\n');
+}
+
+export function formatToolFailureForDebug(result: ToolResult, options?: DebugFormatOptions): string {
+  const redactionLevel = options?.redactionLevel ?? 'full';
   const errorCode = result.metadata?.errorCode ? String(result.metadata.errorCode) : '';
   const errorType = result.metadata?.errorType ? String(result.metadata.errorType) : '';
   const label = errorCode || errorType;
   const errorRaw = result.error ? String(result.error) : 'Unknown error';
-  const error = truncateForDebug(redactSensitive(errorRaw), 500);
+  const error = truncateForDebug(redactSensitive(errorRaw, { redactionLevel }), 500);
 
   const extra: string[] = [];
   if (result.metadata && typeof result.metadata === 'object') {
@@ -169,7 +165,7 @@ export function formatToolFailureForDebug(result: ToolResult): string {
         const paths = blockedPathsRaw
           .filter((p): p is string => typeof p === 'string' && !!p.trim())
           .slice(0, 5)
-          .map(p => truncateForDebug(redactSensitive(p), 120));
+          .map(p => truncateForDebug(redactSensitive(p, { redactionLevel }), 120));
         if (paths.length) {
           const suffix = blockedPathsRaw.length > paths.length ? ',…' : '';
           extra.push(`paths=${paths.join(',')}${suffix}`);
@@ -202,9 +198,10 @@ export function formatToolFailureForDebug(result: ToolResult): string {
   return parts.join(': ');
 }
 
-export function summarizeToolArgsForDebug(args: unknown): string {
+export function summarizeToolArgsForDebug(args: unknown, options?: DebugFormatOptions): string {
+  const redactionLevel = options?.redactionLevel ?? 'full';
   if (!args || typeof args !== 'object') {
-    return truncateForDebug(redactSensitive(safeJsonStringify(args ?? null)), 500);
+    return truncateForDebug(redactSensitive(safeJsonStringify(args ?? null), { redactionLevel }), 500);
   }
 
   const out: Record<string, unknown> = {};
@@ -216,7 +213,7 @@ export function summarizeToolArgsForDebug(args: unknown): string {
     }
 
     if (typeof value === 'string') {
-      out[key] = truncateForDebug(redactSensitive(value), 200);
+      out[key] = truncateForDebug(redactSensitive(value, { redactionLevel }), 200);
       continue;
     }
 
@@ -238,7 +235,7 @@ export function summarizeToolArgsForDebug(args: unknown): string {
     out[key] = value ?? null;
   }
 
-  return truncateForDebug(redactSensitive(safeJsonStringify(out)), 800);
+  return truncateForDebug(redactSensitive(safeJsonStringify(out), { redactionLevel }), 800);
 }
 
 function isSensitiveArgKey(key: string): boolean {
@@ -264,6 +261,73 @@ function safeJsonStringify(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' ? (value as Record<string, unknown>) : undefined;
+}
+
+function getErrorChain(error: unknown): unknown[] {
+  const chain: unknown[] = [];
+  const seen = new Set<object>();
+  let current: unknown = error;
+
+  while (current !== undefined && current !== null) {
+    if (typeof current === 'object') {
+      if (seen.has(current)) break;
+      seen.add(current);
+    }
+
+    chain.push(current);
+    current = getErrorCause(current);
+  }
+
+  return chain;
+}
+
+function getErrorName(error: unknown): string {
+  if (error instanceof Error) return error.name;
+  const record = asRecord(error);
+  return typeof record?.name === 'string' ? record.name : 'UnknownError';
+}
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'string') return error;
+  return safeJsonStringify(error);
+}
+
+function getErrorCode(error: unknown): string {
+  const record = asRecord(error);
+  return typeof record?.code === 'string' ? record.code : '';
+}
+
+function getErrorStatus(error: unknown): number | undefined {
+  const record = asRecord(error);
+  const candidates = [record?.status, record?.statusCode, asRecord(record?.response)?.status];
+  return candidates.find(v => typeof v === 'number' && Number.isFinite(v)) as number | undefined;
+}
+
+function getErrorCause(error: unknown): unknown {
+  return (error instanceof Error ? (error as Error & { cause?: unknown }).cause : undefined) ?? asRecord(error)?.cause;
+}
+
+function getErrorStack(error: unknown): string | undefined {
+  if (error instanceof Error) return typeof error.stack === 'string' ? error.stack : undefined;
+  const record = asRecord(error);
+  return typeof record?.stack === 'string' ? record.stack : undefined;
+}
+
+function getErrorResponseHeaders(error: unknown): unknown {
+  const record = asRecord(error);
+  return record?.responseHeaders ?? asRecord(record?.response)?.headers;
+}
+
+function formatErrorMessageForDebug(error: unknown, options?: { includeName?: boolean }): string {
+  const message = getErrorMessage(error);
+  if (!options?.includeName) return message;
+  const name = getErrorName(error);
+  return name && name !== 'UnknownError' ? `${name}: ${message}` : message;
 }
 
 export function sha256Hex(value: string): string {

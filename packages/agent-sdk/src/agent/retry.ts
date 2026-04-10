@@ -51,6 +51,34 @@ function getErrorMessage(error: unknown): string {
   }
 }
 
+function getErrorChain(error: unknown): unknown[] {
+  const chain: unknown[] = [];
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+
+  while (current !== undefined && current !== null && !seen.has(current) && chain.length < 8) {
+    chain.push(current);
+    seen.add(current);
+
+    if (!current || typeof current !== 'object') break;
+    current = (current as any).cause;
+  }
+
+  return chain;
+}
+
+function getErrorMessages(error: unknown): string[] {
+  const chain = getErrorChain(error);
+  const messages: string[] = [];
+
+  for (const item of chain) {
+    const message = getErrorMessage(item).trim();
+    if (message) messages.push(message);
+  }
+
+  return messages;
+}
+
 function getErrorName(error: unknown): string {
   if (error instanceof Error && error.name) return error.name;
   const maybe = (error as any)?.name;
@@ -58,27 +86,27 @@ function getErrorName(error: unknown): string {
 }
 
 function getErrorCode(error: unknown): string | undefined {
-  const direct = (error as any)?.code;
-  if (typeof direct === 'string' && direct.trim()) return direct.trim();
-  const cause = (error as any)?.cause?.code;
-  if (typeof cause === 'string' && cause.trim()) return cause.trim();
+  for (const item of getErrorChain(error)) {
+    const direct = (item as any)?.code;
+    if (typeof direct === 'string' && direct.trim()) return direct.trim();
+  }
   return undefined;
 }
 
 function getStatusCode(error: unknown): number | undefined {
-  const candidates = [
-    (error as any)?.status,
-    (error as any)?.statusCode,
-    (error as any)?.response?.status,
-    (error as any)?.cause?.status,
-    (error as any)?.cause?.statusCode,
-  ];
+  for (const item of getErrorChain(error)) {
+    const candidates = [
+      (item as any)?.status,
+      (item as any)?.statusCode,
+      (item as any)?.response?.status,
+    ];
 
-  for (const value of candidates) {
-    if (typeof value === 'number' && Number.isFinite(value)) return value;
-    if (typeof value === 'string') {
-      const parsed = Number(value);
-      if (Number.isFinite(parsed)) return parsed;
+    for (const value of candidates) {
+      if (typeof value === 'number' && Number.isFinite(value)) return value;
+      if (typeof value === 'string') {
+        const parsed = Number(value);
+        if (Number.isFinite(parsed)) return parsed;
+      }
     }
   }
 
@@ -86,31 +114,30 @@ function getStatusCode(error: unknown): number | undefined {
 }
 
 function getResponseHeaders(error: unknown): Record<string, string> | undefined {
-  const candidates = [
-    (error as any)?.responseHeaders,
-    (error as any)?.cause?.responseHeaders,
-    (error as any)?.headers,
-    (error as any)?.cause?.headers,
-    (error as any)?.response?.headers,
-    (error as any)?.cause?.response?.headers,
-    (error as any)?.data?.responseHeaders,
-  ];
+  for (const item of getErrorChain(error)) {
+    const candidates = [
+      (item as any)?.responseHeaders,
+      (item as any)?.headers,
+      (item as any)?.response?.headers,
+      (item as any)?.data?.responseHeaders,
+    ];
 
-  for (const value of candidates) {
-    if (!value) continue;
+    for (const value of candidates) {
+      if (!value) continue;
 
-    if (value instanceof Headers) {
-      const out: Record<string, string> = {};
-      for (const [k, v] of value.entries()) out[k.toLowerCase()] = v;
-      return out;
-    }
-
-    if (typeof value === 'object') {
-      const out: Record<string, string> = {};
-      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-        if (typeof v === 'string') out[k.toLowerCase()] = v;
+      if (value instanceof Headers) {
+        const out: Record<string, string> = {};
+        for (const [k, v] of value.entries()) out[k.toLowerCase()] = v;
+        return out;
       }
-      if (Object.keys(out).length > 0) return out;
+
+      if (typeof value === 'object') {
+        const out: Record<string, string> = {};
+        for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+          if (typeof v === 'string') out[k.toLowerCase()] = v;
+        }
+        if (Object.keys(out).length > 0) return out;
+      }
     }
   }
 
@@ -152,8 +179,9 @@ export function retryable(error: unknown): RetryableReason | undefined {
 
   if (name === 'AbortError') return undefined;
 
-  const msg = getErrorMessage(error);
-  const lower = msg.toLowerCase();
+  const messages = getErrorMessages(error);
+  const msg = messages[0] ?? getErrorMessage(error);
+  const lower = messages.length > 0 ? messages.join('\n').toLowerCase() : msg.toLowerCase();
 
   if (status === 429) return { kind: 'rate_limited', message: 'Too Many Requests', retryAfterMs };
   if (status === 503 || status === 502 || status === 504 || status === 529) {

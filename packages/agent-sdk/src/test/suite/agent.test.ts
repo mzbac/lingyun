@@ -463,6 +463,50 @@ suite('LingYun Agent SDK', () => {
     assert.strictEqual(assistantText, ' Hello<tool_call>{}</tool_call>World');
   });
 
+  test('retries wrapped openai-compatible terminated stream errors after reasoning', async () => {
+    const llm = new MockOpenAICompatibleProvider();
+    const registry = new ToolRegistry();
+
+    llm.queueResponse({
+      kind: 'stream',
+      chunks: [
+        { type: 'reasoning-start' as const, id: 'r1' },
+        { type: 'reasoning-delta' as const, id: 'r1', delta: 'some reasoning' },
+        {
+          type: 'error' as const,
+          error: {
+            name: 'AI_APICallError',
+            message: 'Network error',
+            cause: {
+              name: 'TypeError',
+              message: 'terminated',
+              responseHeaders: { 'retry-after-ms': '1' },
+            },
+          },
+        },
+      ],
+    });
+    llm.queueResponse({ kind: 'text', content: 'Hello' });
+
+    const agent = new LingyunAgent(llm, { model: 'mock-model', maxRetries: 1 }, registry, {
+      allowExternalPaths: false,
+    });
+    const session = new LingyunSession();
+
+    const run = agent.run({ session, input: 'Hi' });
+    for await (const _event of run.events) {
+      // drain
+    }
+    const result = await run.done;
+
+    assert.strictEqual(result.text, 'Hello');
+    assert.strictEqual(llm.callCount, 2);
+
+    const history = session.getHistory();
+    assert.strictEqual(history.filter((m) => m.role === 'assistant').length, 1);
+    assert.strictEqual(getMessageText(history[history.length - 1]!), 'Hello');
+  });
+
   test('file handles - glob assigns fileId and read resolves it', async () => {
     const llm = new MockLLMProvider();
     const registry = new ToolRegistry();

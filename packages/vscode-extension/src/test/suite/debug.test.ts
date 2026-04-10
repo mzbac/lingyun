@@ -1,7 +1,12 @@
 import * as assert from 'assert';
 import * as os from 'os';
 
-import { redactSensitive, summarizeErrorForDebug, summarizeToolArgsForDebug } from '../../core/agent/debug';
+import {
+  formatDetailedErrorForDebug,
+  redactSensitive,
+  summarizeErrorForDebug,
+  summarizeToolArgsForDebug,
+} from '../../core/agent/debug';
 
 suite('Debug Redaction', () => {
   test('summarizeToolArgsForDebug redacts secret-like keys and values', () => {
@@ -60,5 +65,54 @@ suite('Debug Redaction', () => {
     assert.ok(redacted.includes('~'));
     assert.ok(redacted.includes('<local-host>'));
     assert.ok(redacted.includes('<file-url>'));
+  });
+
+  test('redactSensitive keeps urls and paths when using secrets-only mode', () => {
+    const home = os.homedir();
+    const input = `authorization=Bearer abc https://example.com from ${home}/projects/demo via localhost:3000`;
+    const redacted = redactSensitive(input, { redactionLevel: 'secrets-only' });
+
+    assert.ok(!redacted.includes('abc'));
+    assert.ok(redacted.includes('https://example.com'));
+    assert.ok(redacted.includes(home));
+    assert.ok(redacted.includes('localhost:3000'));
+  });
+
+  test('formatDetailedErrorForDebug redacts nested cause details and stack', () => {
+    const cause = Object.assign(new TypeError('terminated token=inner-secret'), {
+      responseHeaders: {
+        location: 'https://example.com/v1/chat',
+      },
+    });
+    const err: Error & { cause?: unknown } = new Error('network error authorization=Bearer outer-secret');
+    err.stack = 'Error: network error token=stack-secret\n    at https://example.com/v1/chat';
+    err.cause = cause;
+
+    const details = formatDetailedErrorForDebug(err);
+    assert.ok(details.includes('error:'));
+    assert.ok(details.includes('cause[1]:'));
+    assert.ok(details.includes('cause[1].headers='));
+    assert.ok(details.includes('error.stack='));
+    assert.ok(!details.includes('outer-secret'));
+    assert.ok(!details.includes('inner-secret'));
+    assert.ok(!details.includes('stack-secret'));
+    assert.ok(details.includes('<url>'));
+  });
+
+  test('formatDetailedErrorForDebug keeps urls in secrets-only mode', () => {
+    const cause = Object.assign(new TypeError('terminated token=inner-secret'), {
+      responseHeaders: {
+        location: 'https://example.com/v1/chat',
+      },
+    });
+    const err: Error & { cause?: unknown } = new Error('network error authorization=Bearer outer-secret');
+    err.stack = 'Error: network error token=stack-secret\n    at https://example.com/v1/chat';
+    err.cause = cause;
+
+    const details = formatDetailedErrorForDebug(err, { redactionLevel: 'secrets-only' });
+    assert.ok(details.includes('https://example.com/v1/chat'));
+    assert.ok(!details.includes('outer-secret'));
+    assert.ok(!details.includes('inner-secret'));
+    assert.ok(!details.includes('stack-secret'));
   });
 });

@@ -3,6 +3,7 @@ import * as vscode from 'vscode';
 import { TOOL_ERROR_CODES, containsBinaryData } from '@kooka/core';
 import type { AgentCallbacks, ToolCall, ToolDefinition, ToolResult } from '../../../core/types';
 import type { AgentSessionState } from '../../../core/agent';
+import { getDebugSettings } from '../../../core/debugSettings';
 import { appendErrorLog, appendLog } from '../../../core/logger';
 import type { ChatMessage, ChatSessionInfo } from '../types';
 import { formatWorkspacePathForUI } from '../utils';
@@ -251,9 +252,7 @@ export async function readTextFileForDiff(
 type AgentStatusEvent = Parameters<NonNullable<AgentCallbacks['onStatusChange']>>[0];
 
 export function appendDebugLog(view: { outputChannel?: vscode.OutputChannel }, message: string): void {
-  const config = vscode.workspace.getConfiguration('lingyun');
-  const debugLlm = config.get<boolean>('debug.llm') ?? false;
-  const debugTools = config.get<boolean>('debug.tools') ?? false;
+  const { llm: debugLlm, tools: debugTools } = getDebugSettings();
   if (!debugLlm && !debugTools) return;
 
   const isTool = typeof message === 'string' && message.startsWith('[Tool]');

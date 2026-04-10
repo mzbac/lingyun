@@ -65,6 +65,7 @@ suite('Bash Tool', () => {
 
     assert.strictEqual(res.success, true);
     assert.strictEqual((res.metadata as any)?.background, true);
+    assert.match(String(res.data || ''), /Auto-stop:/);
 
     const pid = (res.metadata as any)?.pid;
     assert.strictEqual(typeof pid, 'number');

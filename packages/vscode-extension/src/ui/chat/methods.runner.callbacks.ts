@@ -8,6 +8,7 @@ import type { ChatMessage } from './types';
 import { buildToolDiffView, createUnifiedDiff, computeUnifiedDiffStats, trimUnifiedDiff } from './toolDiff';
 import { resolveToolPath } from '../../tools/builtin/workspace';
 import { recordAssistantOutcome, recordFileTouch, recordToolUse } from '../../core/sessionSignals';
+import { getDebugSettings } from '../../core/debugSettings';
 import { appendErrorLog, appendLog } from '../../core/logger';
 import { bindChatControllerService } from './controllerService';
 import { decorateAgentCallbacksWithOfficeSync } from '../office/sync';
@@ -296,7 +297,7 @@ export function createChatRunnerCallbacksService(controller: ChatRunnerCallbacks
   createAgentCallbacks(this: ChatRunnerCallbacksRuntime): AgentCallbacks {
     const showThinking =
       vscode.workspace.getConfiguration('lingyun').get<boolean>('showThinking', false) ?? false;
-    const debugLlm = vscode.workspace.getConfiguration('lingyun').get<boolean>('debug.llm') ?? false;
+    const debugLlm = getDebugSettings().llm;
     const persistSessions = this.isSessionPersistenceEnabled();
 
     let stepMsg: ChatMessage | undefined;
@@ -950,8 +951,7 @@ export function createChatRunnerCallbacksService(controller: ChatRunnerCallbacks
         }
       },
       onError: (error) => {
-        const debugEnabled =
-          vscode.workspace.getConfiguration('lingyun').get<boolean>('debug.llm') ?? false;
+        const debugEnabled = getDebugSettings().llm;
         if (debugEnabled) {
           appendErrorLog(this.outputChannel, 'Agent error', error, { tag: 'Agent' });
         }

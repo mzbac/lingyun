@@ -13,6 +13,7 @@ import {
   refreshBackgroundJob,
   registerBackgroundJob,
   removeBackgroundJob,
+  TOOL_ERROR_CODES,
 } from '@kooka/core';
 
 import type { ToolContext, ToolResult } from '../types';
@@ -25,7 +26,6 @@ type BackgroundTerminalRecord = {
   terminal: vscode.Terminal;
   terminalName: string;
   pid?: number;
-  pidAcquisition?: Promise<void>;
   pidFilePath: string;
   logFilePath: string;
   logStream: fs.WriteStream;
@@ -180,6 +180,33 @@ function makeRecordId(scope: string, key: string): string {
   return `${scope}\n${key}`;
 }
 
+function formatBackgroundTtl(ttlMs: number): string {
+  if (!Number.isFinite(ttlMs) || ttlMs <= 0) return 'disabled';
+
+  if (ttlMs % (60 * 60 * 1000) === 0) {
+    const hours = ttlMs / (60 * 60 * 1000);
+    return hours === 1 ? '1 hour' : `${hours} hours`;
+  }
+
+  if (ttlMs % (60 * 1000) === 0) {
+    const minutes = ttlMs / (60 * 1000);
+    return minutes === 1 ? '1 minute' : `${minutes} minutes`;
+  }
+
+  if (ttlMs % 1000 === 0) {
+    const seconds = ttlMs / 1000;
+    return seconds === 1 ? '1 second' : `${seconds} seconds`;
+  }
+
+  return `${ttlMs} ms`;
+}
+
+function buildAutoStopMessage(ttlMs: number): string {
+  return ttlMs > 0
+    ? `Auto-stop: after ${formatBackgroundTtl(ttlMs)} (set ttlMs: 0 to disable).`
+    : 'Auto-stop: disabled (ttlMs: 0).';
+}
+
 class BackgroundTerminalManager {
   private records = new Map<string, BackgroundTerminalRecord>();
 
@@ -191,56 +218,6 @@ class BackgroundTerminalManager {
         }
       }
     });
-  }
-
-  private async acquirePidLater(args: {
-    recordId: string;
-    record: BackgroundTerminalRecord;
-    scope: string;
-    key: string;
-    command: string;
-    cwd: string;
-    jobState: { jobId?: string; ttlMs?: number; expiresAt?: number };
-    timeoutMs: number;
-    context: ToolContext;
-  }): Promise<void> {
-    try {
-      const pid =
-        process.platform === 'win32'
-          ? await waitForTerminalPid(args.record.terminal, args.timeoutMs)
-          : await waitForPidFile(args.record.pidFilePath, args.timeoutMs);
-
-      if (typeof pid !== 'number') return;
-
-      const current = this.records.get(args.recordId);
-      if (current !== args.record) return;
-      if (args.record.terminal.exitStatus) return;
-      if (typeof args.record.pid === 'number') return;
-
-      args.record.pid = pid;
-
-      const job = registerBackgroundJob({
-        scope: args.scope,
-        key: args.key,
-        command: args.command,
-        cwd: args.cwd,
-        pid,
-        ttlMs: args.record.ttlMs,
-      });
-      args.jobState.jobId = job.id;
-      args.jobState.ttlMs = job.ttlMs;
-      args.jobState.expiresAt = job.expiresAt;
-
-      args.context.log(`[Bash bg] PID acquired pid=${pid} terminal="${args.record.terminalName}"`);
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      args.context.log(`[Bash bg] PID acquisition failed: ${msg}`);
-    } finally {
-      const current = this.records.get(args.recordId);
-      if (current === args.record) {
-        args.record.pidAcquisition = undefined;
-      }
-    }
   }
 
   private disposeRecord(id: string, record: BackgroundTerminalRecord): void {
@@ -319,27 +296,47 @@ class BackgroundTerminalManager {
     if (existingRecord && !existingRecord.terminal.exitStatus) {
       this.refreshRecordTtl(existingRecord, ttlMs);
       const pid = existingRecord.pid;
-      const job = pid ? getBackgroundJob(scope, key) : undefined;
-      const refreshed = job ? refreshBackgroundJob(scope, key, ttlMs) ?? job : undefined;
-      const stopHint = computeStopHint(pid) ?? `Close the terminal "${existingRecord.terminalName}"`;
+      if (typeof pid === 'number' && isPidAlive(pid)) {
+        const job = getBackgroundJob(scope, key);
+        const refreshed = job ? refreshBackgroundJob(scope, key, ttlMs) ?? job : undefined;
+        const stopHint = computeStopHint(pid) ?? `Close the terminal "${existingRecord.terminalName}"`;
+
+        return {
+          success: true,
+          data: [
+            `Command already running in background (pid ${pid}).`,
+            `Terminal: ${existingRecord.terminalName}`,
+            `Log: ${existingRecord.logFilePath}`,
+            `To stop: ${stopHint}`,
+            buildAutoStopMessage(ttlMs),
+          ].join('\n'),
+          metadata: {
+            background: true,
+            reused: true,
+            pid,
+            terminalName: existingRecord.terminalName,
+            logFilePath: existingRecord.logFilePath,
+            jobId: refreshed?.id,
+            ttlMs,
+            expiresAt: existingRecord.expiresAt,
+            stopHint,
+            shellIntegration: Boolean(existingRecord.terminal.shellIntegration),
+          },
+        };
+      }
 
       return {
-        success: true,
-        data: pid
-          ? `Command already running in background (pid ${pid}). To stop: ${stopHint}`
-          : `Command already running in background (terminal "${existingRecord.terminalName}"). To stop: ${stopHint}`,
+        success: false,
+        error: `Background command is still starting in terminal "${existingRecord.terminalName}". Retry in a moment.`,
         metadata: {
           background: true,
           reused: true,
-          pid,
+          errorCode: TOOL_ERROR_CODES.bash_background_pid_unavailable,
           terminalName: existingRecord.terminalName,
           logFilePath: existingRecord.logFilePath,
-          jobId: refreshed?.id,
-          ttlMs: ttlMs,
+          ttlMs,
           expiresAt: existingRecord.expiresAt,
-          stopHint,
           shellIntegration: Boolean(existingRecord.terminal.shellIntegration),
-          pidPending: typeof pid !== 'number',
         },
       };
     }
@@ -351,7 +348,11 @@ class BackgroundTerminalManager {
 
       return {
         success: true,
-        data: `Command already running in background (pid ${existingJob.pid}).${stopHint ? ` To stop: ${stopHint}` : ''}`,
+        data: [
+          `Command already running in background (pid ${existingJob.pid}).`,
+          ...(stopHint ? [`To stop: ${stopHint}`] : []),
+          buildAutoStopMessage(refreshed.ttlMs),
+        ].join('\n'),
         metadata: {
           background: true,
           reused: true,
@@ -433,8 +434,7 @@ class BackgroundTerminalManager {
     const previewLines: string[] = [];
     let previewChars = 0;
     let previewTruncated = false;
-
-    const jobState: { jobId?: string; ttlMs?: number; expiresAt?: number } = {};
+    const jobState: { id?: string } = {};
 
     let previewSettled = false;
     let resolvePreview: ((value?: string) => void) | undefined;
@@ -555,7 +555,7 @@ class BackgroundTerminalManager {
         }
 
         const current = getBackgroundJob(scope, key);
-        if (current && current.id === jobState.jobId && !isPidAlive(current.pid)) {
+        if (current && current.id === jobState.id && !isPidAlive(current.pid)) {
           removeBackgroundJob(scope, key);
         }
       };
@@ -577,42 +577,97 @@ class BackgroundTerminalManager {
       process.platform === 'win32'
         ? await waitForTerminalPid(terminal, args.pidTimeoutMs)
         : await waitForPidFile(pidFilePath, args.pidTimeoutMs);
-    if (typeof pid === 'number') {
-      record.pid = pid;
+    const previewText = await previewReady;
 
-      const job = registerBackgroundJob({
-        scope,
-        key,
-        command: args.command,
-        cwd: args.cwd,
-        pid,
-        ttlMs,
-      });
-      jobState.jobId = job.id;
-      jobState.ttlMs = job.ttlMs;
-      jobState.expiresAt = job.expiresAt;
-    } else if (!record.pidAcquisition) {
-      const pidRetryTimeoutMs = Math.max(10_000, args.pidTimeoutMs);
-      record.pidAcquisition = this.acquirePidLater({
-        recordId,
-        record,
-        scope,
-        key,
-        command: args.command,
-        cwd: args.cwd,
-        jobState,
-        timeoutMs: pidRetryTimeoutMs,
-        context: args.context,
-      });
+    const buildFailureDetails = (message: string): string => {
+      const parts: string[] = [message, `Terminal: ${terminalName}`];
+      parts.push(
+        shellIntegration
+          ? `Log: ${logFilePath}`
+          : `Log: ${logFilePath} (shell integration unavailable; output not captured)`
+      );
+      parts.push(buildAutoStopMessage(ttlMs));
+      if (previewText) {
+        parts.push('');
+        parts.push('Startup output:');
+        parts.push(previewText);
+        if (previewTruncated) parts.push('\n...(preview truncated; see log for full output)');
+      }
+      return parts.join('\n');
+    };
+
+    if (typeof pid !== 'number') {
+      args.context.log(`[Bash bg] Failed to acquire PID terminal="${terminalName}"`);
+      removeBackgroundJob(scope, key);
+      try {
+        terminal.dispose();
+      } catch {
+        // ignore
+      }
+      this.disposeRecord(recordId, record);
+
+      return {
+        success: false,
+        error: buildFailureDetails(
+          'Failed to confirm background command started in the VS Code terminal.'
+        ),
+        metadata: {
+          background: true,
+          errorCode: TOOL_ERROR_CODES.bash_background_pid_unavailable,
+          terminalName,
+          logFilePath,
+          ttlMs,
+          expiresAt: record.expiresAt,
+          shellIntegration: Boolean(shellIntegration),
+        },
+      };
+    }
+
+    record.pid = pid;
+
+    const job = registerBackgroundJob({
+      scope,
+      key,
+      command: args.command,
+      cwd: args.cwd,
+      pid,
+      ttlMs,
+    });
+    jobState.id = job.id;
+
+    if (!isPidAlive(pid)) {
+      args.context.log(`[Bash bg] Background command exited before confirmation pid=${pid}`);
+      removeBackgroundJob(scope, key);
+      try {
+        terminal.dispose();
+      } catch {
+        // ignore
+      }
+      this.disposeRecord(recordId, record);
+
+      return {
+        success: false,
+        error: buildFailureDetails(
+          'Background command exited before LingYun could confirm it was still running.'
+        ),
+        metadata: {
+          background: true,
+          errorCode: TOOL_ERROR_CODES.bash_background_pid_unavailable,
+          pid,
+          terminalName,
+          logFilePath,
+          ttlMs,
+          expiresAt: record.expiresAt,
+          shellIntegration: Boolean(shellIntegration),
+        },
+      };
     }
 
     const stopHint = computeStopHint(pid) ?? `Close the terminal "${terminalName}"`;
 
-    const previewText = await previewReady;
-
     const outputParts: string[] = [];
     outputParts.push(
-      `Command started in VS Code terminal (background).${typeof pid === 'number' ? ` pid ${pid}.` : ''}`
+      `Command started in VS Code terminal (background). pid ${pid}.`
     );
     outputParts.push(`Terminal: ${terminalName}`);
     outputParts.push(
@@ -621,14 +676,7 @@ class BackgroundTerminalManager {
         : `Log: ${logFilePath} (shell integration unavailable; output not captured)`
     );
     if (stopHint) outputParts.push(`To stop: ${stopHint}`);
-    if (typeof pid !== 'number') {
-      outputParts.push('');
-      outputParts.push(
-        ttlMs > 0
-          ? `Note: PID not available; auto-stop will close the terminal after ${ttlMs} ms.`
-          : 'Note: PID not available; auto-stop is disabled for this background command.'
-      );
-    }
+    outputParts.push(buildAutoStopMessage(ttlMs));
     if (previewText) {
       outputParts.push('');
       outputParts.push('Startup output:');
@@ -644,13 +692,12 @@ class BackgroundTerminalManager {
         pid,
         terminalName,
         logFilePath,
-        jobId: jobState.jobId,
-        ttlMs: ttlMs,
+        jobId: job.id,
+        ttlMs,
         expiresAt: record.expiresAt,
         stopHint,
         previewTruncated,
         shellIntegration: Boolean(shellIntegration),
-        pidPending: typeof pid !== 'number',
       },
     };
   }

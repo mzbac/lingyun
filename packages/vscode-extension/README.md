@@ -228,7 +228,7 @@ Default keybinding:
 - **OpenAI-compatible models do not load**: make sure `lingyun.openaiCompatible.baseURL` includes `/v1` and the server answers `GET /v1/models`.
 - **Responses cut off**: increase `lingyun.openaiCompatible.maxTokens` or configure `lingyun.modelLimits`.
 - **Compaction is too aggressive or not aggressive enough**: set `lingyun.modelLimits` for the exact model, or use a provider-scoped key like `codexSubscription:gpt-5.4`.
-- **Need more visibility**: use `LingYun: Show Logs` and enable `lingyun.debug.llm`, `lingyun.debug.tools`, or `lingyun.debug.plugins`.
+- **Need more visibility**: use `LingYun: Show Logs` and enable `lingyun.debug.details` for fuller logs with visible paths/URLs/hosts, or turn on `lingyun.debug.llm`, `lingyun.debug.tools`, or `lingyun.debug.plugins` individually.
 
 ## Advanced
 

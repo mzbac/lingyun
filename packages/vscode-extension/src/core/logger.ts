@@ -1,6 +1,7 @@
-import type * as vscode from 'vscode';
+import * as vscode from 'vscode';
 
-import { redactSensitive, summarizeErrorForDebug } from './agent/debug';
+import { formatDetailedErrorForDebug, redactSensitive, summarizeErrorForDebug } from './agent/debug';
+import { getDebugRedactionLevel, getDebugSettings } from './debugSettings';
 
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
@@ -19,7 +20,11 @@ export function appendLog(
 
   const prefixParts = [level ? `[${level}]` : '', tag ? `[${tag}]` : ''].filter(Boolean);
   const prefix = prefixParts.length ? ` ${prefixParts.join(' ')}` : '';
-  outputChannel.appendLine(`[${timestamp}]${prefix} ${redactSensitive(text)}`);
+  const redactionLevel = getDebugRedactionLevel();
+  const lines = redactSensitive(text, { redactionLevel }).split(/\r?\n/);
+  for (const line of lines) {
+    outputChannel.appendLine(`[${timestamp}]${prefix} ${line}`);
+  }
 }
 
 export function appendErrorLog(
@@ -28,7 +33,14 @@ export function appendErrorLog(
   error: unknown,
   options?: { tag?: string }
 ): void {
-  const summary = summarizeErrorForDebug(error);
+  const redactionLevel = getDebugRedactionLevel();
+  const summary = summarizeErrorForDebug(error, { redactionLevel });
   appendLog(outputChannel, `${message}: ${summary}`, { level: 'error', tag: options?.tag });
-}
 
+  if (!getDebugSettings().details) return;
+
+  const details = formatDetailedErrorForDebug(error, { redactionLevel });
+  if (!details) return;
+
+  appendLog(outputChannel, `Details:\n${details}`, { level: 'debug', tag: options?.tag });
+}

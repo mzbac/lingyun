@@ -24,8 +24,10 @@ import { PluginToolProvider } from './core/hooks/pluginToolProvider';
 import { getSkillIndex } from './core/skills';
 import { WorkspaceMemories, getMemoriesConfig } from './core/memories';
 import { resolveConfiguredModelId } from './core/modelSelection';
-import { redactSensitive, summarizeToolArgsForDebug } from './core/agent/debug';
+import { summarizeToolArgsForDebug } from './core/agent/debug';
+import { getDebugRedactionLevel, getDebugSettings } from './core/debugSettings';
 import { getPrimaryWorkspaceFolderUri, getPrimaryWorkspaceRootPath } from './core/workspaceContext';
+import { appendLog } from './core/logger';
 
 import { ChatViewProvider } from './ui/chat';
 import { LingyunDiffContentProvider, LINGYUN_DIFF_SCHEME } from './ui/chat/diffContentProvider';
@@ -252,7 +254,7 @@ async function warmSkillIndexOnStartup(context: vscode.ExtensionContext): Promis
       watchWorkspace: true,
     });
   } catch (error) {
-    const debug = getConfig<boolean>('debug.tools') ?? false;
+    const debug = getDebugSettings().tools;
     if (debug) {
       log(`Failed to warm skills index: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -789,7 +791,7 @@ async function cmdRunTool(): Promise<void> {
 
   extensionState?.outputChannel?.show();
   log(`\nRunning ${tool.name}...`);
-  log(`Args: ${summarizeToolArgsForDebug(args)}`);
+  log(`Args: ${summarizeToolArgsForDebug(args, { redactionLevel: getDebugRedactionLevel() })}`);
 
   const tokenSource = new vscode.CancellationTokenSource();
   try {
@@ -820,8 +822,7 @@ function getConfig<T>(key: string): T | undefined {
 }
 
 function log(message: string): void {
-  const timestamp = new Date().toLocaleTimeString();
-  extensionState?.outputChannel?.appendLine(`[${timestamp}] ${redactSensitive(message)}`);
+  appendLog(extensionState?.outputChannel, message);
 }
 
 async function maybeWarnSessionPersistence(context: vscode.ExtensionContext): Promise<void> {
