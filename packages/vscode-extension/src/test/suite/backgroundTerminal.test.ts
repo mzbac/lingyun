@@ -1,7 +1,7 @@
 import * as assert from 'assert';
 import * as vscode from 'vscode';
 
-import { TOOL_ERROR_CODES } from '@kooka/core';
+import { TOOL_ERROR_CODES, getBackgroundJob, registerBackgroundJob } from '@kooka/core';
 import { backgroundTerminalManager } from '../../core/terminal/backgroundTerminal';
 import type { ToolContext } from '../../core/types';
 
@@ -17,6 +17,52 @@ function createToolContext(): ToolContext {
 }
 
 suite('Background Terminal', () => {
+  test('sweep disposes dead tracked terminals and removes their background jobs', () => {
+    const scope = `test-scope-${Date.now()}`;
+    const key = `test-key-${Date.now()}`;
+    const recordId = `${scope}\n${key}`;
+
+    let disposed = false;
+    let logEnded = false;
+    const fakeTerminal: any = {
+      exitStatus: undefined as vscode.TerminalExitStatus | undefined,
+      dispose: () => {
+        disposed = true;
+        fakeTerminal.exitStatus = { code: 0 } as vscode.TerminalExitStatus;
+      },
+    };
+
+    registerBackgroundJob({
+      scope,
+      key,
+      command: 'echo hi',
+      cwd: process.cwd(),
+      pid: 999_999_999,
+      ttlMs: 60_000,
+    });
+
+    (backgroundTerminalManager as any).records.set(recordId, {
+      scope,
+      key,
+      command: 'echo hi',
+      cwd: process.cwd(),
+      terminal: fakeTerminal as vscode.Terminal,
+      terminalName: 'LingYun: bg test deadbeef',
+      pid: 999_999_999,
+      pidFilePath: '/tmp/fake.pid',
+      logFilePath: '/tmp/fake.log',
+      logStream: { end: () => { logEnded = true; } },
+      ttlMs: 60_000,
+    });
+
+    backgroundTerminalManager.sweep(scope);
+
+    assert.strictEqual(disposed, true);
+    assert.strictEqual(logEnded, true);
+    assert.strictEqual((backgroundTerminalManager as any).records.has(recordId), false);
+    assert.strictEqual(getBackgroundJob(scope, key), undefined);
+  });
+
   test('fails when the integrated terminal command never yields a PID', async () => {
     const fakeTerminal: any = {
       shellIntegration: undefined,

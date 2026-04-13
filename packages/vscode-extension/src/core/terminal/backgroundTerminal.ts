@@ -34,6 +34,8 @@ type BackgroundTerminalRecord = {
   ttlTimer?: NodeJS.Timeout;
 };
 
+const BACKGROUND_TERMINAL_SWEEP_MS = 5_000;
+
 function buildSandboxedTerminalEnv(): Record<string, string | null> {
   // Best-effort "env_clear" behavior for VS Code terminals: unset everything
   // except a small allowlist so we don't leak host secrets (API keys, tokens).
@@ -214,10 +216,13 @@ class BackgroundTerminalManager {
     vscode.window.onDidCloseTerminal((terminal) => {
       for (const [id, record] of this.records) {
         if (record.terminal === terminal) {
-          this.disposeRecord(id, record);
+          this.closeRecord(id, record, { removeJob: true });
         }
       }
     });
+
+    const sweepTimer = setInterval(() => this.sweep(), BACKGROUND_TERMINAL_SWEEP_MS);
+    sweepTimer.unref?.();
   }
 
   private disposeRecord(id: string, record: BackgroundTerminalRecord): void {
@@ -227,6 +232,29 @@ class BackgroundTerminalManager {
     }
     try {
       record.logStream.end();
+    } catch {
+      // ignore
+    }
+  }
+
+  private closeRecord(
+    id: string,
+    record: BackgroundTerminalRecord,
+    options?: { disposeTerminal?: boolean; removeJob?: boolean }
+  ): void {
+    const disposeTerminal = options?.disposeTerminal ?? false;
+    const removeJob = options?.removeJob ?? false;
+
+    this.disposeRecord(id, record);
+
+    if (removeJob) {
+      removeBackgroundJob(record.scope, record.key);
+    }
+
+    if (!disposeTerminal) return;
+
+    try {
+      record.terminal.dispose();
     } catch {
       // ignore
     }
@@ -253,17 +281,17 @@ class BackgroundTerminalManager {
     record.ttlTimer.unref?.();
   }
 
-  private cleanupStaleRecords(scope: string): void {
+  sweep(scope?: string): void {
     cleanupDeadBackgroundJobs(scope);
     for (const [id, record] of this.records) {
-      if (record.scope !== scope) continue;
+      if (scope && record.scope !== scope) continue;
       if (record.terminal.exitStatus) {
-        this.disposeRecord(id, record);
+        this.closeRecord(id, record, { removeJob: true });
         continue;
       }
 
       if (typeof record.pid === 'number' && !isPidAlive(record.pid)) {
-        this.disposeRecord(id, record);
+        this.closeRecord(id, record, { disposeTerminal: true, removeJob: true });
       }
     }
   }
@@ -288,7 +316,7 @@ class BackgroundTerminalManager {
         ? Math.floor(args.ttlMs)
         : DEFAULT_BACKGROUND_TTL_MS;
 
-    this.cleanupStaleRecords(scope);
+    this.sweep(scope);
 
     const existingJob = getBackgroundJob(scope, key);
     const existingRecord = this.records.get(recordId);
@@ -373,12 +401,7 @@ class BackgroundTerminalManager {
     }
 
     if (existingRecord) {
-      try {
-        existingRecord.terminal.dispose();
-      } catch {
-        // ignore
-      }
-      this.disposeRecord(recordId, existingRecord);
+      this.closeRecord(recordId, existingRecord, { disposeTerminal: true, removeJob: true });
     }
 
     const terminalName = makeTerminalName(args.cwd, key);
@@ -557,6 +580,7 @@ class BackgroundTerminalManager {
         const current = getBackgroundJob(scope, key);
         if (current && current.id === jobState.id && !isPidAlive(current.pid)) {
           removeBackgroundJob(scope, key);
+          this.closeRecord(recordId, record, { disposeTerminal: true });
         }
       };
 
@@ -598,13 +622,7 @@ class BackgroundTerminalManager {
 
     if (typeof pid !== 'number') {
       args.context.log(`[Bash bg] Failed to acquire PID terminal="${terminalName}"`);
-      removeBackgroundJob(scope, key);
-      try {
-        terminal.dispose();
-      } catch {
-        // ignore
-      }
-      this.disposeRecord(recordId, record);
+      this.closeRecord(recordId, record, { disposeTerminal: true, removeJob: true });
 
       return {
         success: false,
@@ -637,13 +655,7 @@ class BackgroundTerminalManager {
 
     if (!isPidAlive(pid)) {
       args.context.log(`[Bash bg] Background command exited before confirmation pid=${pid}`);
-      removeBackgroundJob(scope, key);
-      try {
-        terminal.dispose();
-      } catch {
-        // ignore
-      }
-      this.disposeRecord(recordId, record);
+      this.closeRecord(recordId, record, { disposeTerminal: true, removeJob: true });
 
       return {
         success: false,
