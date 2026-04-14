@@ -48,12 +48,22 @@
 			    const MARKDOWN_RENDER_DEBOUNCE_MS = 40;
 			    const assistantMarkdownRenderQueue = new Map();
 
-			    function clearAssistantMarkdownRenderQueue() {
-			      assistantMarkdownRenderQueue.forEach((state) => {
-			        if (state && state.timer) clearTimeout(state.timer);
-			      });
-			      assistantMarkdownRenderQueue.clear();
-			    }
+		    function clearAssistantMarkdownRenderQueue() {
+		      assistantMarkdownRenderQueue.forEach((state) => {
+		        if (state && state.timer) clearTimeout(state.timer);
+		      });
+		      assistantMarkdownRenderQueue.clear();
+		    }
+
+		    function discardPendingStreamState(messageId) {
+		      if (!messageId) return;
+		      const state = assistantMarkdownRenderQueue.get(messageId);
+		      if (state && state.timer) {
+		        clearTimeout(state.timer);
+		      }
+		      assistantMarkdownRenderQueue.delete(messageId);
+		      pendingTokens.delete(messageId);
+		    }
 
 			    function flushAssistantMarkdownRender(messageId) {
 			      const state = assistantMarkdownRenderQueue.get(messageId);
@@ -296,7 +306,14 @@
 		          }
 		          break;
 				        case 'updateMessage':
-				          if (data.message && typeof data.message.id === 'string') {
+				          const shouldDiscardPendingStreamState =
+				            data.message &&
+				            typeof data.message.id === 'string' &&
+				            (data.message.role === 'assistant' || data.message.role === 'thought') &&
+				            !String(data.message.content || '').trim();
+				          if (shouldDiscardPendingStreamState) {
+				            discardPendingStreamState(data.message.id);
+				          } else if (data.message && typeof data.message.id === 'string') {
 				            flushAssistantMarkdownRender(data.message.id);
 				          }
 				          if (data.message && typeof data.message.id === 'string') {

@@ -37,5 +37,13 @@ suite('Chat Render Perf Guards', () => {
       updateCaseBody.includes('flushAssistantMarkdownRender('),
       'updateMessage branch should flush pending markdown queue'
     );
+    assert.ok(
+      source.includes('function discardPendingStreamState(messageId)'),
+      'expected helper that discards buffered stream state for retries'
+    );
+    assert.ok(
+      updateCaseBody.includes('discardPendingStreamState(data.message.id);'),
+      'updateMessage branch should discard buffered stream state when a retry resets assistant/thought content'
+    );
   });
 });
