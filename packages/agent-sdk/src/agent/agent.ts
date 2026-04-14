@@ -718,10 +718,15 @@ export class LingyunAgent {
     modelId: string,
     execution: LingyunAgentExecutionContext,
     syntheticContexts: readonly LingyunAgentSyntheticContext[] = [],
+    options?: { syntheticResumeUserText?: string },
   ): Promise<ModelMessage[]> {
     const effective = [...getEffectiveHistory(session.history)];
     for (const context of syntheticContexts) {
       appendSyntheticContextMessage(effective, context);
+    }
+    const syntheticResumeUserText = String(options?.syntheticResumeUserText || '').trim();
+    if (syntheticResumeUserText) {
+      effective.push(createUserHistoryMessage(syntheticResumeUserText, { synthetic: true }));
     }
     const prepared = createHistoryForModel(effective);
     const reminded = insertModeReminders(prepared, this.getModeForConfig(execution.config), {
@@ -993,6 +998,7 @@ export class LingyunAgent {
     session: LingyunSession,
     execution: LingyunAgentExecutionContext,
     syntheticContexts: readonly LingyunAgentSyntheticContext[] = [],
+    options?: { syntheticResumeUserText?: string },
     callbacks?: AgentCallbacks,
     signal?: AbortSignal
   ): Promise<string> {
@@ -1037,8 +1043,9 @@ export class LingyunAgent {
           scopedCallbacks,
           toolNameToDefinition,
         ),
-      toModelMessages: (scopedSession, tools, id) =>
-        this.toModelMessages(scopedSession, tools, id, execution, syntheticContexts),
+      toModelMessages: (scopedSession, tools, id, messageOptions) =>
+        this.toModelMessages(scopedSession, tools, id, execution, syntheticContexts, messageOptions),
+      syntheticResumeUserText: options?.syntheticResumeUserText,
       pruneToolResultForHistory: (output, toolLabel) => this.pruneToolResultForHistory(output, toolLabel),
       drainPendingInputs: (scopedSession, scopedCallbacks, scopedSignal) =>
         this.drainPendingInputs(scopedSession, execution, scopedCallbacks, scopedSignal),
@@ -1260,6 +1267,7 @@ export class LingyunAgent {
           params.session,
           execution,
           syntheticContexts,
+          undefined,
           proxy,
           params.signal
         );
@@ -1283,10 +1291,16 @@ export class LingyunAgent {
 
   async resume(params: { session: LingyunSession; callbacks?: AgentCallbacks; signal?: AbortSignal }): Promise<string> {
     const prepared = await this.prepareRun(params.session, undefined, params.signal);
+    const modelId = String(prepared.execution.config.model || '').trim();
+    const syntheticResumeUserText = this.providerBehavior.getSyntheticResumeUserText(
+      modelId,
+      params.session.history,
+    );
     return this.runOnce(
       params.session,
       prepared.execution,
       prepared.syntheticContexts,
+      { syntheticResumeUserText },
       params.callbacks,
       params.signal
     );

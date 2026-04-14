@@ -32,9 +32,31 @@ export type ProviderBehavior = {
    * Provider-specific normalization for system prompt messages.
    */
   normalizeSystemPrompts: (system: string[]) => string[];
+  /**
+   * Optional synthetic user text to append for resume-only model calls.
+   */
+  getSyntheticResumeUserText: (modelId: string, history: AgentHistoryMessage[]) => string | undefined;
 };
 
 export function createProviderBehavior(llmId: string): ProviderBehavior {
+  function normalizeModelId(modelId: string): string {
+    return String(modelId || '')
+      .trim()
+      .toLowerCase()
+      .replace(/\./g, '-');
+  }
+
+  function isClaudeFamilyModel(modelId: string): boolean {
+    const normalized = normalizeModelId(modelId);
+    return /(^|[/:_-])claude([/:_-]|$)/.test(normalized);
+  }
+
+  function shouldAppendSyntheticResumeUserTurn(modelId: string, history: AgentHistoryMessage[]): boolean {
+    if (!isClaudeFamilyModel(modelId)) return false;
+    const last = history[history.length - 1];
+    return !!last && last.role !== 'user';
+  }
+
   function getGpt5ReasoningEffort(modelId: string, params: { reasoningEffort: string }): string | undefined {
     const reasoningEffort = String(params.reasoningEffort || '').trim();
     if (!reasoningEffort) return undefined;
@@ -73,6 +95,11 @@ export function createProviderBehavior(llmId: string): ProviderBehavior {
       normalizeSystemPrompts(system) {
         return system;
       },
+      getSyntheticResumeUserText(modelId, history) {
+        return shouldAppendSyntheticResumeUserTurn(modelId, history)
+          ? 'Continue if you have next steps.'
+          : undefined;
+      },
     };
   }
 
@@ -99,6 +126,9 @@ export function createProviderBehavior(llmId: string): ProviderBehavior {
       normalizeSystemPrompts(system) {
         return system;
       },
+      getSyntheticResumeUserText() {
+        return undefined;
+      },
     };
   }
 
@@ -120,6 +150,11 @@ export function createProviderBehavior(llmId: string): ProviderBehavior {
         if (system.length <= 1) return system;
         return [system.filter(Boolean).join('\n')];
       },
+      getSyntheticResumeUserText(modelId, history) {
+        return shouldAppendSyntheticResumeUserTurn(modelId, history)
+          ? 'Continue if you have next steps.'
+          : undefined;
+      },
     };
   }
 
@@ -138,6 +173,9 @@ export function createProviderBehavior(llmId: string): ProviderBehavior {
     },
     normalizeSystemPrompts(system) {
       return system;
+    },
+    getSyntheticResumeUserText() {
+      return undefined;
     },
   };
 }

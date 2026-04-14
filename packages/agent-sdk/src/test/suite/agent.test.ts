@@ -35,6 +35,15 @@ function getMessageText(message: AgentHistoryMessage): string {
     .join('');
 }
 
+function getPromptMessageText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .filter((part: any) => part?.type === 'text' && typeof part?.text === 'string')
+    .map((part: any) => part.text)
+    .join('');
+}
+
 function isSymlinkUnsupportedError(error: unknown): boolean {
   const code = (error as NodeJS.ErrnoException | undefined)?.code;
   return code === 'EPERM' || code === 'EACCES' || code === 'ENOSYS' || code === 'UNKNOWN';
@@ -202,6 +211,11 @@ class MockLLMProvider implements LLMProvider {
 class MockOpenAICompatibleProvider extends MockLLMProvider {
   override readonly id = 'openaiCompatible';
   override readonly name = 'OpenAI-Compatible';
+}
+
+class MockCopilotProvider extends MockLLMProvider {
+  override readonly id = 'copilot';
+  override readonly name = 'Copilot';
 }
 
 suite('LingYun Agent SDK', () => {
@@ -461,6 +475,41 @@ suite('LingYun Agent SDK', () => {
       .map((part) => part.text)
       .join('');
     assert.strictEqual(assistantText, ' Hello<tool_call>{}</tool_call>World');
+  });
+
+  test('resume - copilot Claude prompts append a synthetic trailing user turn without persisting it', async () => {
+    const llm = new MockCopilotProvider();
+    const registry = new ToolRegistry();
+
+    llm.queueResponse({ kind: 'text', content: 'First reply' });
+    llm.queueResponse({ kind: 'text', content: 'Resumed reply' });
+
+    const agent = new LingyunAgent(llm, { model: 'claude-sonnet-4.5' }, registry, {
+      allowExternalPaths: false,
+    });
+    const session = new LingyunSession();
+
+    for await (const _event of agent.run({ session, input: 'hi' }).events) {
+      // drain
+    }
+    await agent.resume({ session });
+
+    const prompt = llm.lastPrompt as any[];
+    const last = prompt[prompt.length - 1];
+    assert.ok(last, 'expected a final prompt message');
+    assert.strictEqual(last.role, 'user');
+    assert.ok(
+      getPromptMessageText(last.content).startsWith('Continue if you have next steps.'),
+      'expected synthetic resume prompt to start with the continue text',
+    );
+
+    const history = session.getHistory();
+    assert.strictEqual(history[history.length - 1]?.role, 'assistant');
+    assert.strictEqual(
+      history.some((message) => message.role === 'user' && getMessageText(message).startsWith('Continue if you have next steps.')),
+      false,
+      'synthetic resume prompt should not be persisted in session history',
+    );
   });
 
   test('retries wrapped openai-compatible terminated stream errors after reasoning', async () => {

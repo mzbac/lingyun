@@ -46,6 +46,15 @@ type UsageOverride = {
   outputTotal?: number;
 };
 
+function getPromptMessageText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .filter((part: any) => part?.type === 'text' && typeof part?.text === 'string')
+    .map((part: any) => part.text)
+    .join('');
+}
+
 function usage(override?: UsageOverride): LanguageModelV3Usage {
   return {
     inputTokens: { total: 0, noCache: 0, cacheRead: 0, cacheWrite: 0 },
@@ -608,6 +617,39 @@ suite('AgentLoop', () => {
       .map((part) => part.text)
       .join('');
     assert.strictEqual(assistantText, ' Hello<tool_call>{}</tool_call>World');
+  });
+
+  test('resume - copilot Claude prompts append a synthetic trailing user turn without persisting it', async () => {
+    const copilotLLM = new MockCopilotProvider();
+    agent = new AgentLoop(
+      copilotLLM,
+      mockContext,
+      { model: 'claude-sonnet-4.5', sessionId: 'session-1' },
+      registry,
+    );
+
+    copilotLLM.setNextResponse({ kind: 'text', content: 'First reply' });
+    await agent.run('Hi');
+
+    copilotLLM.setNextResponse({ kind: 'text', content: 'Resumed reply' });
+    await agent.resume();
+
+    const prompt = copilotLLM.lastPrompt as any[];
+    const last = prompt[prompt.length - 1];
+    assert.ok(last, 'expected a final prompt message');
+    assert.strictEqual(last.role, 'user');
+    assert.ok(
+      getPromptMessageText(last.content).startsWith('Continue if you have next steps.'),
+      'expected synthetic resume prompt to start with the continue text',
+    );
+
+    const history = agent.getHistory();
+    assert.strictEqual(history[history.length - 1]?.role, 'assistant');
+    assert.strictEqual(
+      history.some((message) => message.role === 'user' && getMessageText(message).startsWith('Continue if you have next steps.')),
+      false,
+      'synthetic resume prompt should not be persisted in session history',
+    );
   });
 
   test('continue - replays Copilot /responses reasoning replay metadata in prompt parts', async () => {

@@ -55,6 +55,7 @@ export async function runOnce(params: {
   mode: 'build' | 'plan';
   sessionId?: string;
   sessionIdFallback?: string;
+  syntheticResumeUserText?: string;
 
   llm: LLMProvider;
   plugins: PluginManagerLike;
@@ -83,6 +84,7 @@ export async function runOnce(params: {
     session: LingyunSession,
     tools: Record<string, unknown>,
     modelId: string,
+    options?: { syntheticResumeUserText?: string },
   ) => Promise<ModelMessage[]>;
   pruneToolResultForHistory: (output: unknown, toolLabel: string) => Promise<ToolResult>;
   drainPendingInputs: (
@@ -168,6 +170,7 @@ export async function runOnce(params: {
     );
 
     let lastResponse = '';
+    let syntheticResumeUserText = params.syntheticResumeUserText;
 
     const maxIterations = 50;
     for (let iteration = 1; iteration <= maxIterations; iteration++) {
@@ -196,7 +199,10 @@ export async function runOnce(params: {
         callbacksSafe,
         toolNameToDefinition,
       );
-      const modelMessages = await params.toModelMessages(session, aiTools, modelId);
+      const modelMessages = await params.toModelMessages(session, aiTools, modelId, {
+        syntheticResumeUserText,
+      });
+      syntheticResumeUserText = undefined;
       const promptMessages: ModelMessage[] = [
         ...systemParts.map((text) => ({ role: 'system', content: text } as any)),
         ...modelMessages,
