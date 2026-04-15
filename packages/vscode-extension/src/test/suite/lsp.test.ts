@@ -70,46 +70,21 @@ suite('LSP Tool', () => {
   });
 
   test('lsp documentSymbol returns success for a workspace TS file', async () => {
-    const root = vscode.workspace.workspaceFolders?.[0]?.uri;
-    assert.ok(root, 'Workspace folder must be available for LSP tests');
-
-    const dir = vscode.Uri.joinPath(root, '.lingyun-test');
-    const fileRel = '.lingyun-test/lspSample.ts';
-    const fileUri = vscode.Uri.joinPath(root, fileRel);
-
-    await vscode.workspace.fs.createDirectory(dir);
-    await vscode.workspace.fs.writeFile(
-      fileUri,
-      Buffer.from('export function foo() { return 1 }\nexport class Bar { method() { return foo() } }\n')
+    const ctx = createToolContext();
+    const result = await lspHandler(
+      { operation: 'documentSymbol', filePath: 'src/sample.ts', line: 1, character: 1 },
+      ctx
     );
 
-    try {
-      const ctx = createToolContext();
-      const result = await lspHandler(
-        { operation: 'documentSymbol', filePath: fileRel, line: 1, character: 1 },
-        ctx
-      );
+    assert.strictEqual(result.success, true);
+    const data = result.data as any;
+    assert.strictEqual(data.operation, 'documentSymbol');
+    assert.ok(Array.isArray(data.results));
 
-      assert.strictEqual(result.success, true);
-      const data = result.data as any;
-      assert.strictEqual(data.operation, 'documentSymbol');
-      assert.ok(Array.isArray(data.results));
-
-      const names = collectSymbolNames(data.results);
-      if (names.length > 0) {
-        assert.ok(names.includes('foo'));
-      }
-    } finally {
-      try {
-        await vscode.workspace.fs.delete(fileUri, { recursive: false, useTrash: false });
-      } catch {
-        // ignore
-      }
-      try {
-        await vscode.workspace.fs.delete(dir, { recursive: true, useTrash: false });
-      } catch {
-        // ignore
-      }
+    const names = collectSymbolNames(data.results);
+    if (names.length > 0) {
+      assert.ok(names.includes('foo'));
+      assert.ok(names.includes('Bar'));
     }
   });
 });

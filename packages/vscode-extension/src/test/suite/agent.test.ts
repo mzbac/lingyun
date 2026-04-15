@@ -24,6 +24,7 @@ import { getMessageText, TOOL_ERROR_CODES } from '@kooka/core';
 import { COMPACTED_TOOL_PLACEHOLDER, COMPACTION_AUTO_CONTINUE_TEXT, createHistoryForModel } from '../../core/compaction';
 import { PluginManager } from '../../core/hooks/pluginManager';
 import { createBlankSessionSignals } from '../../core/sessionSignals';
+import { createCopilotResponsesModel } from '../../providers/copilotResponsesModel';
 import { taskHandler, taskTool } from '../../tools/builtin/task';
 
 type ScriptedResponse =
@@ -103,6 +104,18 @@ function streamPartsForToolCall(call: Extract<ScriptedResponse, { kind: 'tool-ca
       finishReason: { unified: finish as any, raw: finish as any },
     },
   ];
+}
+
+function encodeSseEvents(events: unknown[]): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  const body = events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join('');
+
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(encoder.encode(body));
+      controller.close();
+    },
+  });
 }
 
 function generateResultForResponse(response: ScriptedResponse): LanguageModelV3GenerateResult {
@@ -250,6 +263,20 @@ class MockOpenAICompatibleProvider extends MockLLMProvider {
 class MockCodexSubscriptionProvider extends MockLLMProvider {
   override readonly id: string = 'codexSubscription';
   override readonly name: string = 'ChatGPT Codex Subscription';
+}
+
+class MockCopilotResponsesApiProvider implements LLMProvider {
+  readonly id: string = 'copilot';
+  readonly name: string = 'Copilot';
+
+  async getModel(modelId: string): Promise<unknown> {
+    return createCopilotResponsesModel({
+      baseURL: 'https://example.invalid',
+      apiKey: 'test',
+      modelId,
+      headers: {},
+    });
+  }
 }
 
 class MockProviderWithModelMetadata extends MockLLMProvider {
@@ -717,6 +744,158 @@ suite('AgentLoop', () => {
     assert.ok(toolResult);
     assert.strictEqual(toolResult?.success, true);
     assert.strictEqual(toolResult?.data, 'Echo: Hello World');
+  });
+
+  test('run - actual Copilot Responses model preserves the v2.1.10 tool-call conversation flow', async () => {
+    const originalFetch = globalThis.fetch;
+    const requestBodies: Array<Record<string, unknown>> = [];
+    const provider = new MockCopilotResponsesApiProvider();
+    agent = new AgentLoop(provider, mockContext, { model: 'gpt-5.3-codex', sessionId: 'session-1' }, registry);
+
+    const responseEventsQueue: unknown[][] = [
+      [
+        {
+          type: 'response.output_text.delta',
+          item_id: 'item_text_1',
+          output_index: 0,
+          delta: 'I will use echo.',
+        },
+        {
+          type: 'response.output_item.added',
+          output_index: 1,
+          item: {
+            type: 'function_call',
+            call_id: 'call_1',
+            name: 'test_echo',
+            arguments: '',
+          },
+        },
+        {
+          type: 'response.function_call_arguments.delta',
+          output_index: 1,
+          delta: '{"message":"Hello World"}',
+        },
+        {
+          type: 'response.output_item.done',
+          output_index: 1,
+          item: {
+            type: 'function_call',
+            call_id: 'call_1',
+            name: 'test_echo',
+            arguments: '{"message":"Hello World"}',
+          },
+        },
+        {
+          type: 'response.output_item.done',
+          output_index: 0,
+          item: {
+            type: 'message',
+            id: 'msg_1',
+            content: [{ type: 'output_text', text: 'I will use echo.' }],
+          },
+        },
+        {
+          type: 'response.completed',
+          response: {
+            id: 'resp_1',
+            model: 'gpt-5.3-codex',
+            created_at: 0,
+            usage: {
+              input_tokens: 10,
+              input_tokens_details: { cached_tokens: 0 },
+              output_tokens: 12,
+              output_tokens_details: { reasoning_tokens: 0 },
+            },
+          },
+        },
+      ],
+      [
+        {
+          type: 'response.output_text.delta',
+          item_id: 'item_text_2',
+          output_index: 0,
+          delta: 'Done',
+        },
+        {
+          type: 'response.output_item.done',
+          output_index: 0,
+          item: {
+            type: 'message',
+            id: 'msg_2',
+            content: [{ type: 'output_text', text: 'Done' }],
+          },
+        },
+        {
+          type: 'response.completed',
+          response: {
+            id: 'resp_2',
+            model: 'gpt-5.3-codex',
+            created_at: 0,
+            usage: {
+              input_tokens: 12,
+              input_tokens_details: { cached_tokens: 0 },
+              output_tokens: 4,
+              output_tokens_details: { reasoning_tokens: 0 },
+            },
+          },
+        },
+      ],
+    ];
+
+    try {
+      globalThis.fetch = async (_input, init) => {
+        requestBodies.push(JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>);
+        const events = responseEventsQueue.shift();
+        assert.ok(events, 'unexpected extra Copilot Responses request');
+        return new Response(encodeSseEvents(events), {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        });
+      };
+
+      const result = await agent.run('Echo something');
+
+      assert.strictEqual(result, 'Done');
+      assert.strictEqual(requestBodies.length, 2);
+
+      const secondInput = requestBodies[1]?.input as Array<Record<string, unknown>>;
+      assert.ok(Array.isArray(secondInput), 'expected second Copilot request to have input history');
+      assert.ok(
+        secondInput.some((entry) => entry.type === 'function_call' && entry.call_id === 'call_1' && entry.name === 'test_echo'),
+        'expected second request to replay the assistant tool call',
+      );
+      assert.ok(
+        secondInput.some(
+          (entry) =>
+            entry.type === 'function_call_output' &&
+            entry.call_id === 'call_1' &&
+            entry.output === 'Echo: Hello World',
+        ),
+        'expected second request to include the tool result',
+      );
+      assert.ok(
+        secondInput.some((entry) => entry.role === 'assistant' && JSON.stringify(entry.content).includes('I will use echo.')),
+        'expected second request to keep the assistant text from the tool-call turn',
+      );
+
+      const history = agent.getHistory();
+      const toolAssistant = history.find(
+        (message) => message.role === 'assistant' && message.parts.some((part: any) => part.type === 'dynamic-tool' && part.toolCallId === 'call_1'),
+      );
+      assert.ok(toolAssistant, 'expected assistant tool-call turn in history');
+      assert.strictEqual(getMessageText(toolAssistant!), 'I will use echo.');
+
+      const toolResult = findDynamicToolResult(history, 'call_1');
+      assert.ok(toolResult);
+      assert.strictEqual(toolResult?.success, true);
+      assert.strictEqual(toolResult?.data, 'Echo: Hello World');
+
+      const finalAssistant = history[history.length - 1];
+      assert.strictEqual(finalAssistant.role, 'assistant');
+      assert.strictEqual(getMessageText(finalAssistant), 'Done');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   test('run - task tool returns sanitized session_id and text payload', async () => {

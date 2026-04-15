@@ -143,7 +143,6 @@ function normalizeTextPartsStream(
   const openTextPartIds = new Set<string>();
   const canonicalizeTextPartIds = options?.canonicalizeTextPartIds === true;
   let canonicalTextId: string | null = null;
-  let canonicalStartEmitted = false;
 
   let partsIn = 0;
   let partsOut = 0;
@@ -245,18 +244,21 @@ function normalizeTextPartsStream(
             }
 
             if (canonicalizeTextPartIds) {
+              const targetId = canonicalTextId ?? id;
               if (!canonicalTextId) {
-                canonicalTextId = id;
+                canonicalTextId = targetId;
               }
-              if (!canonicalStartEmitted) {
-                canonicalStartEmitted = true;
-                openTextPartIds.add(canonicalTextId);
-                controller.enqueue({ ...value, id: canonicalTextId });
-                partsOut += 1;
-                return;
+              if (openTextPartIds.has(targetId)) {
+                // Ignore provider-specific text-start ids while the canonical stream is open.
+                continue;
               }
-              // Ignore provider-specific text-start ids after canonical stream is open.
-              continue;
+              if (id !== targetId) {
+                rewrittenTextParts += 1;
+              }
+              openTextPartIds.add(targetId);
+              controller.enqueue({ ...value, id: targetId });
+              partsOut += 1;
+              return;
             }
 
             openTextPartIds.add(id);
@@ -284,8 +286,7 @@ function normalizeTextPartsStream(
               if (!canonicalTextId) {
                 canonicalTextId = targetId;
               }
-              if (!canonicalStartEmitted) {
-                canonicalStartEmitted = true;
+              if (!openTextPartIds.has(targetId)) {
                 openTextPartIds.add(targetId);
                 controller.enqueue({ type: 'text-start', id: targetId } as LanguageModelV3StreamPart);
                 partsOut += 1;

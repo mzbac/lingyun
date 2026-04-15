@@ -449,10 +449,14 @@ function createResponsesStream(
         const openTextIds = new Set<string>();
         const openReasoningIds = new Set<string>();
         const pendingToolCalls = new Map<number, PendingToolCall>();
+        const emittedToolCallIds = new Set<string>();
         let lastReasoningReplay: { id: string; encryptedContent?: string } | undefined;
         const textIdByOutputIndex = new Map<number, string>();
+        const canonicalTextIdByItemId = new Map<string, string>();
         const textIdsWithDelta = new Set<string>();
         const finalizedTextIds = new Set<string>();
+        const reasoningIdsWithDelta = new Set<string>();
+        const finalizedReasoningIds = new Set<string>();
 
         const closeOpenParts = () => {
           for (const id of Array.from(openTextIds)) {
@@ -485,6 +489,57 @@ function createResponsesStream(
           }
 
           finalizedTextIds.add(textId);
+        };
+
+        const resolveTextId = (outputIndex: number | undefined, itemId: string | undefined) => {
+          const mappedTextId = outputIndex === undefined ? undefined : textIdByOutputIndex.get(outputIndex);
+          const aliasedTextId = itemId ? canonicalTextIdByItemId.get(itemId) : undefined;
+          const textId = mappedTextId ?? aliasedTextId ?? itemId ?? 'text_0';
+
+          if (outputIndex !== undefined) {
+            textIdByOutputIndex.set(outputIndex, textId);
+          }
+          canonicalTextIdByItemId.set(textId, textId);
+          if (itemId) {
+            canonicalTextIdByItemId.set(itemId, textId);
+          }
+
+          return textId;
+        };
+
+        const emitFinalReasoning = (reasoningId: string, text: string) => {
+          if (!reasoningId || finalizedReasoningIds.has(reasoningId)) return;
+
+          const sawDelta = reasoningIdsWithDelta.has(reasoningId);
+          const normalizedText = text || '';
+
+          if (!sawDelta && normalizedText) {
+            if (!openReasoningIds.has(reasoningId)) {
+              openReasoningIds.add(reasoningId);
+              controller.enqueue({ type: 'reasoning-start', id: reasoningId });
+            }
+            controller.enqueue({ type: 'reasoning-delta', id: reasoningId, delta: normalizedText });
+          }
+
+          if (openReasoningIds.has(reasoningId)) {
+            controller.enqueue({ type: 'reasoning-end', id: reasoningId });
+            openReasoningIds.delete(reasoningId);
+          }
+
+          finalizedReasoningIds.add(reasoningId);
+        };
+
+        const emitFinalToolCall = (toolCallId: string, toolName: string, input: string) => {
+          if (!toolCallId || !toolName || emittedToolCallIds.has(toolCallId)) return;
+          hasFunctionCall = true;
+          controller.enqueue({ type: 'tool-input-end', id: toolCallId });
+          controller.enqueue({
+            type: 'tool-call',
+            toolCallId,
+            toolName,
+            input,
+          });
+          emittedToolCallIds.add(toolCallId);
         };
 
         try {
@@ -531,10 +586,10 @@ function createResponsesStream(
               }
 
               if (eventType === 'response.output_text.delta') {
-                const itemId = asString(event['item_id']) ?? 'text_0';
                 const outputIndex = asNumber(event['output_index']);
-                if (outputIndex !== undefined && !textIdByOutputIndex.has(outputIndex)) {
-                  textIdByOutputIndex.set(outputIndex, itemId);
+                const itemId = resolveTextId(outputIndex, asString(event['item_id']));
+                if (finalizedTextIds.has(itemId)) {
+                  continue;
                 }
                 textIdsWithDelta.add(itemId);
                 const delta = asString(event['delta']) ?? '';
@@ -549,14 +604,7 @@ function createResponsesStream(
               }
 
               if (eventType === 'response.output_text.done') {
-                const outputIndex = asNumber(event['output_index']);
-                const itemId =
-                  asString(event['item_id']) ??
-                  (outputIndex === undefined ? undefined : textIdByOutputIndex.get(outputIndex)) ??
-                  'text_0';
-                if (outputIndex !== undefined && !textIdByOutputIndex.has(outputIndex)) {
-                  textIdByOutputIndex.set(outputIndex, itemId);
-                }
+                const itemId = resolveTextId(asNumber(event['output_index']), asString(event['item_id']));
                 emitFinalText(itemId, asString(event['text']) ?? '');
                 continue;
               }
@@ -612,6 +660,19 @@ function createResponsesStream(
                 continue;
               }
 
+              if (eventType === 'response.function_call_arguments.done') {
+                const outputIndex = asNumber(event['output_index']);
+                const pending = outputIndex === undefined ? undefined : pendingToolCalls.get(outputIndex);
+                const toolCallId = asString(event['call_id']) ?? pending?.toolCallId ?? '';
+                const toolName = asString(event['name']) ?? pending?.toolName ?? '';
+                const input = asString(event['arguments']) ?? pending?.input ?? '{}';
+                if (outputIndex !== undefined) {
+                  pendingToolCalls.delete(outputIndex);
+                }
+                emitFinalToolCall(toolCallId, toolName, input);
+                continue;
+              }
+
               if (eventType === 'response.output_item.done') {
                 const item = asRecord(event['item']);
                 const itemType = asString(item?.['type']);
@@ -619,8 +680,7 @@ function createResponsesStream(
 
                 if (itemType === 'message') {
                   const messageId = asString(item?.['id']);
-                  const textIdFromIndex = outputIndex === undefined ? undefined : textIdByOutputIndex.get(outputIndex);
-                  const textIdToClose = textIdFromIndex ?? messageId;
+                  const textIdToClose = resolveTextId(outputIndex, messageId);
                   if (textIdToClose && (openTextIds.has(textIdToClose) || finalizedTextIds.has(textIdToClose))) {
                     emitFinalText(textIdToClose, '');
                   } else if (messageId) {
@@ -638,16 +698,7 @@ function createResponsesStream(
                   const toolCallId = asString(item?.['call_id']) ?? pending?.toolCallId ?? '';
                   const toolName = asString(item?.['name']) ?? pending?.toolName ?? '';
                   const input = asString(item?.['arguments']) ?? pending?.input ?? '{}';
-                  if (toolCallId && toolName) {
-                    hasFunctionCall = true;
-                    controller.enqueue({ type: 'tool-input-end', id: toolCallId });
-                    controller.enqueue({
-                      type: 'tool-call',
-                      toolCallId,
-                      toolName,
-                      input,
-                    });
-                  }
+                  emitFinalToolCall(toolCallId, toolName, input);
                   if (outputIndex !== undefined) {
                     pendingToolCalls.delete(outputIndex);
                   }
@@ -667,15 +718,7 @@ function createResponsesStream(
                         const summaryPart = asRecord(summary[i]);
                         const text = asString(summaryPart?.['text']) ?? '';
                         const reasoningId = `${reasoningIdBase}:${String(i)}`;
-                        if (!openReasoningIds.has(reasoningId)) {
-                          openReasoningIds.add(reasoningId);
-                          controller.enqueue({ type: 'reasoning-start', id: reasoningId });
-                        }
-                        if (text) {
-                          controller.enqueue({ type: 'reasoning-delta', id: reasoningId, delta: text });
-                        }
-                        controller.enqueue({ type: 'reasoning-end', id: reasoningId });
-                        openReasoningIds.delete(reasoningId);
+                        emitFinalReasoning(reasoningId, text);
                       }
                     }
 
@@ -691,14 +734,7 @@ function createResponsesStream(
               }
 
               if (eventType === 'response.content_part.done') {
-                const outputIndex = asNumber(event['output_index']);
-                const itemId =
-                  asString(event['item_id']) ??
-                  (outputIndex === undefined ? undefined : textIdByOutputIndex.get(outputIndex)) ??
-                  'text_0';
-                if (outputIndex !== undefined && !textIdByOutputIndex.has(outputIndex)) {
-                  textIdByOutputIndex.set(outputIndex, itemId);
-                }
+                const itemId = resolveTextId(asNumber(event['output_index']), asString(event['item_id']));
                 const part = asRecord(event['part']);
                 const partType = asString(part?.['type']);
                 if (partType === 'output_text' || partType === 'text') {
@@ -711,6 +747,10 @@ function createResponsesStream(
                 const itemId = asString(event['item_id']) ?? 'reasoning_0';
                 const summaryIndex = asNumber(event['summary_index']) ?? 0;
                 const reasoningId = `${itemId}:${String(summaryIndex)}`;
+                if (finalizedReasoningIds.has(reasoningId)) {
+                  continue;
+                }
+                reasoningIdsWithDelta.add(reasoningId);
                 if (!openReasoningIds.has(reasoningId)) {
                   openReasoningIds.add(reasoningId);
                   controller.enqueue({ type: 'reasoning-start', id: reasoningId });
@@ -726,7 +766,9 @@ function createResponsesStream(
                 const itemId = asString(event['item_id']) ?? 'reasoning_0';
                 const summaryIndex = asNumber(event['summary_index']) ?? 0;
                 const reasoningId = `${itemId}:${String(summaryIndex)}`;
-                if (openReasoningIds.has(reasoningId)) {
+                if (reasoningIdsWithDelta.has(reasoningId)) {
+                  emitFinalReasoning(reasoningId, '');
+                } else if (openReasoningIds.has(reasoningId)) {
                   controller.enqueue({ type: 'reasoning-end', id: reasoningId });
                   openReasoningIds.delete(reasoningId);
                 }

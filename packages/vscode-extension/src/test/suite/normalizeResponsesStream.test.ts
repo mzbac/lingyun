@@ -133,6 +133,30 @@ suite('normalizeResponsesStreamModel', () => {
     );
   });
 
+  test('canonical mode reopens the canonical text part for later text segments', async () => {
+    const raw = makeModel([
+      { type: 'text-start', id: 't0' },
+      { type: 'text-delta', id: 't0', delta: 'A' },
+      { type: 'text-end', id: 't0' },
+      { type: 'text-start', id: 't1' },
+      { type: 'text-delta', id: 't1', delta: 'B' },
+      { type: 'text-end', id: 't1' },
+      finishPart(),
+    ]);
+    const normalized = normalizeResponsesStreamModel(raw, { canonicalizeTextPartIds: true });
+    const result = await normalized.doStream({} as any);
+    const parts = await readAll(result.stream);
+
+    assert.deepStrictEqual(
+      parts.map(p => p.type),
+      ['text-start', 'text-delta', 'text-end', 'text-start', 'text-delta', 'text-end', 'finish'],
+    );
+    assert.deepStrictEqual(
+      parts.slice(0, 6).map((p: any) => p.id),
+      ['t0', 't0', 't0', 't0', 't0', 't0'],
+    );
+  });
+
   test('recovers summaryParts parser error before finish', async () => {
     const raw = makeModelThatErrorsAfter(
       [{ type: 'text-delta', id: 't0', delta: 'A' }],
