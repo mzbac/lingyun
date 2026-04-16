@@ -23,8 +23,10 @@ import type { LLMProvider } from '../../core/types';
 import { getMessageText, TOOL_ERROR_CODES } from '@kooka/core';
 import { COMPACTED_TOOL_PLACEHOLDER, COMPACTION_AUTO_CONTINUE_TEXT, createHistoryForModel } from '../../core/compaction';
 import { PluginManager } from '../../core/hooks/pluginManager';
+import { backgroundTerminalManager } from '../../core/terminal/backgroundTerminal';
 import { createBlankSessionSignals } from '../../core/sessionSignals';
 import { createCopilotResponsesModel } from '../../providers/copilotResponsesModel';
+import { bashHandler, bashTool } from '../../tools/builtin/bash';
 import { taskHandler, taskTool } from '../../tools/builtin/task';
 
 type ScriptedResponse =
@@ -1587,6 +1589,81 @@ suite('AgentLoop', () => {
       assert.strictEqual(toolResult?.success, true);
     } finally {
       await cfg.update('security.allowExternalPaths', prev as any, true);
+    }
+  });
+
+  test('run - real bash tool forwards foreground failure outputText into the next prompt', async () => {
+    registry.registerTool(bashTool, bashHandler);
+
+    mockLLM.setNextResponse({
+      kind: 'tool-call',
+      toolCallId: 'call_bash_real_fail',
+      toolName: 'bash',
+      input: { command: `node -e "console.error('boom from stderr'); process.exit(7)"` },
+    });
+    mockLLM.queueResponse({ kind: 'text', content: 'Done' });
+
+    const result = await agent.run('Run a failing shell command');
+    assert.strictEqual(result, 'Done');
+    assert.strictEqual(mockLLM.callCount, 2);
+
+    const toolResult = findDynamicToolResult(agent.getHistory(), 'call_bash_real_fail');
+    assert.ok(toolResult);
+    assert.strictEqual(toolResult?.success, false);
+    assert.match(String((toolResult as any)?.metadata?.outputText || ''), /Command failed with exit code 7/);
+    assert.match(String((toolResult as any)?.metadata?.outputText || ''), /boom from stderr/);
+
+    const prompt = JSON.stringify(mockLLM.lastPrompt ?? '');
+    assert.match(prompt, /Command failed with exit code 7/);
+    assert.match(prompt, /boom from stderr/);
+  });
+
+  test('run - real bash tool forwards background startup failure outputText into the next prompt', async () => {
+    registry.registerTool(bashTool, bashHandler);
+
+    const originalRunner = process.env.LINGYUN_BASH_BACKGROUND_RUNNER;
+    delete process.env.LINGYUN_BASH_BACKGROUND_RUNNER;
+
+    const originalStart = backgroundTerminalManager.start.bind(backgroundTerminalManager);
+    (backgroundTerminalManager as any).start = async () => ({
+      success: false,
+      error: 'Background command finished during startup with exit code 1.',
+      metadata: {
+        background: true,
+        errorCode: TOOL_ERROR_CODES.bash_background_pid_unavailable,
+        outputText: 'Background command finished during startup with exit code 1.\n\nStartup output:\nboom from startup',
+      },
+    });
+
+    try {
+      mockLLM.setNextResponse({
+        kind: 'tool-call',
+        toolCallId: 'call_bash_real_bg_fail',
+        toolName: 'bash',
+        input: { command: 'node -e "process.exit(1)"', background: true },
+      });
+      mockLLM.queueResponse({ kind: 'text', content: 'Done' });
+
+      const result = await agent.run('Run a failing background shell command');
+      assert.strictEqual(result, 'Done');
+      assert.strictEqual(mockLLM.callCount, 2);
+
+      const toolResult = findDynamicToolResult(agent.getHistory(), 'call_bash_real_bg_fail');
+      assert.ok(toolResult);
+      assert.strictEqual(toolResult?.success, false);
+      assert.match(String((toolResult as any)?.metadata?.outputText || ''), /Background command finished during startup/);
+      assert.match(String((toolResult as any)?.metadata?.outputText || ''), /boom from startup/);
+
+      const prompt = JSON.stringify(mockLLM.lastPrompt ?? '');
+      assert.match(prompt, /Background command finished during startup/);
+      assert.match(prompt, /boom from startup/);
+    } finally {
+      (backgroundTerminalManager as any).start = originalStart;
+      if (originalRunner === undefined) {
+        delete process.env.LINGYUN_BASH_BACKGROUND_RUNNER;
+      } else {
+        process.env.LINGYUN_BASH_BACKGROUND_RUNNER = originalRunner;
+      }
     }
   });
 

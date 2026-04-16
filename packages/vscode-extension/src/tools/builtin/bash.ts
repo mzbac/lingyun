@@ -5,6 +5,8 @@ import * as vscode from 'vscode';
 
 import type { ToolDefinition, ToolHandler } from '../../core/types';
 import {
+  buildAutoStopMessage,
+  buildShellOutputText,
   computeStopHint,
   DEFAULT_BACKGROUND_TTL_MS,
   looksLikeGitPushCommand,
@@ -33,33 +35,6 @@ import { getWorkspaceRootUri, resolveToolPath } from './workspace';
 
 const MAX_BASH_OUTPUT = 50000;
 const KILL_GRACE_MS = 1500;
-
-function formatBackgroundTtl(ttlMs: number): string {
-  if (!Number.isFinite(ttlMs) || ttlMs <= 0) return 'disabled';
-
-  if (ttlMs % (60 * 60 * 1000) === 0) {
-    const hours = ttlMs / (60 * 60 * 1000);
-    return hours === 1 ? '1 hour' : `${hours} hours`;
-  }
-
-  if (ttlMs % (60 * 1000) === 0) {
-    const minutes = ttlMs / (60 * 1000);
-    return minutes === 1 ? '1 minute' : `${minutes} minutes`;
-  }
-
-  if (ttlMs % 1000 === 0) {
-    const seconds = ttlMs / 1000;
-    return seconds === 1 ? '1 second' : `${seconds} seconds`;
-  }
-
-  return `${ttlMs} ms`;
-}
-
-function buildAutoStopMessage(ttlMs: number): string {
-  return ttlMs > 0
-    ? `Auto-stop: after ${formatBackgroundTtl(ttlMs)} (set ttlMs: 0 to disable).`
-    : 'Auto-stop: disabled (ttlMs: 0).';
-}
 
 async function runBackgroundSpawn(args: {
   command: string;
@@ -91,6 +66,11 @@ async function runBackgroundSpawn(args: {
         expiresAt: refreshed.expiresAt,
         stopHint,
         runner: 'spawn',
+        outputText: [
+          `Command already running in background (pid ${existing.pid}).`,
+          ...(stopHint ? [`To stop: ${stopHint}`] : []),
+          buildAutoStopMessage(refreshed.ttlMs),
+        ].join('\n'),
       },
     };
   }
@@ -125,6 +105,7 @@ async function runBackgroundSpawn(args: {
         background: true,
         errorCode: TOOL_ERROR_CODES.bash_background_pid_unavailable,
         runner: 'spawn',
+        outputText: 'Failed to start background command (missing pid)',
       },
     };
   }
@@ -156,6 +137,11 @@ async function runBackgroundSpawn(args: {
       expiresAt: job.expiresAt,
       stopHint,
       runner: 'spawn',
+      outputText: [
+        `Command started in background (pid ${pid}).`,
+        ...(stopHint ? [`To stop: ${stopHint}`] : []),
+        buildAutoStopMessage(job.ttlMs),
+      ].join('\n'),
     },
   };
 }
@@ -450,37 +436,72 @@ export const bashHandler: ToolHandler = async (args, context) => {
       cleanup();
 
       if (timedOut) {
+        const error = `Command timed out after ${timeout} ms`;
         resolve({
           success: false,
-          error: `Command timed out after ${timeout} ms`,
+          error,
           data: output,
-          metadata: { truncated, background: false },
+          metadata: {
+            truncated,
+            background: false,
+            outputText: buildShellOutputText(error, output),
+          },
         });
         return;
       }
 
       if (canceled) {
+        const error = 'Command canceled';
         resolve({
           success: false,
-          error: 'Command canceled',
+          error,
           data: output,
-          metadata: { truncated, background: false },
+          metadata: {
+            truncated,
+            background: false,
+            outputText: buildShellOutputText(error, output),
+          },
         });
         return;
       }
 
       if (code !== 0) {
-        const errText = output.trim() || `Command failed with exit code ${code}`;
-        resolve({ success: false, error: errText, data: output, metadata: { truncated, background: false } });
+        const error = `Command failed with exit code ${code}`;
+        resolve({
+          success: false,
+          error: output.trim() || error,
+          data: output,
+          metadata: {
+            truncated,
+            background: false,
+            exitCode: code,
+            outputText: buildShellOutputText(error, output),
+          },
+        });
         return;
       }
 
-      resolve({ success: true, data: output || 'Command completed', metadata: { truncated } });
+      resolve({
+        success: true,
+        data: output || 'Command completed',
+        metadata: {
+          truncated,
+          background: false,
+          outputText: output ? output.trimEnd() : 'Command completed',
+        },
+      });
     };
 
     proc.on('error', (err) => {
       cleanup();
-      resolve({ success: false, error: err.message, metadata: { background: runInBackground } });
+      resolve({
+        success: false,
+        error: err.message,
+        metadata: {
+          background: runInBackground,
+          outputText: buildShellOutputText(`Failed to start command: ${err.message}`),
+        },
+      });
     });
 
     // Prefer "close" for normal commands (ensures streams drained), but fall back to "exit"

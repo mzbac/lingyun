@@ -4,6 +4,8 @@ import * as path from 'path';
 
 import type { ToolDefinition, ToolHandler } from '../../types.js';
 import {
+  buildAutoStopMessage,
+  buildShellOutputText,
   computeStopHint,
   DEFAULT_BACKGROUND_KILL_GRACE_MS,
   DEFAULT_BACKGROUND_TTL_MS,
@@ -173,7 +175,11 @@ export const bashHandler: ToolHandler = async (args, context) => {
 
       return {
         success: true,
-        data: `Command already running in background (pid ${existing.pid}).${stopHint ? ` To stop: ${stopHint}` : ''}`,
+        data: [
+          `Command already running in background (pid ${existing.pid}).`,
+          ...(stopHint ? [`To stop: ${stopHint}`] : []),
+          buildAutoStopMessage(refreshed.ttlMs),
+        ].join('\n'),
         metadata: {
           background: true,
           reused: true,
@@ -182,6 +188,11 @@ export const bashHandler: ToolHandler = async (args, context) => {
           ttlMs: refreshed.ttlMs,
           expiresAt: refreshed.expiresAt,
           stopHint,
+          outputText: [
+            `Command already running in background (pid ${existing.pid}).`,
+            ...(stopHint ? [`To stop: ${stopHint}`] : []),
+            buildAutoStopMessage(refreshed.ttlMs),
+          ].join('\n'),
         },
       };
     }
@@ -208,19 +219,29 @@ export const bashHandler: ToolHandler = async (args, context) => {
       }
 
       const pid = typeof proc.pid === 'number' ? proc.pid : undefined;
+      if (typeof pid !== 'number') {
+        resolve({
+          success: false,
+          error: 'Failed to start background command (missing pid)',
+          metadata: {
+            background: true,
+            errorCode: TOOL_ERROR_CODES.bash_background_pid_unavailable,
+            outputText: 'Failed to start background command (missing pid)',
+          },
+        });
+        return;
+      }
+
       const stopHint = computeStopHint(pid);
 
-      const job =
-        typeof pid === 'number'
-          ? registerBackgroundJob({
-              scope: backgroundScope,
-              key: backgroundKey,
-              command: commandToRun,
-              cwd,
-              pid,
-              ttlMs: backgroundTtlMs,
-            })
-          : undefined;
+      const job = registerBackgroundJob({
+        scope: backgroundScope,
+        key: backgroundKey,
+        command: commandToRun,
+        cwd,
+        pid,
+        ttlMs: backgroundTtlMs,
+      });
 
       proc.once('exit', () => {
         if (!job) return;
@@ -232,17 +253,23 @@ export const bashHandler: ToolHandler = async (args, context) => {
 
       resolve({
         success: true,
-        data:
-          typeof pid === 'number'
-            ? `Command started in background (pid ${pid}).${stopHint ? ` To stop: ${stopHint}` : ''}`
-            : 'Command started in background.',
+        data: [
+          `Command started in background (pid ${pid}).`,
+          ...(stopHint ? [`To stop: ${stopHint}`] : []),
+          buildAutoStopMessage(job.ttlMs),
+        ].join('\n'),
         metadata: {
           background: true,
           pid,
           stopHint,
-          jobId: job?.id,
-          ttlMs: job?.ttlMs,
-          expiresAt: job?.expiresAt,
+          jobId: job.id,
+          ttlMs: job.ttlMs,
+          expiresAt: job.expiresAt,
+          outputText: [
+            `Command started in background (pid ${pid}).`,
+            ...(stopHint ? [`To stop: ${stopHint}`] : []),
+            buildAutoStopMessage(job.ttlMs),
+          ].join('\n'),
         },
       });
       return;
@@ -325,37 +352,61 @@ export const bashHandler: ToolHandler = async (args, context) => {
       cleanup();
 
       if (timedOut) {
+        const error = `Command timed out after ${timeout} ms`;
         resolve({
           success: false,
-          error: `Command timed out after ${timeout} ms`,
+          error,
           data: output,
-          metadata: { truncated },
+          metadata: { truncated, outputText: buildShellOutputText(error, output) },
         });
         return;
       }
 
       if (canceled) {
+        const error = 'Command canceled';
         resolve({
           success: false,
-          error: 'Command canceled',
+          error,
           data: output,
-          metadata: { truncated },
+          metadata: { truncated, outputText: buildShellOutputText(error, output) },
         });
         return;
       }
 
       if (code !== 0) {
-        const errText = output.trim() || `Command failed with exit code ${code}`;
-        resolve({ success: false, error: errText, data: output, metadata: { truncated } });
+        const error = `Command failed with exit code ${code}`;
+        resolve({
+          success: false,
+          error: output.trim() || error,
+          data: output,
+          metadata: {
+            truncated,
+            exitCode: code,
+            outputText: buildShellOutputText(error, output),
+          },
+        });
         return;
       }
 
-      resolve({ success: true, data: output || 'Command completed', metadata: { truncated } });
+      resolve({
+        success: true,
+        data: output || 'Command completed',
+        metadata: {
+          truncated,
+          outputText: output ? output.trimEnd() : 'Command completed',
+        },
+      });
     };
 
     proc.on('error', (err) => {
       cleanup();
-      resolve({ success: false, error: err.message });
+      resolve({
+        success: false,
+        error: err.message,
+        metadata: {
+          outputText: buildShellOutputText(`Failed to start command: ${err.message}`),
+        },
+      });
     });
 
     proc.on('exit', (code, signal) => {

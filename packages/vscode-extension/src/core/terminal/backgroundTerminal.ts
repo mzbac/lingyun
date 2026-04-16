@@ -5,6 +5,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import {
   DEFAULT_BACKGROUND_TTL_MS,
+  buildAutoStopMessage,
   buildSafeChildProcessEnv,
   cleanupDeadBackgroundJobs,
   createBackgroundJobKey,
@@ -35,6 +36,7 @@ type BackgroundTerminalRecord = {
 };
 
 const BACKGROUND_TERMINAL_SWEEP_MS = 5_000;
+const BACKGROUND_STARTUP_EXIT_GRACE_MS = 250;
 
 function buildSandboxedTerminalEnv(): Record<string, string | null> {
   // Best-effort "env_clear" behavior for VS Code terminals: unset everything
@@ -180,33 +182,6 @@ function makeTerminalName(cwd: string, key: string): string {
 
 function makeRecordId(scope: string, key: string): string {
   return `${scope}\n${key}`;
-}
-
-function formatBackgroundTtl(ttlMs: number): string {
-  if (!Number.isFinite(ttlMs) || ttlMs <= 0) return 'disabled';
-
-  if (ttlMs % (60 * 60 * 1000) === 0) {
-    const hours = ttlMs / (60 * 60 * 1000);
-    return hours === 1 ? '1 hour' : `${hours} hours`;
-  }
-
-  if (ttlMs % (60 * 1000) === 0) {
-    const minutes = ttlMs / (60 * 1000);
-    return minutes === 1 ? '1 minute' : `${minutes} minutes`;
-  }
-
-  if (ttlMs % 1000 === 0) {
-    const seconds = ttlMs / 1000;
-    return seconds === 1 ? '1 second' : `${seconds} seconds`;
-  }
-
-  return `${ttlMs} ms`;
-}
-
-function buildAutoStopMessage(ttlMs: number): string {
-  return ttlMs > 0
-    ? `Auto-stop: after ${formatBackgroundTtl(ttlMs)} (set ttlMs: 0 to disable).`
-    : 'Auto-stop: disabled (ttlMs: 0).';
 }
 
 class BackgroundTerminalManager {
@@ -458,6 +433,9 @@ class BackgroundTerminalManager {
     let previewChars = 0;
     let previewTruncated = false;
     const jobState: { id?: string } = {};
+    let executionStartError: string | undefined;
+    let executionExitCode: number | undefined;
+    let executionExitObserved = false;
 
     let previewSettled = false;
     let resolvePreview: ((value?: string) => void) | undefined;
@@ -487,6 +465,32 @@ class BackgroundTerminalManager {
       args.shellIntegrationTimeoutMs
     );
 
+    if (!shellIntegration) {
+      this.closeRecord(recordId, record, { disposeTerminal: true, removeJob: true });
+      const errorText =
+        'Failed to start background command because VS Code shell integration was unavailable. ' +
+        'LingYun cannot capture startup output or confirm whether the command stayed running.';
+      return {
+        success: false,
+        error: errorText,
+        metadata: {
+          background: true,
+          errorCode: TOOL_ERROR_CODES.bash_background_pid_unavailable,
+          terminalName,
+          logFilePath,
+          ttlMs,
+          expiresAt: record.expiresAt,
+          shellIntegration: false,
+          outputText: [
+            errorText,
+            `Terminal: ${terminalName}`,
+            `Log: ${logFilePath}`,
+            buildAutoStopMessage(ttlMs),
+          ].join('\n'),
+        },
+      };
+    }
+
     this.refreshRecordTtl(record, ttlMs);
 
     const wrappedCommand =
@@ -494,108 +498,113 @@ class BackgroundTerminalManager {
         ? args.command
         : buildPosixPidWrappedCommand({ command: args.command, pidFilePath });
 
-    if (shellIntegration) {
-      const startOutputLoop = async () => {
-        const write = (text: string) => {
-          try {
-            record.logStream.write(text);
-          } catch {
-            // ignore
-          }
-        };
-
-        let execution: vscode.TerminalShellExecution | undefined;
+    const startOutputLoop = async () => {
+      const write = (text: string) => {
         try {
-          execution = shellIntegration.executeCommand(wrappedCommand);
-        } catch (error) {
-          const msg = error instanceof Error ? error.message : String(error);
-          write(`\n[lingyun] failed to execute command: ${msg}\n`);
-          settlePreview();
-          if (previewTimer) clearTimeout(previewTimer);
-          return;
+          record.logStream.write(text);
+        } catch {
+          // ignore
         }
+      };
 
-        const stream = execution.read();
+      let execution: vscode.TerminalShellExecution | undefined;
+      try {
+        execution = shellIntegration.executeCommand(wrappedCommand);
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        executionStartError = msg;
+        write(`\n[lingyun] failed to execute command: ${msg}\n`);
+        settlePreview();
+        if (previewTimer) clearTimeout(previewTimer);
+        return;
+      }
 
-        let buffer = '';
-        let captureError: unknown;
-        try {
-          for await (const rawChunk of stream) {
-            const chunk = stripAnsiAndVscodeSequences(rawChunk);
-            write(chunk);
+      const executionWithExitCode = execution as vscode.TerminalShellExecution & {
+        exitCode?: Promise<number | undefined>;
+      };
+      void executionWithExitCode.exitCode?.then(
+        (code: number | undefined) => {
+          executionExitObserved = true;
+          executionExitCode = typeof code === 'number' ? code : undefined;
+        },
+        (error: unknown) => {
+          executionExitObserved = true;
+          const msg = error instanceof Error ? error.message : String(error);
+          executionStartError ??= msg;
+          write(`\n[lingyun] terminal exit-code error: ${msg}\n`);
+        }
+      );
 
-            if (!capturePreview) {
-              continue;
-            }
+      const stream = execution.read();
 
-            const now = Date.now();
-            if (captureDeadline > 0 && now > captureDeadline) {
+      let buffer = '';
+      let captureError: unknown;
+      try {
+        for await (const rawChunk of stream) {
+          const chunk = stripAnsiAndVscodeSequences(rawChunk);
+          write(chunk);
+
+          if (!capturePreview) {
+            continue;
+          }
+
+          const now = Date.now();
+          if (captureDeadline > 0 && now > captureDeadline) {
+            settlePreview();
+            continue;
+          }
+
+          buffer += chunk;
+          let newlineIdx: number;
+          while ((newlineIdx = buffer.indexOf('\n')) !== -1) {
+            const line = buffer.slice(0, newlineIdx).trimEnd();
+            buffer = buffer.slice(newlineIdx + 1);
+
+            if (previewLines.length >= captureLines) {
               settlePreview();
               continue;
             }
 
-            buffer += chunk;
-            let newlineIdx: number;
-            while ((newlineIdx = buffer.indexOf('\n')) !== -1) {
-              const line = buffer.slice(0, newlineIdx).trimEnd();
-              buffer = buffer.slice(newlineIdx + 1);
+            if (previewChars + line.length + 1 > maxPreviewChars) {
+              previewTruncated = true;
+              settlePreview();
+              continue;
+            }
 
-              if (previewLines.length >= captureLines) {
-                settlePreview();
-                continue;
-              }
+            previewLines.push(line);
+            previewChars += line.length + 1;
 
-              if (previewChars + line.length + 1 > maxPreviewChars) {
-                previewTruncated = true;
-                settlePreview();
-                continue;
-              }
-
-              previewLines.push(line);
-              previewChars += line.length + 1;
-
-              if (previewLines.length >= captureLines) {
-                settlePreview();
-              }
+            if (previewLines.length >= captureLines) {
+              settlePreview();
             }
           }
-        } catch (error) {
-          captureError = error;
-        } finally {
-          settlePreview();
-          if (previewTimer) clearTimeout(previewTimer);
         }
+      } catch (error) {
+        captureError = error;
+      } finally {
+        settlePreview();
+        if (previewTimer) clearTimeout(previewTimer);
+      }
 
-        if (captureError) {
-          const msg = captureError instanceof Error ? captureError.message : String(captureError);
-          write(`\n[lingyun] terminal output capture error: ${msg}\n`);
-        }
+      if (captureError) {
+        const msg = captureError instanceof Error ? captureError.message : String(captureError);
+        write(`\n[lingyun] terminal output capture error: ${msg}\n`);
+      }
 
-        try {
-          record.logStream.end();
-        } catch {
-          // ignore
-        }
-
-        const current = getBackgroundJob(scope, key);
-        if (current && current.id === jobState.id && !isPidAlive(current.pid)) {
-          removeBackgroundJob(scope, key);
-          this.closeRecord(recordId, record, { disposeTerminal: true });
-        }
-      };
-
-      void startOutputLoop();
-    } else {
-      terminal.sendText(wrappedCommand, true);
-      settlePreview();
-      if (previewTimer) clearTimeout(previewTimer);
       try {
-        record.logStream.write('[lingyun] shell integration unavailable; output not captured\n');
         record.logStream.end();
       } catch {
         // ignore
       }
-    }
+
+      const current = getBackgroundJob(scope, key);
+      if (current && current.id === jobState.id && !isPidAlive(current.pid)) {
+        removeBackgroundJob(scope, key);
+        this.closeRecord(recordId, record, { disposeTerminal: true });
+      }
+    };
+
+    void startOutputLoop();
 
     const pid =
       process.platform === 'win32'
@@ -603,13 +612,16 @@ class BackgroundTerminalManager {
         : await waitForPidFile(pidFilePath, args.pidTimeoutMs);
     const previewText = await previewReady;
 
+    if (!executionExitObserved && typeof pid === 'number') {
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, BACKGROUND_STARTUP_EXIT_GRACE_MS);
+        timer.unref?.();
+      });
+    }
+
     const buildFailureDetails = (message: string): string => {
       const parts: string[] = [message, `Terminal: ${terminalName}`];
-      parts.push(
-        shellIntegration
-          ? `Log: ${logFilePath}`
-          : `Log: ${logFilePath} (shell integration unavailable; output not captured)`
-      );
+      parts.push(`Log: ${logFilePath}`);
       parts.push(buildAutoStopMessage(ttlMs));
       if (previewText) {
         parts.push('');
@@ -623,12 +635,15 @@ class BackgroundTerminalManager {
     if (typeof pid !== 'number') {
       args.context.log(`[Bash bg] Failed to acquire PID terminal="${terminalName}"`);
       this.closeRecord(recordId, record, { disposeTerminal: true, removeJob: true });
+      const errorText = buildFailureDetails(
+        executionStartError
+          ? `Failed to start background command: ${executionStartError}`
+          : 'Failed to confirm background command started in the VS Code terminal.'
+      );
 
       return {
         success: false,
-        error: buildFailureDetails(
-          'Failed to confirm background command started in the VS Code terminal.'
-        ),
+        error: errorText,
         metadata: {
           background: true,
           errorCode: TOOL_ERROR_CODES.bash_background_pid_unavailable,
@@ -636,7 +651,8 @@ class BackgroundTerminalManager {
           logFilePath,
           ttlMs,
           expiresAt: record.expiresAt,
-          shellIntegration: Boolean(shellIntegration),
+          shellIntegration: true,
+          outputText: errorText,
         },
       };
     }
@@ -656,12 +672,15 @@ class BackgroundTerminalManager {
     if (!isPidAlive(pid)) {
       args.context.log(`[Bash bg] Background command exited before confirmation pid=${pid}`);
       this.closeRecord(recordId, record, { disposeTerminal: true, removeJob: true });
+      const errorText = buildFailureDetails(
+        executionExitObserved
+          ? `Background command exited during startup${typeof executionExitCode === 'number' ? ` with exit code ${executionExitCode}` : ''}.`
+          : 'Background command exited before LingYun could confirm it was still running.'
+      );
 
       return {
         success: false,
-        error: buildFailureDetails(
-          'Background command exited before LingYun could confirm it was still running.'
-        ),
+        error: errorText,
         metadata: {
           background: true,
           errorCode: TOOL_ERROR_CODES.bash_background_pid_unavailable,
@@ -670,7 +689,34 @@ class BackgroundTerminalManager {
           logFilePath,
           ttlMs,
           expiresAt: record.expiresAt,
-          shellIntegration: Boolean(shellIntegration),
+          shellIntegration: true,
+          outputText: errorText,
+        },
+      };
+    }
+
+    if (executionExitObserved) {
+      args.context.log(
+        `[Bash bg] Background command finished during startup pid=${pid} exit=${String(executionExitCode ?? '')}`
+      );
+      this.closeRecord(recordId, record, { disposeTerminal: true, removeJob: true });
+      const errorText = buildFailureDetails(
+        `Background command finished during startup${typeof executionExitCode === 'number' ? ` with exit code ${executionExitCode}` : ''}.`
+      );
+
+      return {
+        success: false,
+        error: errorText,
+        metadata: {
+          background: true,
+          errorCode: TOOL_ERROR_CODES.bash_background_pid_unavailable,
+          pid,
+          terminalName,
+          logFilePath,
+          ttlMs,
+          expiresAt: record.expiresAt,
+          shellIntegration: true,
+          outputText: errorText,
         },
       };
     }
@@ -682,11 +728,7 @@ class BackgroundTerminalManager {
       `Command started in VS Code terminal (background). pid ${pid}.`
     );
     outputParts.push(`Terminal: ${terminalName}`);
-    outputParts.push(
-      shellIntegration
-        ? `Log: ${logFilePath}`
-        : `Log: ${logFilePath} (shell integration unavailable; output not captured)`
-    );
+    outputParts.push(`Log: ${logFilePath}`);
     if (stopHint) outputParts.push(`To stop: ${stopHint}`);
     outputParts.push(buildAutoStopMessage(ttlMs));
     if (previewText) {
@@ -709,7 +751,8 @@ class BackgroundTerminalManager {
         expiresAt: record.expiresAt,
         stopHint,
         previewTruncated,
-        shellIntegration: Boolean(shellIntegration),
+        shellIntegration: true,
+        outputText: outputParts.join('\n'),
       },
     };
   }

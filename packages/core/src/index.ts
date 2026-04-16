@@ -27,6 +27,7 @@ export type { SafeChildProcessEnvOptions } from './shellEnv';
 export { buildSafeChildProcessEnv } from './shellEnv';
 
 export { computeStopHint, looksLikeGitPushCommand, looksLikeLongRunningServerCommand } from './bashHeuristics';
+export { buildAutoStopMessage, buildShellOutputText, formatBackgroundTtl } from './bashResults';
 
 export type { SkillListEntry } from './skills';
 export { extractSkillMentions, renderSkillsSectionForPrompt, selectSkillsForText } from './skills';

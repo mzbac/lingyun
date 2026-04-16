@@ -73,6 +73,19 @@ suite('Bash Tool', () => {
     killProcessTree(pid, 'SIGTERM');
   });
 
+  test('surfaces plain-text outputText for failed foreground commands', async () => {
+    const context = createToolContext();
+    const res = await bashHandler(
+      { command: `node -e "console.error('boom from stderr'); process.exit(7)"` },
+      context
+    );
+
+    assert.strictEqual(res.success, false);
+    const outputText = String((res.metadata as any)?.outputText || '');
+    assert.match(outputText, /Command failed with exit code 7/);
+    assert.match(outputText, /boom from stderr/);
+  });
+
   test('deduplicates background commands by (workdir + command)', async () => {
     const context = createToolContext();
     const args = { command: 'node -e "setInterval(() => {}, 1001)"', background: true, ttlMs: 60000, captureMs: 0, captureLines: 0 };
