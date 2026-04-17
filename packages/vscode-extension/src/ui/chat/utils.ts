@@ -210,3 +210,17 @@ export function formatErrorForUser(error: unknown, options?: FormatErrorForUserO
 
   return base;
 }
+
+export function isCancellationMessage(message: string | undefined): boolean {
+  const trimmed = typeof message === 'string' ? message.trim() : '';
+  if (!trimmed) return false;
+  return /agent aborted/i.test(trimmed) || /aborterror/i.test(trimmed);
+}
+
+export function isCancellationError(
+  error: unknown,
+  options?: FormatErrorForUserOptions & { abortRequested?: boolean },
+): boolean {
+  if (options?.abortRequested) return true;
+  return isCancellationMessage(formatErrorForUser(error, options));
+}

@@ -20,7 +20,7 @@ export function createRunCoordinatorHostForController(controller: ChatController
       get running() {
         return controller.agent.running ?? false;
       },
-      run: (task, callbacks) => controller.agent.run(task as any, callbacks),
+      run: (task, callbacks) => controller.agent.run(task, callbacks),
       continue: (message, callbacks) => controller.agent.continue(message, callbacks),
       getHistory: () =>
         typeof controller.agent.getHistory === 'function'

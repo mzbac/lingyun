@@ -118,8 +118,11 @@ suite('Pending plan send', () => {
     };
     provider.runnerInputApi.classifyPlanStatus = () => 'needs_input';
     provider.queueManager.scheduleAutosendForSession = () => {};
-    provider.runnerCallbacksApi.createPlanningCallbacks = () => ({}) as any;
-    provider.agent.plan = async () => 'Need more detail';
+    provider.agent.plan = async (_task, callbacks) => {
+      callbacks?.onAssistantToken?.('Need more detail');
+      callbacks?.onComplete?.('Need more detail');
+      return 'Need more detail';
+    };
 
     await provider.runnerInputApi.handleUserMessage('User clarification');
 
@@ -247,8 +250,11 @@ suite('Pending plan send', () => {
     };
     provider.runnerInputApi.classifyPlanStatus = () => 'needs_input';
     provider.queueManager.scheduleAutosendForSession = () => {};
-    provider.runnerCallbacksApi.createPlanningCallbacks = () => ({}) as any;
-    provider.agent.plan = async () => 'Need more detail';
+    provider.agent.plan = async (_task, callbacks) => {
+      callbacks?.onAssistantToken?.('Need more detail');
+      callbacks?.onComplete?.('Need more detail');
+      return 'Need more detail';
+    };
 
     await provider.runnerPlanApi.revisePendingPlan('plan-1', 'Clarify deployment');
 
@@ -286,8 +292,11 @@ suite('Pending plan send', () => {
       recordedInputs.push(content);
     };
     provider.queueManager.scheduleAutosendForSession = () => {};
-    provider.runnerCallbacksApi.createPlanningCallbacks = () => ({}) as any;
-    provider.agent.plan = async () => 'Need more detail';
+    provider.agent.plan = async (_task, callbacks) => {
+      callbacks?.onAssistantToken?.('Need more detail');
+      callbacks?.onComplete?.('Need more detail');
+      return 'Need more detail';
+    };
     provider.runnerInputApi.classifyPlanStatus = () => 'needs_input';
 
     await provider.runnerPlanApi.revisePendingPlan('plan-1', 'Clarify deployment');
@@ -389,8 +398,9 @@ suite('Pending plan send', () => {
     provider.queueManager.scheduleAutosendForSession = (sessionId: string, options?: { suppress?: boolean }) => {
       scheduledAutosends.push({ sessionId, suppress: options?.suppress });
     };
-    provider.runnerCallbacksApi.createPlanningCallbacks = () => ({}) as any;
-    provider.agent.plan = async () => {
+    provider.agent.plan = async (_task, callbacks) => {
+      callbacks?.onAssistantToken?.('1. Partial plan');
+      callbacks?.onError?.(new Error('plan failed'));
       throw new Error('plan failed');
     };
 
@@ -402,10 +412,142 @@ suite('Pending plan send', () => {
     const turnStatus = posted.find(message => (message as any)?.type === 'turnStatus') as any;
     assert.ok(turnStatus);
     assert.strictEqual(turnStatus.turnId, 'turn-1');
+    assert.strictEqual(turnStatus.status?.type, 'error');
 
     const errorMessage = provider.messages.find(message => message.role === 'error');
     assert.ok(errorMessage);
     assert.match(errorMessage?.content || '', /plan failed/i);
+
+    const failedPlan = provider.messages.find(message => message.role === 'plan' && message.id !== 'plan-1');
+    assert.ok(failedPlan);
+    assert.strictEqual(failedPlan?.plan?.status, 'draft');
+    assert.strictEqual(failedPlan?.content, '1. Partial plan');
+
+    const finalPlanPending = posted.filter(message => (message as any)?.type === 'planPending').at(-1) as any;
+    assert.deepStrictEqual(finalPlanPending, {
+      type: 'planPending',
+      value: true,
+      planMessageId: 'plan-1',
+    });
+  });
+
+  test('revisePendingPlan clears stale abort state before a new update run begins', async () => {
+    const provider = createPendingPlanController();
+    const planMsg = createPendingPlanMessage();
+    installPendingPlanSession(provider, planMsg);
+    provider.abortRequested = true;
+    const posted: unknown[] = [];
+    const scheduledAutosends: Array<{ sessionId: string; suppress?: boolean }> = [];
+
+    provider.webviewApi.postMessage = (message: unknown) => {
+      posted.push(message);
+    };
+    provider.queueManager.scheduleAutosendForSession = (sessionId: string, options?: { suppress?: boolean }) => {
+      scheduledAutosends.push({ sessionId, suppress: options?.suppress });
+    };
+    provider.agent.plan = async (_task, callbacks) => {
+      callbacks?.onAssistantToken?.('1. Partial plan');
+      callbacks?.onError?.(new Error('plan failed'));
+      throw new Error('plan failed');
+    };
+
+    await provider.runnerPlanApi.revisePendingPlan('plan-1', 'Retry safely');
+
+    const turnStatus = posted.find(message => (message as any)?.type === 'turnStatus') as any;
+    assert.ok(turnStatus);
+    assert.strictEqual(turnStatus.turnId, 'turn-1');
+    assert.strictEqual(turnStatus.status?.type, 'error');
+    assert.deepStrictEqual(scheduledAutosends, [{ sessionId: 'session-1', suppress: false }]);
+    assert.strictEqual(provider.abortRequested, false);
+
+    const failedPlan = provider.messages.find(message => message.role === 'plan' && message.id !== 'plan-1');
+    assert.ok(failedPlan);
+    assert.strictEqual(failedPlan?.plan?.status, 'draft');
+    assert.strictEqual(failedPlan?.content, '1. Partial plan');
+  });
+
+  test('revisePendingPlan treats explicit user aborts as cancellation and preserves the prior pending plan', async () => {
+    const provider = createPendingPlanController();
+    const planMsg = createPendingPlanMessage();
+    const session = installPendingPlanSession(provider, planMsg);
+    const posted: unknown[] = [];
+    const scheduledAutosends: Array<{ sessionId: string; suppress?: boolean }> = [];
+
+    provider.webviewApi.postMessage = (message: unknown) => {
+      posted.push(message);
+    };
+    provider.queueManager.scheduleAutosendForSession = (sessionId: string, options?: { suppress?: boolean }) => {
+      scheduledAutosends.push({ sessionId, suppress: options?.suppress });
+    };
+    provider.agent.plan = async (_task, callbacks) => {
+      callbacks?.onAssistantToken?.('1. Partial plan');
+      provider.abortRequested = true;
+      callbacks?.onError?.(new Error('request canceled'));
+      throw new Error('request canceled');
+    };
+
+    await provider.runnerPlanApi.revisePendingPlan('plan-1', 'Retry safely');
+
+    assert.deepStrictEqual(session.pendingPlan, { task: 'Task', planMessageId: 'plan-1' });
+    assert.deepStrictEqual(scheduledAutosends, [{ sessionId: 'session-1', suppress: true }]);
+    assert.strictEqual(provider.abortRequested, false);
+
+    const turnStatus = posted.find(message => (message as any)?.type === 'turnStatus');
+    assert.strictEqual(turnStatus, undefined);
+
+    const errorMessage = provider.messages.find(message => message.role === 'error');
+    assert.ok(errorMessage);
+    assert.match(errorMessage?.content || '', /request canceled/i);
+
+    const canceledPlan = provider.messages.find(message => message.role === 'plan' && message.id !== 'plan-1');
+    assert.ok(canceledPlan);
+    assert.strictEqual(canceledPlan?.plan?.status, 'canceled');
+    assert.strictEqual(canceledPlan?.content, '1. Partial plan');
+
+    const finalPlanPending = posted.filter(message => (message as any)?.type === 'planPending').at(-1) as any;
+    assert.deepStrictEqual(finalPlanPending, {
+      type: 'planPending',
+      value: true,
+      planMessageId: 'plan-1',
+    });
+  });
+
+  test('revisePendingPlan treats canonical abort text as cancellation and preserves the prior pending plan', async () => {
+    const provider = createPendingPlanController();
+    const planMsg = createPendingPlanMessage();
+    const session = installPendingPlanSession(provider, planMsg);
+    const posted: unknown[] = [];
+    const scheduledAutosends: Array<{ sessionId: string; suppress?: boolean }> = [];
+
+    provider.webviewApi.postMessage = (message: unknown) => {
+      posted.push(message);
+    };
+    provider.queueManager.scheduleAutosendForSession = (sessionId: string, options?: { suppress?: boolean }) => {
+      scheduledAutosends.push({ sessionId, suppress: options?.suppress });
+    };
+    provider.agent.plan = async (_task, callbacks) => {
+      callbacks?.onAssistantToken?.('1. Partial plan');
+      callbacks?.onError?.(new Error('Agent aborted'));
+      throw new Error('Agent aborted');
+    };
+
+    await provider.runnerPlanApi.revisePendingPlan('plan-1', 'Retry safely');
+
+    assert.deepStrictEqual(session.pendingPlan, { task: 'Task', planMessageId: 'plan-1' });
+    assert.deepStrictEqual(scheduledAutosends, [{ sessionId: 'session-1', suppress: true }]);
+    assert.strictEqual(provider.abortRequested, false);
+
+    const turnStatus = posted.find(message => (message as any)?.type === 'turnStatus');
+    assert.strictEqual(turnStatus, undefined);
+
+    const errorMessage = provider.messages.find(message => message.role === 'error');
+    assert.ok(errorMessage);
+    assert.strictEqual((errorMessage?.content || '').trim(), 'Agent aborted');
+
+    const canceledPlan = provider.messages.find(message => message.role === 'plan' && message.id !== 'plan-1');
+    assert.ok(canceledPlan);
+    assert.strictEqual(canceledPlan?.plan?.status, 'canceled');
+    assert.strictEqual(canceledPlan?.content, '1. Partial plan');
 
     const finalPlanPending = posted.filter(message => (message as any)?.type === 'planPending').at(-1) as any;
     assert.deepStrictEqual(finalPlanPending, {
@@ -655,6 +797,7 @@ suite('Pending plan send', () => {
     const turnStatus = posted.find(message => message?.type === 'turnStatus');
     assert.ok(turnStatus);
     assert.strictEqual(turnStatus?.turnId, 'turn-1');
+    assert.strictEqual(turnStatus?.status?.type, 'error');
 
     const planPendingEvents = posted.filter(message => message?.type === 'planPending');
     assert.deepStrictEqual(
@@ -693,7 +836,7 @@ suite('Pending plan send', () => {
     assert.ok(processingIndex > userMessageIndex);
   });
 
-  test('handleUserMessage uses shared run failure handling for ordinary execution errors', async () => {
+  test('handleUserMessage clears stale abort state before ordinary execution failures', async () => {
     const provider = createPendingPlanController();
     const stepMsg: ChatMessage = {
       id: 'step-1',
@@ -707,6 +850,7 @@ suite('Pending plan send', () => {
     };
     installActiveSession(provider, [stepMsg]);
     provider.activeStepId = stepMsg.id;
+    provider.abortRequested = true;
 
     const posted: any[] = [];
     const scheduledAutosends: Array<{ sessionId: string; suppress?: boolean }> = [];
@@ -744,7 +888,9 @@ suite('Pending plan send', () => {
     const turnStatus = posted.find(message => message?.type === 'turnStatus');
     assert.ok(turnStatus);
     assert.strictEqual(turnStatus?.turnId, userMsg?.id);
+    assert.strictEqual(turnStatus?.status?.type, 'error');
     assert.strictEqual(scheduledAutosends.at(-1)?.suppress, false);
+    assert.strictEqual(provider.abortRequested, false);
   });
 
   test('handleUserMessage treats canonical abort text as cancellation without posting turn done', async () => {
@@ -791,6 +937,54 @@ suite('Pending plan send', () => {
     const errorMessage = provider.messages.find(message => message.role === 'error');
     assert.ok(errorMessage);
     assert.strictEqual((errorMessage?.content || '').trim(), 'Agent aborted');
+  });
+
+  test('handleUserMessage treats explicit user aborts as cancellation without posting turn done', async () => {
+    const provider = createPendingPlanController();
+    const stepMsg: ChatMessage = {
+      id: 'step-1',
+      role: 'step',
+      content: 'Running step',
+      timestamp: Date.now(),
+      step: {
+        index: 1,
+        status: 'running',
+      },
+    };
+    installActiveSession(provider, [stepMsg]);
+    provider.activeStepId = stepMsg.id;
+
+    const posted: any[] = [];
+    const scheduledAutosends: Array<{ sessionId: string; suppress?: boolean }> = [];
+    provider.webviewApi.postMessage = (message: unknown) => {
+      posted.push(JSON.parse(JSON.stringify(message)));
+    };
+    provider.runnerInputApi.isPlanFirstEnabled = () => false;
+    provider.loopManager.onRunStart = () => {};
+    provider.loopManager.onRunEnd = () => {};
+    provider.queueManager.scheduleAutosendForSession = (sessionId: string, options?: { suppress?: boolean }) => {
+      scheduledAutosends.push({ sessionId, suppress: options?.suppress });
+    };
+    provider.runnerCallbacksApi.createAgentCallbacks = () => ({}) as any;
+    provider.agent.run = async () => {
+      provider.abortRequested = true;
+      throw new Error('request canceled');
+    };
+    provider.agent.continue = async () => {
+      provider.abortRequested = true;
+      throw new Error('request canceled');
+    };
+
+    await provider.runnerInputApi.handleUserMessage('Ship it');
+
+    const turnStatus = posted.find(message => message?.type === 'turnStatus');
+    assert.strictEqual(turnStatus, undefined);
+    assert.strictEqual(scheduledAutosends.at(-1)?.suppress, true);
+    assert.strictEqual(stepMsg.step?.status, 'canceled');
+
+    const errorMessage = provider.messages.find(message => message.role === 'error');
+    assert.ok(errorMessage);
+    assert.match((errorMessage?.content || '').trim(), /request canceled/i);
   });
 
   test('retryToolCall uses shared run failure handling for resume errors', async () => {
@@ -852,6 +1046,7 @@ suite('Pending plan send', () => {
     const turnStatus = posted.find(message => message?.type === 'turnStatus');
     assert.ok(turnStatus);
     assert.strictEqual(turnStatus?.turnId, 'turn-1');
+    assert.strictEqual(turnStatus?.status?.type, 'error');
     assert.strictEqual(scheduledAutosends.at(-1)?.suppress, false);
   });
 });

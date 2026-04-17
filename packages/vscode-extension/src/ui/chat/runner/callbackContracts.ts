@@ -124,8 +124,25 @@ export type RunnerPersistenceView = Pick<
   | 'currentTurnId'
 >;
 
-export type RunnerPlanningView = RunnerPersistenceView &
-  Pick<ChatRunnerCallbacksDeps, 'llmProvider' | 'getContextForUI' | 'requestInlineApproval'>;
+export type RunnerPlanningView = Pick<
+  ChatRunnerCallbacksDeps,
+  | 'activeSessionId'
+  | 'sessions'
+  | 'normalizeLoadedSession'
+  | 'postSessions'
+  | 'markSessionDirty'
+  | 'flushSessionSave'
+  | 'persistActiveSession'
+  | 'isSessionPersistenceEnabled'
+  | 'outputChannel'
+  | 'messages'
+  | 'postMessage'
+  | 'agent'
+  | 'currentTurnId'
+  | 'getContextForUI'
+  | 'requestInlineApproval'
+  | 'abortRequested'
+>;
 
 export type RunnerToolLifecycleView = Pick<
   ChatRunnerCallbacksDeps,

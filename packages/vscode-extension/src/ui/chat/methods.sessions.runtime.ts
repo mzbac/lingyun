@@ -11,7 +11,7 @@ import type { ModelInfo } from '../../providers/modelCatalog';
 import type { OfficeSync } from '../office/sync';
 import { bindChatControllerService } from './controllerService';
 import { createDefaultSessionTitle } from './sessionTitle';
-import { formatErrorForUser } from './utils';
+import { formatErrorForUser, isCancellationMessage } from './utils';
 import type { ChatMessage, ChatSessionInfo } from './types';
 import type { PendingApprovalEntry } from './controllerPorts';
 import type { ChatSessionPersistenceService } from './methods.sessions.persistence';
@@ -475,10 +475,7 @@ export function createChatSessionRuntimeService(
       } catch (error) {
         const endedAt = Date.now();
         const formatted = formatErrorForUser(error, { llmProviderId: this.llmProvider?.id });
-        const canceled =
-          this.abortRequested ||
-          /agent aborted/i.test(formatted) ||
-          /aborterror/i.test(formatted);
+        const canceled = this.abortRequested || isCancellationMessage(formatted);
         const status: 'running' | 'done' | 'error' | 'canceled' = canceled ? 'canceled' : 'error';
         const label = canceled ? 'Compaction canceled' : 'Compaction failed';
 

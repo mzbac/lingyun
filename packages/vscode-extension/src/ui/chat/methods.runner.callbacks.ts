@@ -6,8 +6,7 @@ import { getDebugSettings } from '../../core/debugSettings';
 import { appendErrorLog, appendLog } from '../../core/logger';
 import { bindChatControllerService } from './controllerService';
 import { decorateAgentCallbacksWithOfficeSync } from '../office/sync';
-import type { ChatMessage, ChatSessionInfo } from './types';
-import { formatErrorForUser } from './utils';
+import type { ChatMessage } from './types';
 import type { ChatController } from './controller';
 import type { ChatRunnerCallbacksDeps, ChatRunnerCallbacksService } from './runner/callbackContracts';
 export type { ChatRunnerCallbacksService } from './runner/callbackContracts';
@@ -141,29 +140,6 @@ export function createChatRunnerCallbacksService(controller: ChatRunnerCallbacks
         const debugEnabled = getDebugSettings().llm;
         if (debugEnabled) {
           appendErrorLog(this.outputChannel, 'Agent error', error, { tag: 'Agent' });
-        }
-
-        if (this.currentTurnId) {
-          this.postMessage({
-            type: 'turnStatus',
-            turnId: this.currentTurnId,
-            status: { type: 'error', message: formatErrorForUser(error, { llmProviderId: this.llmProvider?.id }) },
-          });
-        }
-
-        executionState.markStepError(this.abortRequested);
-        const errorMsg: ChatMessage = {
-          id: crypto.randomUUID(),
-          role: 'error',
-          content: formatErrorForUser(error, { llmProviderId: this.llmProvider?.id }),
-          timestamp: Date.now(),
-          turnId: this.currentTurnId,
-        };
-        this.messages.push(errorMsg);
-        this.postMessage({ type: 'message', message: errorMsg });
-        this.postMessage({ type: 'context', context: this.getContextForUI() });
-        if (persistSessions) {
-          this.persistActiveSession();
         }
       },
     };

@@ -1,5 +1,5 @@
 import type { AgentCallbacks, ToolCall, ToolDefinition } from '../../../core/types';
-import { cleanAssistantPreamble, formatErrorForUser } from '../utils';
+import { cleanAssistantPreamble, isCancellationError } from '../utils';
 import type { ChatMessage } from '../types';
 import type { RunnerPlanningView } from './callbackContracts';
 import {
@@ -9,6 +9,12 @@ import {
   resolveToolCallUiPath,
   upsertTaskChildSession,
 } from './callbackUtils';
+import {
+  getPlanFailureText,
+  getPlanMessageKindFromPlaceholder,
+  getPlanPlaceholderText,
+  isPlanPlaceholderText,
+} from './runCoordinatorPendingPlan';
 import { findToolMessageByApprovalId } from '../toolMessageLookup';
 
 export function createPlanningCallbacks(
@@ -18,22 +24,60 @@ export function createPlanningCallbacks(
   const persistSessions = view.isSessionPersistenceEnabled();
   const planContainerId = planMsg.id;
   const planTurnId = planMsg.turnId ?? view.currentTurnId;
-  const planPlaceholderText = planMsg.content || 'Planning...';
+  const planKind = getPlanMessageKindFromPlaceholder(planMsg.content) ?? 'initial';
+  const planPlaceholderText = planMsg.content || getPlanPlaceholderText(planKind);
 
   let buffered = '';
   let flushHandle: NodeJS.Timeout | undefined;
 
-  const flush = () => {
-    flushHandle = undefined;
+  const postPlanUpdate = () => {
     view.postMessage({ type: 'updateMessage', message: planMsg });
     if (persistSessions) {
       view.persistActiveSession();
     }
   };
 
+  const clearScheduledFlush = () => {
+    if (!flushHandle) return;
+    clearTimeout(flushHandle);
+    flushHandle = undefined;
+  };
+
+  const flushPendingPlanUpdate = () => {
+    if (!flushHandle) return;
+    clearScheduledFlush();
+    postPlanUpdate();
+  };
+
   const scheduleFlush = () => {
     if (flushHandle) return;
-    flushHandle = setTimeout(flush, 60);
+    flushHandle = setTimeout(() => {
+      flushHandle = undefined;
+      postPlanUpdate();
+    }, 60);
+  };
+
+  const hasNonPlaceholderPlanContent = () => {
+    const text = (planMsg.content || '').trim();
+    return !!text && !isPlanPlaceholderText(text);
+  };
+
+
+  const markPlanFailed = (wasCanceled: boolean) => {
+    clearScheduledFlush();
+
+    const status = wasCanceled ? 'canceled' : 'draft';
+    if (planMsg.plan) {
+      planMsg.plan.status = status;
+    } else {
+      planMsg.plan = { status };
+    }
+
+    if (!hasNonPlaceholderPlanContent()) {
+      planMsg.content = getPlanFailureText({ kind: planKind, wasCanceled });
+    }
+
+    postPlanUpdate();
   };
 
   const upsertToolError = (tc: ToolCall, def: ToolDefinition, reason: string) => {
@@ -86,10 +130,7 @@ export function createPlanningCallbacks(
     onStatusChange: status => {
       if (status?.type === 'retry') {
         buffered = '';
-        if (flushHandle) {
-          clearTimeout(flushHandle);
-          flushHandle = undefined;
-        }
+        clearScheduledFlush();
         planMsg.content = planPlaceholderText;
         view.postMessage({ type: 'updateMessage', message: planMsg });
         if (persistSessions) {
@@ -186,24 +227,18 @@ export function createPlanningCallbacks(
       return await view.requestInlineApproval(tc, def, planContainerId, approvalContext);
     },
     onComplete: () => {
+      flushPendingPlanUpdate();
       if (planTurnId) {
         view.postMessage({ type: 'turnStatus', turnId: planTurnId, status: { type: 'done' } });
       }
       view.postMessage({ type: 'context', context: view.getContextForUI() });
     },
     onError: error => {
-      const errorMsg: ChatMessage = {
-        id: crypto.randomUUID(),
-        role: 'error',
-        content: formatErrorForUser(error, { llmProviderId: view.llmProvider?.id }),
-        timestamp: Date.now(),
-      };
-      view.messages.push(errorMsg);
-      view.postMessage({ type: 'message', message: errorMsg });
+      // Terminal plan-run errors are surfaced by the run coordinator after agent.plan() rejects.
+      // This callback only keeps the plan card itself out of the stale "generating" state.
+      const wasCanceled = isCancellationError(error, { abortRequested: view.abortRequested });
+      markPlanFailed(wasCanceled);
       view.postMessage({ type: 'context', context: view.getContextForUI() });
-      if (persistSessions) {
-        view.persistActiveSession();
-      }
     },
   };
 }

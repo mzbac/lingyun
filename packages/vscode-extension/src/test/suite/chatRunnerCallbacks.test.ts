@@ -103,4 +103,117 @@ suite('Chat runner callbacks', () => {
     assert.strictEqual(assistantMsg?.content, 'Final response');
     assert.ok(posted.some((message) => (message as any)?.type === 'complete'), 'expected completion event');
   });
+
+  test('planning callbacks flush final debounced plan content on complete', () => {
+    const controller = createStandaloneChatController();
+    const posted: unknown[] = [];
+    const planMsg: ChatMessage = {
+      id: 'plan-1',
+      role: 'plan',
+      content: 'Planning...',
+      timestamp: Date.now(),
+      turnId: 'turn-1',
+      plan: { status: 'generating', task: 'Task' },
+    };
+
+    controller.view = {} as vscode.WebviewView;
+    controller.currentTurnId = 'turn-1';
+    controller.mode = 'plan';
+    controller.currentModel = 'mock-model';
+    controller.webviewApi.postMessage = (message: unknown) => {
+      posted.push(message);
+    };
+    controller.sessionApi.isSessionPersistenceEnabled = () => false;
+    controller.sessionApi.getContextForUI = () => ({}) as any;
+    controller.messages.push(planMsg);
+
+    const callbacks = controller.runnerCallbacksApi.createPlanningCallbacks(planMsg);
+    callbacks.onAssistantToken?.('1. Ship it');
+    callbacks.onComplete?.('1. Ship it');
+
+    const planUpdate = posted.find(
+      (message) => (message as any)?.type === 'updateMessage' && (message as any)?.message?.id === 'plan-1'
+    ) as { message: ChatMessage } | undefined;
+    assert.ok(planUpdate, 'expected a final plan update before completion');
+    assert.strictEqual(planMsg.content, '1. Ship it');
+    assert.strictEqual(planUpdate?.message.content, '1. Ship it');
+  });
+
+  test('planning callbacks keep failed plans out of the generating state without posting duplicate error UI', () => {
+    const controller = createStandaloneChatController();
+    const posted: unknown[] = [];
+    const planMsg: ChatMessage = {
+      id: 'plan-1',
+      role: 'plan',
+      content: 'Planning...',
+      timestamp: Date.now(),
+      turnId: 'turn-1',
+      plan: { status: 'generating', task: 'Task' },
+    };
+
+    controller.view = {} as vscode.WebviewView;
+    controller.currentTurnId = 'turn-1';
+    controller.mode = 'plan';
+    controller.currentModel = 'mock-model';
+    controller.webviewApi.postMessage = (message: unknown) => {
+      posted.push(message);
+    };
+    controller.sessionApi.isSessionPersistenceEnabled = () => false;
+    controller.sessionApi.getContextForUI = () => ({}) as any;
+    controller.messages.push(planMsg);
+
+    const callbacks = controller.runnerCallbacksApi.createPlanningCallbacks(planMsg);
+    callbacks.onError?.(new Error('plan failed'));
+
+    assert.strictEqual(planMsg.plan?.status, 'draft');
+    assert.strictEqual(planMsg.content, '(Plan generation failed)');
+    assert.strictEqual(controller.messages.filter((message) => message.role === 'error').length, 0);
+    assert.ok(
+      posted.some(
+        (message) => (message as any)?.type === 'updateMessage' && (message as any)?.message?.id === 'plan-1'
+      ),
+      'expected failed plan card update'
+    );
+    assert.ok(
+      !posted.some((message) => (message as any)?.type === 'message' && (message as any)?.message?.role === 'error'),
+      'planning callback should not own terminal error message posting'
+    );
+  });
+
+  test('planning callbacks treat canonical abort text as cancellation for the plan card', () => {
+    const controller = createStandaloneChatController();
+    const posted: unknown[] = [];
+    const planMsg: ChatMessage = {
+      id: 'plan-1',
+      role: 'plan',
+      content: 'Planning...',
+      timestamp: Date.now(),
+      turnId: 'turn-1',
+      plan: { status: 'generating', task: 'Task' },
+    };
+
+    controller.view = {} as vscode.WebviewView;
+    controller.currentTurnId = 'turn-1';
+    controller.mode = 'plan';
+    controller.currentModel = 'mock-model';
+    controller.webviewApi.postMessage = (message: unknown) => {
+      posted.push(message);
+    };
+    controller.sessionApi.isSessionPersistenceEnabled = () => false;
+    controller.sessionApi.getContextForUI = () => ({}) as any;
+    controller.messages.push(planMsg);
+
+    const callbacks = controller.runnerCallbacksApi.createPlanningCallbacks(planMsg);
+    callbacks.onError?.(new Error('Agent aborted'));
+
+    assert.strictEqual(planMsg.plan?.status, 'canceled');
+    assert.strictEqual(planMsg.content, '(Plan generation canceled)');
+    assert.strictEqual(controller.messages.filter((message) => message.role === 'error').length, 0);
+    assert.ok(
+      posted.some(
+        (message) => (message as any)?.type === 'updateMessage' && (message as any)?.message?.id === 'plan-1'
+      ),
+      'expected canceled plan card update'
+    );
+  });
 });

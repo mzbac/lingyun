@@ -25,20 +25,25 @@ function isRecord(value: unknown): value is RecordLike {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
-export type TaskChildSessionView = {
+type WarningMessageView = {
   currentTurnId?: string;
-  activeSessionId: string;
   messages: ChatMessage[];
+  postMessage(message: unknown): void;
+};
+
+export type TaskChildSessionView = WarningMessageView & {
+  activeSessionId: string;
   sessions: Map<string, ChatSessionInfo>;
-  toolDiffSnapshotsByToolCallId: Map<string, ToolDiffSnapshot>;
-  agent: { resolveFileId(fileId: string): string | undefined };
   outputChannel?: vscode.OutputChannel;
 
   normalizeLoadedSession(raw: ChatSessionInfo): ChatSessionInfo;
-  postMessage(message: unknown): void;
   postSessions(): void;
   markSessionDirty(sessionId: string): void;
   flushSessionSave(): Promise<void>;
+};
+
+export type ToolDiffSnapshotStoreView = {
+  toolDiffSnapshotsByToolCallId: Map<string, ToolDiffSnapshot>;
 };
 
 function getTaskToolModelWarning(meta: RecordLike): string | undefined {
@@ -48,7 +53,7 @@ function getTaskToolModelWarning(meta: RecordLike): string | undefined {
   return warning || undefined;
 }
 
-function emitWarningMessage(view: Pick<TaskChildSessionView, 'currentTurnId' | 'messages' | 'postMessage'>, warning: string): void {
+function emitWarningMessage(view: WarningMessageView, warning: string): void {
   const msg: ChatMessage = {
     id: crypto.randomUUID(),
     role: 'warning',
@@ -154,7 +159,7 @@ export function upsertTaskChildSession(view: TaskChildSessionView, result: unkno
 }
 
 export function cacheToolDiffSnapshot(
-  view: Pick<TaskChildSessionView, 'toolDiffSnapshotsByToolCallId'>,
+  view: ToolDiffSnapshotStoreView,
   toolCallId: string,
   snapshot: ToolDiffSnapshot
 ): void {

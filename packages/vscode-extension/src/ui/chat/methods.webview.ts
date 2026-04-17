@@ -545,7 +545,6 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
             }
             break;
           case 'send':
-            this.abortRequested = false;
             {
               const payload = data as Record<string, unknown>;
               const input: ChatUserInput = {

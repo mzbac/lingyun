@@ -166,18 +166,20 @@ export function createToolLifecycleCallbacks(params: {
   function recordToolResultFileTouches(toolId: string, resultData: unknown, resultStr: string, toolMsg: ChatMessage): void {
     if (resultData && typeof resultData === 'object') {
       const data = resultData as Record<string, unknown>;
-      if (toolId === 'glob' && Array.isArray((data as any).files)) {
-        const files = (data as any).files as unknown[];
-        for (const file of files) {
+      const globFiles = data.files;
+      if (toolId === 'glob' && Array.isArray(globFiles)) {
+        for (const file of globFiles) {
           if (typeof file !== 'string' || !file.trim()) continue;
           recordFileTouch(view.signals, formatWorkspacePathForUI(file) ?? file.trim());
         }
       }
-      if (toolId === 'grep' && Array.isArray((data as any).matches)) {
-        const matches = (data as any).matches as unknown[];
-        for (const match of matches) {
+
+      const grepMatches = data.matches;
+      if (toolId === 'grep' && Array.isArray(grepMatches)) {
+        for (const match of grepMatches) {
           if (!match || typeof match !== 'object') continue;
-          const filePath = (match as any).filePath;
+          const record = match as Record<string, unknown>;
+          const filePath = record.filePath;
           if (typeof filePath !== 'string' || !filePath.trim()) continue;
           recordFileTouch(view.signals, formatWorkspacePathForUI(filePath) ?? filePath.trim());
         }
@@ -193,8 +195,10 @@ export function createToolLifecycleCallbacks(params: {
           .filter(Boolean);
 
         const previewCount = 10;
-        toolMsg.toolCall!.batchFiles = files.slice(0, previewCount);
-        toolMsg.toolCall!.additionalCount = Math.max(0, files.length - previewCount);
+        const toolCall = toolMsg.toolCall;
+        if (!toolCall) return;
+        toolCall.batchFiles = files.slice(0, previewCount);
+        toolCall.additionalCount = Math.max(0, files.length - previewCount);
       }
     }
   }

@@ -1,13 +1,44 @@
 import type { RunCoordinatorHost } from '../controllerPorts';
 import type { ChatMessage } from '../types';
 
+export type PlanMessageKind = 'initial' | 'update';
+
 const INITIAL_PLAN_PLACEHOLDER = 'Planning...';
 const UPDATE_PLAN_PLACEHOLDER = 'Updating plan...';
 const NO_PLAN_GENERATED_TEXT = '(No plan generated)';
 
+export function getPlanPlaceholderText(kind: PlanMessageKind): string {
+  return kind === 'update' ? UPDATE_PLAN_PLACEHOLDER : INITIAL_PLAN_PLACEHOLDER;
+}
+
+export function getPlanMessageKindFromPlaceholder(content: string | undefined): PlanMessageKind | undefined {
+  const trimmed = (content || '').trim();
+  if (trimmed === UPDATE_PLAN_PLACEHOLDER) return 'update';
+  if (trimmed === INITIAL_PLAN_PLACEHOLDER) return 'initial';
+  return undefined;
+}
+
+export function isPlanPlaceholderText(content: string | undefined): boolean {
+  return !!getPlanMessageKindFromPlaceholder(content);
+}
+
+export function getPlanFailureText(params: { kind: PlanMessageKind; wasCanceled: boolean }): string {
+  if (params.wasCanceled) {
+    return params.kind === 'update' ? '(Plan update canceled)' : '(Plan generation canceled)';
+  }
+  return params.kind === 'update' ? '(Plan update failed)' : '(Plan generation failed)';
+}
+
 type PendingPlanRunView = Pick<
   RunCoordinatorHost,
-  'activeSessionId' | 'postApprovalState' | 'postMessage' | 'persistActiveSession' | 'officeSync' | 'pendingApprovals' | 'queueManager'
+  | 'activeSessionId'
+  | 'abortRequested'
+  | 'postApprovalState'
+  | 'postMessage'
+  | 'persistActiveSession'
+  | 'officeSync'
+  | 'pendingApprovals'
+  | 'queueManager'
 > & {
   isProcessing: boolean;
   autoApproveThisRun: boolean;
@@ -21,18 +52,18 @@ type PendingPlanRunView = Pick<
  * - which placeholder text represents an in-flight plan
  * - how blank plan output falls back to a stable UI message
  * - how plan status/task fields are finalized after generation
- * - how plan update runs synchronize processing/approval/office/autosend state
+ * - how plan update runs clear stale abort state and synchronize processing/approval/office/autosend state
  * - how the planPending indicator is posted consistently
  */
 export function createPlanMessage(params: {
-  kind: 'initial' | 'update';
+  kind: PlanMessageKind;
   task: string;
   turnId?: string;
 }): ChatMessage {
   return {
     id: crypto.randomUUID(),
     role: 'plan',
-    content: params.kind === 'update' ? UPDATE_PLAN_PLACEHOLDER : INITIAL_PLAN_PLACEHOLDER,
+    content: getPlanPlaceholderText(params.kind),
     timestamp: Date.now(),
     turnId: params.turnId,
     plan: { status: 'generating', task: params.task },
@@ -69,8 +100,7 @@ export function applyGeneratedPlanContent(params: {
     planMsg.content = trimmedPlan;
   } else {
     const existing = (planMsg.content || '').trim();
-    const placeholder = existing === INITIAL_PLAN_PLACEHOLDER || existing === UPDATE_PLAN_PLACEHOLDER;
-    planMsg.content = !placeholder && existing ? planMsg.content : NO_PLAN_GENERATED_TEXT;
+    planMsg.content = !isPlanPlaceholderText(existing) && existing ? planMsg.content : NO_PLAN_GENERATED_TEXT;
   }
 
   const status = classifyPlanStatus(planMsg.content);
@@ -95,6 +125,7 @@ export function postPlanPendingState(
 
 export function beginPendingPlanUpdateRun(view: PendingPlanRunView): void {
   view.isProcessing = true;
+  view.abortRequested = false;
   view.autoApproveThisRun = false;
   view.postApprovalState();
   view.officeSync?.onRunStart();
@@ -105,6 +136,7 @@ export function finishPendingPlanUpdateRun(
   params: { currentPlanMessageId?: string; wasCanceled: boolean },
 ): void {
   view.isProcessing = false;
+  view.abortRequested = false;
   view.postMessage({ type: 'processing', value: false });
   postPlanPendingState(view, {
     active: true,

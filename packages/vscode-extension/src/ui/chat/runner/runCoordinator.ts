@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 
 import type { UserHistoryInputPart } from '@kooka/core';
-import { formatErrorForUser } from '../utils';
+import { formatErrorForUser, isCancellationMessage } from '../utils';
 
 import type { RunCoordinatorHost } from '../controllerPorts';
 import type { ChatMessage, ChatUserInput } from '../types';
@@ -151,6 +151,7 @@ export class RunCoordinator {
    * Shared activation state for ordinary build/plan executions.
    *
    * Hidden knowledge kept here:
+   * - entering a run always clears stale abort state from any previous canceled run
    * - entering a run always clears per-run auto-approval state
    * - approval state must be reposted whenever processing begins
    * - loop steerability is part of the run activation contract, not an ad hoc branch detail
@@ -158,6 +159,7 @@ export class RunCoordinator {
   private activateRun(steerableDuringProcessing: boolean): void {
     const c = this.controller;
     c.isProcessing = true;
+    c.abortRequested = false;
     this.loopSteerableDuringProcessing = steerableDuringProcessing;
     c.autoApproveThisRun = false;
     c.postApprovalState();
@@ -201,7 +203,7 @@ export class RunCoordinator {
     shouldGeneratePlan: boolean;
     synthetic?: boolean;
     displayContent?: string;
-  }): ChatMessage {
+  }): void {
     const c = this.controller;
     this.activateRun(!params.shouldGeneratePlan);
     c.loopManager.onRunStart(params.activeSession.id);
@@ -239,7 +241,6 @@ export class RunCoordinator {
     // attaches to the correct turn.
     c.postMessage({ type: 'processing', value: true });
 
-    return userMsg;
   }
 
   /**
@@ -248,7 +249,7 @@ export class RunCoordinator {
    * Hidden knowledge kept here:
    * - how user-facing run errors are formatted
    * - how cancellation is detected from abort state plus canonical abort text
-   * - when a turn should receive a terminal done status before the error message
+   * - when a turn should receive a terminal error status vs suppress it for cancellations
    * - which runs should also mark the active step status
    */
   private handleRunFailure(params: {
@@ -258,15 +259,18 @@ export class RunCoordinator {
   }): boolean {
     const c = this.controller;
     const message = formatErrorForUser(params.error, { llmProviderId: c.llmProvider?.id });
-    const trimmed = message.trim();
-    const wasCanceled = c.abortRequested || trimmed === 'Agent aborted';
+    const wasCanceled = c.abortRequested || isCancellationMessage(message);
 
     if (params.markStepStatus) {
       c.markActiveStepStatus(wasCanceled ? 'canceled' : 'error');
     }
 
-    if (params.turnId && !(trimmed === 'Agent aborted' && !c.abortRequested)) {
-      c.postMessage({ type: 'turnStatus', turnId: params.turnId, status: { type: 'done' } });
+    if (!wasCanceled && params.turnId) {
+      c.postMessage({
+        type: 'turnStatus',
+        turnId: params.turnId,
+        status: { type: 'error', message },
+      });
     }
 
     this.postTurnErrorIfNeeded(params.turnId, message);
@@ -783,7 +787,7 @@ export class RunCoordinator {
     const planFirst = c.isPlanFirstEnabled();
     const shouldGeneratePlan = c.mode === 'plan' || (planFirst && isNew);
 
-    const userMsg = this.beginUserTurnRun({
+    this.beginUserTurnRun({
       activeSession,
       normalizedInput,
       shouldGeneratePlan,
