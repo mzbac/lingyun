@@ -58,7 +58,7 @@ function buildSessionStateRestoreText(session: LingyunSession): string | undefin
     sections.push(['Pending plan:', pendingPlan].join('\n'));
   }
 
-  const mentionedSkills = (session.mentionedSkills || []).filter(Boolean).slice(-MAX_SKILLS);
+  const mentionedSkills = session.mentionedSkills.slice(-MAX_SKILLS);
   if (mentionedSkills.length > 0) {
     sections.push(`Mentioned skills: ${mentionedSkills.join(', ')}`);
   }

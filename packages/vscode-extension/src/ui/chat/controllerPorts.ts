@@ -3,8 +3,7 @@ import * as vscode from 'vscode';
 import type { AgentHistoryMessage, UserHistoryInput } from '@kooka/core';
 
 import type { AgentSessionState } from '../../core/agent';
-import type { SessionSignals } from '../../core/sessionSignals';
-import type { AgentCallbacks, LLMProvider } from '../../core/types';
+import type { AgentApprovalContext, AgentCallbacks, LLMProvider } from '../../core/types';
 import type { OfficeSync } from '../office/sync';
 import type { ChatMessage, ChatMode, ChatQueuedInput, ChatSessionInfo, ChatUserInput } from './types';
 
@@ -12,6 +11,7 @@ export type PendingApprovalEntry = {
   resolve: (approved: boolean) => void;
   toolName: string;
   stepId?: string;
+  approvalContext?: AgentApprovalContext;
 };
 
 export interface ChatQueueRunnerPort {
@@ -34,7 +34,6 @@ export interface ChatAgentPort {
   clear(): Promise<void>;
   steer(input: UserHistoryInput): void;
   plan(task: UserHistoryInput, callbacks?: AgentCallbacks): Promise<string>;
-  generateSessionTitle(message: string, options?: { maxChars?: number; modelId?: string }): Promise<string | undefined>;
   resume(callbacks?: AgentCallbacks): Promise<string>;
   execute(callbacks?: AgentCallbacks, options?: { approvedPlan?: string }): Promise<string>;
 }
@@ -110,7 +109,7 @@ export interface RunCoordinatorHost {
   isSessionPersistenceEnabled(): boolean;
   llmProvider?: LLMProvider;
   loopManager: RunCoordinatorLoopPort;
-  markSessionDirty(sessionId: string): void;
+  maybeGenerateSessionTitle(params: { sessionId: string; message: string; synthetic?: boolean }): void;
   markActiveStepStatus(status: 'running' | 'done' | 'error' | 'canceled'): void;
   messages: ChatMessage[];
   mode: ChatMode;
@@ -120,16 +119,13 @@ export interface RunCoordinatorHost {
   postApprovalState(): void;
   postLoopState(session?: ChatSessionInfo): void;
   postMessage(message: unknown): void;
-  postSessions(): void;
   postUnknownSkillWarnings(content: string, turnId?: string): Promise<void>;
   queueManager: RunCoordinatorQueuePort;
   recordInputHistory(content: string): void;
-  revisePendingPlan(planMessageId: string, instructions: string): Promise<void>;
-  sessions: Map<string, ChatSessionInfo>;
+  recordUserIntent(text: string): void;
   setModeAndPersist(
     mode: ChatMode,
     options?: { persistConfig?: boolean; notifyWebview?: boolean; persistSession?: boolean }
   ): Promise<void>;
-  signals: SessionSignals;
   view?: vscode.WebviewView;
 }

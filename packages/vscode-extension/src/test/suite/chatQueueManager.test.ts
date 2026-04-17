@@ -184,4 +184,143 @@ suite('Chat queue manager', () => {
       [{ type: 'text', text: 'with parts' }],
     ]);
   });
+
+  test('normalizeLoadedAgentState uses shared mentioned skill normalization', () => {
+    const { provider } = createProvider();
+
+    const state = provider.sessionApi.normalizeLoadedAgentState({
+      history: [],
+      mentionedSkills: ['memory.skill', 42, null, '', '  follow-up.skill  ', 'memory.skill', '   '],
+    } as any);
+
+    assert.deepStrictEqual(state.mentionedSkills, ['memory.skill', 'follow-up.skill']);
+  });
+
+  test('normalizeLoadedAgentState uses shared file handle normalization', () => {
+    const { provider } = createProvider();
+
+    const state = provider.sessionApi.normalizeLoadedAgentState({
+      history: [],
+      fileHandles: {
+        nextId: 2.9,
+        byId: {
+          F1: ' src/foo.ts ',
+          bad: 'drop-me.ts',
+          F2: '   ',
+        },
+      },
+    } as any);
+
+    assert.deepStrictEqual(state.fileHandles, {
+      nextId: 2,
+      byId: { F1: 'src/foo.ts' },
+    });
+  });
+
+  test('normalizeLoadedAgentState uses shared semantic handle normalization', () => {
+    const { provider } = createProvider();
+
+    const state = provider.sessionApi.normalizeLoadedAgentState({
+      history: [],
+      semanticHandles: {
+        nextMatchId: 2.9,
+        nextSymbolId: 3,
+        nextLocId: 0,
+        matches: {
+          M1: {
+            fileId: ' F1 ',
+            range: {
+              start: { line: 0, character: 0 },
+              end: { line: 2.8, character: 4.2 },
+            },
+            preview: 'match preview',
+          },
+          bad: {
+            fileId: 'F2',
+            range: {
+              start: { line: 1, character: 1 },
+              end: { line: 1, character: 2 },
+            },
+            preview: 'drop me',
+          },
+        },
+        symbols: {
+          S1: {
+            name: '  Symbol Name  ',
+            kind: 'function',
+            fileId: 'F1',
+            range: {
+              start: { line: 5, character: 0 },
+              end: { line: 6, character: 3.6 },
+            },
+            containerName: '  Parent  ',
+          },
+          S2: {
+            name: '   ',
+            kind: 'function',
+            fileId: 'F1',
+            range: {
+              start: { line: 1, character: 1 },
+              end: { line: 1, character: 2 },
+            },
+          },
+        },
+        locations: {
+          L1: {
+            fileId: 'F1',
+            range: {
+              start: { line: 8, character: 0 },
+              end: { line: 8, character: 0 },
+            },
+            label: '  Location label  ',
+          },
+          bad: {
+            fileId: 'F1',
+            range: {
+              start: { line: 1, character: 1 },
+              end: { line: 1, character: 2 },
+            },
+          },
+        },
+      },
+    } as any);
+
+    assert.deepStrictEqual(state.semanticHandles, {
+      nextMatchId: 2,
+      nextSymbolId: 3,
+      nextLocId: 1,
+      matches: {
+        M1: {
+          fileId: 'F1',
+          range: {
+            start: { line: 1, character: 1 },
+            end: { line: 2, character: 4 },
+          },
+          preview: 'match preview',
+        },
+      },
+      symbols: {
+        S1: {
+          name: '  Symbol Name  ',
+          kind: 'function',
+          fileId: 'F1',
+          range: {
+            start: { line: 5, character: 1 },
+            end: { line: 6, character: 3 },
+          },
+          containerName: 'Parent',
+        },
+      },
+      locations: {
+        L1: {
+          fileId: 'F1',
+          range: {
+            start: { line: 8, character: 1 },
+            end: { line: 8, character: 1 },
+          },
+          label: 'Location label',
+        },
+      },
+    });
+  });
 });

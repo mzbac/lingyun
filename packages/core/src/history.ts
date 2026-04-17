@@ -99,6 +99,15 @@ export function cloneUserHistoryInput(input: UserHistoryInput): UserHistoryInput
   return normalizeUserHistoryInputParts(input);
 }
 
+export function cloneAgentHistoryMessage(message: AgentHistoryMessage): AgentHistoryMessage {
+  return structuredClone(message);
+}
+
+export function cloneAgentHistoryMessages(history: readonly AgentHistoryMessage[]): AgentHistoryMessage[] {
+  if (!Array.isArray(history) || history.length === 0) return [];
+  return history.map((message) => cloneAgentHistoryMessage(message));
+}
+
 export function parseUserHistoryInput(input: unknown): UserHistoryInput | undefined {
   if (typeof input === 'string') {
     return input;

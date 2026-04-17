@@ -547,7 +547,7 @@ function createAPI(): LingyunAPI {
         extensionState.agent.updateConfig(config);
       }
       return extensionState.agent.run(task, {
-        onRequestApproval: async (tc, def) => requestApproval(tc, def),
+        onRequestApproval: async (tc, def, approvalContext) => requestApproval(tc, def, approvalContext),
       });
     },
 

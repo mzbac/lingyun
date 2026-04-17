@@ -368,9 +368,14 @@
 	          const preview = args.command || rawArgsText;
 	          if (preview) html += renderOutputPreview(preview, 6);
 	        }
+        if (toolCall.approvalReason) {
+          html += '<div class="tool-note">' + escapeHtml(truncateText(String(toolCall.approvalReason), 140)) + '</div>';
+        }
         html += '<div class="tool-actions">' +
           '<button class="tool-btn approve" data-action="approve" data-approval="' + escapeHtml(toolCall.approvalId) + '">Allow</button>' +
-          '<button class="tool-btn always" data-action="always" data-approval="' + escapeHtml(toolCall.approvalId) + '" data-tool="' + escapeHtml(toolId) + '">Always</button>' +
+          (toolCall.isProtected
+            ? ''
+            : '<button class="tool-btn always" data-action="always" data-approval="' + escapeHtml(toolCall.approvalId) + '">Always</button>') +
           '<button class="tool-btn reject" data-action="reject" data-approval="' + escapeHtml(toolCall.approvalId) + '">Deny</button>' +
         '</div>';
         html += '</div>';
@@ -1077,12 +1082,11 @@
 
       const action = btn.dataset.action;
       const approvalId = btn.dataset.approval;
-      const toolId = btn.dataset.tool;
 
 	      if (action === 'approve') {
 	        vscode.postMessage({ type: 'approveToolCall', approvalId });
 	      } else if (action === 'always') {
-	        vscode.postMessage({ type: 'alwaysAllowTool', approvalId, toolId });
+	        vscode.postMessage({ type: 'alwaysAllowTool', approvalId });
 	      } else if (action === 'reject') {
 	        vscode.postMessage({ type: 'rejectToolCall', approvalId });
 	      } else if (action === 'retryTool') {

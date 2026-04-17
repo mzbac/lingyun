@@ -7,9 +7,10 @@ import {
   restoreSession,
   serializeSessionSnapshot,
   snapshotSession,
+  tryParseSessionSnapshot,
   type LingyunSessionSnapshot,
   type SqliteDriver,
-} from '@kooka/agent-sdk';
+} from '../../index.js';
 
 type StoredRow = { snapshotJson: string; updatedAt: string };
 
@@ -152,22 +153,181 @@ suite('persistence', () => {
     assert.equal(parsed.history.length, 1);
   });
 
-  test('SqliteSessionStore stores snapshots via driver', async () => {
+  test('tryParseSessionSnapshot tolerates partially malformed optional fields', () => {
+    const parsed = tryParseSessionSnapshot({
+      version: 1,
+      savedAt: '2020-01-01T00:00:00.000Z',
+      sessionId: 'child-1',
+      parentSessionId: 'parent-1',
+      subagentType: 'general',
+      modelId: 'mock-model',
+      history: [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hello' }] }],
+      mentionedSkills: ['skill-1', 42, '', '  skill-2  ', 'skill-1', '   ', null],
+      compactionSyntheticContexts: [
+        { transientContext: 'memoryRecall', text: 'remember me' },
+        { transientContext: 'invalid', text: 'drop me' },
+      ],
+      fileHandles: {
+        nextId: 2.9,
+        byId: {
+          F1: ' src/index.ts ',
+          bad: 'drop-me.ts',
+          F2: '   ',
+        },
+      },
+      semanticHandles: {
+        nextMatchId: 2.9,
+        nextSymbolId: 3,
+        nextLocId: 0,
+        matches: {
+          M1: {
+            fileId: ' F1 ',
+            range: {
+              start: { line: 0, character: 0 },
+              end: { line: 2.8, character: 4.2 },
+            },
+            preview: 'match preview',
+          },
+          bad: {
+            fileId: 'F2',
+            range: {
+              start: { line: 1, character: 1 },
+              end: { line: 1, character: 2 },
+            },
+            preview: 'drop me',
+          },
+        },
+        symbols: {
+          S1: {
+            name: '  Symbol Name  ',
+            kind: 'function',
+            fileId: 'F1',
+            range: {
+              start: { line: 5, character: 0 },
+              end: { line: 6, character: 3.6 },
+            },
+            containerName: '  Parent  ',
+          },
+          S2: {
+            name: '   ',
+            kind: 'function',
+            fileId: 'F1',
+            range: {
+              start: { line: 1, character: 1 },
+              end: { line: 1, character: 2 },
+            },
+          },
+        },
+        locations: {
+          L1: {
+            fileId: 'F1',
+            range: {
+              start: { line: 8, character: 0 },
+              end: { line: 8, character: 0 },
+            },
+            label: '  Location label  ',
+          },
+          bad: {
+            fileId: 'F1',
+            range: {
+              start: { line: 1, character: 1 },
+              end: { line: 1, character: 2 },
+            },
+          },
+        },
+      },
+    });
+
+    assert.ok(parsed);
+    assert.equal(parsed?.sessionId, 'child-1');
+    assert.deepEqual(parsed?.mentionedSkills, ['skill-1', 'skill-2']);
+    assert.deepEqual(parsed?.compactionSyntheticContexts, [
+      { transientContext: 'memoryRecall', text: 'remember me' },
+    ]);
+    assert.deepEqual(parsed?.fileHandles, {
+      nextId: 2,
+      byId: { F1: 'src/index.ts' },
+    });
+    assert.deepEqual(parsed?.semanticHandles, {
+      nextMatchId: 2,
+      nextSymbolId: 3,
+      nextLocId: 1,
+      matches: {
+        M1: {
+          fileId: 'F1',
+          range: {
+            start: { line: 1, character: 1 },
+            end: { line: 2, character: 4 },
+          },
+          preview: 'match preview',
+        },
+      },
+      symbols: {
+        S1: {
+          name: '  Symbol Name  ',
+          kind: 'function',
+          fileId: 'F1',
+          range: {
+            start: { line: 5, character: 1 },
+            end: { line: 6, character: 3 },
+          },
+          containerName: 'Parent',
+        },
+      },
+      locations: {
+        L1: {
+          fileId: 'F1',
+          range: {
+            start: { line: 8, character: 1 },
+            end: { line: 8, character: 1 },
+          },
+          label: 'Location label',
+        },
+      },
+    });
+  });
+
+  test('tryParseSessionSnapshot rejects snapshots without required identity fields', () => {
+    assert.equal(
+      tryParseSessionSnapshot({
+        version: 1,
+        savedAt: '2020-01-01T00:00:00.000Z',
+        history: [],
+      }),
+      undefined,
+    );
+  });
+
+  test('SqliteSessionStore stores canonical snapshots via driver', async () => {
     const { driver, rows } = createFakeSqliteDriver();
     const store = new SqliteSessionStore(driver);
 
     const snapshot: LingyunSessionSnapshot = {
       version: 1,
       savedAt: '2020-01-01T00:00:00.000Z',
-      sessionId: 's1',
+      sessionId: ' s1 ',
+      parentSessionId: '   ',
+      mentionedSkills: [' skill-1 ', '', '   ', 'skill-2', 'skill-1'],
       history: [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hello' }] }] as any,
     };
 
-    await store.save('s1', snapshot);
+    await store.save(snapshot);
     assert.equal(rows.has('s1'), true);
+
+    const storedJson = rows.get('s1')?.snapshotJson;
+    assert.ok(storedJson, 'expected canonical snapshot json to be stored');
+    assert.deepEqual(JSON.parse(storedJson!), {
+      version: 1,
+      savedAt: '2020-01-01T00:00:00.000Z',
+      sessionId: 's1',
+      mentionedSkills: ['skill-1', 'skill-2'],
+      history: [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hello' }] }],
+    });
 
     const loaded = await store.load('s1');
     assert.equal(loaded?.sessionId, 's1');
+    assert.equal(loaded?.parentSessionId, undefined);
+    assert.deepEqual(loaded?.mentionedSkills, ['skill-1', 'skill-2']);
     assert.equal(loaded?.savedAt, '2020-01-01T00:00:00.000Z');
 
     const list = await store.list({ limit: 10 });
@@ -176,5 +336,40 @@ suite('persistence', () => {
 
     await store.delete('s1');
     assert.equal(rows.has('s1'), false);
+  });
+
+  test('SqliteSessionStore rejects invalid snapshots before persisting', async () => {
+    const { driver, rows } = createFakeSqliteDriver();
+    const store = new SqliteSessionStore(driver);
+
+    await assert.rejects(
+      () =>
+        store.save({
+          version: 1,
+          savedAt: '2020-01-01T00:00:00.000Z',
+          sessionId: 's1',
+          history: [],
+          mentionedSkills: ['skill-1', 42] as any,
+        } as LingyunSessionSnapshot),
+      /SqliteSessionStore\.save: invalid snapshot:/
+    );
+
+    assert.equal(rows.has('s1'), false);
+  });
+
+  test('SqliteSessionStore requires snapshot session identity when saving', async () => {
+    const { driver } = createFakeSqliteDriver();
+    const store = new SqliteSessionStore(driver);
+
+    await assert.rejects(
+      () =>
+        store.save({
+          version: 1,
+          savedAt: '2020-01-01T00:00:00.000Z',
+          sessionId: '   ',
+          history: [],
+        } as LingyunSessionSnapshot),
+      /SqliteSessionStore\.save: sessionId is required/
+    );
   });
 });

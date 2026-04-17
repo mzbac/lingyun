@@ -10,6 +10,7 @@ import type { ModelInfo } from '../../providers/modelCatalog';
 import type { LLMProviderWithUi } from '../../providers/providerUi';
 import type { OfficeSync } from '../office/sync';
 
+import { loadAutoApprovedTools } from './autoApprovedToolsStore';
 import { installChatControllerComposition } from './controllerComposition';
 import type { ChatApprovalsService } from './methods.approvals';
 import type { ChatInputHistoryService } from './methods.inputHistory';
@@ -24,6 +25,7 @@ import type { ChatSessionsService } from './methods.sessions';
 import type { ChatSkillsService } from './methods.skills';
 import type { ChatWebviewService } from './methods.webview';
 import type { ChatMessage, ChatMode, ChatSessionInfo } from './types';
+import type { PendingApprovalEntry } from './controllerPorts';
 import type { ChatLoopManager } from './loopManager';
 import type { ChatQueueManager } from './queueManager';
 import type { RunCoordinator } from './runner/runCoordinator';
@@ -41,8 +43,7 @@ export class ChatController {
   mode: ChatMode = 'build';
   availableModels: ModelInfo[] = [];
   autoApprovedTools: Set<string> = new Set();
-  pendingApprovals: Map<string, { resolve: (approved: boolean) => void; toolName: string; stepId?: string }> =
-    new Map();
+  pendingApprovals: Map<string, PendingApprovalEntry> = new Map();
   autoApproveThisRun = false;
   activeStepId?: string;
   currentTurnId?: string;
@@ -52,7 +53,7 @@ export class ChatController {
   initAcked = false;
   initInterval?: NodeJS.Timeout;
   initInFlight = false;
-  webviewErrorShown = false;
+  webviewCrashToastClientId?: string;
   sessionStore?: SessionStore<ChatSessionInfo>;
   sessionsLoadedFromDisk = false;
   sessionsLoadPromise?: Promise<void>;
@@ -115,7 +116,7 @@ export class ChatController {
       (vscode.workspace.getConfiguration('lingyun').get<string>('mode') || 'build') === 'plan'
         ? 'plan'
         : 'build';
-    this.autoApprovedTools = new Set(this.context.globalState.get<string[]>('autoApprovedTools') || []);
+    this.autoApprovedTools = loadAutoApprovedTools(this.context.globalState);
 
     this.sessionApi.initializeSessions();
     void this.sessionApi.ensureSessionsLoaded();

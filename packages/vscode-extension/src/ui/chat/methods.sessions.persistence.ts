@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 
+import { normalizeFileHandlesState, normalizeOptionalMentionedSkills, normalizeSemanticHandlesState } from '@kooka/agent-sdk';
 import { parseUserHistoryInput } from '@kooka/core';
 
 import type { AgentSessionState } from '../../core/agent';
@@ -11,13 +12,8 @@ import { SessionStore } from '../../core/sessionStore';
 import { bindChatControllerService } from './controllerService';
 import { createDefaultSessionTitle } from './sessionTitle';
 import type { ChatSessionInfo } from './types';
+import type { PendingApprovalEntry } from './controllerPorts';
 import type { ChatSessionRuntimeService } from './methods.sessions.runtime';
-
-type PendingApprovalEntry = {
-  resolve: (approved: boolean) => void;
-  toolName: string;
-  stepId?: string;
-};
 
 export interface ChatSessionPersistenceService {
   isSessionPersistenceEnabled(): boolean;
@@ -310,32 +306,10 @@ export function createChatSessionPersistenceService(
       if (!isValid) return this.runtime.getBlankAgentState();
 
       const fileHandlesRaw = state.fileHandles;
-      let fileHandles: AgentSessionState['fileHandles'] | undefined;
-      if (fileHandlesRaw && typeof fileHandlesRaw === 'object') {
-        const nextId = (fileHandlesRaw as any).nextId;
-        const byIdRaw = (fileHandlesRaw as any).byId;
-        if (
-          typeof nextId === 'number' &&
-          Number.isFinite(nextId) &&
-          nextId >= 1 &&
-          byIdRaw &&
-          typeof byIdRaw === 'object'
-        ) {
-          const byId: Record<string, string> = {};
-          for (const [id, filePath] of Object.entries(byIdRaw as Record<string, unknown>)) {
-            if (typeof id !== 'string' || !/^F\\d+$/.test(id)) continue;
-            if (typeof filePath !== 'string' || !filePath.trim()) continue;
-            byId[id] = filePath.trim();
-          }
-          fileHandles = { nextId: Math.floor(nextId), byId };
-        }
-      }
+      const fileHandles = normalizeFileHandlesState(fileHandlesRaw);
 
       const semanticHandlesRaw = state.semanticHandles;
-      const semanticHandles =
-        semanticHandlesRaw && typeof semanticHandlesRaw === 'object'
-          ? (semanticHandlesRaw as AgentSessionState['semanticHandles'])
-          : undefined;
+      const semanticHandles = normalizeSemanticHandlesState(semanticHandlesRaw);
 
       const pendingInputsRaw = (state as any).pendingInputs;
       const pendingInputs =
@@ -344,6 +318,9 @@ export function createChatSessionPersistenceService(
               .map((input: unknown) => parseUserHistoryInput(input))
               .filter((input): input is NonNullable<AgentSessionState['pendingInputs']>[number] => input !== undefined)
           : undefined;
+
+      const mentionedSkillsRaw = (state as any).mentionedSkills;
+      const mentionedSkills = normalizeOptionalMentionedSkills(mentionedSkillsRaw);
 
       const compactionSyntheticContextsRaw = (state as any).compactionSyntheticContexts;
       const compactionSyntheticContexts =
@@ -368,6 +345,7 @@ export function createChatSessionPersistenceService(
         fileHandles,
         semanticHandles,
         ...(pendingInputs ? { pendingInputs } : {}),
+        ...(mentionedSkills && mentionedSkills.length > 0 ? { mentionedSkills } : {}),
         ...(compactionSyntheticContexts ? { compactionSyntheticContexts } : {}),
       };
     },

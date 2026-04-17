@@ -1,16 +1,11 @@
-import * as path from 'path';
-
 import {
   TOOL_ERROR_CODES,
-  collectDotEnvApprovalTargets,
-  evaluateShellSafetyForTool,
   evaluateToolPermissionAction,
-  findExternalPathReferencesInShellCommand,
+  evaluateToolRisk,
   getDefaultLingyunPermissionRuleset,
-  getExternalPathPatterns,
+  getPrimaryToolRiskReason,
   getToolPermissionName,
   getToolPermissionPatterns,
-  isPathInsideWorkspace,
   isToolAllowedInPlanMode,
   toToolCall,
 } from '@kooka/core';
@@ -221,110 +216,32 @@ export async function executeToolWithPolicies(params: {
     return { success: false, error: reason };
   }
 
-  let requiresApproval = permissionAction === 'ask' || !!def.metadata?.requiresApproval;
-  const dotEnvApprovalTargets = collectDotEnvApprovalTargets(def, resolvedArgs as any);
-  if (dotEnvApprovalTargets.length > 0) {
-    requiresApproval = true;
-  }
+  const risk = evaluateToolRisk({
+    def,
+    args: (resolvedArgs ?? {}) as Record<string, unknown>,
+    workspaceRoot: host.workspaceRoot,
+    allowExternalPaths: host.allowExternalPaths,
+    permissionAction,
+  });
 
-  const isShellExecutionTool = def.id === 'bash' || def.execution?.type === 'shell';
-
-  const workspaceRoot = host.workspaceRoot;
-  if (isShellExecutionTool && !host.allowExternalPaths && workspaceRoot) {
-    const cwdRaw =
-      typeof resolvedArgs?.workdir === 'string'
-        ? resolvedArgs.workdir
-        : def.execution?.type === 'shell' && typeof (def.execution as any).cwd === 'string'
-          ? String((def.execution as any).cwd)
-          : '';
-
-    const cwd =
-      cwdRaw && cwdRaw.trim()
-        ? path.isAbsolute(cwdRaw.trim())
-          ? path.resolve(cwdRaw.trim())
-          : path.resolve(workspaceRoot, cwdRaw.trim())
-        : workspaceRoot;
-
-    const commandText =
-      typeof resolvedArgs?.command === 'string'
-        ? resolvedArgs.command
-        : def.execution?.type === 'shell' && typeof (def.execution as any).script === 'string'
-          ? String((def.execution as any).script)
-          : undefined;
-
-    const externalRefs = new Set<string>();
-    if (!isPathInsideWorkspace(cwd, workspaceRoot)) {
-      externalRefs.add(cwd);
-    }
-    if (typeof commandText === 'string' && commandText.trim()) {
-      for (const p of findExternalPathReferencesInShellCommand(commandText, { cwd, workspaceRoot })) {
-        externalRefs.add(p);
-      }
-    }
-
-    if (externalRefs.size > 0) {
-      const reason =
-        'External paths are disabled. This shell command references paths outside the current workspace. Enable allowExternalPaths to allow external path access.';
-      invokeCallbackSafely(
-        callbacks?.onToolBlocked,
-        { label: `onToolBlocked tool=${def.id}`, onDebug: callbacks?.onDebug },
-        tc,
-        def,
-        reason,
-      );
-      const blockedPaths = [...externalRefs];
-      const blockedPathsMax = 20;
-      return {
-        success: false,
-        error: reason,
-        metadata: {
-          errorCode: TOOL_ERROR_CODES.external_paths_disabled,
-          blockedSettingKey: 'lingyun.security.allowExternalPaths',
-          isOutsideWorkspace: true,
-          blockedPaths: blockedPaths.slice(0, blockedPathsMax),
-          blockedPathsTruncated: blockedPaths.length > blockedPathsMax,
-        },
-      };
-    }
-  }
-
-  const safety = evaluateShellSafetyForTool(def, resolvedArgs as any);
-  if (safety?.verdict === 'deny') {
-    const reason = `Blocked command: ${safety.reason}`;
+  const primaryRiskReason = getPrimaryToolRiskReason(risk);
+  if (risk.denied && primaryRiskReason) {
     invokeCallbackSafely(
       callbacks?.onToolBlocked,
       { label: `onToolBlocked tool=${def.id}`, onDebug: callbacks?.onDebug },
       tc,
       def,
-      reason,
-    );
-    return { success: false, error: reason };
-  }
-  if (safety?.verdict === 'needs_approval') {
-    requiresApproval = true;
-  }
-
-  const externalPaths = getExternalPathPatterns(def, resolvedArgs, { workspaceRoot: host.workspaceRoot });
-  if (externalPaths.length > 0 && !host.allowExternalPaths) {
-    const reason =
-      'External paths are disabled. Enable allowExternalPaths to allow access outside the current workspace.';
-    invokeCallbackSafely(
-      callbacks?.onToolBlocked,
-      { label: `onToolBlocked tool=${def.id}`, onDebug: callbacks?.onDebug },
-      tc,
-      def,
-      reason,
+      primaryRiskReason.message,
     );
     return {
       success: false,
-      error: reason,
-      metadata: {
-        errorCode: TOOL_ERROR_CODES.external_paths_disabled,
-        blockedSettingKey: 'lingyun.security.allowExternalPaths',
-        isOutsideWorkspace: true,
-      },
+      error: primaryRiskReason.message,
+      ...(primaryRiskReason.metadata ? { metadata: { ...primaryRiskReason.metadata } } : {}),
     };
   }
+
+  let requiresApproval = risk.requiresApproval;
+  let manualApproval = risk.manualApproval;
 
   // permission.ask plugin hook
   {
@@ -338,7 +255,10 @@ export async function executeToolWithPolicies(params: {
         metadata: {
           mode,
           requiresApproval,
+          manualApproval,
           permission,
+          decision: risk.decision,
+          riskReasons: risk.reasons,
         },
       },
       { status: requiresApproval ? 'ask' : 'allow' },
@@ -358,6 +278,7 @@ export async function executeToolWithPolicies(params: {
 
     if ((permissionDecision as any)?.status === 'allow') {
       requiresApproval = false;
+      manualApproval = false;
     }
 
     if ((permissionDecision as any)?.status === 'ask') {
@@ -365,11 +286,21 @@ export async function executeToolWithPolicies(params: {
     }
   }
 
-  const allowAutoApprove = mode !== 'plan' && !!host.config.autoApprove;
+  const allowAutoApprove = mode !== 'plan' && !!host.config.autoApprove && !manualApproval;
   if (requiresApproval && !allowAutoApprove) {
     let approved = false;
     try {
-      approved = (await callbacks?.onRequestApproval?.(tc, def)) ?? false;
+      approved =
+        (await callbacks?.onRequestApproval?.(tc, def, {
+          manual: manualApproval,
+          ...(primaryRiskReason?.message ? { reason: primaryRiskReason.message } : {}),
+          decision: risk.decision,
+          metadata: {
+            ...(primaryRiskReason?.metadata ? primaryRiskReason.metadata : {}),
+            riskReasons: risk.reasons,
+            dotEnvTargets: risk.dotEnvTargets,
+          },
+        })) ?? false;
     } catch (error) {
       invokeCallbackSafely(
         callbacks?.onDebug,

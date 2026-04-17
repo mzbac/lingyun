@@ -46,7 +46,7 @@ import { runOnce as runOnceLoop } from './runOnce.js';
 
 import { AsyncQueue } from './asyncQueue.js';
 import { invokeCallbackSafely } from './callbacks.js';
-import { LingyunSession } from './session.js';
+import { createBlankFileHandlesState, createBlankSemanticHandlesState, LingyunSession } from './session.js';
 import { TaskSubagentRunner } from './taskSubagentRunner.js';
 import {
   appendSyntheticContextMessage,
@@ -388,6 +388,8 @@ export class LingyunAgent {
         subagentType: seed.subagentType,
         modelId: seed.modelId,
         mentionedSkills: [...(parentSession.mentionedSkills || [])],
+        fileHandles: createBlankFileHandlesState(),
+        semanticHandles: createBlankSemanticHandlesState(),
       });
 
     childSession.sessionId = seed.sessionId;
@@ -1096,9 +1098,7 @@ export class LingyunAgent {
 
     for (const skill of selectedForInject) {
       if (signal?.aborted) break;
-      if (!session.mentionedSkills.includes(skill.name)) {
-        session.mentionedSkills.push(skill.name);
-      }
+      session.rememberMentionedSkill(skill.name);
 
       let body: string;
       try {

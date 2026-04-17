@@ -1,7 +1,13 @@
 import * as assert from 'assert';
+import * as fs from 'fs';
+import * as path from 'path';
 import * as vscode from 'vscode';
 
 import { createBlankSessionSignals } from '../../core/sessionSignals';
+import {
+  WEBVIEW_MESSAGE_ERROR,
+  WEBVIEW_MESSAGE_READY,
+} from '../../ui/chat/webviewProtocol';
 import { createStandaloneChatController } from './chatControllerHarness';
 
 suite('Chat webview loop integration', () => {
@@ -34,6 +40,8 @@ suite('Chat webview loop integration', () => {
       assert.strictEqual(initMessage.currentModel, 'gpt-5.4');
       assert.strictEqual(initMessage.currentModelLabel, 'GPT-5.4');
       assert.strictEqual(initMessage.currentReasoningEffort, 'low');
+      assert.strictEqual(initMessage.pendingApprovals, 0);
+      assert.strictEqual(initMessage.manualApprovals, 0);
     } finally {
       if (previousEffort === undefined) {
         await config.update('copilot.reasoningEffort', undefined, vscode.ConfigurationTarget.Global);
@@ -115,12 +123,157 @@ suite('Chat webview loop integration', () => {
     assert.strictEqual(configureCalls, 1);
   });
 
+  test('getHtml injects the shared chat protocol bootstrap before browser scripts', () => {
+    const controller = createStandaloneChatController();
+    const webview = {
+      cspSource: 'test-csp',
+      asWebviewUri: (uri: unknown) => uri,
+    } as unknown as vscode.Webview;
+
+    const html = controller.webviewApi.getHtml(webview);
+    const protocolIndex = html.indexOf('window.LINGYUN_CHAT_PROTOCOL = Object.freeze(');
+    const bootstrapIndex = html.indexOf('bootstrap.js');
+    const mainIndex = html.indexOf('main.js');
+
+    assert.ok(protocolIndex >= 0, 'expected injected chat protocol bootstrap script');
+    assert.ok(bootstrapIndex > protocolIndex, 'expected protocol bootstrap to precede bootstrap.js');
+    assert.ok(mainIndex > bootstrapIndex, 'expected main.js to remain after bootstrap.js');
+  });
+
+  test('approveAll webview message keeps manual approvals pending through the controller adapter', async () => {
+    const controller = createStandaloneChatController();
+    const posted: unknown[] = [];
+
+    controller.viewDisposables = [];
+    controller.webviewApi.getHtml = () => '';
+    controller.webviewApi.startInitPusher = () => {};
+
+    let normalResolved: boolean | undefined;
+    let manualResolved: boolean | undefined;
+    let onMessage: ((data: unknown) => void | Promise<void>) | undefined;
+    const disposable = { dispose() {} };
+    const webview = {
+      options: {},
+      html: '',
+      cspSource: 'test-csp',
+      postMessage(message: unknown) {
+        posted.push(message);
+        return true;
+      },
+      asWebviewUri: (uri: unknown) => uri,
+      onDidReceiveMessage: (listener: (data: unknown) => void | Promise<void>) => {
+        onMessage = listener;
+        return disposable;
+      },
+    } as unknown as vscode.Webview;
+    const view = {
+      webview,
+      visible: true,
+      onDidChangeVisibility: () => disposable,
+      onDidDispose: () => disposable,
+    } as unknown as vscode.WebviewView;
+
+    controller.webviewApi.resolveWebviewView(view);
+    assert.ok(onMessage, 'expected resolveWebviewView to register a webview message handler');
+
+    controller.pendingApprovals.set('normal-1', {
+      resolve: (approved: boolean) => {
+        normalResolved = approved;
+      },
+      toolName: 'read',
+    });
+    controller.pendingApprovals.set('manual-1', {
+      resolve: (approved: boolean) => {
+        manualResolved = approved;
+      },
+      toolName: 'read',
+      approvalContext: {
+        manual: true,
+        reason: 'Protected dotenv access requires manual approval.',
+        decision: 'require_manual_approval',
+      },
+    });
+
+    await onMessage?.({ type: 'approveAll' });
+
+    assert.strictEqual(normalResolved, true);
+    assert.strictEqual(manualResolved, undefined);
+    assert.strictEqual(controller.pendingApprovals.size, 1);
+    assert.ok(controller.pendingApprovals.has('manual-1'));
+
+    const approvalState = posted.find((message) => (message as any)?.type === 'approvalsChanged') as any;
+    assert.ok(approvalState, 'expected approvalsChanged update');
+    assert.strictEqual(approvalState.count, 1);
+    assert.strictEqual(approvalState.manualCount, 1);
+  });
+
+  test('alwaysAllowTool webview message does not persist auto-allow for manual approvals', async () => {
+    const controller = createStandaloneChatController();
+    const posted: unknown[] = [];
+
+    controller.viewDisposables = [];
+    controller.webviewApi.getHtml = () => '';
+    controller.webviewApi.startInitPusher = () => {};
+
+    let manualResolved: boolean | undefined;
+    let onMessage: ((data: unknown) => void | Promise<void>) | undefined;
+    const disposable = { dispose() {} };
+    const webview = {
+      options: {},
+      html: '',
+      cspSource: 'test-csp',
+      postMessage(message: unknown) {
+        posted.push(message);
+        return true;
+      },
+      asWebviewUri: (uri: unknown) => uri,
+      onDidReceiveMessage: (listener: (data: unknown) => void | Promise<void>) => {
+        onMessage = listener;
+        return disposable;
+      },
+    } as unknown as vscode.Webview;
+    const view = {
+      webview,
+      visible: true,
+      onDidChangeVisibility: () => disposable,
+      onDidDispose: () => disposable,
+    } as unknown as vscode.WebviewView;
+
+    controller.webviewApi.resolveWebviewView(view);
+    assert.ok(onMessage, 'expected resolveWebviewView to register a webview message handler');
+
+    controller.pendingApprovals.set('manual-1', {
+      resolve: (approved: boolean) => {
+        manualResolved = approved;
+      },
+      toolName: 'read',
+      approvalContext: {
+        manual: true,
+        reason: 'Protected dotenv access requires manual approval.',
+        decision: 'require_manual_approval',
+      },
+    });
+
+    await onMessage?.({ type: 'alwaysAllowTool', approvalId: 'manual-1' });
+
+    assert.strictEqual(manualResolved, true);
+    assert.strictEqual(controller.pendingApprovals.size, 0);
+    assert.strictEqual(controller.autoApprovedTools.has('read'), false);
+    assert.strictEqual((controller.context.globalState as any).get('autoApprovedTools'), undefined);
+
+    const approvalState = posted.find((message) => (message as any)?.type === 'approvalsChanged') as any;
+    assert.ok(approvalState, 'expected approvalsChanged update');
+    assert.strictEqual(approvalState.count, 0);
+    assert.strictEqual(approvalState.manualCount, 0);
+  });
+
   test('resolveWebviewView writes lifecycle state through the controller adapter', async () => {
     const controller = createStandaloneChatController();
     let previousDisposed = 0;
     controller.viewDisposables = [{ dispose: () => previousDisposed++ } as vscode.Disposable];
     controller.initAcked = true;
     controller.webviewClientInstanceId = 'stale-client';
+    controller.webviewCrashToastClientId = 'stale-client';
 
     let onMessage: ((data: unknown) => void | Promise<void>) | undefined;
     let onVisibility: (() => void) | undefined;
@@ -157,6 +310,7 @@ suite('Chat webview loop integration', () => {
       assert.strictEqual(controller.view, view);
       assert.strictEqual(controller.initAcked, false);
       assert.strictEqual(controller.webviewClientInstanceId, undefined);
+      assert.strictEqual(controller.webviewCrashToastClientId, undefined);
       assert.ok(typeof onMessage === 'function');
       assert.ok(typeof onVisibility === 'function');
       assert.ok(typeof onDispose === 'function');
@@ -175,12 +329,14 @@ suite('Chat webview loop integration', () => {
       assert.notStrictEqual(controller.initInterval, firstInterval);
 
       controller.webviewClientInstanceId = 'client-1';
+      controller.webviewCrashToastClientId = 'client-1';
       controller.initAcked = true;
       onDispose?.();
 
       assert.strictEqual(controller.view, undefined);
       assert.strictEqual(controller.initAcked, false);
       assert.strictEqual(controller.webviewClientInstanceId, undefined);
+      assert.strictEqual(controller.webviewCrashToastClientId, undefined);
       assert.strictEqual(controller.initInterval, undefined);
     } finally {
       if (controller.initInterval) {
@@ -220,5 +376,121 @@ suite('Chat webview loop integration', () => {
       accountLabel: 'user@example.com',
       secondaryActionLabel: 'Disconnect',
     });
+  });
+
+  test('webviewError messages are routed through appendErrorLog and the live webview script avoids duplicate fatal-error posts', async () => {
+    const logged: string[] = [];
+    const controller = createStandaloneChatController({
+      outputChannel: {
+        appendLine(line: string) {
+          logged.push(line);
+        },
+      } as unknown as vscode.OutputChannel,
+    });
+
+    const originalShowErrorMessage = vscode.window.showErrorMessage;
+    const shown: string[] = [];
+    (vscode.window as any).showErrorMessage = (message: string) => {
+      shown.push(message);
+      return Promise.resolve(undefined);
+    };
+
+    let onMessage: ((data: unknown) => void | Promise<void>) | undefined;
+    const disposable = { dispose() {} };
+    const webview = {
+      options: {},
+      html: '',
+      cspSource: 'test-csp',
+      postMessage: () => true,
+      asWebviewUri: (uri: unknown) => uri,
+      onDidReceiveMessage: (listener: (data: unknown) => void | Promise<void>) => {
+        onMessage = listener;
+        return disposable;
+      },
+    } as unknown as vscode.Webview;
+    const view = {
+      webview,
+      visible: true,
+      onDidChangeVisibility: () => disposable,
+      onDidDispose: () => disposable,
+    } as unknown as vscode.WebviewView;
+
+    try {
+      controller.webviewApi.resolveWebviewView(view);
+      assert.ok(onMessage, 'expected resolveWebviewView to register a webview message handler');
+
+      await onMessage?.({
+        type: WEBVIEW_MESSAGE_READY,
+        clientInstanceId: 'client-1',
+      });
+
+      await onMessage?.({
+        type: WEBVIEW_MESSAGE_ERROR,
+        error: {
+          kind: 'fatal',
+          source: 'window.error',
+          name: 'ReferenceError',
+          message: 'token=secret-value',
+          stack: 'ReferenceError: token=secret-value\n    at https://example.com/app.js:1:1',
+        },
+      });
+
+      await onMessage?.({
+        type: WEBVIEW_MESSAGE_ERROR,
+        error: {
+          kind: 'fatal',
+          source: 'window.error',
+          name: 'ReferenceError',
+          message: 'token=secret-value',
+          stack: 'ReferenceError: token=secret-value\n    at https://example.com/app.js:1:1',
+        },
+      });
+
+      assert.strictEqual(shown.length, 1, 'expected one user-facing crash toast per webview client');
+      assert.ok(logged.some(line => line.includes('[ERROR] [Webview] Webview error:')));
+      assert.ok(logged.some(line => line.includes('"kind":"fatal"')));
+      assert.ok(logged.some(line => line.includes('"source":"window.error"')));
+      assert.ok(!logged.some(line => line.includes('secret-value')));
+      assert.ok(logged.some(line => line.includes('<redacted>')));
+      assert.ok(logged.some(line => line.includes('<url>')));
+      assert.strictEqual(controller.webviewCrashToastClientId, 'client-1');
+
+      await onMessage?.({ type: WEBVIEW_MESSAGE_READY, clientInstanceId: 'client-2' });
+      await onMessage?.({
+        type: WEBVIEW_MESSAGE_ERROR,
+        error: {
+          kind: 'fatal',
+          source: 'window.unhandledrejection',
+          name: 'TypeError',
+          message: 'token=second-secret',
+          stack: 'TypeError: token=second-secret\n    at https://example.com/app.js:2:1',
+        },
+      });
+      assert.strictEqual(shown.length, 2, 'expected a fresh client to receive its own crash toast');
+      assert.strictEqual(controller.webviewCrashToastClientId, 'client-2');
+      assert.ok(logged.some(line => line.includes('"source":"window.unhandledrejection"')));
+
+      const bootstrapJsPath = path.resolve(__dirname, '../../../media/chat/bootstrap.js');
+      const bootstrapSource = fs.readFileSync(bootstrapJsPath, 'utf8');
+      assert.ok(bootstrapSource.includes('function postWebviewCrash(details, source)'));
+      assert.ok(bootstrapSource.includes("type: chatProtocol.webviewError"));
+      assert.ok(bootstrapSource.includes("source || 'webview'"));
+
+      const mainJsPath = path.resolve(__dirname, '../../../media/chat/main.js');
+      const mainSource = fs.readFileSync(mainJsPath, 'utf8');
+      assert.ok(mainSource.includes("type: chatProtocol.ready"));
+      assert.ok(mainSource.includes("type: chatProtocol.initAck"));
+      assert.ok(mainSource.includes("showFatalError(err, 'message.dispatch');"));
+      assert.ok(
+        !mainSource.includes("vscode.postMessage({ type: 'webviewError', error: String(err && (err.stack || err.message) || err) });"),
+        'main.js should not duplicate fatal webviewError posts after showFatalError already reports them'
+      );
+    } finally {
+      (vscode.window as any).showErrorMessage = originalShowErrorMessage;
+      if (controller.initInterval) {
+        clearInterval(controller.initInterval);
+        controller.initInterval = undefined;
+      }
+    }
   });
 });

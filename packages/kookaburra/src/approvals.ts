@@ -1,4 +1,4 @@
-import type { ToolCall, ToolDefinition } from '@kooka/agent-sdk';
+import type { AgentApprovalContext, ToolCall, ToolDefinition } from '@kooka/agent-sdk';
 
 import { redactSensitive, summarizeArgsForDisplay, truncateForDisplay } from './redact.js';
 
@@ -14,11 +14,11 @@ export class ApprovalManager {
     }
   ) {}
 
-  async requestApproval(tool: ToolCall, def: ToolDefinition): Promise<boolean> {
-    if (this.alwaysAllow.has(def.id)) return true;
+  async requestApproval(tool: ToolCall, def: ToolDefinition, approvalContext?: AgentApprovalContext): Promise<boolean> {
+    if (!approvalContext?.manual && this.alwaysAllow.has(def.id)) return true;
 
     if (!process.stdin.isTTY) {
-      return this.options?.nonInteractiveDefault === 'allow';
+      return !approvalContext?.manual && this.options?.nonInteractiveDefault === 'allow';
     }
 
     const argsText = tool.function.arguments || '{}';
@@ -35,11 +35,16 @@ export class ApprovalManager {
       '\n' +
       `Tool approval required: ${def.id}\n` +
       `Args: ${truncateForDisplay(redactSensitive(summary), 800)}\n` +
-      `[y]es / [n]o / [a]lways for ${def.id}: `;
+      (approvalContext?.manual && approvalContext.reason
+        ? `Reason: ${truncateForDisplay(redactSensitive(approvalContext.reason), 400)}\n`
+        : '') +
+      (approvalContext?.manual
+        ? `[y]es / [n]o for ${def.id}: `
+        : `[y]es / [n]o / [a]lways for ${def.id}: `);
 
     const answer = (await this.prompt(promptText)).trim().toLowerCase();
     if (answer === 'y' || answer === 'yes') return true;
-    if (answer === 'a' || answer === 'always') {
+    if (!approvalContext?.manual && (answer === 'a' || answer === 'always')) {
       this.alwaysAllow.add(def.id);
       return true;
     }

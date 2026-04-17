@@ -3,7 +3,7 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 
-import type { ToolContext } from '@kooka/agent-sdk';
+import type { ToolContext } from '../../index.js';
 import { globHandler } from '../../tools/builtin/glob.js';
 import { listHandler } from '../../tools/builtin/list.js';
 import { readHandler } from '../../tools/builtin/read.js';

@@ -1,9 +1,10 @@
 import * as vscode from 'vscode';
-import type { ToolCall, ToolDefinition } from '../core/types';
+import type { AgentApprovalContext, ToolCall, ToolDefinition } from '../core/types';
 
 export async function requestApproval(
   toolCall: ToolCall,
-  definition: ToolDefinition
+  definition: ToolDefinition,
+  approvalContext?: AgentApprovalContext
 ): Promise<boolean> {
   let argsPreview: string;
   try {
@@ -15,17 +16,22 @@ export async function requestApproval(
     argsPreview = toolCall.function.arguments;
   }
 
-  const message = `Allow tool "${definition.name}"?\n\n${argsPreview}`;
+  const protectedReason =
+    approvalContext?.manual && typeof approvalContext.reason === 'string' && approvalContext.reason.trim()
+      ? approvalContext.reason.trim()
+      : '';
+  const message =
+    `Allow tool "${definition.name}"?\n\n${argsPreview}` +
+    (protectedReason ? `\n\nReason: ${protectedReason}` : '');
 
+  const choices = approvalContext?.manual ? ['Allow', 'Deny'] : ['Allow', 'Allow All', 'Deny'];
   const result = await vscode.window.showWarningMessage(
     message,
     { modal: true },
-    'Allow',
-    'Allow All',
-    'Deny'
+    ...choices
   );
 
-  return result === 'Allow' || result === 'Allow All';
+  return result === 'Allow' || (!approvalContext?.manual && result === 'Allow All');
 }
 
 export async function requestFileApproval(

@@ -220,7 +220,7 @@ export class TaskSubagentRunner {
     const toolSummary = new Map<string, { id: string; tool: string; status: 'running' | 'success' | 'error' }>();
 
     const childCallbacks: AgentCallbacks = {
-      onRequestApproval: async (tool, definition) => {
+      onRequestApproval: async (tool, definition, approvalContext) => {
         invokeCallbackSafely(
           params.callbacks?.onSubagentEvent,
           {
@@ -240,7 +240,7 @@ export class TaskSubagentRunner {
 
         let approved = false;
         try {
-          approved = (await params.callbacks?.onRequestApproval?.(tool, definition)) ?? false;
+          approved = (await params.callbacks?.onRequestApproval?.(tool, definition, approvalContext)) ?? false;
         } catch {
           approved = false;
         }

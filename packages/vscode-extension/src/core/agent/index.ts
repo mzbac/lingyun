@@ -1,14 +1,20 @@
 import * as vscode from 'vscode';
 
 import {
+  cloneFileHandlesState,
+  cloneSemanticHandlesState,
+  createBlankFileHandlesState,
+  createBlankSemanticHandlesState,
   LingyunAgent,
   LingyunSession,
+  normalizeFileHandlesState,
   stripTransientSyntheticMessages,
   type LingyunCompactionSyntheticContext,
 } from '@kooka/agent-sdk';
 import type { AgentConfig as SdkAgentConfig } from '@kooka/agent-sdk';
 import type { AgentHistoryMessage, UserHistoryInput } from '@kooka/core';
 import {
+  cloneAgentHistoryMessages,
   cloneUserHistoryInput,
   createUserHistoryMessage,
   parseUserHistoryInput,
@@ -35,7 +41,7 @@ type SemanticHandlesState = NonNullable<LingyunSession['semanticHandles']>;
 
 export type AgentSessionState = {
   history: AgentHistoryMessage[];
-  fileHandles?: { nextId: number; byId: Record<string, string> };
+  fileHandles?: LingyunSession['fileHandles'];
   semanticHandles?: SemanticHandlesState;
   mentionedSkills?: string[];
   pendingInputs?: UserHistoryInput[];
@@ -49,17 +55,6 @@ function isAbortError(error: unknown): boolean {
     return /abort/i.test(error.message);
   }
   return /abort/i.test(String(error));
-}
-
-function createBlankSemanticHandlesState(): SemanticHandlesState {
-  return {
-    nextMatchId: 1,
-    nextSymbolId: 1,
-    nextLocId: 1,
-    matches: {},
-    symbols: {},
-    locations: {},
-  };
 }
 
 function toSdkAgentConfig(config: AgentConfig): SdkAgentConfig {
@@ -77,11 +72,12 @@ export class AgentLoop {
   private readonly runtimePolicy: VsCodeAgentRuntimePolicy;
 
   private session = new LingyunSession({
-    history: [],
-    fileHandles: { nextId: 1, byId: {} },
-    semanticHandles: createBlankSemanticHandlesState(),
-    mentionedSkills: [],
-  });
+      history: [],
+      fileHandles: createBlankFileHandlesState(),
+      semanticHandles: createBlankSemanticHandlesState(),
+      mentionedSkills: [],
+    });
+
 
   private readonly agent: LingyunAgent;
 
@@ -144,22 +140,20 @@ export class AgentLoop {
   }
 
   exportState(): AgentSessionState {
-    const history = stripTransientSyntheticMessages(stripSkillInjectedMessages(this.session.history));
-    const fileHandles = this.session.fileHandles
-      ? {
-          nextId: this.session.fileHandles.nextId,
-          byId: { ...(this.session.fileHandles.byId || {}) },
-        }
-      : undefined;
+    const history = cloneAgentHistoryMessages(
+      stripTransientSyntheticMessages(stripSkillInjectedMessages(this.session.history)),
+    );
+    const fileHandles = cloneFileHandlesState(this.session.fileHandles);
 
     return {
       history,
       fileHandles,
-      semanticHandles: this.session.semanticHandles,
+      semanticHandles: cloneSemanticHandlesState(this.session.semanticHandles),
       mentionedSkills: [...(this.session.mentionedSkills || [])],
       pendingInputs: this.session.getPendingInputs().map((input) => cloneUserHistoryInput(input)),
       compactionSyntheticContexts: this.session.compactionSyntheticContexts.map((context) => ({ ...context })),
     };
+
   }
 
   resolveFileId(fileId: string): string | undefined {
@@ -177,7 +171,7 @@ export class AgentLoop {
 
     const history = Array.isArray(state.history) ? [...state.history] : [];
     this.session.history = history;
-    this.session.mentionedSkills = Array.isArray(state.mentionedSkills) ? [...state.mentionedSkills] : [];
+    this.session.setMentionedSkills(state.mentionedSkills);
     this.session.setPendingInputs(
       Array.isArray(state.pendingInputs)
         ? state.pendingInputs
@@ -198,19 +192,11 @@ export class AgentLoop {
           .map((context) => ({ ...context }))
       : [];
 
-    const fileHandlesRaw = state.fileHandles;
-    if (fileHandlesRaw && typeof fileHandlesRaw === 'object') {
-      const nextId = (fileHandlesRaw as any).nextId;
-      const byId = (fileHandlesRaw as any).byId;
-      this.session.fileHandles =
-        typeof nextId === 'number' && Number.isFinite(nextId) && byId && typeof byId === 'object'
-          ? { nextId: Math.max(1, Math.floor(nextId)), byId: { ...(byId as Record<string, string>) } }
-          : { nextId: 1, byId: {} };
-    } else {
-      this.session.fileHandles = { nextId: 1, byId: {} };
-    }
+    this.session.fileHandles = normalizeFileHandlesState(state.fileHandles) ?? createBlankFileHandlesState();
 
-    this.session.semanticHandles = state.semanticHandles ? state.semanticHandles : createBlankSemanticHandlesState();
+    this.session.semanticHandles = state.semanticHandles
+      ? cloneSemanticHandlesState(state.semanticHandles)
+      : createBlankSemanticHandlesState();
   }
 
   get running(): boolean {
@@ -349,7 +335,7 @@ export class AgentLoop {
       subagentType: this.sessionMetadata.subagentType,
       modelId: this.config.model,
       mentionedSkills: [...(this.session.mentionedSkills || [])],
-      fileHandles: { nextId: 1, byId: {} },
+      fileHandles: createBlankFileHandlesState(),
       semanticHandles: createBlankSemanticHandlesState(),
     });
 
@@ -420,12 +406,7 @@ export class AgentLoop {
   }
 
   async clear(): Promise<void> {
-    this.session.history = [];
-    this.session.clearPendingInputs();
-    this.session.fileHandles = { nextId: 1, byId: {} };
-    this.session.semanticHandles = createBlankSemanticHandlesState();
-    this.session.mentionedSkills = [];
-    this.session.compactionSyntheticContexts = [];
+    this.session.clearRuntimeState();
   }
 }
 

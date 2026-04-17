@@ -1,7 +1,7 @@
 import * as assert from 'assert';
 
 import { evaluateShellCommand, TOOL_ERROR_CODES } from '@kooka/core';
-import { getBuiltinTools, type ToolContext } from '@kooka/agent-sdk';
+import { getBuiltinTools, type ToolContext } from '../../index.js';
 
 function isPidAlive(pid: number): boolean {
   try {

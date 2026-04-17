@@ -106,6 +106,7 @@
 			    let currentOperation = null;
 		    let operationTimer = null;
 		    let pendingApprovalsCount = 0;
+		    let manualApprovalsCount = 0;
 		    let autoApproveThisRun = false;
 		    let latestContext = null;
 		    let latestTodos = null;
@@ -411,9 +412,12 @@
 	        pendingApprovalsCount === 1
 	          ? 'Waiting for approval (1)'
 	          : 'Waiting for approval (' + pendingApprovalsCount + ')';
+	      if (manualApprovalsCount > 0) {
+	        approvalLabelEl.textContent += ' • ' + manualApprovalsCount + ' manual';
+	      }
 
 	      if (approvalAllowAllBtn) {
-	        approvalAllowAllBtn.disabled = pendingApprovalsCount <= 0;
+	        approvalAllowAllBtn.disabled = pendingApprovalsCount <= 0 || manualApprovalsCount > 0;
 	      }
 	      if (approvalStopBtn) {
 	        approvalStopBtn.disabled = false;
@@ -452,36 +456,69 @@
 	      }, { passive: true });
 	    }
 
-	    function showFatalError(err) {
-	      try {
-	        const message = (err && (err.stack || err.message)) ? (err.stack || err.message) : String(err);
-	        if (modelPickerLabel) {
-	          modelPickerLabel.textContent = 'Webview error';
-	        } else if (modelPicker) {
-	          modelPicker.textContent = 'Webview error';
-	        }
-	        if (modelFavoriteToggle) {
-	          modelFavoriteToggle.disabled = true;
-	          modelFavoriteToggle.textContent = '☆';
-	        }
-	        const banner = document.createElement('div');
-	        banner.style.padding = '10px 12px';
-	        banner.style.margin = '10px';
-	        banner.style.border = '1px solid var(--vscode-testing-iconFailed, #f14c4c)';
-	        banner.style.borderRadius = '8px';
-	        banner.style.background = 'var(--vscode-inputValidation-errorBackground, rgba(241,76,76,0.1))';
-	        banner.style.color = 'var(--vscode-foreground)';
-	        banner.style.whiteSpace = 'pre-wrap';
-	        banner.textContent = 'LingYun webview crashed:\\n\\n' + message + '\\n\\nOpen “Developer: Open Webview Developer Tools” for details.';
-	        document.body.insertBefore(banner, document.body.firstChild);
-	        try { vscode.postMessage({ type: 'webviewError', error: message }); } catch {}
-	      } catch {
-	        // Ignore secondary errors
-	      }
-	    }
+    function getFatalErrorDetails(err) {
+      const record = err && typeof err === 'object' ? err : null;
+      const name = record && typeof record.name === 'string' ? record.name : '';
+      const message = record && typeof record.message === 'string'
+        ? record.message
+        : (record && typeof record.stack === 'string' ? record.stack : String(err));
+      const stack = record && typeof record.stack === 'string' ? record.stack : '';
+      return {
+        name,
+        message,
+        stack,
+        displayText: stack || message,
+      };
+    }
 
-	    window.addEventListener('error', (e) => showFatalError(e.error || e.message));
-	    window.addEventListener('unhandledrejection', (e) => showFatalError(e.reason));
+    const chatProtocol = window.LINGYUN_CHAT_PROTOCOL;
+
+    function postWebviewCrash(details, source) {
+      try {
+        vscode.postMessage({
+          type: chatProtocol.webviewError,
+          error: {
+            kind: 'fatal',
+            source: source || 'webview',
+            name: details && details.name ? details.name : undefined,
+            message: details && details.message ? details.message : undefined,
+            stack: details && details.stack ? details.stack : undefined,
+          }
+        });
+      } catch {}
+    }
+
+    function showFatalError(err, source) {
+      try {
+        const details = getFatalErrorDetails(err);
+        if (modelPickerLabel) {
+          modelPickerLabel.textContent = 'Webview error';
+        } else if (modelPicker) {
+          modelPicker.textContent = 'Webview error';
+        }
+        if (modelFavoriteToggle) {
+          modelFavoriteToggle.disabled = true;
+          modelFavoriteToggle.textContent = '☆';
+        }
+        const banner = document.createElement('div');
+        banner.style.padding = '10px 12px';
+        banner.style.margin = '10px';
+        banner.style.border = '1px solid var(--vscode-testing-iconFailed, #f14c4c)';
+        banner.style.borderRadius = '8px';
+        banner.style.background = 'var(--vscode-inputValidation-errorBackground, rgba(241,76,76,0.1))';
+        banner.style.color = 'var(--vscode-foreground)';
+        banner.style.whiteSpace = 'pre-wrap';
+        banner.textContent = 'LingYun webview crashed:\n\n' + details.displayText + '\n\nOpen “Developer: Open Webview Developer Tools” for details.';
+        document.body.insertBefore(banner, document.body.firstChild);
+        postWebviewCrash(details, source || 'webview');
+      } catch {
+        // Ignore secondary errors
+      }
+    }
+
+    window.addEventListener('error', (e) => showFatalError(e.error || e.message, 'window.error'));
+    window.addEventListener('unhandledrejection', (e) => showFatalError(e.reason, 'window.unhandledrejection'));
+
 
 	    if (modelPickerLabel) {
 	      modelPickerLabel.textContent = 'Connecting…';

@@ -110,6 +110,7 @@ export interface ChatMessage {
     diffView?: ToolDiffView;
     path?: string;
     isProtected?: boolean;
+    approvalReason?: string;
     isOutsideWorkspace?: boolean;
     blockedReason?: string;
     blockedSettingKey?: string;

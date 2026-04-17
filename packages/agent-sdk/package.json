@@ -28,13 +28,15 @@
   ],
   "scripts": {
     "clean": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true }); require('fs').rmSync('dist-test', { recursive: true, force: true })\"",
+    "clean:build": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\"",
+    "clean:test": "node -e \"require('fs').rmSync('dist-test', { recursive: true, force: true })\"",
     "build:cjs": "node scripts/build-cjs.cjs",
-    "build": "pnpm run clean && node ../../scripts/ensure-core-build.cjs && tsc -p tsconfig.json && pnpm run build:cjs",
+    "build": "pnpm run clean:build && node ../../scripts/ensure-core-build.cjs && tsc -p tsconfig.json && pnpm run build:cjs",
     "prepack": "pnpm run build",
     "typecheck": "node ../../scripts/ensure-core-build.cjs && tsc -p tsconfig.json --noEmit",
-    "build:test": "node ../../scripts/ensure-core-build.cjs && tsc -p tsconfig.test.json",
-    "test": "pnpm run build:test && mocha --ui tdd ./dist-test/test/suite/*.test.js",
-    "test:e2e": "pnpm run build:test && mocha --ui tdd --timeout 300000 ./dist-test/test/e2e/*.test.js"
+    "build:test": "pnpm run clean:test && node ../../scripts/ensure-core-build.cjs && tsc -p tsconfig.test.json",
+    "test": "pnpm run build:test && mocha --ui tdd \"./dist-test/test/suite/*.test.js\"",
+    "test:e2e": "pnpm run build:test && mocha --ui tdd --timeout 300000 \"./dist-test/test/e2e/*.test.js\""
   },
   "dependencies": {
     "@kooka/core": "^0.2.0",

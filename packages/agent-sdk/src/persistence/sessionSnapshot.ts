@@ -1,14 +1,21 @@
 import { z } from 'zod';
 
 import type { AgentHistoryMessage } from '@kooka/core';
-import { LingyunSession, type LingyunSession as LingyunSessionType } from '../agent/agent.js';
-import type { SemanticHandlesState } from '../agent/semanticHandles.js';
+import {
+  cloneFileHandlesState,
+  cloneSemanticHandlesState,
+  LingyunSession,
+  normalizeFileHandlesState,
+  normalizeOptionalMentionedSkills,
+  type LingyunSession as LingyunSessionType,
+} from '../agent/session.js';
+import { normalizeSemanticHandlesState, type SemanticHandlesState } from '../agent/semanticHandles.js';
 import type { LingyunCompactionSyntheticContext } from '../agent/transientSyntheticContext.js';
 
 export type LingyunSessionSnapshotV1 = {
   version: 1;
   savedAt: string;
-  sessionId?: string;
+  sessionId: string;
   parentSessionId?: string;
   subagentType?: string;
   modelId?: string;
@@ -16,10 +23,7 @@ export type LingyunSessionSnapshotV1 = {
   history: AgentHistoryMessage[];
   mentionedSkills?: string[];
   compactionSyntheticContexts?: LingyunCompactionSyntheticContext[];
-  fileHandles?: {
-    nextId: number;
-    byId: Record<string, string>;
-  };
+  fileHandles?: LingyunSession['fileHandles'];
   semanticHandles?: SemanticHandlesState;
 };
 
@@ -30,11 +34,97 @@ const FileHandlesSchema = z.object({
   byId: z.record(z.string(), z.string()),
 });
 
+type RecordLike = Record<string, unknown>;
+
+function isRecord(value: unknown): value is RecordLike {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function parseSnapshotInput(input: unknown): unknown {
+  return typeof input === 'string' ? JSON.parse(input) : input;
+}
+
+function tryParseSnapshotInput(input: unknown): unknown | undefined {
+  if (typeof input !== 'string') return input;
+  try {
+    return JSON.parse(input);
+  } catch {
+    return undefined;
+  }
+}
+
+function readTrimmedOptionalString(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed || undefined;
+}
+
+function requireSnapshotSessionId(value: unknown, context: string): string {
+  const sessionId = readTrimmedOptionalString(value);
+  if (!sessionId) {
+    throw new Error(`${context}: sessionId is required`);
+  }
+  return sessionId;
+}
+
+function normalizeCompactionSyntheticContexts(
+  value: unknown,
+): LingyunCompactionSyntheticContext[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const contexts = value
+    .filter(
+      (context): context is LingyunCompactionSyntheticContext =>
+        isRecord(context) &&
+        (context.transientContext === 'explore' || context.transientContext === 'memoryRecall') &&
+        typeof context.text === 'string',
+    )
+    .map(context => ({
+      transientContext: context.transientContext,
+      text: context.text,
+    }));
+  return contexts.length > 0 ? contexts : undefined;
+}
+
+function coerceSessionSnapshot(value: RecordLike): LingyunSessionSnapshot | undefined {
+  if (value.version !== 1) return undefined;
+
+  const savedAt = readTrimmedOptionalString(value.savedAt);
+  if (!savedAt) return undefined;
+
+  const sessionId = readTrimmedOptionalString(value.sessionId);
+  if (!sessionId) return undefined;
+
+  const parentSessionId = readTrimmedOptionalString(value.parentSessionId);
+  const subagentType = readTrimmedOptionalString(value.subagentType);
+  const modelId = readTrimmedOptionalString(value.modelId);
+  const pendingPlan = readTrimmedOptionalString(value.pendingPlan);
+  const history = Array.isArray(value.history) ? (value.history as AgentHistoryMessage[]) : [];
+  const mentionedSkills = normalizeOptionalMentionedSkills(value.mentionedSkills);
+  const compactionSyntheticContexts = normalizeCompactionSyntheticContexts(value.compactionSyntheticContexts);
+  const fileHandles = normalizeFileHandlesState(value.fileHandles);
+  const semanticHandles = normalizeSemanticHandlesState(value.semanticHandles);
+
+  return {
+    version: 1,
+    savedAt,
+    sessionId,
+    ...(parentSessionId ? { parentSessionId } : {}),
+    ...(subagentType ? { subagentType } : {}),
+    ...(modelId ? { modelId } : {}),
+    ...(pendingPlan ? { pendingPlan } : {}),
+    history,
+    ...(mentionedSkills ? { mentionedSkills } : {}),
+    ...(compactionSyntheticContexts ? { compactionSyntheticContexts } : {}),
+    ...(fileHandles ? { fileHandles } : {}),
+    ...(semanticHandles ? { semanticHandles } : {}),
+  };
+}
+
 export const LingyunSessionSnapshotSchema = z
   .object({
     version: z.literal(1),
     savedAt: z.string(),
-    sessionId: z.string().optional(),
+    sessionId: z.string(),
     parentSessionId: z.string().optional(),
     subagentType: z.string().optional(),
     modelId: z.string().optional(),
@@ -60,25 +150,26 @@ export function snapshotSession(
 ): LingyunSessionSnapshot {
   const includeFileHandles = options?.includeFileHandles !== false;
   const savedAt = (options?.savedAt ?? new Date()).toISOString();
-  const sessionId = options?.sessionId ?? session.sessionId;
+  const sessionId = requireSnapshotSessionId(options?.sessionId ?? session.sessionId, 'snapshotSession');
+  const mentionedSkills = normalizeOptionalMentionedSkills(session.mentionedSkills);
 
   return {
     version: 1,
     savedAt,
-    ...(sessionId ? { sessionId } : {}),
+    sessionId,
     ...(session.parentSessionId ? { parentSessionId: session.parentSessionId } : {}),
     ...(session.subagentType ? { subagentType: session.subagentType } : {}),
     ...(session.modelId ? { modelId: session.modelId } : {}),
     ...(session.pendingPlan ? { pendingPlan: session.pendingPlan } : {}),
     history: session.getHistory(),
-    ...(session.mentionedSkills.length > 0 ? { mentionedSkills: [...session.mentionedSkills] } : {}),
+    ...(mentionedSkills ? { mentionedSkills } : {}),
     ...(session.compactionSyntheticContexts.length > 0
       ? {
           compactionSyntheticContexts: session.compactionSyntheticContexts.map((context) => ({ ...context })),
         }
       : {}),
-    ...(includeFileHandles && session.fileHandles ? { fileHandles: session.fileHandles } : {}),
-    ...(session.semanticHandles ? { semanticHandles: session.semanticHandles } : {}),
+    ...(includeFileHandles && session.fileHandles ? { fileHandles: cloneFileHandlesState(session.fileHandles) } : {}),
+    ...(session.semanticHandles ? { semanticHandles: cloneSemanticHandlesState(session.semanticHandles) } : {}),
   };
 }
 
@@ -102,23 +193,25 @@ export function serializeSessionSnapshot(snapshot: LingyunSessionSnapshot, optio
 }
 
 export function parseSessionSnapshot(input: unknown): LingyunSessionSnapshot {
-  const raw = typeof input === 'string' ? JSON.parse(input) : input;
+  const raw = parseSnapshotInput(input);
   const parsed = LingyunSessionSnapshotSchema.parse(raw);
+  const snapshot = coerceSessionSnapshot(parsed as RecordLike);
+  if (!snapshot) {
+    throw new Error('Invalid session snapshot: sessionId is required');
+  }
+  return snapshot;
+}
 
-  return {
-    version: 1,
-    savedAt: parsed.savedAt,
-    ...(parsed.sessionId ? { sessionId: parsed.sessionId } : {}),
-    ...(parsed.parentSessionId ? { parentSessionId: parsed.parentSessionId } : {}),
-    ...(parsed.subagentType ? { subagentType: parsed.subagentType } : {}),
-    ...(parsed.modelId ? { modelId: parsed.modelId } : {}),
-    ...(parsed.pendingPlan ? { pendingPlan: parsed.pendingPlan } : {}),
-    history: parsed.history as AgentHistoryMessage[],
-    ...(Array.isArray(parsed.mentionedSkills) ? { mentionedSkills: parsed.mentionedSkills } : {}),
-    ...(Array.isArray(parsed.compactionSyntheticContexts)
-      ? { compactionSyntheticContexts: parsed.compactionSyntheticContexts }
-      : {}),
-    ...(parsed.fileHandles ? { fileHandles: parsed.fileHandles } : {}),
-    ...(parsed.semanticHandles ? { semanticHandles: parsed.semanticHandles as SemanticHandlesState } : {}),
-  };
+/**
+ * Best-effort parser for host/UI boundaries that need to tolerate partially malformed
+ * session snapshots while still rejecting snapshots without basic identity/version fields.
+ */
+export function tryParseSessionSnapshot(input: unknown): LingyunSessionSnapshot | undefined {
+  try {
+    return parseSessionSnapshot(input);
+  } catch {
+    const raw = tryParseSnapshotInput(input);
+    if (!isRecord(raw)) return undefined;
+    return coerceSessionSnapshot(raw);
+  }
 }

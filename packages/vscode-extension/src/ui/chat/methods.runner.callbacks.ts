@@ -1,298 +1,39 @@
 import * as vscode from 'vscode';
-import { getMessageText } from '@kooka/core';
-import { EDIT_TOOL_IDS } from '../../core/agent/constants';
-import type { AgentCallbacks, ToolDefinition, ToolCall } from '../../core/types';
-import type { AgentLoop } from '../../core/agent';
-import { cleanAssistantPreamble, formatErrorForUser, formatWorkspacePathForUI } from './utils';
-import type { ChatMessage } from './types';
-import { buildToolDiffView, createUnifiedDiff, computeUnifiedDiffStats, trimUnifiedDiff } from './toolDiff';
-import { resolveToolPath } from '../../tools/builtin/workspace';
-import { recordAssistantOutcome, recordFileTouch, recordToolUse } from '../../core/sessionSignals';
+
+import type { AgentCallbacks } from '../../core/types';
+import { recordAssistantOutcome } from '../../core/sessionSignals';
 import { getDebugSettings } from '../../core/debugSettings';
 import { appendErrorLog, appendLog } from '../../core/logger';
 import { bindChatControllerService } from './controllerService';
 import { decorateAgentCallbacksWithOfficeSync } from '../office/sync';
-import type { OfficeSync } from '../office/sync';
-import type { WorkspaceSnapshot } from '../../core/snapshot';
-import type { SessionSignals } from '../../core/sessionSignals';
-import type { ChatSessionInfo } from './types';
+import type { ChatMessage, ChatSessionInfo } from './types';
+import { formatErrorForUser } from './utils';
 import type { ChatController } from './controller';
-import {
-  appendDebugLog,
-  applyCommonToolResultFields,
-  cacheToolDiffSnapshot,
-  postTurnStatus,
-  readTextFileForDiff,
-  resolveToolCallUiPath,
-  upsertTaskChildSession,
-} from './runner/callbackUtils';
+import type { ChatRunnerCallbacksDeps, ChatRunnerCallbacksService } from './runner/callbackContracts';
+export type { ChatRunnerCallbacksService } from './runner/callbackContracts';
+import { createCompactionCallbacks } from './runner/compactionCallbacks';
+import { createChatExecutionState } from './runner/executionState';
+import { createPlanningCallbacks } from './runner/planningCallbacks';
+import { createStepSnapshotCallbacks } from './runner/stepSnapshotCallbacks';
+import { createToolLifecycleCallbacks } from './runner/toolLifecycleCallbacks';
+import { appendDebugLog, postTurnStatus } from './runner/callbackUtils';
+import { createChatRunnerCallbacksDepsForController } from './runner/callbackControllerAdapter';
 
-const MAX_TOOL_DIFF_FILE_BYTES = 400_000;
-const TOOL_DIFF_CONTEXT_LINES = 3;
-
-export interface ChatRunnerCallbacksService {
-  createPlanningCallbacks(planMsg: ChatMessage): AgentCallbacks;
-  createAgentCallbacks(): AgentCallbacks;
-}
-
-export interface ChatRunnerCallbacksDeps {
-  activeSessionId: string;
-  sessions: Map<string, ChatSessionInfo>;
-  agent: Pick<AgentLoop, 'getHistory' | 'resolveFileId'>;
-  currentModel: string;
-  currentTurnId?: string;
-  activeStepId?: string;
-  stepCounter: number;
-  mode: 'build' | 'plan';
-  llmProvider?: { id?: string };
-  messages: ChatMessage[];
-  abortRequested: boolean;
-  signals: SessionSignals;
-  officeSync?: OfficeSync;
-  outputChannel?: vscode.OutputChannel;
-  snapshot?: WorkspaceSnapshot;
-  snapshotUnavailableReason?: string;
-  toolDiffBeforeByToolCallId: Map<
-    string,
-    {
-      absPath: string;
-      displayPath: string;
-      beforeText: string;
-      isExternal: boolean;
-      skippedReason?: 'too_large' | 'binary';
-    }
-  >;
-  toolDiffSnapshotsByToolCallId: Map<
-    string,
-    {
-      absPath: string;
-      displayPath: string;
-      beforeText: string;
-      afterText: string;
-      isExternal: boolean;
-      truncated: boolean;
-    }
-  >;
-  isSessionPersistenceEnabled(): boolean;
-  normalizeLoadedSession(raw: ChatSessionInfo): ChatSessionInfo;
-  persistActiveSession(): void;
-  postMessage(message: unknown): void;
-  postSessions(): void;
-  markSessionDirty(sessionId: string): void;
-  flushSessionSave(): Promise<void>;
-  getContextForUI(): {
-    totalTokens?: number;
-    inputTokens?: number;
-    outputTokens?: number;
-    cacheReadTokens?: number;
-    cacheWriteTokens?: number;
-    contextLimitTokens?: number;
-    outputLimitTokens?: number;
-    percent?: number;
-  };
-  requestInlineApproval(tc: ToolCall, def: ToolDefinition, parentMessageId?: string): Promise<boolean>;
-  getWorkspaceSnapshot(): Promise<WorkspaceSnapshot | undefined>;
-}
-
+/**
+ * Composition root for chat runner callbacks.
+ *
+ * The deeper runner modules own planning, execution state, tool lifecycle,
+ * compaction, and step snapshot behavior. This module wires them together.
+ */
 type ChatRunnerCallbacksRuntime = ChatRunnerCallbacksDeps & ChatRunnerCallbacksService;
 
 export function createChatRunnerCallbacksService(controller: ChatRunnerCallbacksDeps): ChatRunnerCallbacksService {
   const runtime = controller as ChatRunnerCallbacksRuntime;
   const service = bindChatControllerService(runtime, {
-  createPlanningCallbacks(this: ChatRunnerCallbacksRuntime, planMsg: ChatMessage): AgentCallbacks {
-    const persistSessions = this.isSessionPersistenceEnabled();
-    const planContainerId = planMsg.id;
-    const planTurnId = planMsg.turnId ?? this.currentTurnId;
-    const planPlaceholderText = planMsg.content || 'Planning...';
-
-    let buffered = '';
-    let flushHandle: NodeJS.Timeout | undefined;
-
-    const flush = () => {
-      flushHandle = undefined;
-      this.postMessage({ type: 'updateMessage', message: planMsg });
-      if (persistSessions) {
-        this.persistActiveSession();
-      }
-    };
-
-    const scheduleFlush = () => {
-      if (flushHandle) return;
-      flushHandle = setTimeout(flush, 60);
-    };
-
-    const upsertToolError = (tc: ToolCall, def: ToolDefinition, reason: string) => {
-      const existing = [...this.messages]
-        .reverse()
-        .find(m => m.toolCall?.approvalId === tc.id && m.stepId === planContainerId);
-
-      if (existing?.toolCall) {
-        existing.toolCall.status = 'error';
-        existing.toolCall.result = reason;
-        this.postMessage({ type: 'updateTool', message: existing });
-      } else {
-        const { path } = resolveToolCallUiPath(this, tc, def, { includeWorkdir: true });
-
-        const toolMsg: ChatMessage = {
-          id: crypto.randomUUID(),
-          role: 'tool',
-          content: '',
-          timestamp: Date.now(),
-          stepId: planContainerId,
-          toolCall: {
-            id: def.id,
-            name: def.name,
-            args: tc.function.arguments,
-            status: 'error',
-            approvalId: tc.id,
-            path,
-            result: reason,
-          },
-        };
-        this.messages.push(toolMsg);
-        this.postMessage({ type: 'message', message: toolMsg });
-      }
-
-      if (persistSessions) {
-        this.persistActiveSession();
-      }
-    };
-
-    const callbacks: AgentCallbacks = {
-      onIterationEnd: () => {
-        // Keep the global context indicator in sync during plan loops (usage updates per turn).
-        this.postMessage({ type: 'context', context: this.getContextForUI() });
-      },
-      onDebug: (message) => {
-        appendDebugLog(this, message);
-      },
-      onStatusChange: (status) => {
-        if (status?.type === 'retry') {
-          buffered = '';
-          if (flushHandle) {
-            clearTimeout(flushHandle);
-            flushHandle = undefined;
-          }
-          planMsg.content = planPlaceholderText;
-          this.postMessage({ type: 'updateMessage', message: planMsg });
-          if (persistSessions) {
-            this.persistActiveSession();
-          }
-        }
-        postTurnStatus(this, planTurnId, status);
-      },
-      onAssistantToken: (token) => {
-        buffered += token;
-        planMsg.content = cleanAssistantPreamble(buffered);
-        scheduleFlush();
-      },
-      onToolCall: (tc: ToolCall, def: ToolDefinition) => {
-        const { path } = resolveToolCallUiPath(this, tc, def);
-
-        const existing = [...this.messages].reverse().find(m => {
-          if (m.role !== 'tool') return false;
-          if (m.toolCall?.approvalId !== tc.id) return false;
-          return m.stepId === planContainerId;
-        });
-
-        if (existing?.toolCall) {
-          existing.toolCall.id = def.id;
-          existing.toolCall.name = def.name;
-          existing.toolCall.args = tc.function.arguments;
-          if (path) existing.toolCall.path = path;
-          if (existing.toolCall.status !== 'pending' && existing.toolCall.status !== 'rejected') {
-            existing.toolCall.status = 'running';
-          }
-          this.postMessage({ type: 'updateTool', message: existing });
-          if (persistSessions) {
-            this.persistActiveSession();
-          }
-          return;
-        }
-
-        const toolMsg: ChatMessage = {
-          id: crypto.randomUUID(),
-          role: 'tool',
-          content: '',
-          timestamp: Date.now(),
-          stepId: planContainerId,
-          toolCall: {
-            id: def.id,
-            name: def.name,
-            args: tc.function.arguments,
-            status: 'running',
-            approvalId: tc.id,
-            path,
-          },
-        };
-        this.messages.push(toolMsg);
-        this.postMessage({ type: 'message', message: toolMsg });
-        if (persistSessions) {
-          this.persistActiveSession();
-        }
-      },
-      onToolBlocked: (tc: ToolCall, def: ToolDefinition, reason: string) => {
-        upsertToolError(tc, def, reason);
-      },
-      onToolResult: (tc, result) => {
-        const toolMsg = [...this.messages]
-          .reverse()
-          .find(m => m.toolCall?.approvalId === tc.id && m.stepId === planContainerId);
-        if (toolMsg?.toolCall) {
-          const { resultStr, isTaskTool, hasDiff, maybeTodos } = applyCommonToolResultFields(
-            toolMsg.toolCall,
-            result,
-          );
-
-          if (isTaskTool && result.success) {
-            const childId = upsertTaskChildSession(this, result);
-            if (childId) toolMsg.toolCall.taskSessionId = childId;
-          }
-
-          let storeOutput = !result.success || (!!resultStr.trim() && !hasDiff);
-          if (toolMsg.toolCall.id === 'todowrite' || toolMsg.toolCall.id === 'todoread') {
-            // Todo output is already surfaced in the header popover; avoid spamming the chat with raw JSON.
-            storeOutput = false;
-          }
-          toolMsg.toolCall.result = storeOutput ? resultStr.substring(0, 4000) : undefined;
-
-          this.postMessage({ type: 'updateTool', message: toolMsg });
-
-          if (Array.isArray(maybeTodos)) {
-            this.postMessage({ type: 'todos', todos: maybeTodos });
-          }
-          if (persistSessions) {
-            this.persistActiveSession();
-          }
-        }
-      },
-      onRequestApproval: async (tc, def) => {
-        return await this.requestInlineApproval(tc, def, planContainerId);
-      },
-      onComplete: () => {
-        if (planTurnId) {
-          this.postMessage({ type: 'turnStatus', turnId: planTurnId, status: { type: 'done' } });
-        }
-        this.postMessage({ type: 'context', context: this.getContextForUI() });
-      },
-      onError: (error) => {
-        const errorMsg: ChatMessage = {
-          id: crypto.randomUUID(),
-          role: 'error',
-          content: formatErrorForUser(error, { llmProviderId: this.llmProvider?.id }),
-          timestamp: Date.now(),
-        };
-        this.messages.push(errorMsg);
-        this.postMessage({ type: 'message', message: errorMsg });
-        this.postMessage({ type: 'context', context: this.getContextForUI() });
-        if (persistSessions) {
-          this.persistActiveSession();
-        }
-      },
-    };
-
-    return this.officeSync ? decorateAgentCallbacksWithOfficeSync(callbacks, this.officeSync) : callbacks;
-  },
+    createPlanningCallbacks(this: ChatRunnerCallbacksRuntime, planMsg: ChatMessage): AgentCallbacks {
+      const callbacks = createPlanningCallbacks(this, planMsg);
+      return this.officeSync ? decorateAgentCallbacksWithOfficeSync(callbacks, this.officeSync) : callbacks;
+    },
 
   createAgentCallbacks(this: ChatRunnerCallbacksRuntime): AgentCallbacks {
     const showThinking =
@@ -300,639 +41,87 @@ export function createChatRunnerCallbacksService(controller: ChatRunnerCallbacks
     const debugLlm = getDebugSettings().llm;
     const persistSessions = this.isSessionPersistenceEnabled();
 
-    let stepMsg: ChatMessage | undefined;
-    let stepPosted = false;
-    let thoughtMsg: ChatMessage | undefined;
-    let thoughtBuffer = '';
-    let thoughtTokensSeen = 0;
-    let thoughtCharsSeen = 0;
-    let loggedFirstThought = false;
-    let assistantMsg: ChatMessage | undefined;
-    let assistantStarted = false;
-    let compactionMsg: ChatMessage | undefined;
-    const MAX_COMPACTION_SUMMARY_CHARS = 20000;
-
     const debug = (message: string) => {
       if (!debugLlm || !message) return;
       appendLog(this.outputChannel, message, { level: 'debug', tag: 'UI' });
     };
 
-    debug(
-      `[Thinking] callbacks created showThinking=${String(showThinking)} mode=${this.mode} turn=${this.currentTurnId ?? ''}`,
-    );
-
-    const ensureStepMsg = (): ChatMessage => {
-      if (stepMsg) return stepMsg;
-
-      const index = ++this.stepCounter;
-      stepMsg = {
-        id: crypto.randomUUID(),
-        role: 'step',
-        content: '',
-        timestamp: Date.now(),
-        turnId: this.currentTurnId,
-        step: {
-          index,
-          status: 'running',
-          mode: this.mode === 'plan' ? 'Plan' : 'Build',
-          model: this.currentModel,
-        },
-      };
-      this.activeStepId = stepMsg.id;
-      debug(`[Step] start stepId=${stepMsg.id} index=${String(index)} turn=${this.currentTurnId ?? ''}`);
-      return stepMsg;
-    };
-
-    const postStepMsgIfNeeded = (): ChatMessage => {
-      const msg = ensureStepMsg();
-      if (stepPosted) return msg;
-      stepPosted = true;
-      this.messages.push(msg);
-      this.postMessage({ type: 'message', message: msg });
-      if (persistSessions) {
-        this.persistActiveSession();
-      }
-      return msg;
-    };
-
-    const ensureAssistantMsg = (): ChatMessage => {
-      if (assistantMsg) return assistantMsg;
-      assistantMsg = {
-        id: crypto.randomUUID(),
-        role: 'assistant',
-        content: '',
-        timestamp: Date.now(),
-        turnId: this.currentTurnId,
-        stepId: this.activeStepId,
-      };
-      this.messages.push(assistantMsg);
-      this.postMessage({ type: 'message', message: assistantMsg });
-      return assistantMsg;
-    };
-
-    const pushThought = (text: string) => {
-      if (!text) return;
-
-      thoughtTokensSeen += 1;
-      thoughtCharsSeen += text.length;
-      if (!loggedFirstThought) {
-        loggedFirstThought = true;
-        debug(
-          `[Thinking] first token len=${String(text.length)} trimmedLen=${String(text.trim().length)} showThinking=${String(showThinking)} step=${this.activeStepId ?? ''}`,
-        );
-      }
-
-      if (!showThinking) return;
-
-      // Local servers sometimes emit "<think>\n" as a separate chunk, which creates an
-      // empty-looking Thinking block. Buffer whitespace until we see a real character.
-      if (!thoughtMsg) {
-        thoughtBuffer += text;
-        const normalized = thoughtBuffer.replace(/\[REDACTED\]/g, '').trim();
-        if (!normalized) return;
-
-        thoughtMsg = {
-          id: crypto.randomUUID(),
-          role: 'thought',
-          content: normalized,
-          timestamp: Date.now(),
-          turnId: this.currentTurnId,
-          stepId: this.activeStepId,
-        };
-        thoughtBuffer = '';
-        debug(
-          `[Thinking] created thoughtId=${thoughtMsg.id} initialChars=${String(normalized.length)} step=${this.activeStepId ?? ''}`,
-        );
-        this.messages.push(thoughtMsg);
-        this.postMessage({ type: 'message', message: thoughtMsg });
-        return;
-      }
-
-      const safe = text.replace(/\[REDACTED\]/g, '');
-      if (!safe) return;
-      thoughtMsg.content += safe;
-      this.postMessage({ type: 'token', messageId: thoughtMsg.id, token: safe });
-    };
-
-    const pushAssistant = (text: string) => {
-      if (!text) return;
-      let chunk = text;
-      if (!assistantStarted) {
-        chunk = chunk.replace(/^[\s\r\n]+/, '');
-        if (!chunk) return;
-        assistantStarted = true;
-      }
-      const msg = ensureAssistantMsg();
-      msg.content += chunk;
-      this.postMessage({ type: 'token', messageId: msg.id, token: chunk });
-    };
-
-    const reconcileAssistantForToolCall = () => {
-      if (!assistantMsg || assistantMsg.turnId !== this.currentTurnId) return;
-      const original = assistantMsg.content;
-      const trimmed = cleanAssistantPreamble(original);
-      if (trimmed !== original) {
-        assistantMsg.content = trimmed;
-        this.postMessage({ type: 'updateMessage', message: assistantMsg });
-      }
-    };
-
-    const finalizeAssistantForStepEnd = () => {
-      if (!assistantMsg || assistantMsg.turnId !== this.currentTurnId) return;
-      const original = assistantMsg.content;
-      const cleaned = cleanAssistantPreamble(original);
-      if (cleaned !== original) {
-        assistantMsg.content = cleaned;
-        this.postMessage({ type: 'updateMessage', message: assistantMsg });
-      }
-    };
-
-    const reconcileAssistantFromHistory = () => {
-      const history = this.agent.getHistory();
-      const lastAssistant = [...history].reverse().find(m => m.role === 'assistant');
-      if (!lastAssistant) return;
-
-      const finalContent = cleanAssistantPreamble(getMessageText(lastAssistant));
-      if (!finalContent.trim()) return;
-
-      if (!assistantMsg) {
-        assistantMsg = {
-          id: crypto.randomUUID(),
-          role: 'assistant',
-          content: finalContent,
-          timestamp: Date.now(),
-          turnId: this.currentTurnId,
-          stepId: this.activeStepId,
-        };
-        this.messages.push(assistantMsg);
-        this.postMessage({ type: 'message', message: assistantMsg });
-        return;
-      }
-
-      if (assistantMsg.turnId === this.currentTurnId && assistantMsg.content !== finalContent) {
-        assistantMsg.content = finalContent;
-        this.postMessage({ type: 'updateMessage', message: assistantMsg });
-      }
-    };
-
-    const startNewTurn = () => {
-      stepMsg = undefined;
-      this.activeStepId = undefined;
-      stepPosted = false;
-      thoughtMsg = undefined;
-      thoughtBuffer = '';
-      assistantMsg = undefined;
-      assistantStarted = false;
-    };
+    const executionState = createChatExecutionState({
+      view: this,
+      showThinking,
+      debugLlm,
+      persistSessions,
+      debug,
+    });
+    const toolLifecycle = createToolLifecycleCallbacks({
+      view: this,
+      executionState,
+      persistSessions,
+    });
+    const compaction = createCompactionCallbacks({
+      view: this,
+      persistSessions,
+    });
+    const stepSnapshots = createStepSnapshotCallbacks({
+      view: this,
+      persistSessions,
+    });
 
     const callbacks: AgentCallbacks = {
-      onCompactionStart: ({ auto }) => {
-        const startedAt = Date.now();
-        const operationId = crypto.randomUUID();
-
-        compactionMsg = {
-          id: operationId,
-          role: 'operation',
-          content: '',
-          timestamp: startedAt,
-          turnId: this.currentTurnId,
-          operation: {
-            kind: 'compact',
-            status: 'running',
-            label: auto ? 'Auto-compacting context…' : 'Compacting context…',
-            detail: auto ? 'Summarizing older messages to avoid context overflow.' : undefined,
-            startedAt,
-            auto,
-          },
-        };
-
-        this.messages.push(compactionMsg);
-        this.postMessage({
-          type: 'operationStart',
-          operation: {
-            id: operationId,
-            kind: 'compact',
-            status: 'running',
-            label: compactionMsg.operation?.label || 'Compacting context…',
-            startedAt,
-          },
-        });
-        this.postMessage({ type: 'message', message: compactionMsg });
-
-        if (persistSessions) {
-          this.persistActiveSession();
-        }
+      onCompactionStart: (event) => {
+        compaction.onCompactionStart(event);
       },
       onIterationStart: async () => {
-        startNewTurn();
-        const step = postStepMsgIfNeeded();
-        if (this.mode !== 'build' || !step.step) return;
-
-        const snapshot = await this.getWorkspaceSnapshot();
-        if (!snapshot) return;
-
-        try {
-          const baseHash = await snapshot.track();
-          step.step.snapshot = { baseHash };
-          if (persistSessions) {
-            this.persistActiveSession();
-          }
-        } catch (error) {
-          this.snapshotUnavailableReason = error instanceof Error ? error.message : String(error);
-        }
+        executionState.startNewTurn();
+        const step = executionState.postStepMsgIfNeeded();
+        await stepSnapshots.onIterationStart(step);
       },
       onAssistantToken: (token) => {
-        pushAssistant(token);
+        executionState.pushAssistant(token);
       },
       onThoughtToken: (token) => {
-        pushThought(token);
+        executionState.pushThought(token);
       },
-      onToolCall: async (tc: ToolCall, def: ToolDefinition) => {
-        postStepMsgIfNeeded();
-        reconcileAssistantForToolCall();
-
-        const { path, filePathRaw } = resolveToolCallUiPath(this, tc, def);
-        recordToolUse(this.signals, def.id);
-        if (path) recordFileTouch(this.signals, path);
-
-        const existing = [...this.messages].reverse().find(m => {
-          if (m.role !== 'tool') return false;
-          if (m.toolCall?.approvalId !== tc.id) return false;
-          if (m.turnId !== this.currentTurnId) return false;
-          return true;
-        });
-
-        if (existing?.toolCall) {
-          existing.toolCall.id = def.id;
-          existing.toolCall.name = def.name;
-          existing.toolCall.args = tc.function.arguments;
-          if (path) existing.toolCall.path = path;
-          if (existing.toolCall.status !== 'pending' && existing.toolCall.status !== 'rejected') {
-            existing.toolCall.status = 'running';
-          }
-          if (!existing.stepId && this.activeStepId) {
-            existing.stepId = this.activeStepId;
-          }
-          this.postMessage({ type: 'updateTool', message: existing });
-          if (persistSessions) {
-            this.persistActiveSession();
-          }
-          return;
-        }
-
-        const toolMsg: ChatMessage = {
-          id: crypto.randomUUID(),
-          role: 'tool',
-          content: '',
-          timestamp: Date.now(),
-          turnId: this.currentTurnId,
-          stepId: this.activeStepId,
-          toolCall: {
-            id: def.id,
-            name: def.name,
-            args: tc.function.arguments,
-            // IMPORTANT: Only mark a tool as "pending approval" when the agent core actually
-            // requests approval (onRequestApproval). Avoid UI heuristics that can disagree with
-            // the core permission system / autoApprove settings.
-            status: 'running',
-            approvalId: tc.id,
-            path,
-          },
-        };
-        this.messages.push(toolMsg);
-        this.postMessage({ type: 'message', message: toolMsg });
-        if (persistSessions) {
-          this.persistActiveSession();
-        }
-
-        if (EDIT_TOOL_IDS.has(def.id) && typeof filePathRaw === 'string' && filePathRaw.trim()) {
-          try {
-            const resolved = resolveToolPath(filePathRaw);
-            const before = await readTextFileForDiff(resolved.uri, MAX_TOOL_DIFF_FILE_BYTES);
-            const displayPath = formatWorkspacePathForUI(resolved.absPath) ?? resolved.absPath;
-            this.toolDiffBeforeByToolCallId.set(tc.id, {
-              absPath: resolved.absPath,
-              displayPath,
-              beforeText: before.text,
-              isExternal: resolved.isExternal,
-              skippedReason: before.skippedReason,
-            });
-          } catch {
-            // Ignore diff capture failures; tool execution should proceed.
-          }
-        }
+      onToolCall: async (tc, def) => {
+        await toolLifecycle.onToolCall(tc, def);
       },
-      onToolBlocked: (tc: ToolCall, def: ToolDefinition, reason: string) => {
-        postStepMsgIfNeeded();
-        reconcileAssistantForToolCall();
-        this.toolDiffBeforeByToolCallId.delete(tc.id);
-        this.toolDiffSnapshotsByToolCallId.delete(tc.id);
-
-        const currentStepId = this.activeStepId;
-        const existing = [...this.messages].reverse().find(m => {
-          if (m.toolCall?.approvalId !== tc.id) return false;
-          if (currentStepId && m.stepId !== currentStepId) return false;
-          return true;
-        });
-
-        if (existing?.toolCall) {
-          existing.toolCall.status = 'error';
-          existing.toolCall.result = reason;
-          this.postMessage({ type: 'updateTool', message: existing });
-        } else {
-          const { path } = resolveToolCallUiPath(this, tc, def, { includeWorkdir: true });
-
-          const toolMsg: ChatMessage = {
-            id: crypto.randomUUID(),
-            role: 'tool',
-            content: '',
-            timestamp: Date.now(),
-            turnId: this.currentTurnId,
-            stepId: this.activeStepId,
-            toolCall: {
-              id: def.id,
-              name: def.name,
-              args: tc.function.arguments,
-              status: 'error',
-              approvalId: tc.id,
-              path,
-              result: reason,
-            },
-          };
-          this.messages.push(toolMsg);
-          this.postMessage({ type: 'message', message: toolMsg });
-        }
-        if (persistSessions) {
-          this.persistActiveSession();
-        }
+      onToolBlocked: (tc, def, reason) => {
+        toolLifecycle.onToolBlocked(tc, def, reason);
       },
       onToolResult: (tc, result) => {
-        const currentStepId = this.activeStepId;
-        const toolMsg = [...this.messages].reverse().find(m => {
-          if (m.toolCall?.approvalId !== tc.id) return false;
-          if (currentStepId && m.stepId !== currentStepId) return false;
-          return true;
-        });
-        if (toolMsg?.toolCall) {
-          const toolCall = toolMsg.toolCall;
-          const { resultStr, isTaskTool, hasDiff, maybeTodos } = applyCommonToolResultFields(toolCall, result);
-
-          const toolId = toolMsg.toolCall.id;
-          if (result.success && result.data && typeof result.data === 'object') {
-            const data = result.data as Record<string, unknown>;
-            if (toolId === 'glob' && Array.isArray((data as any).files)) {
-              const files = (data as any).files as unknown[];
-              for (const file of files) {
-                if (typeof file !== 'string' || !file.trim()) continue;
-                recordFileTouch(this.signals, formatWorkspacePathForUI(file) ?? file.trim());
-              }
-            }
-            if (toolId === 'grep' && Array.isArray((data as any).matches)) {
-              const matches = (data as any).matches as unknown[];
-              for (const match of matches) {
-                if (!match || typeof match !== 'object') continue;
-                const filePath = (match as any).filePath;
-                if (typeof filePath !== 'string' || !filePath.trim()) continue;
-                recordFileTouch(this.signals, formatWorkspacePathForUI(filePath) ?? filePath.trim());
-              }
-            }
-          }
-          if (result.success && (toolId === 'glob' || toolId === 'list') && typeof resultStr === 'string') {
-            const trimmed = resultStr.trim();
-            if (trimmed && trimmed !== 'No files found matching the criteria' && trimmed !== 'No files found') {
-              const files = trimmed
-                .split(/\r?\n/)
-                .map(line => line.trim())
-                .filter(Boolean);
-
-              const previewCount = 10;
-              toolMsg.toolCall.batchFiles = files.slice(0, previewCount);
-              toolMsg.toolCall.additionalCount = Math.max(0, files.length - previewCount);
-            }
-          }
-
-          if (result.success && EDIT_TOOL_IDS.has(toolId)) {
-            const before = this.toolDiffBeforeByToolCallId.get(tc.id);
-            this.toolDiffBeforeByToolCallId.delete(tc.id);
-            this.toolDiffSnapshotsByToolCallId.delete(tc.id);
-
-            if (before?.skippedReason) {
-              toolCall.diffUnavailableReason =
-                before.skippedReason === 'binary'
-                  ? 'Diff unavailable (binary file)'
-                  : 'Diff unavailable (file too large)';
-            } else if (before) {
-              void (async () => {
-                try {
-                  const after = await readTextFileForDiff(
-                    vscode.Uri.file(before.absPath),
-                    MAX_TOOL_DIFF_FILE_BYTES,
-                  );
-                  if (after.skippedReason) {
-                    toolCall.diffUnavailableReason =
-                      after.skippedReason === 'binary'
-                        ? 'Diff unavailable (binary file)'
-                        : 'Diff unavailable (file too large)';
-                  } else {
-                    const rawDiff = createUnifiedDiff({
-                      filePath: before.displayPath,
-                      beforeText: before.beforeText,
-                      afterText: after.text,
-                      context: TOOL_DIFF_CONTEXT_LINES,
-                    });
-
-                    const stats = computeUnifiedDiffStats(rawDiff);
-                    if (stats.additions > 0 || stats.deletions > 0) {
-                      const trimmed = trimUnifiedDiff(rawDiff, { maxChars: 20_000, maxLines: 400 });
-                      toolCall.diff = trimmed.text;
-                      toolCall.diffStats = stats;
-                      toolCall.diffTruncated = trimmed.truncated;
-
-                      toolCall.diffView = buildToolDiffView(trimmed.text, {
-                        filePath: before.displayPath || toolCall.path || 'file',
-                      });
-
-                      cacheToolDiffSnapshot(this, tc.id, {
-                        absPath: before.absPath,
-                        displayPath: before.displayPath || toolCall.path || 'file',
-                        beforeText: before.beforeText,
-                        afterText: after.text,
-                        isExternal: before.isExternal,
-                        truncated: trimmed.truncated,
-                      });
-                    }
-                  }
-
-                  this.postMessage({ type: 'updateTool', message: toolMsg });
-                  if (persistSessions) {
-                    this.persistActiveSession();
-                  }
-                } catch {
-                  // Ignore diff capture failures; tool result is still valid.
-                }
-              })();
-            }
-          } else {
-            this.toolDiffBeforeByToolCallId.delete(tc.id);
-          }
-
-          if (isTaskTool && result.success) {
-            const childId = upsertTaskChildSession(this, result);
-            if (childId) toolCall.taskSessionId = childId;
-          }
-
-          let storeOutput = !result.success || (!!resultStr.trim() && !hasDiff);
-          if (hasDiff && result.success && (toolId === 'edit' || toolId === 'write')) {
-            // Edit/write output may include diagnostics; keep it alongside the diff.
-            storeOutput = !!resultStr.trim();
-          }
-          if (toolMsg.toolCall.id === 'todowrite' || toolMsg.toolCall.id === 'todoread') {
-            // Todo output is already surfaced in the header popover; avoid spamming the chat with raw JSON.
-            storeOutput = false;
-          }
-          toolMsg.toolCall.result = storeOutput ? resultStr.substring(0, 4000) : undefined;
-
-          this.postMessage({ type: 'updateTool', message: toolMsg });
-
-          if (Array.isArray(maybeTodos)) {
-            this.postMessage({ type: 'todos', todos: maybeTodos });
-          }
-          if (persistSessions) {
-            this.persistActiveSession();
-          }
-        }
+        toolLifecycle.onToolResult(tc, result);
       },
       onIterationEnd: async () => {
-        if (this.mode === 'build' && stepMsg?.step?.snapshot?.baseHash) {
-          const snapshot = await this.getWorkspaceSnapshot();
-          if (snapshot) {
-            try {
-              const baseHash = stepMsg.step.snapshot.baseHash;
-              const patch = await snapshot.patch(baseHash);
-              if (patch.files.length > 0) {
-                stepMsg.step.patch = { baseHash: patch.baseHash, files: patch.files };
-              } else {
-                delete stepMsg.step.patch;
-              }
-              if (persistSessions) {
-                this.persistActiveSession();
-              }
-            } catch (error) {
-              this.snapshotUnavailableReason = error instanceof Error ? error.message : String(error);
-            }
-          }
-        }
+        const stepMsg = executionState.getStepMessage();
+        await stepSnapshots.onIterationEnd(stepMsg);
 
-        reconcileAssistantFromHistory();
-        finalizeAssistantForStepEnd();
-        if (stepPosted && stepMsg?.step) {
-          if (stepMsg.step.status !== 'canceled') {
-            stepMsg.step.status = 'done';
-          }
-          this.postMessage({ type: 'updateMessage', message: stepMsg });
-        }
+        executionState.reconcileAssistantFromHistory();
+        executionState.finalizeAssistantForStepEnd();
+        executionState.markStepDoneIfPosted();
         if (persistSessions) {
           this.persistActiveSession();
         }
         this.postMessage({ type: 'context', context: this.getContextForUI() });
-        if (debugLlm) {
-          debug(
-            `[Thinking] end tokens=${String(thoughtTokensSeen)} chars=${String(thoughtCharsSeen)} created=${String(!!thoughtMsg)} bufferChars=${String(thoughtBuffer.length)}`,
-          );
-        }
       },
-      onCompactionEnd: ({ auto, summaryMessageId, status, error }) => {
-        if (!compactionMsg || !compactionMsg.operation) return;
-
-        const endedAt = Date.now();
-        const opStatus = status === 'done' ? 'done' : status === 'canceled' ? 'canceled' : 'error';
-        const label =
-          opStatus === 'done'
-            ? auto
-              ? 'Context compacted (auto)'
-              : 'Context compacted'
-            : opStatus === 'canceled'
-              ? auto
-                ? 'Auto compaction canceled'
-                : 'Compaction canceled'
-              : auto
-                ? 'Auto compaction failed'
-                : 'Compaction failed';
-
-        compactionMsg.operation.status = opStatus;
-        compactionMsg.operation.label = label;
-        compactionMsg.operation.endedAt = endedAt;
-
-        if (opStatus !== 'done') {
-          compactionMsg.operation.detail = error ? String(error) : undefined;
-        } else {
-          compactionMsg.operation.detail = auto
-            ? 'Summarized older messages into a compact note to avoid context overflow.'
-            : 'Summarized older messages into a compact note.';
-
-          if (summaryMessageId) {
-            const history = this.agent.getHistory();
-            const summary = history.find(m => m.id === summaryMessageId);
-            const summaryText = summary ? getMessageText(summary) : '';
-            if (summaryText.trim()) {
-              const trimmed = summaryText.length > MAX_COMPACTION_SUMMARY_CHARS
-                ? summaryText.slice(0, MAX_COMPACTION_SUMMARY_CHARS) + '\n\n[Summary truncated in UI]'
-                : summaryText;
-              compactionMsg.operation.summaryText = trimmed;
-              compactionMsg.operation.summaryTruncated = summaryText.length > MAX_COMPACTION_SUMMARY_CHARS;
-            }
-          }
-        }
-
-        this.postMessage({ type: 'updateMessage', message: compactionMsg });
-        this.postMessage({
-          type: 'operationEnd',
-          operation: {
-            id: compactionMsg.id,
-            kind: 'compact',
-            status: opStatus,
-            label,
-            startedAt: compactionMsg.operation.startedAt,
-            endedAt,
-          },
-        });
-
-        // Compaction changes the effective prompt boundary; refresh the context indicator now.
-        this.postMessage({ type: 'context', context: this.getContextForUI() });
-
-        if (persistSessions) {
-          this.persistActiveSession();
-        }
-
-        compactionMsg = undefined;
+      onCompactionEnd: (event) => {
+        compaction.onCompactionEnd(event);
       },
       onStatusChange: (status) => {
-        if (status?.type === 'retry') {
-          thoughtBuffer = '';
-          if (thoughtMsg && thoughtMsg.turnId === this.currentTurnId) {
-            thoughtMsg.content = '';
-            this.postMessage({ type: 'updateMessage', message: thoughtMsg });
-          }
-          if (assistantMsg && assistantMsg.turnId === this.currentTurnId) {
-            assistantMsg.content = '';
-            this.postMessage({ type: 'updateMessage', message: assistantMsg });
-          }
-          assistantStarted = false;
-        }
+        executionState.resetStreamedContentForRetry(status);
         postTurnStatus(this, this.currentTurnId, status);
       },
-      onRequestApproval: async (tc, def) => {
-        postStepMsgIfNeeded();
-        reconcileAssistantForToolCall();
-        return await this.requestInlineApproval(tc, def);
+      onRequestApproval: async (tc, def, approvalContext) => {
+        executionState.postStepMsgIfNeeded();
+        executionState.reconcileAssistantForToolCall();
+        return await this.requestInlineApproval(tc, def, undefined, approvalContext);
       },
       onDebug: (message) => {
         appendDebugLog(this, message);
       },
       onComplete: (response) => {
-        finalizeAssistantForStepEnd();
-        if (!assistantMsg && response) {
-          pushAssistant(response);
+        executionState.finalizeAssistantForStepEnd();
+        if (!executionState.hasAssistantMessage() && response) {
+          executionState.pushAssistant(response);
         }
         if (this.mode === 'build' && response) {
           recordAssistantOutcome(this.signals, response);
@@ -941,9 +130,7 @@ export function createChatRunnerCallbacksService(controller: ChatRunnerCallbacks
           this.postMessage({ type: 'turnStatus', turnId: this.currentTurnId, status: { type: 'done' } });
         }
         this.abortRequested = false;
-        this.activeStepId = undefined;
-        stepMsg = undefined;
-        stepPosted = false;
+        executionState.resetCompletionState();
         this.postMessage({ type: 'complete' });
         this.postMessage({ type: 'context', context: this.getContextForUI() });
         if (persistSessions) {
@@ -964,12 +151,7 @@ export function createChatRunnerCallbacksService(controller: ChatRunnerCallbacks
           });
         }
 
-        if (stepMsg?.step) {
-          stepMsg.step.status = this.abortRequested ? 'canceled' : 'error';
-          if (stepPosted) {
-            this.postMessage({ type: 'updateMessage', message: stepMsg });
-          }
-        }
+        executionState.markStepError(this.abortRequested);
         const errorMsg: ChatMessage = {
           id: crypto.randomUUID(),
           role: 'error',
@@ -991,99 +173,6 @@ export function createChatRunnerCallbacksService(controller: ChatRunnerCallbacks
   });
   Object.assign(runtime, service);
   return service;
-}
-
-function createChatRunnerCallbacksDepsForController(
-  controller: ChatController
-): ChatRunnerCallbacksDeps {
-  return {
-    get activeSessionId() {
-      return controller.activeSessionId;
-    },
-    get sessions() {
-      return controller.sessions;
-    },
-    get agent() {
-      return controller.agent;
-    },
-    get currentModel() {
-      return controller.currentModel;
-    },
-    get currentTurnId() {
-      return controller.currentTurnId;
-    },
-    set currentTurnId(value) {
-      controller.currentTurnId = value;
-    },
-    get activeStepId() {
-      return controller.activeStepId;
-    },
-    set activeStepId(value) {
-      controller.activeStepId = value;
-    },
-    get stepCounter() {
-      return controller.stepCounter;
-    },
-    set stepCounter(value) {
-      controller.stepCounter = value;
-    },
-    get mode() {
-      return controller.mode;
-    },
-    get llmProvider() {
-      return controller.llmProvider;
-    },
-    get messages() {
-      return controller.messages;
-    },
-    get abortRequested() {
-      return controller.abortRequested;
-    },
-    set abortRequested(value) {
-      controller.abortRequested = value;
-    },
-    get signals() {
-      return controller.signals;
-    },
-    get officeSync() {
-      return controller.officeSync;
-    },
-    get outputChannel() {
-      return controller.outputChannel;
-    },
-    get snapshot() {
-      return controller.snapshot;
-    },
-    set snapshot(value) {
-      controller.snapshot = value;
-    },
-    get snapshotUnavailableReason() {
-      return controller.snapshotUnavailableReason;
-    },
-    set snapshotUnavailableReason(value) {
-      controller.snapshotUnavailableReason = value;
-    },
-    get toolDiffBeforeByToolCallId() {
-      return controller.toolDiffBeforeByToolCallId;
-    },
-    get toolDiffSnapshotsByToolCallId() {
-      return controller.toolDiffSnapshotsByToolCallId;
-    },
-    isSessionPersistenceEnabled: () => controller.sessionApi.isSessionPersistenceEnabled(),
-    normalizeLoadedSession: (raw: ChatSessionInfo) => controller.sessionApi.normalizeLoadedSession(raw),
-    persistActiveSession: () => controller.sessionApi.persistActiveSession(),
-    postMessage: (message: unknown) => controller.webviewApi.postMessage(message),
-    postSessions: () => controller.sessionApi.postSessions(),
-    markSessionDirty: (sessionId: string) => controller.sessionApi.markSessionDirty(sessionId),
-    flushSessionSave: () => controller.sessionApi.flushSessionSave(),
-    getContextForUI: () => controller.sessionApi.getContextForUI(),
-    requestInlineApproval: (
-      tc: Parameters<ChatRunnerCallbacksDeps['requestInlineApproval']>[0],
-      def: Parameters<ChatRunnerCallbacksDeps['requestInlineApproval']>[1],
-      parentMessageId?: string
-    ) => controller.approvalsApi.requestInlineApproval(tc, def, parentMessageId),
-    getWorkspaceSnapshot: () => controller.revertApi.getWorkspaceSnapshot(),
-  };
 }
 
 export function createChatRunnerCallbacksServiceForController(

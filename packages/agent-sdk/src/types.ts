@@ -212,6 +212,13 @@ export interface AgentConfig {
  * - Other callbacks may be awaited internally (e.g. iteration/compaction hooks) to allow async hosts,
  *   but failures never crash the agent loop.
  */
+export type AgentApprovalContext = {
+  manual: boolean;
+  reason?: string;
+  decision?: 'allow' | 'require_manual_approval' | 'deny';
+  metadata?: Record<string, unknown>;
+};
+
 export interface AgentCallbacks {
   onIterationStart?: (iteration: number) => void | Promise<void>;
   onIterationEnd?: (iteration: number) => void | Promise<void>;
@@ -243,7 +250,11 @@ export interface AgentCallbacks {
   onToolCall?: (tool: ToolCall, definition: ToolDefinition) => void | Promise<void>;
   onToolBlocked?: (tool: ToolCall, definition: ToolDefinition, reason: string) => void;
   onToolResult?: (tool: ToolCall, result: ToolResult) => void;
-  onRequestApproval?: (tool: ToolCall, definition: ToolDefinition) => Promise<boolean>;
+  onRequestApproval?: (
+    tool: ToolCall,
+    definition: ToolDefinition,
+    context?: AgentApprovalContext
+  ) => Promise<boolean>;
   /**
    * Subagent event hook for the built-in `task` tool.
    *

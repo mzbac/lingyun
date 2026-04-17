@@ -1,6 +1,7 @@
+		    const chatProtocol = window.LINGYUN_CHAT_PROTOCOL;
 		    const readyInterval = setInterval(() => {
 		      if (!initReceived) {
-		        vscode.postMessage({ type: 'ready', clientInstanceId });
+		        vscode.postMessage({ type: chatProtocol.ready, clientInstanceId });
 		      }
 		    }, 2000);
 
@@ -199,13 +200,14 @@
 		          try { setInputHistoryEntries(Array.isArray(data.inputHistory) ? data.inputHistory : []); } catch {}
 		          try { setAvailableSkills(Array.isArray(data.skills) ? data.skills : []); } catch {}
 		          pendingApprovalsCount = Number(data.pendingApprovals || 0) || 0;
+		          manualApprovalsCount = Number(data.manualApprovals || 0) || 0;
 		          autoApproveThisRun = !!data.autoApproveThisRun;
 		          updateApprovalBanner();
 		          canUndo = !!data.canUndo;
 		          canRedo = !!data.canRedo;
 		          updateRevertBar(data.revertState);
 		          syncInputState();
-		          vscode.postMessage({ type: 'initAck', clientInstanceId });
+		          vscode.postMessage({ type: chatProtocol.initAck, clientInstanceId });
 		          break;
 	        case 'queueState':
 	          try { setQueueState(Array.isArray(data.queuedInputs) ? data.queuedInputs : []); } catch {}
@@ -401,6 +403,7 @@
           break;
         case 'approvalsChanged':
           pendingApprovalsCount = Number(data.count || 0) || 0;
+          manualApprovalsCount = Number(data.manualCount || 0) || 0;
           autoApproveThisRun = !!data.autoApproveThisRun;
           updateApprovalBanner();
           break;
@@ -442,6 +445,7 @@
 		          stopOperationTimer();
 		          updateOperationBanner();
 		          pendingApprovalsCount = 0;
+		          manualApprovalsCount = 0;
 		          autoApproveThisRun = false;
 		          updateApprovalBanner();
 		          latestContext = null;
@@ -559,11 +563,10 @@
           input.focus();
           break;
       }
-	      } catch (err) {
-	        showFatalError(err);
-	        try { vscode.postMessage({ type: 'webviewError', error: String(err && (err.stack || err.message) || err) }); } catch {}
-	      }
+      } catch (err) {
+        showFatalError(err, 'message.dispatch');
+      }
 	    });
 
 		    syncInputState();
-		    vscode.postMessage({ type: 'ready', clientInstanceId });
+		    vscode.postMessage({ type: chatProtocol.ready, clientInstanceId });

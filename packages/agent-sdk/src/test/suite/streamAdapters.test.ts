@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 
-import { buildStreamReplay } from '@kooka/agent-sdk';
+import { buildStreamReplay } from '../../index.js';
 
 suite('streamAdapters', () => {
   test('buildStreamReplay throws on duplicate namespaces', () => {

@@ -3,7 +3,7 @@ const esbuild = require('esbuild');
 
 async function main() {
   const pkgRoot = path.resolve(__dirname, '..');
-  const entryPoint = path.resolve(pkgRoot, 'dist', 'index.js');
+  const entryPoint = path.resolve(pkgRoot, 'src', 'index.ts');
   const outFile = path.resolve(pkgRoot, 'dist', 'index.cjs');
 
   await esbuild.build({

@@ -1131,19 +1131,58 @@ suite('AgentLoop', () => {
     assert.ok(String(grepResult?.data || '').toLowerCase().includes('lsp'), 'grep output should include lsp hint');
   });
 
-  test('state round-trips pending steers and clear resets them', async () => {
+  test('state round-trips pending steers and clear resets runtime state', async () => {
     agent.syncSession({
       state: {
-        history: [],
+        history: [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hello' }] } as any],
         pendingInputs: ['queued follow-up'],
+        mentionedSkills: ['skill-1'],
+        compactionSyntheticContexts: [{ transientContext: 'memoryRecall', text: 'remember me' }],
+        fileHandles: {
+          nextId: 2.9,
+          byId: {
+            F1: ' src/foo.ts ',
+            bad: 'drop-me.ts',
+            F2: '   ',
+          },
+        },
+        semanticHandles: {
+          nextMatchId: 2,
+          nextSymbolId: 2,
+          nextLocId: 2,
+          matches: { M1: { fileId: 'F1', range: { start: { line: 1, character: 1 }, end: { line: 1, character: 2 } }, preview: 'x' } },
+          symbols: {},
+          locations: {},
+        },
       },
     });
 
     const state = agent.exportState();
     assert.deepStrictEqual(state.pendingInputs, ['queued follow-up']);
+    assert.deepStrictEqual(state.mentionedSkills, ['skill-1']);
+    assert.deepStrictEqual(state.compactionSyntheticContexts, [{ transientContext: 'memoryRecall', text: 'remember me' }]);
+    assert.deepStrictEqual(state.fileHandles, { nextId: 2, byId: { F1: 'src/foo.ts' } });
+
+    state.history[0]!.parts[0] = { type: 'text', text: 'mutated', state: 'done' } as any;
+    const unaffected = agent.exportState();
+    assert.deepStrictEqual(unaffected.history, [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hello' }] }]);
 
     await agent.clear();
-    assert.deepStrictEqual(agent.exportState().pendingInputs, []);
+
+    const cleared = agent.exportState();
+    assert.deepStrictEqual(cleared.history, []);
+    assert.deepStrictEqual(cleared.pendingInputs, []);
+    assert.deepStrictEqual(cleared.mentionedSkills, []);
+    assert.deepStrictEqual(cleared.compactionSyntheticContexts, []);
+    assert.deepStrictEqual(cleared.fileHandles, { nextId: 1, byId: {} });
+    assert.deepStrictEqual(cleared.semanticHandles, {
+      nextMatchId: 1,
+      nextSymbolId: 1,
+      nextLocId: 1,
+      matches: {},
+      symbols: {},
+      locations: {},
+    });
   });
 
   test('run - continues when tool calls are present even if finishReason is stop', async () => {

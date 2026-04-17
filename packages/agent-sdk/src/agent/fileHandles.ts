@@ -3,12 +3,14 @@ import * as path from 'path';
 import type { ToolResult } from '../types.js';
 import type { SemanticHandleRegistry } from './semanticHandles.js';
 import type { FileHandleLike } from './semanticHandles.js';
+import {
+  createBlankFileHandlesState,
+  normalizeFileHandlesState,
+  type LingyunFileHandlesState,
+} from './session.js';
 
 export type FileHandlesState = {
-  fileHandles?: {
-    nextId: number;
-    byId: Record<string, string>;
-  };
+  fileHandles?: LingyunFileHandlesState;
   workspaceRoot?: string;
 };
 
@@ -39,18 +41,8 @@ export class FileHandleRegistry {
   }
 
   private ensureState(session: FileHandlesState): NonNullable<FileHandlesState['fileHandles']> {
-    if (!session.fileHandles) {
-      session.fileHandles = { nextId: 1, byId: {} };
-      return session.fileHandles;
-    }
-
-    const nextId = (session.fileHandles as any).nextId;
-    const byId = (session.fileHandles as any).byId;
-    if (typeof nextId !== 'number' || !Number.isFinite(nextId) || nextId < 1 || !byId || typeof byId !== 'object') {
-      session.fileHandles = { nextId: 1, byId: {} };
-      return session.fileHandles;
-    }
-
+    const normalized = normalizeFileHandlesState(session.fileHandles);
+    session.fileHandles = normalized ?? createBlankFileHandlesState();
     return session.fileHandles;
   }
 

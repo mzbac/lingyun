@@ -1,26 +1,46 @@
 import * as vscode from 'vscode';
 
-import type { ToolCall, ToolDefinition } from '../../core/types';
+import type { AgentApprovalContext, ToolCall, ToolDefinition } from '../../core/types';
 
-import type { ChatMode, ChatMessage } from './types';
-import { formatWorkspacePathForUI } from './utils';
+import { persistAutoApprovedTools, rememberAutoApprovedTool } from './autoApprovedToolsStore';
+import {
+  buildApprovalStateForUI,
+  isManualApprovalContext,
+  partitionPendingApprovals,
+} from './approvalState';
+import type { PendingApprovalEntry } from './controllerPorts';
 import { bindChatControllerService } from './controllerService';
 import type { ChatSessionsService } from './methods.sessions';
 import type { ChatWebviewService } from './methods.webview';
+import { findApprovalToolMessage } from './toolMessageLookup';
+import type { ChatMode, ChatMessage } from './types';
+import { formatWorkspacePathForUI } from './utils';
 
 export interface ChatApprovalsService {
   onAutoApproveEnabled(): void;
   postApprovalState(): void;
   handleApprovalResponse(approvalId: string, approved: boolean): void;
-  approveAllPendingApprovals(): void;
+  handleAlwaysAllowApproval(approvalId: string): Promise<void>;
+  approveAllPendingApprovals(options?: { includeManual?: boolean }): void;
   rejectAllPendingApprovals(reason: string): void;
-  requestInlineApproval(tc: ToolCall, def: ToolDefinition, parentMessageId?: string): Promise<boolean>;
+  requestInlineApproval(
+    tc: ToolCall,
+    def: ToolDefinition,
+    parentMessageId?: string,
+    approvalContext?: AgentApprovalContext
+  ): Promise<boolean>;
   markActiveStepStatus(status: 'running' | 'done' | 'error' | 'canceled'): void;
 }
 
+type GlobalStateLike = {
+  update(key: string, value: unknown): Thenable<void>;
+};
+
 export interface ChatApprovalsDeps {
   view?: vscode.WebviewView;
-  pendingApprovals: Map<string, { resolve: (approved: boolean) => void; toolName: string; stepId?: string }>;
+  outputChannel?: vscode.OutputChannel;
+  context: { globalState: GlobalStateLike };
+  pendingApprovals: Map<string, PendingApprovalEntry>;
   autoApproveThisRun: boolean;
   messages: ChatMessage[];
   mode: ChatMode;
@@ -31,19 +51,46 @@ export interface ChatApprovalsDeps {
   webviewApi: Pick<ChatWebviewService, 'postMessage'>;
 }
 
+type ChatApprovalToolCall = NonNullable<ChatMessage['toolCall']>;
+
+function postUpdatedApprovalToolMessage(
+  controller: Pick<ChatApprovalsDeps, 'messages' | 'webviewApi'>,
+  params: {
+    approvalId: string;
+    stepId?: string;
+    update(toolCall: ChatApprovalToolCall): void;
+  }
+): void {
+
+  const toolMsg = findApprovalToolMessage({
+    messages: controller.messages,
+    approvalId: params.approvalId,
+    stepId: params.stepId,
+  });
+  if (!toolMsg?.toolCall) {
+    return;
+  }
+
+  params.update(toolMsg.toolCall);
+  controller.webviewApi.postMessage({ type: 'updateTool', message: toolMsg });
+}
+
 export function createChatApprovalsService(controller: ChatApprovalsDeps): ChatApprovalsService {
   const service = bindChatControllerService(controller, {
     onAutoApproveEnabled(this: ChatApprovalsDeps): void {
       if (this.pendingApprovals.size === 0) return;
-      service.approveAllPendingApprovals();
+      service.approveAllPendingApprovals({ includeManual: false });
     },
 
     postApprovalState(this: ChatApprovalsDeps): void {
       if (!this.view) return;
+      const approvalState = buildApprovalStateForUI({
+        pendingApprovals: this.pendingApprovals,
+        autoApproveThisRun: this.autoApproveThisRun,
+      });
       this.webviewApi.postMessage({
         type: 'approvalsChanged',
-        count: this.pendingApprovals.size,
-        autoApproveThisRun: this.autoApproveThisRun,
+        ...approvalState,
       });
     },
 
@@ -55,37 +102,64 @@ export function createChatApprovalsService(controller: ChatApprovalsDeps): ChatA
       this.pendingApprovals.delete(approvalId);
       service.postApprovalState();
 
-      const toolMsg = [...this.messages].reverse().find((message) => {
-        if (message.toolCall?.approvalId !== approvalId) return false;
-        if (pending.stepId && message.stepId !== pending.stepId) return false;
-        return true;
+      postUpdatedApprovalToolMessage(this, {
+        approvalId,
+        stepId: pending.stepId,
+        update: toolCall => {
+          toolCall.status = approved ? 'running' : 'rejected';
+        },
       });
-      if (toolMsg?.toolCall) {
-        toolMsg.toolCall.status = approved ? 'running' : 'rejected';
-        this.webviewApi.postMessage({ type: 'updateTool', message: toolMsg });
-      }
 
       this.sessionApi.persistActiveSession();
     },
 
-    approveAllPendingApprovals(this: ChatApprovalsDeps): void {
-      if (this.pendingApprovals.size === 0) return;
-      this.autoApproveThisRun = true;
+    async handleAlwaysAllowApproval(this: ChatApprovalsDeps, approvalId: string): Promise<void> {
+      const pending = this.pendingApprovals.get(approvalId);
+      if (!pending) {
+        return;
+      }
 
-      const entries = [...this.pendingApprovals.entries()];
-      this.pendingApprovals.clear();
+      const shouldPersistAutoApproval = !isManualApprovalContext(pending.approvalContext);
+      if (shouldPersistAutoApproval) {
+        rememberAutoApprovedTool(this.autoApprovedTools, pending.toolName);
+      }
 
-      for (const [approvalId, pending] of entries) {
-        pending.resolve(true);
-        const toolMsg = [...this.messages].reverse().find((message) => {
-          if (message.toolCall?.approvalId !== approvalId) return false;
-          if (pending.stepId && message.stepId !== pending.stepId) return false;
-          return true;
+      service.handleApprovalResponse(approvalId, true);
+
+      if (shouldPersistAutoApproval) {
+        await persistAutoApprovedTools({
+          globalState: this.context.globalState,
+          autoApprovedTools: this.autoApprovedTools,
+          outputChannel: this.outputChannel,
         });
-        if (toolMsg?.toolCall) {
-          toolMsg.toolCall.status = 'running';
-          this.webviewApi.postMessage({ type: 'updateTool', message: toolMsg });
-        }
+      }
+    },
+
+
+    approveAllPendingApprovals(this: ChatApprovalsDeps, options?: { includeManual?: boolean }): void {
+      if (this.pendingApprovals.size === 0) return;
+
+      const { manualEntries, approvableEntries } = partitionPendingApprovals(this.pendingApprovals, options);
+      if (approvableEntries.length === 0) {
+        service.postApprovalState();
+        return;
+      }
+
+      this.autoApproveThisRun = true;
+      this.pendingApprovals.clear();
+      for (const [approvalId, pending] of manualEntries) {
+        this.pendingApprovals.set(approvalId, pending);
+      }
+
+      for (const [approvalId, pending] of approvableEntries) {
+        pending.resolve(true);
+        postUpdatedApprovalToolMessage(this, {
+          approvalId,
+          stepId: pending.stepId,
+          update: toolCall => {
+            toolCall.status = 'running';
+          },
+        });
       }
 
       service.postApprovalState();
@@ -100,16 +174,14 @@ export function createChatApprovalsService(controller: ChatApprovalsDeps): ChatA
 
       for (const [approvalId, pending] of entries) {
         pending.resolve(false);
-        const toolMsg = [...this.messages].reverse().find((message) => {
-          if (message.toolCall?.approvalId !== approvalId) return false;
-          if (pending.stepId && message.stepId !== pending.stepId) return false;
-          return true;
+        postUpdatedApprovalToolMessage(this, {
+          approvalId,
+          stepId: pending.stepId,
+          update: toolCall => {
+            toolCall.status = 'rejected';
+            toolCall.result = toolCall.result || reason;
+          },
         });
-        if (toolMsg?.toolCall) {
-          toolMsg.toolCall.status = 'rejected';
-          toolMsg.toolCall.result = toolMsg.toolCall.result || reason;
-          this.webviewApi.postMessage({ type: 'updateTool', message: toolMsg });
-        }
       }
 
       service.postApprovalState();
@@ -120,26 +192,29 @@ export function createChatApprovalsService(controller: ChatApprovalsDeps): ChatA
       this: ChatApprovalsDeps,
       tc: ToolCall,
       def: ToolDefinition,
-      parentMessageId?: string
+      parentMessageId?: string,
+      approvalContext?: AgentApprovalContext
     ): Promise<boolean> {
+      const manualApproval = isManualApprovalContext(approvalContext);
       const globalAutoApprove =
         this.mode === 'build'
           ? (vscode.workspace.getConfiguration('lingyun').get<boolean>('autoApprove', false) ?? false)
           : false;
-      if (globalAutoApprove) return Promise.resolve(true);
-      if (this.mode === 'build' && this.autoApprovedTools.has(def.id)) return Promise.resolve(true);
-      if (this.autoApproveThisRun) return Promise.resolve(true);
+      if (!manualApproval && globalAutoApprove) return Promise.resolve(true);
+      if (!manualApproval && this.mode === 'build' && this.autoApprovedTools.has(def.id)) return Promise.resolve(true);
+      if (!manualApproval && this.autoApproveThisRun) return Promise.resolve(true);
 
       const approvalId = tc.id;
       const stepId = parentMessageId ?? this.activeStepId;
-
-      const existing = [...this.messages].reverse().find((message) => {
-        if (message.toolCall?.approvalId !== approvalId) return false;
-        if (stepId && message.stepId !== stepId) return false;
-        return true;
+      const existing = findApprovalToolMessage({
+        messages: this.messages,
+        approvalId,
+        stepId,
       });
       if (existing?.toolCall) {
         existing.toolCall.status = 'pending';
+        existing.toolCall.isProtected = manualApproval || existing.toolCall.isProtected;
+        existing.toolCall.approvalReason = approvalContext?.reason || existing.toolCall.approvalReason;
         this.webviewApi.postMessage({ type: 'updateTool', message: existing });
       } else {
         let uiPath: string | undefined;
@@ -165,6 +240,8 @@ export function createChatApprovalsService(controller: ChatApprovalsDeps): ChatA
             status: 'pending',
             approvalId,
             path: uiPath,
+            isProtected: manualApproval || undefined,
+            approvalReason: approvalContext?.reason,
           },
         };
         this.messages.push(toolMsg);
@@ -172,7 +249,12 @@ export function createChatApprovalsService(controller: ChatApprovalsDeps): ChatA
       }
 
       return new Promise((resolve) => {
-        this.pendingApprovals.set(approvalId, { resolve, toolName: def.id, stepId });
+        this.pendingApprovals.set(approvalId, {
+          resolve,
+          toolName: def.id,
+          stepId,
+          ...(approvalContext ? { approvalContext } : {}),
+        });
         service.postApprovalState();
       });
     },

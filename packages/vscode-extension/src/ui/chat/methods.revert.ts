@@ -8,6 +8,7 @@ import type { ChatMessage, RevertBarState } from './types';
 import { bindChatControllerService } from './controllerService';
 import type { AgentLoop } from '../../core/agent';
 import type { ChatController } from './controller';
+import type { PendingApprovalEntry } from './controllerPorts';
 import type { ChatLoopManager } from './loopManager';
 import type { ChatSessionsService } from './methods.sessions';
 
@@ -76,7 +77,7 @@ export interface ChatRevertDeps {
   isProcessing: boolean;
   currentModel: string;
   mode: 'build' | 'plan';
-  pendingApprovals: Map<string, { resolve: (approved: boolean) => void; toolName: string; stepId?: string }>;
+  pendingApprovals: Map<string, PendingApprovalEntry>;
   agent: Pick<AgentLoop, 'clear' | 'exportState' | 'syncSession'>;
   loopManager: Pick<ChatLoopManager, 'releaseSession' | 'syncActiveSession'>;
   ensureSessionsLoaded(): Promise<void>;

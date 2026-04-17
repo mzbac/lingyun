@@ -1,4 +1,4 @@
-import { parseSessionSnapshot, type LingyunSessionSnapshot } from './sessionSnapshot.js';
+import { parseSessionSnapshot, serializeSessionSnapshot, type LingyunSessionSnapshot } from './sessionSnapshot.js';
 
 export type LingyunSessionStoreEntry = {
   sessionId: string;
@@ -6,7 +6,7 @@ export type LingyunSessionStoreEntry = {
 };
 
 export interface LingyunSessionStore {
-  save(sessionId: string, snapshot: LingyunSessionSnapshot): Promise<void>;
+  save(snapshot: LingyunSessionSnapshot): Promise<void>;
   load(sessionId: string): Promise<LingyunSessionSnapshot | undefined>;
   list(options?: { limit?: number; offset?: number }): Promise<LingyunSessionStoreEntry[]>;
   delete(sessionId: string): Promise<void>;
@@ -57,18 +57,27 @@ export class SqliteSessionStore implements LingyunSessionStore {
     await this.initPromise;
   }
 
-  async save(sessionId: string, snapshot: LingyunSessionSnapshot): Promise<void> {
-    const id = sessionId.trim();
+  async save(snapshot: LingyunSessionSnapshot): Promise<void> {
+    const id = snapshot.sessionId.trim();
     if (!id) throw new Error('SqliteSessionStore.save: sessionId is required');
+
+    let persistedSnapshot: LingyunSessionSnapshot;
+    try {
+      persistedSnapshot = parseSessionSnapshot({ ...snapshot, sessionId: id });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`SqliteSessionStore.save: invalid snapshot: ${message}`);
+    }
+
     await this.ensureInit();
 
-    const updatedAt = snapshot.savedAt || new Date().toISOString();
-    const snapshotJson = JSON.stringify(snapshot);
+    const updatedAt = persistedSnapshot.savedAt;
+    const snapshotJson = serializeSessionSnapshot(persistedSnapshot);
 
     await this.driver.execute(
       `INSERT INTO ${this.tableName} (sessionId, snapshotJson, updatedAt) VALUES (?, ?, ?) ` +
         `ON CONFLICT(sessionId) DO UPDATE SET snapshotJson=excluded.snapshotJson, updatedAt=excluded.updatedAt`,
-      [id, snapshotJson, updatedAt]
+      [persistedSnapshot.sessionId, snapshotJson, updatedAt]
     );
   }
 

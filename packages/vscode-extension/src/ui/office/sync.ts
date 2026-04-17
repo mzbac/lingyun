@@ -174,13 +174,13 @@ export function decorateAgentCallbacksWithOfficeSync(
       callbacks.onToolResult?.(tc, result);
     },
     onRequestApproval: callbacks.onRequestApproval
-      ? async (tc, def) => {
+      ? async (tc, def, approvalContext) => {
           const skipParentBubble = subagentToolCallIdsAwaitingApproval.has(tc.id);
           if (!skipParentBubble) {
             officeSync.onApprovalStart();
           }
           try {
-            return (await callbacks.onRequestApproval?.(tc, def)) ?? false;
+            return (await callbacks.onRequestApproval?.(tc, def, approvalContext)) ?? false;
           } finally {
             if (!skipParentBubble) {
               officeSync.onApprovalEnd();

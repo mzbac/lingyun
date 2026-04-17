@@ -3,12 +3,14 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { readTodos } from '../../core/todo';
-import { appendErrorLog, appendLog } from '../../core/logger';
+import { appendErrorLog } from '../../core/logger';
 import { getConfiguredReasoningEffort } from '../../core/reasoningEffort';
 import type { ModelInfo } from '../../providers/modelCatalog';
 import type { LLMProviderWithUi, ProviderAuthUiState } from '../../providers/providerUi';
 import { formatErrorForUser, getNonce } from './utils';
 import { getWorkspaceFolderUrisByPriority, resolveExistingFilePath } from './fileLinks';
+import { buildApprovalStateForUI } from './approvalState';
+import type { PendingApprovalEntry } from './controllerPorts';
 import type { ChatImageAttachment, ChatUserInput } from './types';
 import { bindChatControllerService } from './controllerService';
 import { createLingyunDiffUri } from './diffContentProvider';
@@ -20,6 +22,17 @@ import type { ChatSkillsService } from './methods.skills';
 import type { ChatQueueManager } from './queueManager';
 import type { RunCoordinator } from './runner/runCoordinator';
 import type { ChatController } from './controller';
+import {
+  getWebviewMessageType,
+  parseWebviewErrorMessage,
+  parseWebviewInitAckMessage,
+  parseWebviewReadyMessage,
+  WEBVIEW_MESSAGE_ERROR,
+  WEBVIEW_MESSAGE_INIT_ACK,
+  WEBVIEW_MESSAGE_READY,
+} from './webviewProtocol';
+import { handleWebviewInitAckMessage, handleWebviewReadyMessage } from './webviewHandshake';
+import { handleWebviewCrashMessage, resetWebviewCrashToastState } from './webviewCrash';
 
 function stripWrappingQuotes(value: string): string {
   const trimmed = value.trim();
@@ -117,13 +130,12 @@ export interface ChatWebviewDeps {
   isProcessing: boolean;
   abortRequested: boolean;
   autoApproveThisRun: boolean;
-  pendingApprovals: Map<string, { resolve: (approved: boolean) => void; toolName: string; stepId?: string }>;
-  autoApprovedTools: Set<string>;
+  pendingApprovals: Map<string, PendingApprovalEntry>;
   initAcked: boolean;
   initInterval?: NodeJS.Timeout;
   initInFlight: boolean;
   webviewClientInstanceId?: string;
-  webviewErrorShown: boolean;
+  webviewCrashToastClientId?: string;
   llmProvider?: Pick<
     LLMProviderWithUi,
     'id' | 'name' | 'getAuthStatus' | 'authenticate' | 'disconnect' | 'clearModelCache'
@@ -162,7 +174,8 @@ export interface ChatWebviewDeps {
   switchToSession(sessionId: string): Promise<void>;
   handleUserMessage(content: string | ChatUserInput): Promise<void>;
   configureLoopForActiveSession(): Promise<void>;
-  approveAllPendingApprovals(): void;
+  approveAllPendingApprovals(options?: { includeManual?: boolean }): void;
+  handleAlwaysAllowApproval(approvalId: string): Promise<void>;
   rejectAllPendingApprovals(reason: string): void;
   clearCurrentSession(): Promise<void>;
   executePendingPlan(planMessageId?: string): Promise<void>;
@@ -196,6 +209,92 @@ export interface ChatWebviewDeps {
 
 type ChatWebviewRuntime = ChatWebviewDeps & ChatWebviewService;
 
+type BrowserChatProtocol = {
+  ready: typeof WEBVIEW_MESSAGE_READY;
+  initAck: typeof WEBVIEW_MESSAGE_INIT_ACK;
+  webviewError: typeof WEBVIEW_MESSAGE_ERROR;
+};
+
+type ChatWebviewInitMessage = {
+  type: 'init';
+  sessions: ReturnType<ChatSessionsService['getSessionsForUI']>;
+  activeSessionId: string;
+  messages: ReturnType<ChatSessionsService['getRenderableMessages']>;
+  inputHistory: string[];
+  revertState: ReturnType<ChatRevertService['getRevertBarStateForUI']>;
+  context: ReturnType<ChatSessionsService['getContextForUI']>;
+  todos: Awaited<ReturnType<typeof readTodos>>;
+  loop: ReturnType<ChatLoopService['getLoopStateForUI']>;
+  currentModel: string;
+  currentModelLabel: string;
+  currentModelIsFavorite: boolean;
+  currentReasoningEffort: ReturnType<typeof getConfiguredReasoningEffort>;
+  providerAuth: ProviderAuthUiState;
+  mode: 'build' | 'plan';
+  planPending: boolean;
+  activePlanMessageId: string;
+  processing: boolean;
+  queuedInputs: ReturnType<ChatQueueManager['getQueuedInputs']>;
+  pendingApprovals: number;
+  manualApprovals: number;
+  autoApproveThisRun: boolean;
+  skills: Awaited<ReturnType<ChatSkillsService['getSkillNamesForUI']>>;
+} & ReturnType<ChatRevertService['getUndoRedoAvailability']>;
+
+function createBrowserChatProtocol(): BrowserChatProtocol {
+  return {
+    ready: WEBVIEW_MESSAGE_READY,
+    initAck: WEBVIEW_MESSAGE_INIT_ACK,
+    webviewError: WEBVIEW_MESSAGE_ERROR,
+  };
+}
+
+function renderBrowserChatProtocolBootstrapScript(nonce: string): string {
+  const protocolJson = JSON.stringify(createBrowserChatProtocol());
+  return `<script nonce="${nonce}">window.LINGYUN_CHAT_PROTOCOL = Object.freeze(${protocolJson});</script>`;
+}
+
+async function buildWebviewInitMessage(
+  runtime: ChatWebviewRuntime,
+  params: { modelLabel: string; currentModelIsFavorite: boolean }
+): Promise<ChatWebviewInitMessage> {
+  const todos = await readTodos(runtime.context, runtime.activeSessionId);
+  const skills = await runtime.getSkillNamesForUI();
+  const providerAuth = await runtime.getProviderAuthStateForUI();
+  const pendingPlan = runtime.getActiveSession().pendingPlan;
+  const approvalState = buildApprovalStateForUI({
+    pendingApprovals: runtime.pendingApprovals,
+    autoApproveThisRun: runtime.autoApproveThisRun,
+  });
+
+  return {
+    type: 'init',
+    sessions: runtime.getSessionsForUI(),
+    activeSessionId: runtime.activeSessionId,
+    messages: runtime.getRenderableMessages(),
+    inputHistory: runtime.inputHistoryEntries,
+    revertState: runtime.getRevertBarStateForUI(),
+    context: runtime.getContextForUI(),
+    todos,
+    loop: runtime.getLoopStateForUI(),
+    currentModel: runtime.currentModel,
+    currentModelLabel: params.modelLabel,
+    currentModelIsFavorite: params.currentModelIsFavorite,
+    currentReasoningEffort: getConfiguredReasoningEffort(),
+    providerAuth,
+    mode: runtime.mode,
+    planPending: !!pendingPlan,
+    activePlanMessageId: pendingPlan?.planMessageId ?? '',
+    processing: runtime.isProcessing,
+    queuedInputs: runtime.queueManager.getQueuedInputs(),
+    pendingApprovals: approvalState.count,
+    manualApprovals: approvalState.manualCount,
+    autoApproveThisRun: approvalState.autoApproveThisRun,
+    skills,
+    ...runtime.getUndoRedoAvailability(),
+  };
+}
+
 export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebviewService {
   const runtime = controller as ChatWebviewRuntime;
   const service = bindChatControllerService(runtime, {
@@ -208,6 +307,7 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
     this.view = webviewView;
     this.initAcked = false;
     this.webviewClientInstanceId = undefined;
+    resetWebviewCrashToastState(this);
 
     webviewView.webview.options = {
       enableScripts: true,
@@ -238,6 +338,7 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
         this.view = undefined;
         this.initAcked = false;
         this.webviewClientInstanceId = undefined;
+        resetWebviewCrashToastState(this);
         if (this.initInterval) {
           clearInterval(this.initInterval);
           this.initInterval = undefined;
@@ -247,7 +348,7 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
 
     this.viewDisposables.push(
       webviewView.webview.onDidReceiveMessage(async (data) => {
-        switch (data.type) {
+        switch (getWebviewMessageType(data)) {
           case 'newSession':
             await this.createNewSession();
             break;
@@ -476,7 +577,7 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
             this.persistActiveSession();
             break;
           case 'approveAll':
-            this.approveAllPendingApprovals();
+            this.approveAllPendingApprovals({ includeManual: false });
             break;
           case 'clear': {
             this.toolDiffBeforeByToolCallId.clear();
@@ -484,25 +585,12 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
             await this.clearCurrentSession();
             break;
           }
-          case 'ready':
-            if (typeof data.clientInstanceId === 'string' && data.clientInstanceId.trim()) {
-              this.webviewClientInstanceId = data.clientInstanceId.trim();
-            }
-            this.initAcked = false;
-            this.startInitPusher();
+          case WEBVIEW_MESSAGE_READY:
+            handleWebviewReadyMessage(this, parseWebviewReadyMessage(data));
             break;
-          case 'initAck':
-            if (typeof data.clientInstanceId === 'string' && data.clientInstanceId.trim()) {
-              const incoming = data.clientInstanceId.trim();
-              if (this.webviewClientInstanceId && incoming !== this.webviewClientInstanceId) {
-                return;
-              }
-              this.webviewClientInstanceId = incoming;
-            }
-            this.initAcked = true;
-            if (this.initInterval) {
-              clearInterval(this.initInterval);
-              this.initInterval = undefined;
+          case WEBVIEW_MESSAGE_INIT_ACK:
+            if (!handleWebviewInitAckMessage(this, parseWebviewInitAckMessage(data))) {
+              return;
             }
             break;
           case 'pickModel':
@@ -598,24 +686,15 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
               await this.retryToolCall(data.approvalId.trim());
             }
             break;
-          case 'alwaysAllowTool':
-            this.autoApprovedTools.add(data.toolId);
-            await this.context.globalState.update('autoApprovedTools', [...this.autoApprovedTools]);
-            this.handleApprovalResponse(data.approvalId, true);
-            break;
-          case 'webviewError': {
-            const errorText =
-              typeof data.error === 'string' ? data.error : JSON.stringify(data.error, null, 2);
-            appendLog(this.outputChannel, `Webview error: ${errorText}`, {
-              level: 'error',
-              tag: 'Webview',
-            });
-            if (!this.webviewErrorShown) {
-              this.webviewErrorShown = true;
-              void vscode.window.showErrorMessage(
-                'LingYun chat UI crashed. Open “Developer: Open Webview Developer Tools” to see details.'
-              );
+          case 'alwaysAllowTool': {
+            if (typeof data.approvalId === 'string' && data.approvalId.trim()) {
+              await this.handleAlwaysAllowApproval(data.approvalId.trim());
             }
+            break;
+          }
+          case WEBVIEW_MESSAGE_ERROR: {
+            const message = parseWebviewErrorMessage(data);
+            handleWebviewCrashMessage(this, message?.error);
             break;
           }
         }
@@ -654,42 +733,17 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
 
       const modelLabel = this.getModelLabel(this.currentModel) || this.currentModel;
       const currentModelIsFavorite = await this.isModelFavorite(this.currentModel);
-
-      const todos = await readTodos(this.context, this.activeSessionId);
-      const skills = await this.getSkillNamesForUI();
-      const providerAuth = await service.getProviderAuthStateForUI();
-
-      this.postMessage({
-        type: 'init',
-        sessions: this.getSessionsForUI(),
-        activeSessionId: this.activeSessionId,
-        messages: this.getRenderableMessages(),
-        inputHistory: this.inputHistoryEntries,
-        revertState: this.getRevertBarStateForUI(),
-        context: this.getContextForUI(),
-        todos,
-        loop: this.getLoopStateForUI(),
-        currentModel: this.currentModel,
-        currentModelLabel: modelLabel,
-        currentModelIsFavorite,
-        currentReasoningEffort: getConfiguredReasoningEffort(),
-        providerAuth,
-        mode: this.mode,
-        planPending: !!this.getActiveSession().pendingPlan,
-	        activePlanMessageId: this.getActiveSession().pendingPlan?.planMessageId ?? '',
-	        processing: this.isProcessing,
-        queuedInputs: this.queueManager.getQueuedInputs(),
-	        pendingApprovals: this.pendingApprovals.size,
-	        autoApproveThisRun: this.autoApproveThisRun,
-        skills,
-        ...this.getUndoRedoAvailability(),
-      });
+      this.postMessage(
+        await buildWebviewInitMessage(this, {
+          modelLabel,
+          currentModelIsFavorite,
+        })
+      );
     } catch (error) {
       appendErrorLog(this.outputChannel, 'Failed to send init', error, { tag: 'Webview' });
 
       const fallback = this.currentModel || 'gpt-4o';
       this.currentModel = fallback;
-      const modelLabel = fallback;
       let currentModelIsFavorite = false;
       try {
         currentModelIsFavorite = await this.isModelFavorite(fallback);
@@ -698,40 +752,18 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
       }
 
       try {
-        const todos = await readTodos(this.context, this.activeSessionId);
-        const skills = await this.getSkillNamesForUI();
-        const providerAuth = await service.getProviderAuthStateForUI();
-        this.postMessage({
-          type: 'init',
-          sessions: this.getSessionsForUI(),
-          activeSessionId: this.activeSessionId,
-          messages: this.getRenderableMessages(),
-          inputHistory: this.inputHistoryEntries,
-          revertState: this.getRevertBarStateForUI(),
-          context: this.getContextForUI(),
-          todos,
-          loop: this.getLoopStateForUI(),
-          currentModel: this.currentModel,
-          currentModelLabel: modelLabel,
-          currentModelIsFavorite,
-          currentReasoningEffort: getConfiguredReasoningEffort(),
-          providerAuth,
-          mode: this.mode,
-          planPending: !!this.getActiveSession().pendingPlan,
-	          activePlanMessageId: this.getActiveSession().pendingPlan?.planMessageId ?? '',
-	          processing: this.isProcessing,
-          queuedInputs: this.queueManager.getQueuedInputs(),
-	          pendingApprovals: this.pendingApprovals.size,
-	          autoApproveThisRun: this.autoApproveThisRun,
-          skills,
-          ...this.getUndoRedoAvailability(),
-        });
+        this.postMessage(
+          await buildWebviewInitMessage(this, {
+            modelLabel: fallback,
+            currentModelIsFavorite,
+          })
+        );
       } catch (postError) {
         appendErrorLog(this.outputChannel, 'Failed to post init fallback', postError, {
           tag: 'Webview',
         });
       }
-  } finally {
+    } finally {
       this.initInFlight = false;
       void this.queueManager.flushAutosendForActiveSession();
     }
@@ -832,14 +864,15 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
       ['chat', 'context.js'],
       ['chat', 'main.js'],
     ];
-    const scripts = scriptFiles
-      .map(parts => {
+    const scripts = [
+      renderBrowserChatProtocolBootstrapScript(nonce),
+      ...scriptFiles.map(parts => {
         const uri = webview.asWebviewUri(
           vscode.Uri.joinPath(this.context.extensionUri, 'media', ...parts)
         );
         return `<script nonce="${nonce}" src="${String(uri)}"></script>`;
-      })
-      .join('\n');
+      }),
+    ].join('\n');
     const logoUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this.context.extensionUri, 'images', 'icon.png')
     );
@@ -916,9 +949,6 @@ function createChatWebviewDepsForController(controller: ChatController): ChatWeb
     get pendingApprovals() {
       return controller.pendingApprovals;
     },
-    get autoApprovedTools() {
-      return controller.autoApprovedTools;
-    },
     get initAcked() {
       return controller.initAcked;
     },
@@ -943,11 +973,11 @@ function createChatWebviewDepsForController(controller: ChatController): ChatWeb
     set webviewClientInstanceId(value) {
       controller.webviewClientInstanceId = value;
     },
-    get webviewErrorShown() {
-      return controller.webviewErrorShown;
+    get webviewCrashToastClientId() {
+      return controller.webviewCrashToastClientId;
     },
-    set webviewErrorShown(value) {
-      controller.webviewErrorShown = value;
+    set webviewCrashToastClientId(value) {
+      controller.webviewCrashToastClientId = value;
     },
     get llmProvider() {
       return controller.llmProvider;
@@ -977,7 +1007,9 @@ function createChatWebviewDepsForController(controller: ChatController): ChatWeb
     switchToSession: (sessionId: string) => controller.sessionApi.switchToSession(sessionId),
     handleUserMessage: (content: string | ChatUserInput) => controller.runnerInputApi.handleUserMessage(content),
     configureLoopForActiveSession: () => controller.loopApi.configureLoopForActiveSession(),
-    approveAllPendingApprovals: () => controller.approvalsApi.approveAllPendingApprovals(),
+    approveAllPendingApprovals: (options?: { includeManual?: boolean }) =>
+      controller.approvalsApi.approveAllPendingApprovals(options),
+    handleAlwaysAllowApproval: (approvalId: string) => controller.approvalsApi.handleAlwaysAllowApproval(approvalId),
     rejectAllPendingApprovals: (reason: string) => controller.approvalsApi.rejectAllPendingApprovals(reason),
     clearCurrentSession: () => controller.sessionApi.clearCurrentSession(),
     executePendingPlan: (planMessageId?: string) => controller.runnerPlanApi.executePendingPlan(planMessageId),

@@ -3,7 +3,7 @@ import * as assert from 'assert';
 import { simulateReadableStream } from 'ai/test';
 import type { LanguageModelV3, LanguageModelV3StreamPart, LanguageModelV3StreamResult, LanguageModelV3Usage } from '@ai-sdk/provider';
 
-import { LingyunAgent, LingyunSession, ToolRegistry, type LLMProvider } from '@kooka/agent-sdk';
+import { LingyunAgent, LingyunSession, ToolRegistry, type LLMProvider } from '../../index.js';
 
 function usage(): LanguageModelV3Usage {
   return {

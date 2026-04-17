@@ -13,7 +13,7 @@ import { createChatWebviewServiceForController } from './methods.webview';
 import type { ChatController } from './controller';
 import { createChatLoopManager } from './loopManager';
 import { createChatQueueManager } from './queueManager';
-import { createRunCoordinator } from './runner/runCoordinator';
+import { createRunCoordinatorForController } from './runner/runCoordinatorControllerAdapter';
 
 export function installChatControllerComposition(controller: ChatController): void {
   if (controller.approvalsApi) return;
@@ -32,6 +32,6 @@ export function installChatControllerComposition(controller: ChatController): vo
 
   controller.queueManager = createChatQueueManager(controller);
   controller.loopManager = createChatLoopManager(controller);
-  controller.runner = createRunCoordinator(controller);
+  controller.runner = createRunCoordinatorForController(controller);
   controller.webviewApi = createChatWebviewServiceForController(controller);
 }

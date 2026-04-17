@@ -13,13 +13,8 @@ import { bindChatControllerService } from './controllerService';
 import { createDefaultSessionTitle } from './sessionTitle';
 import { formatErrorForUser } from './utils';
 import type { ChatMessage, ChatSessionInfo } from './types';
+import type { PendingApprovalEntry } from './controllerPorts';
 import type { ChatSessionPersistenceService } from './methods.sessions.persistence';
-
-type PendingApprovalEntry = {
-  resolve: (approved: boolean) => void;
-  toolName: string;
-  stepId?: string;
-};
 
 export interface ChatSessionRuntimeService {
   initializeSessions(): void;

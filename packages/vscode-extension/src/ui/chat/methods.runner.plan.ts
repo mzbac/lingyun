@@ -3,23 +3,18 @@ import type { RunCoordinator } from './runner/runCoordinator';
 
 export interface ChatRunnerPlanService {
   executePendingPlan(planMessageId?: string): Promise<void>;
-  regeneratePendingPlan(planMessageId: string, reason?: string): Promise<void>;
   cancelPendingPlan(planMessageId: string): Promise<void>;
   revisePendingPlan(planMessageId: string, instructions: string): Promise<void>;
 }
 
 export interface ChatRunnerPlanDeps {
-  runner: Pick<RunCoordinator, 'executePendingPlan' | 'regeneratePendingPlan' | 'cancelPendingPlan' | 'revisePendingPlan'>;
+  runner: Pick<RunCoordinator, 'executePendingPlan' | 'cancelPendingPlan' | 'revisePendingPlan'>;
 }
 
 export function createChatRunnerPlanService(controller: ChatRunnerPlanDeps): ChatRunnerPlanService {
   return bindChatControllerService(controller, {
     async executePendingPlan(this: ChatRunnerPlanDeps, planMessageId?: string): Promise<void> {
       await this.runner.executePendingPlan(planMessageId);
-    },
-
-    async regeneratePendingPlan(this: ChatRunnerPlanDeps, planMessageId: string, reason?: string): Promise<void> {
-      await this.runner.regeneratePendingPlan(planMessageId, reason);
     },
 
     async cancelPendingPlan(this: ChatRunnerPlanDeps, planMessageId: string): Promise<void> {

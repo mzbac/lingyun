@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 
+import { tryParseSessionSnapshot } from '@kooka/agent-sdk';
 import { TOOL_ERROR_CODES, containsBinaryData } from '@kooka/core';
 import type { AgentCallbacks, ToolCall, ToolDefinition, ToolResult } from '../../../core/types';
 import type { AgentSessionState } from '../../../core/agent';
@@ -40,24 +41,10 @@ export type TaskChildSessionView = {
   flushSessionSave(): Promise<void>;
 };
 
-type AgentSdkChildSessionSnapshot = {
-  version: 1;
-  savedAt: string;
-  sessionId: string;
-  parentSessionId?: string;
-  subagentType?: string;
-  modelId?: string;
-  history?: unknown;
-  mentionedSkills?: unknown;
-  compactionSyntheticContexts?: unknown;
-  fileHandles?: unknown;
-  semanticHandles?: unknown;
-};
-
 function getTaskToolModelWarning(meta: RecordLike): string | undefined {
   const task = meta.task;
   if (!isRecord(task)) return undefined;
-  const warning = typeof (task as any).model_warning === 'string' ? String((task as any).model_warning).trim() : '';
+  const warning = typeof task.model_warning === 'string' ? task.model_warning.trim() : '';
   return warning || undefined;
 }
 
@@ -73,73 +60,30 @@ function emitWarningMessage(view: Pick<TaskChildSessionView, 'currentTurnId' | '
   view.postMessage({ type: 'message', message: msg });
 }
 
-function coerceAgentSdkChildSessionSnapshot(value: unknown): AgentSdkChildSessionSnapshot | undefined {
-  if (!isRecord(value)) return undefined;
-  if ((value as any).version !== 1) return undefined;
-
-  const savedAt = typeof (value as any).savedAt === 'string' ? String((value as any).savedAt).trim() : '';
-  if (!savedAt) return undefined;
-
-  const sessionId = typeof (value as any).sessionId === 'string' ? String((value as any).sessionId).trim() : '';
-  if (!sessionId) return undefined;
-  const parentSessionId =
-    typeof (value as any).parentSessionId === 'string' ? String((value as any).parentSessionId).trim() : undefined;
-  const subagentType =
-    typeof (value as any).subagentType === 'string' ? String((value as any).subagentType).trim() : undefined;
-  const modelId = typeof (value as any).modelId === 'string' ? String((value as any).modelId).trim() : undefined;
+function toAgentSessionStateFromSnapshot(snapshot: ReturnType<typeof tryParseSessionSnapshot>): AgentSessionState {
+  if (!snapshot) {
+    return { history: [] };
+  }
 
   return {
-    version: 1,
-    savedAt,
-    ...(parentSessionId ? { parentSessionId } : {}),
-    ...(subagentType ? { subagentType } : {}),
-    ...(modelId ? { modelId } : {}),
-    sessionId,
-    history: (value as any).history,
-    mentionedSkills: (value as any).mentionedSkills,
-    compactionSyntheticContexts: (value as any).compactionSyntheticContexts,
-    fileHandles: (value as any).fileHandles,
-    semanticHandles: (value as any).semanticHandles,
-  };
-}
-
-function toAgentSessionStateFromSnapshot(snapshot: AgentSdkChildSessionSnapshot): AgentSessionState {
-  const history = Array.isArray(snapshot.history) ? (snapshot.history as AgentSessionState['history']) : [];
-  const mentionedSkillsRaw = snapshot.mentionedSkills;
-  const mentionedSkills = Array.isArray(mentionedSkillsRaw)
-    ? (mentionedSkillsRaw.filter(item => typeof item === 'string') as string[])
-    : undefined;
-  const compactionSyntheticContextsRaw = snapshot.compactionSyntheticContexts;
-  const compactionSyntheticContexts = Array.isArray(compactionSyntheticContextsRaw)
-    ? compactionSyntheticContextsRaw
-        .filter(
-          (item): item is NonNullable<AgentSessionState['compactionSyntheticContexts']>[number] =>
-            !!item &&
-            typeof item === 'object' &&
-            (((item as any).transientContext === 'explore' ||
-              (item as any).transientContext === 'memoryRecall') &&
-              typeof (item as any).text === 'string'),
-        )
-        .map(item => ({
-          transientContext: item.transientContext,
-          text: item.text,
-        }))
-    : undefined;
-  const fileHandles = snapshot.fileHandles as AgentSessionState['fileHandles'] | undefined;
-  const semanticHandles = snapshot.semanticHandles as AgentSessionState['semanticHandles'] | undefined;
-  return {
-    history,
-    ...(fileHandles ? { fileHandles } : {}),
-    ...(semanticHandles ? { semanticHandles } : {}),
-    ...(mentionedSkills && mentionedSkills.length > 0 ? { mentionedSkills } : {}),
-    ...(compactionSyntheticContexts && compactionSyntheticContexts.length > 0
-      ? { compactionSyntheticContexts }
+    history: Array.isArray(snapshot.history) ? (snapshot.history as AgentSessionState['history']) : [],
+    ...(snapshot.fileHandles ? { fileHandles: snapshot.fileHandles } : {}),
+    ...(snapshot.semanticHandles ? { semanticHandles: snapshot.semanticHandles as AgentSessionState['semanticHandles'] } : {}),
+    ...(snapshot.mentionedSkills && snapshot.mentionedSkills.length > 0 ? { mentionedSkills: snapshot.mentionedSkills } : {}),
+    ...(snapshot.compactionSyntheticContexts && snapshot.compactionSyntheticContexts.length > 0
+      ? { compactionSyntheticContexts: snapshot.compactionSyntheticContexts }
       : {}),
   };
 }
 
+type ParsedChildSessionSnapshot = NonNullable<ReturnType<typeof tryParseSessionSnapshot>> & { sessionId: string };
+
+function hasSessionId(snapshot: ReturnType<typeof tryParseSessionSnapshot>): snapshot is ParsedChildSessionSnapshot {
+  return typeof snapshot?.sessionId === 'string' && snapshot.sessionId.trim().length > 0;
+}
+
 function toChatSessionInfoFromSnapshot(params: {
-  snapshot: AgentSdkChildSessionSnapshot;
+  snapshot: ParsedChildSessionSnapshot;
   parentSessionIdFallback: string;
   title: string;
 }): ChatSessionInfo {
@@ -165,25 +109,25 @@ function extractTitleFromTaskResult(meta: RecordLike): string | undefined {
   if (direct) return direct;
   const task = meta.task;
   if (!isRecord(task)) return undefined;
-  const desc = typeof (task as any).description === 'string' ? String((task as any).description).trim() : '';
+  const desc = typeof task.description === 'string' ? task.description.trim() : '';
   return desc || undefined;
 }
 
 export function upsertTaskChildSession(view: TaskChildSessionView, result: unknown): string | undefined {
   if (!isRecord(result)) return undefined;
-  const meta = (result as any).metadata;
-  if (!isRecord(meta)) return undefined;
+  const meta = isRecord(result.metadata) ? result.metadata : undefined;
+  if (!meta) return undefined;
 
   const warning = getTaskToolModelWarning(meta);
   if (warning) {
     emitWarningMessage(view, warning);
   }
 
-  const childRaw = (meta as any).childSession;
+  const childRaw = meta.childSession;
   const title = extractTitleFromTaskResult(meta) ?? '';
 
-  const snapshot = coerceAgentSdkChildSessionSnapshot(childRaw);
-  if (!snapshot) return undefined;
+  const snapshot = tryParseSessionSnapshot(childRaw);
+  if (!hasSessionId(snapshot)) return undefined;
   const rawSession = toChatSessionInfoFromSnapshot({
     snapshot,
     parentSessionIdFallback: view.activeSessionId,
@@ -194,8 +138,8 @@ export function upsertTaskChildSession(view: TaskChildSessionView, result: unkno
   if (!normalized.parentSessionId) {
     normalized.parentSessionId = view.activeSessionId;
   }
-  if (!normalized.subagentType && typeof (childRaw as any)?.subagentType === 'string') {
-    normalized.subagentType = String((childRaw as any).subagentType);
+  if (!normalized.subagentType && typeof snapshot.subagentType === 'string' && snapshot.subagentType.trim()) {
+    normalized.subagentType = snapshot.subagentType;
   }
 
   view.sessions.set(normalized.id, normalized);
@@ -355,13 +299,30 @@ export function resolveToolCallUiPath(
   };
 }
 
-function formatToolResultText(result: ToolResult): string {
-  const meta =
-    result.metadata && typeof result.metadata === 'object'
-      ? (result.metadata as Record<string, unknown>)
-      : undefined;
-  const outputText =
-    meta && typeof (meta as any).outputText === 'string' ? String((meta as any).outputText) : '';
+type ToolResultUiHints = {
+  outputText?: string;
+  diff?: string;
+  isProtected: boolean;
+  isOutsideWorkspace: boolean;
+  blockedSettingKey?: string;
+  todos?: unknown[];
+};
+
+function extractToolResultUiHints(result: ToolResult): ToolResultUiHints {
+  const data = isRecord(result.data) ? result.data : undefined;
+  const meta = isRecord(result.metadata) ? result.metadata : undefined;
+  return {
+    ...(typeof meta?.outputText === 'string' ? { outputText: meta.outputText } : {}),
+    ...(typeof data?.diff === 'string' ? { diff: data.diff } : {}),
+    isProtected: data?.isProtected === true,
+    isOutsideWorkspace: data?.isOutsideWorkspace === true || meta?.isOutsideWorkspace === true,
+    ...(typeof meta?.blockedSettingKey === 'string' ? { blockedSettingKey: meta.blockedSettingKey } : {}),
+    ...(Array.isArray(meta?.todos) ? { todos: meta.todos } : {}),
+  };
+}
+
+function formatToolResultText(result: ToolResult, hints: ToolResultUiHints): string {
+  const outputText = hints.outputText ?? '';
   if (outputText.trim()) return outputText;
 
   if (result.data === undefined || result.data === null) {
@@ -391,33 +352,25 @@ export function applyCommonToolResultFields(
       ? 'rejected'
       : 'error';
 
-  const resultStr = formatToolResultText(result);
+  const hints = extractToolResultUiHints(result);
+  const resultStr = formatToolResultText(result, hints);
 
-  if (result.data && typeof result.data === 'object') {
-    const data = result.data as Record<string, unknown>;
-    if (data.diff && typeof data.diff === 'string') {
-      toolCall.diff = data.diff;
-    }
-    if ((data as any).isProtected) {
-      toolCall.isProtected = true;
-    }
-    if ((data as any).isOutsideWorkspace) {
-      toolCall.isOutsideWorkspace = true;
-    }
+  if (hints.diff) {
+    toolCall.diff = hints.diff;
+  }
+  if (hints.isProtected) {
+    toolCall.isProtected = true;
+  }
+  if (hints.isOutsideWorkspace) {
+    toolCall.isOutsideWorkspace = true;
   }
 
-  const meta = (result.metadata || {}) as Record<string, unknown>;
+  const meta = isRecord(result.metadata) ? result.metadata : undefined;
   if (!result.success) {
-    const errorCode = typeof meta.errorCode === 'string' ? meta.errorCode : '';
+    const errorCode = typeof meta?.errorCode === 'string' ? meta.errorCode : '';
     if (errorCode === TOOL_ERROR_CODES.external_paths_disabled) {
       toolCall.blockedReason = 'external_paths_disabled';
-      toolCall.blockedSettingKey =
-        typeof (meta as any).blockedSettingKey === 'string'
-          ? String((meta as any).blockedSettingKey)
-          : 'lingyun.security.allowExternalPaths';
-      toolCall.isOutsideWorkspace = true;
-    }
-    if ((meta as any).isOutsideWorkspace) {
+      toolCall.blockedSettingKey = hints.blockedSettingKey || 'lingyun.security.allowExternalPaths';
       toolCall.isOutsideWorkspace = true;
     }
   }
@@ -430,9 +383,8 @@ export function applyCommonToolResultFields(
     }
   }
 
-  const maybeTodos = (result.metadata as any)?.todos;
-  if (Array.isArray(maybeTodos)) {
-    toolCall.todos = maybeTodos;
+  if (hints.todos) {
+    toolCall.todos = hints.todos;
   }
 
   const hasDiff = typeof toolCall.diff === 'string' && toolCall.diff.length > 0;
@@ -441,6 +393,6 @@ export function applyCommonToolResultFields(
     resultStr,
     isTaskTool,
     hasDiff,
-    maybeTodos: Array.isArray(maybeTodos) ? maybeTodos : undefined,
+    maybeTodos: hints.todos,
   };
 }

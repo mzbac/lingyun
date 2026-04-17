@@ -21,7 +21,20 @@ export { getDefaultLingyunPermissionRuleset } from './lingyunPermissions';
 export type { ToolCall } from './toolCall';
 export { toToolCall } from './toolCall';
 
-export { findExternalPathReferencesInShellCommand, isPathInsideWorkspace } from './shellPaths';
+export {
+  canonicalizePathForContainment,
+  classifyDotEnvPath,
+  collectProtectedDotEnvMentions,
+  evaluateShellPathAccess,
+  evaluateWorkspacePathPolicy,
+  findExternalPathReferencesInShellCommand,
+  findNearestExistingAncestor,
+  isPathInsideWorkspace,
+  isProtectedDotEnvPath,
+  type DotEnvSensitivity,
+  type ShellPathAccessEvaluation,
+  type WorkspacePathPolicyEvaluation,
+} from './pathPolicy';
 
 export type { SafeChildProcessEnvOptions } from './shellEnv';
 export { buildSafeChildProcessEnv } from './shellEnv';
@@ -68,6 +81,22 @@ export {
   normalizePermissionPath,
 } from './toolPolicy';
 
+export type {
+  ToolDefinitionRiskLike,
+  ToolExecutionRiskLike,
+  ToolMetadataRiskLike,
+  ToolPermissionPatternLike,
+  ToolRiskDecision,
+  ToolRiskEvaluation,
+  ToolRiskReason,
+  ToolRiskReasonCode,
+} from './toolRisk';
+export {
+  collectProtectedDotEnvTargets,
+  evaluateToolRisk,
+  getPrimaryToolRiskReason,
+} from './toolRisk';
+
 export type { BackgroundJob } from './backgroundJobs';
 export {
   DEFAULT_BACKGROUND_KILL_GRACE_MS,
@@ -94,6 +123,8 @@ export type {
 export {
   appendReasoning,
   appendText,
+  cloneAgentHistoryMessage,
+  cloneAgentHistoryMessages,
   cloneUserHistoryInput,
   createAssistantHistoryMessage,
   createUserHistoryMessage,

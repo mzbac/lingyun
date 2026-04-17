@@ -3,7 +3,7 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 
-import { createAgentBrowserToolProvider, type AgentBrowserRunner } from '@kooka/agent-sdk';
+import { createAgentBrowserToolProvider, type AgentBrowserRunner } from '../../index.js';
 
 function createToolContext(workspaceRoot: string) {
   const controller = new AbortController();

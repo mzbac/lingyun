@@ -87,6 +87,26 @@ function trimHandleMap<T>(map: Map<string, T>, max: number): void {
   }
 }
 
+function looksLikeSemanticHandlesState(raw: Record<string, unknown>): boolean {
+  return (
+    'nextMatchId' in raw ||
+    'nextSymbolId' in raw ||
+    'nextLocId' in raw ||
+    'matches' in raw ||
+    'symbols' in raw ||
+    'locations' in raw
+  );
+}
+
+export function normalizeSemanticHandlesState(raw: unknown): SemanticHandlesState | undefined {
+  const rawRecord = asRecord(raw);
+  if (!rawRecord || !looksLikeSemanticHandlesState(rawRecord)) return undefined;
+
+  const registry = new SemanticHandleRegistry();
+  registry.importState(rawRecord);
+  return registry.exportState();
+}
+
 export class SemanticHandleRegistry {
   private nextMatchId = 1;
   private nextSymbolId = 1;
@@ -137,11 +157,11 @@ export class SemanticHandleRegistry {
     const matchesRaw = asRecord(rawRecord.matches);
     if (matchesRaw) {
       for (const [id, value] of Object.entries(matchesRaw)) {
-        if (typeof id !== 'string' || !/^M\\d+$/.test(id)) continue;
+        if (typeof id !== 'string' || !/^M\d+$/.test(id)) continue;
         const valueRecord = asRecord(value);
         if (!valueRecord) continue;
         const fileId = asTrimmedString(valueRecord.fileId);
-        if (!/^F\\d+$/.test(fileId)) continue;
+        if (!/^F\d+$/.test(fileId)) continue;
         const range = parseRange(valueRecord.range);
         if (!range) continue;
         const preview = asString(valueRecord.preview) ?? '';
@@ -152,11 +172,11 @@ export class SemanticHandleRegistry {
     const symbolsRaw = asRecord(rawRecord.symbols);
     if (symbolsRaw) {
       for (const [id, value] of Object.entries(symbolsRaw)) {
-        if (typeof id !== 'string' || !/^S\\d+$/.test(id)) continue;
+        if (typeof id !== 'string' || !/^S\d+$/.test(id)) continue;
         const valueRecord = asRecord(value);
         if (!valueRecord) continue;
         const fileId = asTrimmedString(valueRecord.fileId);
-        if (!/^F\\d+$/.test(fileId)) continue;
+        if (!/^F\d+$/.test(fileId)) continue;
         const range = parseRange(valueRecord.range);
         if (!range) continue;
         const name = asString(valueRecord.name) ?? '';
@@ -171,11 +191,11 @@ export class SemanticHandleRegistry {
     const locationsRaw = asRecord(rawRecord.locations);
     if (locationsRaw) {
       for (const [id, value] of Object.entries(locationsRaw)) {
-        if (typeof id !== 'string' || !/^L\\d+$/.test(id)) continue;
+        if (typeof id !== 'string' || !/^L\d+$/.test(id)) continue;
         const valueRecord = asRecord(value);
         if (!valueRecord) continue;
         const fileId = asTrimmedString(valueRecord.fileId);
-        if (!/^F\\d+$/.test(fileId)) continue;
+        if (!/^F\d+$/.test(fileId)) continue;
         const range = parseRange(valueRecord.range);
         if (!range) continue;
         const labelValue = asTrimmedString(valueRecord.label);

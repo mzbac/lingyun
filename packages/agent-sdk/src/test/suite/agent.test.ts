@@ -14,18 +14,20 @@ import type {
 
 import { TOOL_ERROR_CODES } from '@kooka/core';
 import {
+  FileHandleRegistry,
   getBuiltinTools,
   getSkillIndex,
   loadSkillFile,
   LingyunAgent,
   LingyunSession,
   PluginManager,
+  snapshotSession,
   ToolRegistry,
   type AgentHistoryMessage,
   type LLMProvider,
   type ToolDefinition,
   type ToolResult,
-} from '@kooka/agent-sdk';
+} from '../../index.js';
 import { TaskSubagentRunner } from '../../agent/taskSubagentRunner.js';
 
 function getMessageText(message: AgentHistoryMessage): string {
@@ -278,6 +280,102 @@ suite('LingYun Agent SDK', () => {
 
     const finalAssistant = [...history].reverse().find((m) => m.role === 'assistant' && getMessageText(m).trim())!;
     assert.strictEqual(getMessageText(finalAssistant).trim(), 'done');
+  });
+
+  test('normalizes mentioned skills inside session state', () => {
+    const session = new LingyunSession({ mentionedSkills: ['skill-1', '', '  skill-2  ', 'skill-1', '   '] as any });
+    assert.deepStrictEqual(session.mentionedSkills, ['skill-1', 'skill-2']);
+
+    session.setMentionedSkills(['  skill-3  ', '', null, 'skill-4', 'skill-3'] as any);
+    assert.deepStrictEqual(session.mentionedSkills, ['skill-3', 'skill-4']);
+
+    session.rememberMentionedSkill('  skill-4  ');
+    session.rememberMentionedSkill('  skill-5  ');
+    assert.deepStrictEqual(session.mentionedSkills, ['skill-3', 'skill-4', 'skill-5']);
+
+    session.clearMentionedSkills();
+    assert.deepStrictEqual(session.mentionedSkills, []);
+  });
+
+  test('clearRuntimeState resets runtime session state but preserves identity metadata', () => {
+    const fileHandles = { nextId: 2, byId: { F1: 'src/index.ts' } };
+    const semanticHandles = {
+      nextMatchId: 2,
+      nextSymbolId: 2,
+      nextLocId: 2,
+      matches: { M1: { fileId: 'F1', range: { start: { line: 1, character: 1 }, end: { line: 1, character: 2 } }, preview: 'x' } },
+      symbols: {},
+      locations: {},
+    };
+    const session = new LingyunSession({
+      history: [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hello' }] } as any],
+      pendingPlan: 'keep going',
+      pendingInputs: ['queued'],
+      compactionSyntheticContexts: [{ transientContext: 'memoryRecall', text: 'remember me' }],
+      sessionId: 'session-1',
+      parentSessionId: 'parent-1',
+      subagentType: 'general',
+      modelId: 'mock-model',
+      mentionedSkills: ['skill-1'],
+      fileHandles,
+      semanticHandles,
+    });
+
+    fileHandles.byId.F1 = 'mutated.ts';
+    semanticHandles.matches.M1.preview = 'mutated';
+
+    session.clearRuntimeState();
+
+    assert.deepStrictEqual(session.history, []);
+    assert.strictEqual(session.pendingPlan, undefined);
+    assert.deepStrictEqual(session.getPendingInputs(), []);
+    assert.deepStrictEqual(session.mentionedSkills, []);
+    assert.deepStrictEqual(session.compactionSyntheticContexts, []);
+    assert.deepStrictEqual(session.fileHandles, { nextId: 1, byId: {} });
+    assert.deepStrictEqual(session.semanticHandles, {
+      nextMatchId: 1,
+      nextSymbolId: 1,
+      nextLocId: 1,
+      matches: {},
+      symbols: {},
+      locations: {},
+    });
+    assert.strictEqual(session.sessionId, 'session-1');
+    assert.strictEqual(session.parentSessionId, 'parent-1');
+    assert.strictEqual(session.subagentType, 'general');
+    assert.strictEqual(session.modelId, 'mock-model');
+  });
+
+  test('snapshotSession clones mutable session state', () => {
+    const session = new LingyunSession({
+      sessionId: 's1',
+      history: [{ id: 'm1', role: 'assistant', parts: [{ type: 'text', text: 'hello', state: 'done' }] } as any],
+      fileHandles: { nextId: 2, byId: { F1: 'src/index.ts' } },
+      semanticHandles: {
+        nextMatchId: 2,
+        nextSymbolId: 2,
+        nextLocId: 2,
+        matches: { M1: { fileId: 'F1', range: { start: { line: 1, character: 1 }, end: { line: 1, character: 2 } }, preview: 'x' } },
+        symbols: {},
+        locations: {},
+      },
+    });
+
+    const snapshot = snapshotSession(session);
+    session.history[0]!.parts[0] = { type: 'text', text: 'mutated', state: 'done' } as any;
+    session.fileHandles!.byId.F1 = 'mutated.ts';
+    session.semanticHandles!.matches.M1!.preview = 'mutated';
+
+    assert.deepStrictEqual(snapshot.history, [{ id: 'm1', role: 'assistant', parts: [{ type: 'text', text: 'hello', state: 'done' }] }]);
+    assert.deepStrictEqual(snapshot.fileHandles, { nextId: 2, byId: { F1: 'src/index.ts' } });
+    assert.deepStrictEqual(snapshot.semanticHandles, {
+      nextMatchId: 2,
+      nextSymbolId: 2,
+      nextLocId: 2,
+      matches: { M1: { fileId: 'F1', range: { start: { line: 1, character: 1 }, end: { line: 1, character: 2 } }, preview: 'x' } },
+      symbols: {},
+      locations: {},
+    });
   });
 
   test('drains steered input after assistant completion and continues with a follow-up iteration', async () => {
@@ -556,11 +654,30 @@ suite('LingYun Agent SDK', () => {
     assert.strictEqual(getMessageText(history[history.length - 1]!), 'Hello');
   });
 
+  test('file handles - registry repairs malformed state before resolving ids', () => {
+    const registry = new FileHandleRegistry({});
+    const session = {
+      fileHandles: {
+        nextId: 2.9,
+        byId: {
+          F1: ' src/foo.ts ',
+          bad: 'drop-me.ts',
+          F2: '   ',
+        },
+      },
+    } as any;
+
+    assert.strictEqual(registry.resolveFileId(session, 'F1'), 'src/foo.ts');
+    assert.deepStrictEqual(session.fileHandles, {
+      nextId: 2,
+      byId: { F1: 'src/foo.ts' },
+    });
+  });
+
   test('file handles - glob assigns fileId and read resolves it', async () => {
+    let readArgs: any;
     const llm = new MockLLMProvider();
     const registry = new ToolRegistry();
-
-    let readArgs: any;
 
     registry.registerTool(
       {
@@ -1035,6 +1152,7 @@ suite('LingYun Agent SDK', () => {
 
       const history = session.getHistory();
       assert.strictEqual(history.some((m) => m.role === 'user' && m.metadata?.skill), false);
+      assert.deepStrictEqual(session.mentionedSkills, ['ask-questions-if-underspecified']);
     } finally {
       await fs.rm(workspaceRoot, { recursive: true, force: true });
     }
@@ -1062,6 +1180,7 @@ suite('LingYun Agent SDK', () => {
       llm.queueResponse({ kind: 'text', content: 'ok' });
 
       let approvalCalls = 0;
+      let approvalContext: any;
       const agent = new LingyunAgent(llm, { model: 'mock-model' }, registry, { workspaceRoot: tmp });
       const session = new LingyunSession();
 
@@ -1069,8 +1188,9 @@ suite('LingYun Agent SDK', () => {
         session,
         input: 'try',
         callbacks: {
-          onRequestApproval: async () => {
+          onRequestApproval: async (_tool, _definition, context) => {
             approvalCalls += 1;
+            approvalContext = context;
             return false;
           },
         },
@@ -1083,6 +1203,9 @@ suite('LingYun Agent SDK', () => {
       assert.strictEqual(result.text, 'ok');
       assert.strictEqual(approvalCalls, 1);
       assert.strictEqual(called, false, 'bash handler should not be invoked when approval is rejected');
+      assert.strictEqual(approvalContext?.manual, false);
+      assert.strictEqual(approvalContext?.decision, 'require_manual_approval');
+      assert.ok(String(approvalContext?.reason || '').includes('curl'));
 
       const history = session.getHistory();
       const assistant = history.find((m) => m.role === 'assistant');
@@ -1092,6 +1215,80 @@ suite('LingYun Agent SDK', () => {
       assert.ok(toolPart, 'expected dynamic-tool part for blocked call');
       assert.strictEqual(toolPart.output?.success, false);
       assert.ok(String(toolPart.output?.error || '').includes('User rejected'));
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('manual dotenv approval bypasses autoApprove and reports manual approval context', async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'lingyun-sdk-test-dotenv-approve-'));
+    try {
+      const llm = new MockLLMProvider();
+      const registry = new ToolRegistry();
+
+      let called = false;
+      const readTool: ToolDefinition = {
+        id: 'read',
+        name: 'Read File',
+        description: 'Reads a file',
+        parameters: {
+          type: 'object',
+          properties: {
+            filePath: { type: 'string' },
+          },
+          required: ['filePath'],
+        },
+        execution: { type: 'function', handler: 'test.read.dotenv' },
+        metadata: {
+          permission: 'read',
+          readOnly: true,
+          permissionPatterns: [{ arg: 'filePath', kind: 'path' }],
+        },
+      };
+
+      registry.registerTool(readTool, async () => {
+        called = true;
+        return { success: true, data: 'dotenv-ok' };
+      });
+
+      llm.queueResponse({
+        kind: 'tool-call',
+        toolCallId: 'call_dotenv_read',
+        toolName: 'read',
+        input: { filePath: '.env' },
+        finishReason: 'tool-calls',
+      });
+      llm.queueResponse({ kind: 'text', content: 'done' });
+
+      let approvalCalls = 0;
+      let approvalContext: any;
+      const agent = new LingyunAgent(llm, { model: 'mock-model', autoApprove: true }, registry, { workspaceRoot: tmp });
+      const session = new LingyunSession();
+
+      const run = agent.run({
+        session,
+        input: 'read dotenv',
+        callbacks: {
+          onRequestApproval: async (_tool, _definition, context) => {
+            approvalCalls += 1;
+            approvalContext = context;
+            return true;
+          },
+        },
+      });
+      for await (const _event of run.events) {
+        // drain
+      }
+      const result = await run.done;
+
+      assert.strictEqual(result.text, 'done');
+      assert.strictEqual(approvalCalls, 1, 'manual approval should still be requested when autoApprove=true');
+      assert.strictEqual(called, true);
+      assert.strictEqual(approvalContext?.manual, true);
+      assert.strictEqual(approvalContext?.decision, 'require_manual_approval');
+      assert.ok(String(approvalContext?.reason || '').includes('Protected dotenv access requires manual approval'));
+      assert.deepStrictEqual(approvalContext?.metadata?.dotEnvTargets, ['.env']);
+      assert.ok(Array.isArray(approvalContext?.metadata?.riskReasons));
     } finally {
       await fs.rm(tmp, { recursive: true, force: true });
     }

@@ -9,6 +9,7 @@ export type {
   ToolCall,
   AgentConfig,
   AgentCallbacks,
+  AgentApprovalContext,
   SubagentEvent,
   LingyunEvent,
   LingyunRun,
@@ -48,6 +49,17 @@ export {
   type LingyunAgentSyntheticRunParams,
 } from './agent/agent.js';
 export {
+  cloneFileHandlesState,
+  cloneSemanticHandlesState,
+  createBlankFileHandlesState,
+  createBlankSemanticHandlesState,
+  normalizeFileHandlesState,
+  normalizeMentionedSkills,
+  normalizeOptionalMentionedSkills,
+} from './agent/session.js';
+export { FileHandleRegistry } from './agent/fileHandles.js';
+export { normalizeSemanticHandlesState } from './agent/semanticHandles.js';
+export {
   isTransientSyntheticMessage,
   isCompactionRestoredSyntheticMessage,
   snapshotSyntheticContextsForCompaction,
@@ -60,7 +72,23 @@ export { buildStreamReplay, type StreamReplayNamespace, type StreamReplayUpdate 
 export { registerBuiltinTools, getBuiltinTools, DEFAULT_SKILL_PATHS, type BuiltinToolsOptions } from './tools/builtin/index.js';
 export type { SkillInfo, SkillIndex } from '@kooka/core';
 export { getSkillIndex, loadSkillFile } from '@kooka/core';
-export * from './persistence/index.js';
+export type {
+  LingyunSessionSnapshot,
+  LingyunSessionSnapshotV1,
+  LingyunSessionStore,
+  LingyunSessionStoreEntry,
+  SqliteDriver,
+  SqliteSessionStoreOptions,
+} from './persistence/index.js';
+export {
+  LingyunSessionSnapshotSchema,
+  SqliteSessionStore,
+  parseSessionSnapshot,
+  restoreSession,
+  serializeSessionSnapshot,
+  snapshotSession,
+  tryParseSessionSnapshot,
+} from './persistence/index.js';
 
 // Neutral API aliases for hosts that don't want product-specific naming.
 export {

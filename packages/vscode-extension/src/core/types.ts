@@ -65,6 +65,7 @@ export type AgentSessionSeed = AgentSessionMetadata & {
 };
 
 export type AgentCallbacks = SdkAgentCallbacks;
+export type AgentApprovalContext = Parameters<NonNullable<SdkAgentCallbacks['onRequestApproval']>>[2];
 export type SubagentEvent = SdkSubagentEvent;
 
 export interface LingyunAPI {

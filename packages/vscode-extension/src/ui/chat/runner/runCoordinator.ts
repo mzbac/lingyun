@@ -1,13 +1,20 @@
 import * as vscode from 'vscode';
 
 import type { UserHistoryInputPart } from '@kooka/core';
-import { isDefaultSessionTitle } from '../sessionTitle';
 import { formatErrorForUser } from '../utils';
-import { recordUserIntent } from '../../../core/sessionSignals';
 
 import type { RunCoordinatorHost } from '../controllerPorts';
-import type { ChatController } from '../controller';
 import type { ChatMessage, ChatUserInput } from '../types';
+import { appendTurnErrorMessage, findLatestUserTurnId } from './runCoordinatorMessageState';
+import {
+  applyGeneratedPlanContent,
+  beginPendingPlanUpdateRun,
+  createPlanFollowUpUserMessage,
+  createPlanMessage,
+  finishPendingPlanUpdateRun,
+  postPlanPendingState,
+} from './runCoordinatorPendingPlan';
+import { findLatestToolMessageByApprovalId } from '../toolMessageLookup';
 
 const MAX_USER_IMAGE_ATTACHMENTS = 8;
 const MAX_USER_IMAGE_DATA_URL_LENGTH = 12_000_000;
@@ -27,6 +34,26 @@ type NormalizedUserInput = {
   displayContent: string;
   hasContent: boolean;
 };
+
+type ActiveSession = ReturnType<RunCoordinatorHost['getActiveSession']>;
+type ActivePendingPlan = NonNullable<ActiveSession['pendingPlan']>;
+type PendingPlanMessage = ChatMessage & {
+  role: 'plan';
+  plan: NonNullable<ChatMessage['plan']>;
+};
+type PendingPlanExecutionTarget = {
+  pendingPlan: ActivePendingPlan;
+  planMsg: PendingPlanMessage;
+};
+type PreparedPendingPlanTarget =
+  | { kind: 'ready'; activeSession: ActiveSession; target: PendingPlanExecutionTarget }
+  | { kind: 'busy' }
+  | { kind: 'no-view' }
+  | { kind: 'no-pending-plan' }
+  | { kind: 'missing-target' }
+  | { kind: 'stale-requested-id' };
+type ReadyPendingPlanTarget = Extract<PreparedPendingPlanTarget, { kind: 'ready' }>;
+type PendingPlanDirectAction = 'execute' | 'revise';
 
 function normalizeUserInput(content: string | ChatUserInput): NormalizedUserInput {
   const message =
@@ -120,6 +147,22 @@ export class RunCoordinator {
     c.queueManager.scheduleAutosendForSession(sessionId, { suppress: params?.suppressQueueAutosend });
   }
 
+  /**
+   * Shared activation state for ordinary build/plan executions.
+   *
+   * Hidden knowledge kept here:
+   * - entering a run always clears per-run auto-approval state
+   * - approval state must be reposted whenever processing begins
+   * - loop steerability is part of the run activation contract, not an ad hoc branch detail
+   */
+  private activateRun(steerableDuringProcessing: boolean): void {
+    const c = this.controller;
+    c.isProcessing = true;
+    this.loopSteerableDuringProcessing = steerableDuringProcessing;
+    c.autoApproveThisRun = false;
+    c.postApprovalState();
+  }
+
   private enqueueQueuedInput(params: { normalized: NormalizedUserInput; displayContent?: string }): void {
     this.controller.queueManager.enqueueActiveInput({
       message: params.normalized.text,
@@ -127,6 +170,476 @@ export class RunCoordinator {
       attachmentCount: params.normalized.attachmentCount,
       attachments: params.normalized.imageAttachments,
     });
+  }
+
+  private postTurnErrorIfNeeded(turnId: string | undefined, content: string): void {
+    const errorMsg = appendTurnErrorMessage({
+      messages: this.controller.messages,
+      turnId,
+      content,
+    });
+    if (errorMsg) {
+      this.controller.postMessage({ type: 'message', message: errorMsg });
+    }
+  }
+
+  /**
+   * Starts an ordinary user turn run and posts the bootstrap UI state in the
+   * only ordering the webview can interpret correctly.
+   *
+   * Hidden knowledge kept here:
+   * - the user message must exist before the processing signal so the active
+   *   turn indicator binds to the correct turn
+   * - title generation is opportunistic and only allowed while the session is
+   *   still using an auto-generated title
+   * - unknown-skill warnings and persistence happen after the user message is
+   *   posted, so follow-up UI updates stay attached to the new turn
+   */
+  private beginUserTurnRun(params: {
+    activeSession: ReturnType<RunCoordinatorHost['getActiveSession']>;
+    normalizedInput: NormalizedUserInput;
+    shouldGeneratePlan: boolean;
+    synthetic?: boolean;
+    displayContent?: string;
+  }): ChatMessage {
+    const c = this.controller;
+    this.activateRun(!params.shouldGeneratePlan);
+    c.loopManager.onRunStart(params.activeSession.id);
+    c.officeSync?.onRunStart();
+
+    const checkpointState = c.agent.exportState();
+    const userMsg: ChatMessage = {
+      id: crypto.randomUUID(),
+      role: 'user',
+      content: params.displayContent ?? params.normalizedInput.displayContent,
+      timestamp: Date.now(),
+      checkpoint: {
+        historyLength: checkpointState.history.length,
+      },
+    };
+    c.messages.push(userMsg);
+    c.currentTurnId = userMsg.id;
+
+    c.maybeGenerateSessionTitle({
+      sessionId: params.activeSession.id,
+      message: params.normalizedInput.text,
+      synthetic: params.synthetic,
+    });
+
+    c.postMessage({ type: 'message', message: userMsg });
+    if (params.normalizedInput.text && !params.synthetic) {
+      void c.postUnknownSkillWarnings(params.normalizedInput.text, userMsg.id);
+    }
+    if (c.isSessionPersistenceEnabled()) {
+      c.persistActiveSession();
+    }
+
+    // Important: the webview derives the active turn from the most recent user message.
+    // Send the processing signal only after the user message is in the UI so the status indicator
+    // attaches to the correct turn.
+    c.postMessage({ type: 'processing', value: true });
+
+    return userMsg;
+  }
+
+  /**
+   * Shared failure handling for coordinator-controlled runs.
+   *
+   * Hidden knowledge kept here:
+   * - how user-facing run errors are formatted
+   * - how cancellation is detected from abort state plus canonical abort text
+   * - when a turn should receive a terminal done status before the error message
+   * - which runs should also mark the active step status
+   */
+  private handleRunFailure(params: {
+    error: unknown;
+    turnId?: string;
+    markStepStatus?: boolean;
+  }): boolean {
+    const c = this.controller;
+    const message = formatErrorForUser(params.error, { llmProviderId: c.llmProvider?.id });
+    const trimmed = message.trim();
+    const wasCanceled = c.abortRequested || trimmed === 'Agent aborted';
+
+    if (params.markStepStatus) {
+      c.markActiveStepStatus(wasCanceled ? 'canceled' : 'error');
+    }
+
+    if (params.turnId && !(trimmed === 'Agent aborted' && !c.abortRequested)) {
+      c.postMessage({ type: 'turnStatus', turnId: params.turnId, status: { type: 'done' } });
+    }
+
+    this.postTurnErrorIfNeeded(params.turnId, message);
+    return wasCanceled;
+  }
+
+  /**
+   * Resolves the active pending-plan message and repairs transient drift between
+   * session.pendingPlan and the rendered plan message collection.
+   *
+   * Hidden knowledge kept here:
+   * - stale plan references are cleared from session + UI state in one place
+   * - plan messages missing plan metadata are normalized before any downstream plan flow runs
+   * - missing task metadata falls back to the session-level pending-plan task
+   */
+  private resolvePendingPlanMessage(params: {
+    activeSession: ActiveSession;
+    pendingPlan: ActivePendingPlan;
+    clearStale?: boolean;
+  }): PendingPlanExecutionTarget | undefined {
+    const c = this.controller;
+    const planMsg = c.messages.find(message => message.id === params.pendingPlan.planMessageId);
+    if (!planMsg || planMsg.role !== 'plan') {
+      if (params.clearStale) {
+        params.activeSession.pendingPlan = undefined;
+        postPlanPendingState(c, { active: false });
+        c.persistActiveSession();
+      }
+      return undefined;
+    }
+
+    if (!planMsg.plan) {
+      planMsg.plan = { status: 'draft', task: params.pendingPlan.task };
+      c.postMessage({ type: 'updateMessage', message: planMsg });
+    } else if (!planMsg.plan.task) {
+      planMsg.plan.task = params.pendingPlan.task;
+      c.postMessage({ type: 'updateMessage', message: planMsg });
+    }
+
+    return {
+      pendingPlan: params.pendingPlan,
+      planMsg: planMsg as PendingPlanMessage,
+    };
+  }
+
+  /**
+   * Handles the special user-input policy while a plan is waiting for clarification.
+   *
+   * Hidden knowledge kept here:
+   * - stale pending-plan references must be cleared from session + UI state before ordinary input flow resumes
+   * - attachment-only replies are ignored while the coordinator is explicitly waiting for textual clarification
+   * - clarification flow uses the same post-load revision transaction as direct revise-plan actions
+   */
+  private async handlePendingPlanUserInput(params: {
+    activeSession: ActiveSession;
+    pendingPlan: ActivePendingPlan;
+    normalizedInput: NormalizedUserInput;
+  }): Promise<boolean> {
+    const target = this.resolvePendingPlanMessage({
+      activeSession: params.activeSession,
+      pendingPlan: params.pendingPlan,
+      clearStale: true,
+    });
+    if (!target) {
+      return false;
+    }
+
+    if (!params.normalizedInput.text) {
+      return true;
+    }
+
+    const prepared = await this.preparePendingPlanTarget({
+      planMessageId: target.pendingPlan.planMessageId,
+      beforeCommit: () => this.controller.recordInputHistory(params.normalizedInput.text),
+    });
+    if (prepared.kind !== 'ready') {
+      return true;
+    }
+
+    await this.revisePendingPlanTarget({
+      activeSession: prepared.activeSession,
+      target: prepared.target,
+      instructions: params.normalizedInput.text,
+    });
+    return true;
+  }
+
+  /**
+   * Runs the state transition for executing an already-approved pending plan.
+   *
+   * Hidden knowledge kept here:
+   * - pending-plan execution temporarily switches the coordinator into build mode
+   * - UI ordering requires processing=true before planPending=false and before the executing status update
+   * - execution failure must restore both plan status and plan-mode state before surfacing the turn error
+   */
+  private async executePendingPlanTarget(params: {
+    activeSession: ActiveSession;
+    target: PendingPlanExecutionTarget;
+  }): Promise<void> {
+    const c = this.controller;
+    const { planMsg } = params.target;
+    const previousMode = c.mode;
+    await c.setModeAndPersist('build');
+    const switchedToBuild = previousMode === 'plan';
+    const lastUserTurn = findLatestUserTurnId(c.messages);
+    c.currentTurnId = planMsg.turnId || lastUserTurn || c.currentTurnId;
+
+    this.activateRun(true);
+    c.postMessage({ type: 'processing', value: true });
+    postPlanPendingState(c, { active: false });
+    c.loopManager.onRunStart(c.activeSessionId);
+    c.officeSync?.onRunStart();
+
+    const previousStatus = planMsg.plan?.status ?? 'draft';
+    if (!planMsg.plan) {
+      planMsg.plan = { status: 'draft', task: params.target.pendingPlan.task };
+    }
+    planMsg.plan.status = 'executing';
+    c.postMessage({ type: 'updateMessage', message: planMsg });
+    if (c.isSessionPersistenceEnabled()) {
+      c.persistActiveSession();
+    }
+
+    let wasCanceled = false;
+    try {
+      let approvedPlan = String(planMsg.content || '');
+      if (previousStatus === 'needs_input' && approvedPlan.trim()) {
+        approvedPlan = appendAssumptionsToPlan(approvedPlan);
+      }
+
+      await c.agent.execute(c.createAgentCallbacks(), { approvedPlan });
+      planMsg.plan.status = 'done';
+      c.postMessage({ type: 'updateMessage', message: planMsg });
+      params.activeSession.pendingPlan = undefined;
+      c.persistActiveSession();
+    } catch (error) {
+      planMsg.plan.status = previousStatus;
+      c.postMessage({ type: 'updateMessage', message: planMsg });
+      postPlanPendingState(c, {
+        active: true,
+        planMessageId: params.activeSession.pendingPlan?.planMessageId,
+      });
+
+      if (switchedToBuild) {
+        await c.setModeAndPersist('plan');
+      }
+
+      wasCanceled = this.handleRunFailure({
+        error,
+        turnId: planMsg.turnId,
+      });
+    } finally {
+      this.finalizeRun({ keepAbortFlag: wasCanceled, suppressQueueAutosend: wasCanceled });
+    }
+  }
+
+  private beginPendingPlanUpdateRun(): void {
+    this.loopSteerableDuringProcessing = false;
+    beginPendingPlanUpdateRun(this.controller);
+  }
+
+  private finishPendingPlanUpdateRun(wasCanceled: boolean): void {
+    this.loopSteerableDuringProcessing = false;
+    finishPendingPlanUpdateRun(this.controller, {
+      currentPlanMessageId: this.controller.getActiveSession().pendingPlan?.planMessageId,
+      wasCanceled,
+    });
+  }
+
+  /**
+   * Prepares the current pending-plan target after the required load barrier,
+   * then re-resolves the canonical plan target against post-commit session state.
+   *
+   * Hidden knowledge kept here:
+   * - all pending-plan entrypoints share one load/commit/re-read sequence
+   * - callers may inject one pre-commit side effect (for example input-history recording) without duplicating the sequencing logic
+   * - pending-plan message repair happens after the commit boundary so downstream actions always see the canonical plan shape
+   * - the returned outcome keeps revalidation details local so higher-level flows can decide how to surface non-ready states
+   */
+  private async preparePendingPlanTarget(params?: {
+    planMessageId?: string;
+    beforeCommit?: () => void;
+  }): Promise<PreparedPendingPlanTarget> {
+    const c = this.controller;
+    if (!c.view) return { kind: 'no-view' };
+    if (c.isProcessing) return { kind: 'busy' };
+
+    const initialPendingPlan = c.getActiveSession().pendingPlan;
+    if (!initialPendingPlan) return { kind: 'no-pending-plan' };
+
+    const requestedId =
+      typeof params?.planMessageId === 'string' && params.planMessageId.trim() ? params.planMessageId : undefined;
+    if (requestedId && initialPendingPlan.planMessageId !== requestedId) {
+      return { kind: 'stale-requested-id' };
+    }
+
+    await c.ensureSessionsLoaded();
+    params?.beforeCommit?.();
+    c.commitRevertedConversationIfNeeded();
+
+    const activeSession = c.getActiveSession();
+    const pendingPlan = activeSession.pendingPlan;
+    if (!pendingPlan) return { kind: 'no-pending-plan' };
+    if (requestedId && pendingPlan.planMessageId !== requestedId) {
+      return { kind: 'stale-requested-id' };
+    }
+
+    const target = this.resolvePendingPlanMessage({
+      activeSession,
+      pendingPlan,
+    });
+    if (!target) return { kind: 'missing-target' };
+    if (requestedId && target.planMsg.id !== requestedId) {
+      return { kind: 'stale-requested-id' };
+    }
+
+    return { kind: 'ready', activeSession, target };
+  }
+
+  /**
+   * Prepares a direct pending-plan action outside the clarification flow and
+   * owns how non-ready outcomes surface back to the user.
+   *
+   * Hidden knowledge kept here:
+   * - execute/revise share one target-preparation contract
+   * - direct plan actions should not each decide how busy/no-pending/stale-target states appear in the UI
+   * - stale or missing targets become durable chat errors for all direct plan actions
+   * - execute keeps the existing transient info messages for busy/no-pending states; revise remains silent there because its UI entrypoints already gate those cases
+   */
+  private async prepareDirectPendingPlanAction(params: {
+    action: PendingPlanDirectAction;
+    planMessageId?: string;
+    beforeCommit?: () => void;
+  }): Promise<ReadyPendingPlanTarget | undefined> {
+    const prepared = await this.preparePendingPlanTarget({
+      planMessageId: params.planMessageId,
+      beforeCommit: params.beforeCommit,
+    });
+    if (prepared.kind === 'ready' || prepared.kind === 'no-view') {
+      return prepared.kind === 'ready' ? prepared : undefined;
+    }
+
+    if (prepared.kind === 'busy') {
+      if (params.action === 'execute') {
+        void vscode.window.showInformationMessage('LingYun: A task is already running.');
+      }
+      return undefined;
+    }
+
+    if (prepared.kind === 'no-pending-plan') {
+      if (params.action === 'execute') {
+        void vscode.window.showInformationMessage('LingYun: No pending plan to execute.');
+      }
+      return undefined;
+    }
+
+    const errorContent =
+      params.action === 'revise'
+        ? 'No pending plan found to revise. Try generating a new plan.'
+        : 'No pending plan found to execute. Try updating or generating a new plan.';
+
+    const errorMsg: ChatMessage = {
+      id: crypto.randomUUID(),
+      role: 'error',
+      content: errorContent,
+      timestamp: Date.now(),
+    };
+    this.controller.messages.push(errorMsg);
+    this.controller.postMessage({ type: 'message', message: errorMsg });
+    return undefined;
+  }
+
+  /**
+   * Applies user clarification text to an already-resolved pending-plan target.
+   *
+   * Hidden knowledge kept here:
+   * - revise-plan always appends clarifications using the canonical task format expected by future plan updates/execution
+   * - revise-plan follow-up UI and unknown-skill warnings stay coupled to the same update transaction
+   * - callers provide a repaired target so this method can stay focused on revise policy rather than load-barrier/session repair details
+   */
+  private async revisePendingPlanTarget(params: {
+    activeSession: ActiveSession;
+    target: PendingPlanExecutionTarget;
+    instructions: string;
+  }): Promise<void> {
+    const trimmed = (params.instructions || '').trim();
+    if (!trimmed) return;
+
+    const updatedTask = `${params.target.pendingPlan.task}\n\nUser clarifications:\n${trimmed}`;
+    await this.updatePendingPlan({
+      activeSession: params.activeSession,
+      target: params.target,
+      nextTask: updatedTask,
+      followUpText: trimmed,
+      warnUnknownSkills: true,
+    });
+  }
+
+  private async updatePendingPlan(params: {
+    activeSession: ActiveSession;
+    target: PendingPlanExecutionTarget;
+    nextTask: string;
+    followUpText?: string;
+    warnUnknownSkills?: boolean;
+  }): Promise<void> {
+    const c = this.controller;
+    this.beginPendingPlanUpdateRun();
+
+    if (params.followUpText) {
+      const checkpointState = c.agent.exportState();
+      const userMsg = createPlanFollowUpUserMessage({
+        content: params.followUpText,
+        historyLength: checkpointState.history.length,
+        turnId: params.target.planMsg.turnId,
+      });
+      c.messages.push(userMsg);
+      c.postMessage({ type: 'message', message: userMsg });
+      if (params.warnUnknownSkills) {
+        void c.postUnknownSkillWarnings(params.followUpText, params.target.planMsg.turnId);
+      }
+    }
+
+    // Ensure the follow-up notice is rendered before the global processing flag so the UI keeps the
+    // status indicator tied to the correct (original) turn.
+    c.postMessage({ type: 'processing', value: true });
+    postPlanPendingState(c, {
+      active: true,
+      planMessageId: params.target.pendingPlan.planMessageId,
+    });
+
+    const previousPendingPlan = { ...params.target.pendingPlan };
+    const nextPlanMsg = createPlanMessage({
+      kind: 'update',
+      task: params.nextTask,
+      turnId: params.target.planMsg.turnId,
+    });
+    c.messages.push(nextPlanMsg);
+    c.postMessage({ type: 'message', message: nextPlanMsg });
+
+    params.activeSession.pendingPlan = {
+      task: params.nextTask,
+      planMessageId: nextPlanMsg.id,
+    };
+    postPlanPendingState(c, {
+      active: true,
+      planMessageId: nextPlanMsg.id,
+    });
+
+    let wasCanceled = false;
+    try {
+      const plan = await c.agent.plan(params.nextTask, c.createPlanningCallbacks(nextPlanMsg));
+      applyGeneratedPlanContent({
+        planMsg: nextPlanMsg,
+        task: params.nextTask,
+        plan,
+        classifyPlanStatus: c.classifyPlanStatus,
+      });
+      c.postMessage({ type: 'updateMessage', message: nextPlanMsg });
+      c.persistActiveSession();
+    } catch (error) {
+      params.activeSession.pendingPlan = previousPendingPlan;
+      postPlanPendingState(c, {
+        active: true,
+        planMessageId: previousPendingPlan.planMessageId,
+      });
+
+      wasCanceled = this.handleRunFailure({
+        error,
+        turnId: params.target.planMsg.turnId,
+      });
+    } finally {
+      this.finishPendingPlanUpdateRun(wasCanceled);
+    }
   }
 
   async steerQueuedInput(id: string): Promise<void> {
@@ -231,7 +744,7 @@ export class RunCoordinator {
     if (!normalizedInput.hasContent) return;
 
     if (normalizedInput.text && !options?.fromQueue && !options?.synthetic) {
-      recordUserIntent(c.signals, normalizedInput.text);
+      c.recordUserIntent(normalizedInput.text);
     }
 
     const activeSession = c.getActiveSession();
@@ -248,18 +761,12 @@ export class RunCoordinator {
     }
 
     if (pendingPlan) {
-      const planMsg = c.messages.find(m => m.id === pendingPlan.planMessageId);
-      if (!planMsg || planMsg.role !== 'plan') {
-        activeSession.pendingPlan = undefined;
-        c.postMessage({ type: 'planPending', value: false, planMessageId: '' });
-        c.persistActiveSession();
-      } else {
-        if (!planMsg.plan) {
-          planMsg.plan = { status: 'draft', task: pendingPlan.task };
-          c.postMessage({ type: 'updateMessage', message: planMsg });
-        }
-        if (!normalizedInput.text) return;
-        await c.revisePendingPlan(pendingPlan.planMessageId, normalizedInput.text);
+      const handledPendingPlanInput = await this.handlePendingPlanUserInput({
+        activeSession,
+        pendingPlan,
+        normalizedInput,
+      });
+      if (handledPendingPlanInput) {
         return;
       }
     }
@@ -276,127 +783,51 @@ export class RunCoordinator {
     const planFirst = c.isPlanFirstEnabled();
     const shouldGeneratePlan = c.mode === 'plan' || (planFirst && isNew);
 
-    c.isProcessing = true;
-    this.loopSteerableDuringProcessing = !shouldGeneratePlan;
-    c.autoApproveThisRun = false;
-    c.postApprovalState();
-    c.loopManager.onRunStart(activeSession.id);
-
-    c.officeSync?.onRunStart();
-
-    const checkpointState = c.agent.exportState();
-    const userMsg: ChatMessage = {
-      id: crypto.randomUUID(),
-      role: 'user',
-      content: options?.displayContent ?? normalizedInput.displayContent,
-      timestamp: Date.now(),
-      checkpoint: {
-        historyLength: checkpointState.history.length,
-      },
-    };
-    c.messages.push(userMsg);
-    c.currentTurnId = userMsg.id;
-
-    const userCount = activeSession.messages.filter(m => m.role === 'user').length;
-    if (
-      normalizedInput.text &&
-      userCount === 1 &&
-      isDefaultSessionTitle(activeSession.title) &&
-      !options?.synthetic
-    ) {
-      void c.agent
-        .generateSessionTitle(normalizedInput.text, { maxChars: 50 })
-        .then(title => {
-          const session = c.sessions.get(activeSession.id);
-          if (!session) return;
-          if (!isDefaultSessionTitle(session.title)) return;
-          if (!title || !title.trim()) return;
-
-          session.title = title.trim();
-          session.updatedAt = Date.now();
-          c.postSessions();
-          c.markSessionDirty(session.id);
-        })
-        .catch(() => {});
-    }
-
-    c.postMessage({ type: 'message', message: userMsg });
-    if (normalizedInput.text && !options?.synthetic) {
-      void c.postUnknownSkillWarnings(normalizedInput.text, userMsg.id);
-    }
-    if (c.isSessionPersistenceEnabled()) {
-      c.persistActiveSession();
-    }
-
-    // Important: the webview derives the active turn from the most recent user message.
-    // Send the processing signal only after the user message is in the UI so the status indicator
-    // attaches to the correct turn.
-    c.postMessage({ type: 'processing', value: true });
+    const userMsg = this.beginUserTurnRun({
+      activeSession,
+      normalizedInput,
+      shouldGeneratePlan,
+      synthetic: options?.synthetic,
+      displayContent: options?.displayContent,
+    });
 
     let wasCanceled = false;
     try {
       if (shouldGeneratePlan) {
         await c.setModeAndPersist('plan');
 
-        const planMsg: ChatMessage = {
-          id: crypto.randomUUID(),
-          role: 'plan',
-          content: 'Planning...',
-          timestamp: Date.now(),
+        const planMsg = createPlanMessage({
+          kind: 'initial',
+          task: normalizedInput.displayContent,
           turnId: c.currentTurnId,
-          plan: { status: 'generating', task: normalizedInput.displayContent },
-        };
+        });
         c.messages.push(planMsg);
         c.postMessage({ type: 'message', message: planMsg });
 
         const plan = await c.agent.plan(normalizedInput.agentInput, c.createPlanningCallbacks(planMsg));
+        applyGeneratedPlanContent({
+          planMsg,
+          task: normalizedInput.displayContent,
+          plan,
+          classifyPlanStatus: c.classifyPlanStatus,
+        });
 
-        const trimmedPlan = (plan || '').trim();
-        if (trimmedPlan) {
-          planMsg.content = trimmedPlan;
-        } else {
-          const existing = (planMsg.content || '').trim();
-          const placeholder = existing === 'Planning...' || existing === 'Updating plan...';
-          planMsg.content = !placeholder && existing ? planMsg.content : '(No plan generated)';
-        }
-
-        planMsg.plan = { status: c.classifyPlanStatus(planMsg.content), task: normalizedInput.displayContent };
         activeSession.pendingPlan = { task: normalizedInput.displayContent, planMessageId: planMsg.id };
         c.postMessage({ type: 'updateMessage', message: planMsg });
-        c.postMessage({ type: 'planPending', value: true, planMessageId: planMsg.id });
+        postPlanPendingState(c, { active: true, planMessageId: planMsg.id });
         // Plan runs can still produce usage metadata; update the global context indicator now.
         c.postMessage({ type: 'context', context: c.getContextForUI() });
         return;
       }
 
+
       await c.agent[isNew ? 'run' : 'continue'](normalizedInput.agentInput, c.createAgentCallbacks());
     } catch (error) {
-      const message = formatErrorForUser(error, { llmProviderId: c.llmProvider?.id });
-      const trimmed = message.trim();
-      wasCanceled = c.abortRequested || trimmed === 'Agent aborted';
-      c.markActiveStepStatus(wasCanceled ? 'canceled' : 'error');
-
-      if (c.currentTurnId && !(trimmed === 'Agent aborted' && !c.abortRequested)) {
-        c.postMessage({ type: 'turnStatus', turnId: c.currentTurnId, status: { type: 'done' } });
-      }
-
-      const alreadyPosted =
-        !!c.currentTurnId &&
-        [...c.messages]
-          .reverse()
-          .some((m) => m.turnId === c.currentTurnId && m.role === 'error' && (m.content || '').trim() === trimmed);
-
-      if (!alreadyPosted) {
-        const errorMsg: ChatMessage = {
-          id: crypto.randomUUID(),
-          role: 'error',
-          content: message,
-          timestamp: Date.now(),
-          turnId: c.currentTurnId,
-        };
-        c.messages.push(errorMsg);
-        c.postMessage({ type: 'message', message: errorMsg });
-      }
+      wasCanceled = this.handleRunFailure({
+        error,
+        turnId: c.currentTurnId,
+        markStepStatus: true,
+      });
     } finally {
       this.finalizeRun({ keepAbortFlag: wasCanceled, suppressQueueAutosend: wasCanceled });
     }
@@ -410,19 +841,16 @@ export class RunCoordinator {
 
     await c.ensureSessionsLoaded();
 
-    const toolMsg = [...c.messages].reverse().find(m => m.toolCall?.approvalId === approvalId);
+    const toolMsg = findLatestToolMessageByApprovalId(c.messages, approvalId);
     if (!toolMsg?.toolCall) return;
 
     // Keep the retry scoped to the most recent user turn by default ("continue the current task").
-    const lastUserTurn = [...c.messages].reverse().find(m => m.role === 'user')?.id;
+    const lastUserTurn = findLatestUserTurnId(c.messages);
     c.currentTurnId = toolMsg.turnId || lastUserTurn || c.currentTurnId;
 
     c.commitRevertedConversationIfNeeded();
 
-    c.isProcessing = true;
-    this.loopSteerableDuringProcessing = true;
-    c.autoApproveThisRun = false;
-    c.postApprovalState();
+    this.activateRun(true);
     c.loopManager.onRunStart(c.activeSessionId);
     c.postMessage({ type: 'processing', value: true });
 
@@ -432,287 +860,27 @@ export class RunCoordinator {
     try {
       await c.agent.resume(c.createAgentCallbacks());
     } catch (error) {
-      const message = formatErrorForUser(error, { llmProviderId: c.llmProvider?.id });
-      const trimmed = message.trim();
-      wasCanceled = c.abortRequested || trimmed === 'Agent aborted';
-      c.markActiveStepStatus(wasCanceled ? 'canceled' : 'error');
-
-      if (c.currentTurnId && !(trimmed === 'Agent aborted' && !c.abortRequested)) {
-        c.postMessage({ type: 'turnStatus', turnId: c.currentTurnId, status: { type: 'done' } });
-      }
-
-      const alreadyPosted =
-        !!c.currentTurnId &&
-        [...c.messages]
-          .reverse()
-          .some((m) => m.turnId === c.currentTurnId && m.role === 'error' && (m.content || '').trim() === trimmed);
-
-      if (!alreadyPosted) {
-        const errorMsg: ChatMessage = {
-          id: crypto.randomUUID(),
-          role: 'error',
-          content: message,
-          timestamp: Date.now(),
-          turnId: c.currentTurnId,
-        };
-        c.messages.push(errorMsg);
-        c.postMessage({ type: 'message', message: errorMsg });
-      }
+      wasCanceled = this.handleRunFailure({
+        error,
+        turnId: c.currentTurnId,
+        markStepStatus: true,
+      });
     } finally {
       this.finalizeRun({ keepAbortFlag: wasCanceled, suppressQueueAutosend: wasCanceled });
     }
   }
 
   async executePendingPlan(planMessageId?: string): Promise<void> {
-    const c = this.controller;
-    const session = c.getActiveSession();
-    const pendingPlan = session.pendingPlan;
-    if (c.isProcessing || !pendingPlan || !c.view) {
-      if (!c.view) return;
-      if (c.isProcessing) {
-        void vscode.window.showInformationMessage('LingYun: A task is already running.');
-      } else {
-        void vscode.window.showInformationMessage('LingYun: No pending plan to execute.');
-      }
-      return;
-    }
-
-    await c.ensureSessionsLoaded();
-    c.commitRevertedConversationIfNeeded();
-
-    const refreshedPendingPlan = c.getActiveSession().pendingPlan;
-    if (!refreshedPendingPlan) {
-      void vscode.window.showInformationMessage('LingYun: No pending plan to execute.');
-      return;
-    }
-
-    const requestedId =
-      typeof planMessageId === 'string' && planMessageId.trim() ? planMessageId : undefined;
-    const effectiveId =
-      requestedId && requestedId === refreshedPendingPlan.planMessageId ? requestedId : refreshedPendingPlan.planMessageId;
-
-    const planMsg = c.messages.find(m => m.id === effectiveId);
-    if (!planMsg || planMsg.role !== 'plan') {
-      const errorMsg: ChatMessage = {
-        id: crypto.randomUUID(),
-        role: 'error',
-        content: 'No pending plan found to execute. Try regenerating the plan.',
-        timestamp: Date.now(),
-      };
-      c.messages.push(errorMsg);
-      c.postMessage({ type: 'message', message: errorMsg });
-      return;
-    }
-
-    if (!planMsg.plan) {
-      planMsg.plan = { status: 'draft' };
-    }
-
-    const previousMode = c.mode;
-    await c.setModeAndPersist('build');
-    const switchedToBuild = previousMode === 'plan';
-    const lastUserTurn = [...c.messages].reverse().find(m => m.role === 'user')?.id;
-    c.currentTurnId = planMsg.turnId || lastUserTurn || c.currentTurnId;
-
-    c.isProcessing = true;
-    this.loopSteerableDuringProcessing = true;
-    c.autoApproveThisRun = false;
-    c.postApprovalState();
-    c.postMessage({ type: 'processing', value: true });
-    c.postMessage({ type: 'planPending', value: false, planMessageId: '' });
-    c.loopManager.onRunStart(c.activeSessionId);
-
-    c.officeSync?.onRunStart();
-
-    const previousStatus = planMsg.plan.status;
-    planMsg.plan.status = 'executing';
-    c.postMessage({ type: 'updateMessage', message: planMsg });
-    if (c.isSessionPersistenceEnabled()) {
-      c.persistActiveSession();
-    }
-
-    let wasCanceled = false;
-    try {
-      let approvedPlan = String(planMsg.content || '');
-      if (previousStatus === 'needs_input' && approvedPlan.trim()) {
-        approvedPlan = appendAssumptionsToPlan(approvedPlan);
-      }
-
-      await c.agent.execute(c.createAgentCallbacks(), { approvedPlan });
-      planMsg.plan.status = 'done';
-      c.postMessage({ type: 'updateMessage', message: planMsg });
-      c.getActiveSession().pendingPlan = undefined;
-      c.persistActiveSession();
-    } catch (error) {
-      planMsg.plan.status = previousStatus;
-      c.postMessage({ type: 'updateMessage', message: planMsg });
-      c.postMessage({
-        type: 'planPending',
-        value: true,
-        planMessageId: c.getActiveSession().pendingPlan?.planMessageId ?? '',
-      });
-
-      if (switchedToBuild) {
-        await c.setModeAndPersist('plan');
-      }
-
-      const message = formatErrorForUser(error, { llmProviderId: c.llmProvider?.id });
-      const trimmed = message.trim();
-      wasCanceled = c.abortRequested || trimmed === 'Agent aborted';
-      if (planMsg.turnId && !(trimmed === 'Agent aborted' && !c.abortRequested)) {
-        c.postMessage({ type: 'turnStatus', turnId: planMsg.turnId, status: { type: 'done' } });
-      }
-
-      const alreadyPosted =
-        !!planMsg.turnId &&
-        [...c.messages]
-          .reverse()
-          .some((m) => m.turnId === planMsg.turnId && m.role === 'error' && (m.content || '').trim() === trimmed);
-
-      if (!alreadyPosted) {
-        const errorMsg: ChatMessage = {
-          id: crypto.randomUUID(),
-          role: 'error',
-          content: message,
-          timestamp: Date.now(),
-          turnId: planMsg.turnId,
-        };
-        c.messages.push(errorMsg);
-        c.postMessage({ type: 'message', message: errorMsg });
-      }
-    } finally {
-      this.finalizeRun({ keepAbortFlag: wasCanceled, suppressQueueAutosend: wasCanceled });
-    }
-  }
-
-  async regeneratePendingPlan(planMessageId: string, reason?: string): Promise<void> {
-    const c = this.controller;
-    const session = c.getActiveSession();
-    const pendingPlan = session.pendingPlan;
-    if (c.isProcessing || !pendingPlan || !c.view) return;
-    if (pendingPlan.planMessageId !== planMessageId) return;
-
-    await c.ensureSessionsLoaded();
-    c.commitRevertedConversationIfNeeded();
-
-    const planMsg = c.messages.find(m => m.id === planMessageId);
-    if (!planMsg || planMsg.role !== 'plan' || !planMsg.plan) return;
-
-    c.isProcessing = true;
-    this.loopSteerableDuringProcessing = false;
-    c.autoApproveThisRun = false;
-    c.postApprovalState();
-
-    c.officeSync?.onRunStart();
-
-    const note = (reason || '').trim();
-    if (note) {
-      const checkpointState = c.agent.exportState();
-      const userMsg: ChatMessage = {
-        id: crypto.randomUUID(),
-        role: 'user',
-        content: note,
-        timestamp: Date.now(),
-        turnId: planMsg.turnId,
-        checkpoint: {
-          historyLength: checkpointState.history.length,
-        },
-      };
-      c.messages.push(userMsg);
-      c.postMessage({ type: 'message', message: userMsg });
-    }
-
-    // Ensure the regeneration notice is rendered before the global processing flag so the UI keeps the
-    // status indicator tied to the correct (original) turn.
-    c.postMessage({ type: 'processing', value: true });
-    c.postMessage({
-      type: 'planPending',
-      value: true,
-      planMessageId: pendingPlan.planMessageId,
+    const prepared = await this.prepareDirectPendingPlanAction({
+      action: 'execute',
+      planMessageId,
     });
+    if (!prepared) return;
 
-    const previousPendingPlan = { ...pendingPlan };
-    const taskForPlan = note ? `${pendingPlan.task}\n\n${note}` : pendingPlan.task;
-
-    let wasCanceled = false;
-    try {
-      const nextPlanMsg: ChatMessage = {
-        id: crypto.randomUUID(),
-        role: 'plan',
-        content: 'Updating plan...',
-        timestamp: Date.now(),
-        turnId: planMsg.turnId,
-        plan: { status: 'generating', task: taskForPlan },
-      };
-      c.messages.push(nextPlanMsg);
-      c.postMessage({ type: 'message', message: nextPlanMsg });
-
-      session.pendingPlan = { task: taskForPlan, planMessageId: nextPlanMsg.id };
-      c.postMessage({ type: 'planPending', value: true, planMessageId: nextPlanMsg.id });
-
-      const plan = await c.agent.plan(taskForPlan, c.createPlanningCallbacks(nextPlanMsg));
-      const trimmedPlan = (plan || '').trim();
-      if (trimmedPlan) {
-        nextPlanMsg.content = trimmedPlan;
-      } else {
-        const existing = (nextPlanMsg.content || '').trim();
-        const placeholder = existing === 'Planning...' || existing === 'Updating plan...';
-        nextPlanMsg.content = !placeholder && existing ? nextPlanMsg.content : '(No plan generated)';
-      }
-      if (nextPlanMsg.plan) {
-        nextPlanMsg.plan.status = c.classifyPlanStatus(nextPlanMsg.content);
-        nextPlanMsg.plan.task = taskForPlan;
-      }
-      c.postMessage({ type: 'updateMessage', message: nextPlanMsg });
-      c.persistActiveSession();
-    } catch (error) {
-      session.pendingPlan = previousPendingPlan;
-      c.postMessage({
-        type: 'planPending',
-        value: true,
-        planMessageId: previousPendingPlan.planMessageId,
-      });
-
-      const message = formatErrorForUser(error, { llmProviderId: c.llmProvider?.id });
-      const trimmed = message.trim();
-      wasCanceled = c.abortRequested || trimmed === 'Agent aborted';
-      if (planMsg.turnId && !(trimmed === 'Agent aborted' && !c.abortRequested)) {
-        c.postMessage({ type: 'turnStatus', turnId: planMsg.turnId, status: { type: 'done' } });
-      }
-
-      const alreadyPosted =
-        !!planMsg.turnId &&
-        [...c.messages]
-          .reverse()
-          .some((m) => m.turnId === planMsg.turnId && m.role === 'error' && (m.content || '').trim() === trimmed);
-
-      if (!alreadyPosted) {
-        const errorMsg: ChatMessage = {
-          id: crypto.randomUUID(),
-          role: 'error',
-          content: message,
-          timestamp: Date.now(),
-          turnId: planMsg.turnId,
-        };
-        c.messages.push(errorMsg);
-        c.postMessage({ type: 'message', message: errorMsg });
-      }
-    } finally {
-      c.isProcessing = false;
-      this.loopSteerableDuringProcessing = false;
-      c.postMessage({ type: 'processing', value: false });
-      c.postMessage({
-        type: 'planPending',
-        value: true,
-        planMessageId: session.pendingPlan?.planMessageId ?? '',
-      });
-      c.autoApproveThisRun = false;
-      c.pendingApprovals.clear();
-      c.postApprovalState();
-      c.officeSync?.onRunEnd();
-      c.persistActiveSession();
-      c.queueManager.scheduleAutosendForSession(c.activeSessionId, { suppress: wasCanceled });
-    }
+    await this.executePendingPlanTarget({
+      activeSession: prepared.activeSession,
+      target: prepared.target,
+    });
   }
 
   async cancelPendingPlan(planMessageId: string): Promise<void> {
@@ -731,251 +899,31 @@ export class RunCoordinator {
     await c.agent.clear();
     c.loopManager.syncActiveSession();
     c.postLoopState(session);
-    c.postMessage({ type: 'planPending', value: false, planMessageId: '' });
+    postPlanPendingState(c, { active: false });
     c.persistActiveSession();
     void c.queueManager.flushAutosendForActiveSession();
   }
 
   async revisePendingPlan(planMessageId: string, instructions: string): Promise<void> {
     const c = this.controller;
-    const session = c.getActiveSession();
-    const pendingPlan = session.pendingPlan;
-    if (c.isProcessing || !pendingPlan || !c.view) return;
-    if (pendingPlan.planMessageId !== planMessageId) return;
-
     const trimmed = (instructions || '').trim();
     if (!trimmed) return;
 
-    await c.ensureSessionsLoaded();
-    c.recordInputHistory(trimmed);
-    c.commitRevertedConversationIfNeeded();
-
-    const planMsg = c.messages.find(m => m.id === planMessageId);
-    if (!planMsg || planMsg.role !== 'plan' || !planMsg.plan) return;
-
-    c.isProcessing = true;
-    this.loopSteerableDuringProcessing = false;
-    c.autoApproveThisRun = false;
-    c.postApprovalState();
-
-    c.officeSync?.onRunStart();
-
-    const previousPendingPlan = { ...pendingPlan };
-
-    const checkpointState = c.agent.exportState();
-    const userMsg: ChatMessage = {
-      id: crypto.randomUUID(),
-      role: 'user',
-      content: trimmed,
-      timestamp: Date.now(),
-      turnId: planMsg.turnId,
-      checkpoint: {
-        historyLength: checkpointState.history.length,
-      },
-    };
-    c.messages.push(userMsg);
-    c.postMessage({ type: 'message', message: userMsg });
-    void c.postUnknownSkillWarnings(trimmed, planMsg.turnId);
-
-    // Ensure the user follow-up is rendered before the global processing flag so the UI keeps the
-    // status indicator tied to the correct (original) turn.
-    c.postMessage({ type: 'processing', value: true });
-    c.postMessage({
-      type: 'planPending',
-      value: true,
-      planMessageId: pendingPlan.planMessageId,
+    const prepared = await this.prepareDirectPendingPlanAction({
+      action: 'revise',
+      planMessageId,
+      beforeCommit: () => c.recordInputHistory(trimmed),
     });
+    if (!prepared) return;
 
-    const updatedTask = `${pendingPlan.task}\n\nUser clarifications:\n${trimmed}`;
-    const nextPlanMsg: ChatMessage = {
-      id: crypto.randomUUID(),
-      role: 'plan',
-      content: 'Updating plan...',
-      timestamp: Date.now(),
-      turnId: planMsg.turnId,
-      plan: { status: 'generating', task: updatedTask },
-    };
-    c.messages.push(nextPlanMsg);
-    c.postMessage({ type: 'message', message: nextPlanMsg });
-
-    session.pendingPlan = { task: updatedTask, planMessageId: nextPlanMsg.id };
-    c.postMessage({ type: 'planPending', value: true, planMessageId: nextPlanMsg.id });
-
-    let wasCanceled = false;
-    try {
-      const plan = await c.agent.plan(updatedTask, c.createPlanningCallbacks(nextPlanMsg));
-      const trimmedPlan = (plan || '').trim();
-      if (trimmedPlan) {
-        nextPlanMsg.content = trimmedPlan;
-      } else {
-        const existing = (nextPlanMsg.content || '').trim();
-        const placeholder = existing === 'Planning...' || existing === 'Updating plan...';
-        nextPlanMsg.content = !placeholder && existing ? nextPlanMsg.content : '(No plan generated)';
-      }
-      if (nextPlanMsg.plan) {
-        nextPlanMsg.plan.status = c.classifyPlanStatus(nextPlanMsg.content);
-        nextPlanMsg.plan.task = updatedTask;
-      }
-      c.postMessage({ type: 'updateMessage', message: nextPlanMsg });
-      c.persistActiveSession();
-    } catch (error) {
-      session.pendingPlan = previousPendingPlan;
-      c.postMessage({
-        type: 'planPending',
-        value: true,
-        planMessageId: previousPendingPlan.planMessageId,
-      });
-
-      const message = formatErrorForUser(error, { llmProviderId: c.llmProvider?.id });
-      const trimmed = message.trim();
-      wasCanceled = c.abortRequested || trimmed === 'Agent aborted';
-      if (planMsg.turnId && !(trimmed === 'Agent aborted' && !c.abortRequested)) {
-        c.postMessage({ type: 'turnStatus', turnId: planMsg.turnId, status: { type: 'done' } });
-      }
-
-      const alreadyPosted =
-        !!planMsg.turnId &&
-        [...c.messages]
-          .reverse()
-          .some((m) => m.turnId === planMsg.turnId && m.role === 'error' && (m.content || '').trim() === trimmed);
-
-      if (!alreadyPosted) {
-        const errorMsg: ChatMessage = {
-          id: crypto.randomUUID(),
-          role: 'error',
-          content: message,
-          timestamp: Date.now(),
-          turnId: planMsg.turnId,
-        };
-        c.messages.push(errorMsg);
-        c.postMessage({ type: 'message', message: errorMsg });
-      }
-    } finally {
-      c.isProcessing = false;
-      this.loopSteerableDuringProcessing = false;
-      c.postMessage({ type: 'processing', value: false });
-      c.postMessage({
-        type: 'planPending',
-        value: true,
-        planMessageId: session.pendingPlan?.planMessageId ?? '',
-      });
-      c.autoApproveThisRun = false;
-      c.pendingApprovals.clear();
-      c.postApprovalState();
-      c.officeSync?.onRunEnd();
-      c.persistActiveSession();
-      c.queueManager.scheduleAutosendForSession(c.activeSessionId, { suppress: wasCanceled });
-    }
+    await this.revisePendingPlanTarget({
+      activeSession: prepared.activeSession,
+      target: prepared.target,
+      instructions: trimmed,
+    });
   }
 }
 
-export function createRunCoordinator(controller: ChatController): RunCoordinator {
-  return new RunCoordinator({
-    get activeSessionId() {
-      return controller.activeSessionId;
-    },
-    agent: {
-      get running() {
-        return controller.agent.running ?? false;
-      },
-      run: (task, callbacks) => controller.agent.run(task as any, callbacks),
-      continue: (message, callbacks) => controller.agent.continue(message, callbacks),
-      getHistory: () =>
-        typeof controller.agent.getHistory === 'function'
-          ? controller.agent.getHistory()
-          : controller.agent.exportState().history,
-      exportState: () => controller.agent.exportState(),
-      clear: () => controller.agent.clear(),
-      steer: (input) => controller.agent.steer(input),
-      plan: (task, callbacks) => controller.agent.plan(task, callbacks),
-      generateSessionTitle: (message: string, options?: { maxChars?: number; modelId?: string }) =>
-        controller.agent.generateSessionTitle(message, options),
-      resume: (callbacks) => controller.agent.resume(callbacks),
-      execute: (callbacks, options) => controller.agent.execute(callbacks, options),
-    },
-    get autoApproveThisRun() {
-      return controller.autoApproveThisRun;
-    },
-    set autoApproveThisRun(value: boolean) {
-      controller.autoApproveThisRun = value;
-    },
-    get abortRequested() {
-      return controller.abortRequested;
-    },
-    set abortRequested(value: boolean) {
-      controller.abortRequested = value;
-    },
-    classifyPlanStatus: (plan: string) => controller.runnerInputApi.classifyPlanStatus(plan),
-    commitRevertedConversationIfNeeded: () => controller.revertApi.commitRevertedConversationIfNeeded(),
-    createAgentCallbacks: () => controller.runnerCallbacksApi.createAgentCallbacks(),
-    createPlanningCallbacks: (planMsg: ChatMessage) =>
-      controller.runnerCallbacksApi.createPlanningCallbacks(planMsg),
-    get currentTurnId() {
-      return controller.currentTurnId;
-    },
-    set currentTurnId(value: string | undefined) {
-      controller.currentTurnId = value;
-    },
-    ensureSessionsLoaded: () => controller.sessionApi.ensureSessionsLoaded(),
-    getActiveSession: () => controller.sessionApi.getActiveSession(),
-    getContextForUI: () => controller.sessionApi.getContextForUI(),
-    isPlanFirstEnabled: () => controller.runnerInputApi.isPlanFirstEnabled(),
-    get isProcessing() {
-      return controller.isProcessing;
-    },
-    set isProcessing(value: boolean) {
-      controller.isProcessing = value;
-    },
-    isSessionPersistenceEnabled: () => controller.sessionApi.isSessionPersistenceEnabled(),
-    get llmProvider() {
-      return controller.llmProvider;
-    },
-    loopManager: {
-      hasLoopContext: (session) => controller.loopManager.hasLoopContext(session),
-      onRunStart: (sessionId) => controller.loopManager.onRunStart(sessionId),
-      onRunEnd: (sessionId) => controller.loopManager.onRunEnd(sessionId),
-      syncActiveSession: (options) => controller.loopManager.syncActiveSession(options),
-    },
-    markSessionDirty: (sessionId: string) => controller.sessionApi.markSessionDirty(sessionId),
-    markActiveStepStatus: (status) => controller.approvalsApi.markActiveStepStatus(status),
-    get messages() {
-      return controller.messages;
-    },
-    get mode() {
-      return controller.mode;
-    },
-    get officeSync() {
-      return controller.officeSync;
-    },
-    get pendingApprovals() {
-      return controller.pendingApprovals;
-    },
-    persistActiveSession: () => controller.sessionApi.persistActiveSession(),
-    postApprovalState: () => controller.approvalsApi.postApprovalState(),
-    postLoopState: (session) => controller.loopApi.postLoopState(session),
-    postMessage: (message: unknown) => controller.webviewApi.postMessage(message),
-    postSessions: () => controller.sessionApi.postSessions(),
-    postUnknownSkillWarnings: (content: string, turnId?: string) =>
-      controller.skillsApi.postUnknownSkillWarnings(content, turnId),
-    queueManager: {
-      enqueueActiveInput: (payload) => controller.queueManager.enqueueActiveInput(payload),
-      takeByIdFromActiveSession: (id: string) => controller.queueManager.takeByIdFromActiveSession(id),
-      scheduleAutosendForSession: (sessionId: string, options?: { suppress?: boolean }) =>
-        controller.queueManager.scheduleAutosendForSession(sessionId, options),
-      flushAutosendForActiveSession: () => controller.queueManager.flushAutosendForActiveSession(),
-    },
-    recordInputHistory: (content: string) => controller.inputHistoryApi.recordInputHistory(content),
-    revisePendingPlan: (planMessageId: string, instructions: string) =>
-      controller.runnerPlanApi.revisePendingPlan(planMessageId, instructions),
-    get sessions() {
-      return controller.sessions;
-    },
-    setModeAndPersist: (mode, options) => controller.modeApi.setModeAndPersist(mode, options),
-    get signals() {
-      return controller.signals;
-    },
-    get view() {
-      return controller.view;
-    },
-  });
+export function createRunCoordinator(controller: RunCoordinatorHost): RunCoordinator {
+  return new RunCoordinator(controller);
 }

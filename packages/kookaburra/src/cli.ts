@@ -403,7 +403,10 @@ function createRuntimeAgent(options: {
   const identityParts = renderWorkspaceIdentitySystemParts(options.workspaceRoot, { maxBytesPerFile: 128 * 1024 });
   if (identityParts.length > 0) {
     plugins.registerHooks('kookaburra.identity', {
-      'experimental.chat.system.transform': async (_input, output) => {
+      'experimental.chat.system.transform': async (
+        _input: { sessionId?: string; mode?: 'plan' | 'build'; modelId?: string },
+        output: { system: string[] },
+      ) => {
         const insertAt = Math.min(1, Array.isArray(output.system) ? output.system.length : 0);
         output.system.splice(insertAt, 0, ...identityParts);
       },
@@ -415,8 +418,8 @@ function createRuntimeAgent(options: {
 
 function createAgentCallbacks(approvals: ApprovalManager): AgentCallbacks {
   return {
-    onRequestApproval: async (tc: ToolCall, def: ToolDefinition) => {
-      return await approvals.requestApproval(tc, def);
+    onRequestApproval: async (tc: ToolCall, def: ToolDefinition, approvalContext) => {
+      return await approvals.requestApproval(tc, def, approvalContext);
     },
     onToolCall: (_tc, def) => {
       process.stderr.write(`[tool] ${def.id} (approval may be required)\n`);
@@ -527,9 +530,7 @@ async function runInteractiveAgent(options: {
     }
 
     if (line === '/clear') {
-      session.history = [];
-      session.pendingPlan = undefined;
-      session.mentionedSkills = [];
+      session.clearRuntimeState();
       if (options.save) {
         await saveSession(options.store, session, { sessionId });
       }

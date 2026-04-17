@@ -2,6 +2,7 @@ import * as path from 'path';
 
 import type { PermissionAction, PermissionRuleset } from './permission';
 import { evaluatePermission } from './permission';
+import { collectProtectedDotEnvTargets } from './toolRisk';
 import { evaluateShellCommand, type ShellCommandDecision } from './validation';
 
 export type ToolPermissionPattern = {
@@ -30,10 +31,6 @@ export type ToolDefinitionLike = {
 };
 
 const DEFAULT_EDIT_PERMISSION_TOOL_IDS = new Set(['edit', 'write']);
-
-function asString(value: unknown): string | undefined {
-  return typeof value === 'string' ? value : undefined;
-}
 
 export function getToolPermissionName(def: ToolDefinitionLike, options?: { editToolIds?: Set<string> }): string {
   const explicit = def.metadata?.permission;
@@ -149,76 +146,8 @@ export function isToolAllowedInPlanMode(def: ToolDefinitionLike): { allowed: boo
   return { allowed: false, reason: 'Tool is disabled in Plan mode. Switch to Build mode to use it.' };
 }
 
-const DOTENV_ALLOWLIST_SUFFIXES = ['.env.sample', '.env.example', '.example', '.env.template'];
-const DOTENV_TOKEN_REGEX = /(^|[^A-Za-z0-9_])(\.env(?:\.[A-Za-z0-9_.-]+)?)(?=$|[^A-Za-z0-9_.-])/g;
-
-function stripShellToken(token: string): string {
-  return token.replace(/^[`"'()[\]{}<>,;|&]+|[`"'()[\]{}<>,;|&]+$/g, '');
-}
-
-function isProtectedDotEnvBasename(value: string): boolean {
-  const basename = path.basename(value).toLowerCase();
-  return /^\.env(\.|$)/.test(basename) && !DOTENV_ALLOWLIST_SUFFIXES.some((allowed) => basename.endsWith(allowed));
-}
-
-function findProtectedDotEnvMentions(text: string): string[] {
-  const out = new Set<string>();
-  for (const match of text.matchAll(DOTENV_TOKEN_REGEX)) {
-    const candidate = match[2];
-    if (candidate && isProtectedDotEnvBasename(candidate)) {
-      out.add(candidate);
-    }
-  }
-  return [...out];
-}
-
 export function collectDotEnvApprovalTargets(def: ToolDefinitionLike, args: Record<string, unknown>): string[] {
-  const out = new Set<string>();
-
-  const filePath = asString((args as any).filePath);
-  if (filePath && isProtectedDotEnvBasename(filePath)) {
-    out.add(filePath);
-  }
-
-  if (def.id === 'grep') {
-    const searchPath = asString((args as any).path);
-    if (searchPath && isProtectedDotEnvBasename(searchPath)) {
-      out.add(searchPath);
-    }
-    const include = asString((args as any).include);
-    if (include) {
-      for (const token of include.split(/\s+/).map(stripShellToken).filter(Boolean)) {
-        if (isProtectedDotEnvBasename(token)) {
-          out.add(token);
-        }
-      }
-      for (const token of findProtectedDotEnvMentions(include)) {
-        out.add(token);
-      }
-    }
-  }
-
-  const isShellExecutionTool = def.id === 'bash' || def.execution?.type === 'shell';
-  if (isShellExecutionTool) {
-    const commandText =
-      asString((args as any).command) ||
-      (def.execution?.type === 'shell'
-        ? asString((def.execution as unknown as Record<string, unknown>).script)
-        : undefined);
-    if (commandText) {
-      for (const token of commandText.split(/\s+/).map(stripShellToken).filter(Boolean)) {
-        const rhs = token.includes('=') ? token.slice(token.lastIndexOf('=') + 1) : token;
-        if (rhs && isProtectedDotEnvBasename(rhs)) {
-          out.add(rhs);
-        }
-      }
-      for (const token of findProtectedDotEnvMentions(commandText)) {
-        out.add(token);
-      }
-    }
-  }
-
-  return [...out];
+  return collectProtectedDotEnvTargets(def, args);
 }
 
 export function evaluateShellSafetyForTool(def: ToolDefinitionLike, args: Record<string, unknown>): ShellCommandDecision | undefined {

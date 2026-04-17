@@ -5,6 +5,7 @@ export {
   restoreSession,
   serializeSessionSnapshot,
   parseSessionSnapshot,
+  tryParseSessionSnapshot,
 } from './sessionSnapshot.js';
 export type { LingyunSessionStore, LingyunSessionStoreEntry, SqliteDriver, SqliteSessionStoreOptions } from './sqliteSessionStore.js';
 export { SqliteSessionStore } from './sqliteSessionStore.js';
