@@ -1,7 +1,7 @@
-		    const chatProtocol = window.LINGYUN_CHAT_PROTOCOL;
+		    const mainChatProtocol = window.LINGYUN_CHAT_PROTOCOL;
 		    const readyInterval = setInterval(() => {
 		      if (!initReceived) {
-		        vscode.postMessage({ type: chatProtocol.ready, clientInstanceId });
+		        vscode.postMessage({ type: mainChatProtocol.ready, clientInstanceId });
 		      }
 		    }, 2000);
 
@@ -207,7 +207,7 @@
 		          canRedo = !!data.canRedo;
 		          updateRevertBar(data.revertState);
 		          syncInputState();
-		          vscode.postMessage({ type: chatProtocol.initAck, clientInstanceId });
+		          vscode.postMessage({ type: mainChatProtocol.initAck, clientInstanceId });
 		          break;
 	        case 'queueState':
 	          try { setQueueState(Array.isArray(data.queuedInputs) ? data.queuedInputs : []); } catch {}
@@ -569,4 +569,4 @@
 	    });
 
 		    syncInputState();
-		    vscode.postMessage({ type: chatProtocol.ready, clientInstanceId });
+		    vscode.postMessage({ type: mainChatProtocol.ready, clientInstanceId });

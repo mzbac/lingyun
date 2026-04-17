@@ -474,12 +474,14 @@ suite('Chat webview loop integration', () => {
       const bootstrapSource = fs.readFileSync(bootstrapJsPath, 'utf8');
       assert.ok(bootstrapSource.includes('function postWebviewCrash(details, source)'));
       assert.ok(bootstrapSource.includes("type: chatProtocol.webviewError"));
+      assert.ok(bootstrapSource.includes('const chatProtocol = window.LINGYUN_CHAT_PROTOCOL;'));
       assert.ok(bootstrapSource.includes("source || 'webview'"));
 
       const mainJsPath = path.resolve(__dirname, '../../../media/chat/main.js');
       const mainSource = fs.readFileSync(mainJsPath, 'utf8');
-      assert.ok(mainSource.includes("type: chatProtocol.ready"));
-      assert.ok(mainSource.includes("type: chatProtocol.initAck"));
+      assert.ok(mainSource.includes("type: mainChatProtocol.ready"));
+      assert.ok(mainSource.includes("type: mainChatProtocol.initAck"));
+      assert.ok(!mainSource.includes('const chatProtocol = window.LINGYUN_CHAT_PROTOCOL;'));
       assert.ok(mainSource.includes("showFatalError(err, 'message.dispatch');"));
       assert.ok(
         !mainSource.includes("vscode.postMessage({ type: 'webviewError', error: String(err && (err.stack || err.message) || err) });"),

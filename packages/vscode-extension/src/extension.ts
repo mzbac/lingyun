@@ -502,6 +502,21 @@ export function deactivate(): void {
   }
 }
 
+export function getChatWebviewHandshakeStateForTesting(): {
+  hasView: boolean;
+  visible: boolean;
+  initAcked: boolean;
+  webviewClientInstanceId?: string;
+} {
+  const controller = extensionState?.chatProvider?.controller;
+  return {
+    hasView: !!controller?.view,
+    visible: controller?.view?.visible ?? false,
+    initAcked: controller?.initAcked ?? false,
+    webviewClientInstanceId: controller?.webviewClientInstanceId,
+  };
+}
+
 function createAPI(): LingyunAPI {
   if (!extensionState) {
     throw new Error('Extension not activated');
