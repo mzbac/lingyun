@@ -900,6 +900,92 @@ suite('AgentLoop', () => {
     }
   });
 
+  test('run - actual Copilot Responses model retries when assistant text stream truncates before response.completed', async () => {
+    const originalFetch = globalThis.fetch;
+    const requestBodies: Array<Record<string, unknown>> = [];
+    const provider = new MockCopilotResponsesApiProvider();
+    agent = new AgentLoop(
+      provider,
+      mockContext,
+      { model: 'gpt-5.4', sessionId: 'session-1', maxRetries: 1, retryWithPartialOutput: true },
+      registry,
+    );
+
+    const responseEventsQueue: unknown[][] = [
+      [
+        {
+          type: 'response.output_text.delta',
+          item_id: 'item_text_1',
+          output_index: 0,
+          delta: 'partial output',
+        },
+      ],
+      [
+        {
+          type: 'response.output_text.delta',
+          item_id: 'item_text_2',
+          output_index: 0,
+          delta: 'Hello',
+        },
+        {
+          type: 'response.output_item.done',
+          output_index: 0,
+          item: {
+            type: 'message',
+            id: 'msg_2',
+            content: [{ type: 'output_text', text: 'Hello' }],
+          },
+        },
+        {
+          type: 'response.completed',
+          response: {
+            id: 'resp_2',
+            model: 'gpt-5.4',
+            created_at: 0,
+            usage: {
+              input_tokens: 4,
+              input_tokens_details: { cached_tokens: 0 },
+              output_tokens: 5,
+              output_tokens_details: { reasoning_tokens: 0 },
+            },
+          },
+        },
+      ],
+    ];
+
+    try {
+      globalThis.fetch = async (_input, init) => {
+        requestBodies.push(JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>);
+        const events = responseEventsQueue.shift();
+        assert.ok(events, 'unexpected extra Copilot Responses request');
+        return new Response(encodeSseEvents(events), {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        });
+      };
+
+      const result = await agent.run('Hi');
+
+      assert.strictEqual(result, 'Hello');
+      assert.strictEqual(requestBodies.length, 2);
+
+      const secondInput = requestBodies[1]?.input as Array<Record<string, unknown>>;
+      assert.ok(Array.isArray(secondInput), 'expected retry request to have input history');
+      assert.ok(
+        !JSON.stringify(secondInput).includes('partial output'),
+        'expected retry request to drop truncated assistant output from history',
+      );
+
+      const history = agent.getHistory();
+      assert.strictEqual(history.filter((message) => message.role === 'assistant').length, 1);
+      const finalAssistant = history[history.length - 1];
+      assert.strictEqual(finalAssistant.role, 'assistant');
+      assert.strictEqual(getMessageText(finalAssistant), 'Hello');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test('run - task tool returns sanitized session_id and text payload', async () => {
     registry.registerTool(taskTool, taskHandler);
 

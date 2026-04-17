@@ -135,6 +135,39 @@ suite('CopilotProvider', () => {
     }
   });
 
+  test('uses chat model path for Copilot Claude models instead of Responses API', async () => {
+    let responsesCalls = 0;
+    const provider = new CopilotProvider({
+      createResponsesModel: (() => {
+        responsesCalls += 1;
+        return { type: 'responses' } as any;
+      }) as any,
+    });
+    let chatCalls = 0;
+
+    const fakeChatModel = { type: 'chat' };
+
+    (provider as any).ensureProvider = async () => {
+      (provider as any).provider = {
+        chatModel: () => {
+          chatCalls += 1;
+          return fakeChatModel;
+        },
+      };
+      (provider as any).cachedProviderToken = 'test-token';
+    };
+
+    try {
+      const model = await provider.getModel('claude-sonnet-4.5');
+
+      assert.strictEqual(model, fakeChatModel);
+      assert.strictEqual(chatCalls, 1);
+      assert.strictEqual(responsesCalls, 0);
+    } finally {
+      provider.dispose();
+    }
+  });
+
   test('uses dynamic VS Code + extension version headers', async () => {
     const provider = new CopilotProvider();
 

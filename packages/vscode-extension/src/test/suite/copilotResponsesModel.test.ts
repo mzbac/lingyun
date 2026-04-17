@@ -717,6 +717,65 @@ suite('CopilotResponsesModel', () => {
     }
   });
 
+  test('surfaces a stream error when assistant text EOF arrives before response.completed', async () => {
+    const originalFetch = globalThis.fetch;
+
+    try {
+      globalThis.fetch = async () => {
+        const events = [
+          {
+            type: 'response.output_text.delta',
+            item_id: 'item_text_1',
+            output_index: 0,
+            delta: 'partial output',
+          },
+        ];
+
+        return new Response(encodeSseEvents(events), {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        });
+      };
+
+      const model = createCopilotResponsesModel({
+        baseURL: 'https://example.invalid',
+        apiKey: 'test',
+        modelId: 'gpt-5.4',
+        headers: {},
+      });
+
+      const result = await model.doStream({
+        prompt: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+        tools: [],
+        toolChoice: undefined,
+        temperature: undefined,
+        topP: undefined,
+        maxOutputTokens: 16,
+      } as any);
+
+      const reader = result.stream.getReader();
+      const parts: any[] = [];
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (value) parts.push(value);
+      }
+
+      assert.deepStrictEqual(
+        parts.map((part) => part.type),
+        ['text-start', 'text-delta', 'text-end', 'error'],
+      );
+      assert.strictEqual(
+        parts.filter((part) => part.type === 'text-delta').map((part) => part.delta).join(''),
+        'partial output',
+      );
+      assert.strictEqual(parts.filter((part) => part.type === 'finish').length, 0);
+      assert.match(String(parts[3].error?.message ?? ''), /Connection terminated/);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test('ignores late text and reasoning deltas after the v2.1.10 turn has already finalized them', async () => {
     const originalFetch = globalThis.fetch;
 

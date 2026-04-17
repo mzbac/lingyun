@@ -805,16 +805,7 @@ function createResponsesStream(
 
           if (!finished) {
             closeOpenParts();
-            if (pendingToolCalls.size > 0) {
-              controller.enqueue({ type: 'error', error: new Error('Connection terminated') });
-            } else {
-              controller.enqueue({
-                type: 'finish',
-                usage,
-                finishReason,
-                providerMetadata: buildFinishProviderMetadata(options.behavior, lastReasoningReplay),
-              });
-            }
+            controller.enqueue({ type: 'error', error: new Error('Connection terminated') });
           }
           controller.close();
         } catch (error) {
