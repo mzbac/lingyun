@@ -16,7 +16,6 @@ import {
 import {
   convertToModelMessages,
   extractReasoningMiddleware,
-  streamText,
   wrapLanguageModel,
 } from 'ai';
 
@@ -28,6 +27,7 @@ import {
   appendCompactionRestoredSyntheticMessage,
   stripCompactionRestoredSyntheticMessages,
 } from './transientSyntheticContext.js';
+import { streamTextWithLingyunDefaults } from '../llm/streamText.js';
 
 type PluginManagerLike = {
   trigger: <Name extends LingyunHookName, Output>(
@@ -161,7 +161,7 @@ export async function compactSessionInternal(params: {
       convertedCompactionModelMessages,
     );
 
-    const stream = streamText({
+    const stream = streamTextWithLingyunDefaults({
       model: compactionModel as any,
       system: COMPACTION_SYSTEM_PROMPT,
       messages: compactionModelMessages,

@@ -21,7 +21,6 @@ import {
   redactFsPathForPrompt,
   resolveBuiltinSubagent,
   selectSkillsForText,
-  stripSkillInjectedMessages,
   type AgentHistoryMessage,
   type CompactionConfig,
   type ModelLimit,
@@ -30,7 +29,7 @@ import {
 } from '@kooka/core';
 import { PluginManager } from '../plugins/pluginManager.js';
 import type { LingyunHookName, LingyunPluginToolEntry } from '../plugins/types.js';
-import { insertModeReminders } from './reminders.js';
+import { appendModeReminderMessage } from './reminders.js';
 import { DEFAULT_SYSTEM_PROMPT } from './prompts.js';
 import { MAX_TOOL_RESULT_LENGTH } from './constants.js';
 import { createProviderBehavior } from './providerBehavior.js';
@@ -731,11 +730,7 @@ export class LingyunAgent {
       effective.push(createUserHistoryMessage(syntheticResumeUserText, { synthetic: true }));
     }
     const prepared = createHistoryForModel(effective);
-    const reminded = insertModeReminders(prepared, this.getModeForConfig(execution.config), {
-      allowExternalPaths: execution.runtime.allowExternalPaths,
-      prompts: this.reminderPrompts,
-    });
-    const withoutIds = reminded.map(({ id: _id, ...rest }) => rest);
+    const withoutIds = prepared.map(({ id: _id, ...rest }) => rest);
 
     const messagesOutput = await this.plugins.trigger(
       'experimental.chat.messages.transform',
@@ -941,18 +936,20 @@ export class LingyunAgent {
   private filterTools(tools: ToolDefinition[], config: Readonly<AgentConfig>): ToolDefinition[] {
     const filter = config.toolFilter;
     if (!filter || filter.length === 0) {
-      return tools;
+      return [...tools].sort((a, b) => a.id.localeCompare(b.id));
     }
 
-    return tools.filter((tool) => {
-      return filter.some((pattern) => {
-        if (pattern.includes('*')) {
-          const regex = new RegExp('^' + pattern.replace(/\*/g, '.*') + '$');
-          return regex.test(tool.id);
-        }
-        return tool.id === pattern || tool.id.startsWith(pattern + '.');
-      });
-    });
+    return tools
+      .filter((tool) => {
+        return filter.some((pattern) => {
+          if (pattern.includes('*')) {
+            const regex = new RegExp('^' + pattern.replace(/\*/g, '.*') + '$');
+            return regex.test(tool.id);
+          }
+          return tool.id === pattern || tool.id.startsWith(pattern + '.');
+        });
+      })
+      .sort((a, b) => a.id.localeCompare(b.id));
   }
 
   private async composeSystemPrompt(
@@ -969,6 +966,15 @@ export class LingyunAgent {
     });
   }
 
+  private ensureModePromptState(
+    session: LingyunSession,
+    execution: LingyunAgentExecutionContext,
+  ): void {
+    appendModeReminderMessage(session.history, this.getModeForConfig(execution.config), {
+      prompts: this.reminderPrompts,
+    });
+  }
+
   private async drainPendingInputs(
     session: LingyunSession,
     execution: LingyunAgentExecutionContext,
@@ -981,6 +987,7 @@ export class LingyunAgent {
       const input = session.peekPendingInput();
       if (input === undefined) break;
 
+      this.ensureModePromptState(session, execution);
       await this.injectSkillsForUserText(
         session,
         execution,
@@ -1079,22 +1086,8 @@ export class LingyunAgent {
 
     const maxSkills = this.skillsConfig.maxInjectSkills;
     const maxChars = this.skillsConfig.maxInjectChars;
-
     const selectedForInject = selected.slice(0, maxSkills);
-    const activeLabel = selectedForInject.map((s: SkillInfo) => `$${s.name}`).join(', ');
-
     const blocks: string[] = [];
-    if (activeLabel) {
-      blocks.push(
-        [
-          '<skills>',
-          `<active>${activeLabel}</active>`,
-          'You MUST apply ALL active skills for the next user request.',
-          'Treat skill instructions as additive. If they conflict, call it out and ask the user how to proceed (do not ignore a skill silently).',
-          '</skills>',
-        ].join('\n'),
-      );
-    }
 
     for (const skill of selectedForInject) {
       if (signal?.aborted) break;
@@ -1128,7 +1121,23 @@ export class LingyunAgent {
     }
 
     if (blocks.length > 0) {
-      session.history.push(createUserHistoryMessage(blocks.join('\n\n'), { synthetic: true, skill: true }));
+      const activeLabel = selectedForInject.map((s: SkillInfo) => `$${s.name}`).join(', ');
+      const header = activeLabel
+        ? [
+            '<skills>',
+            `<active>${activeLabel}</active>`,
+            'You MUST apply ALL active skills for the next user request.',
+            'Treat skill instructions as additive. If they conflict, call it out and ask the user how to proceed (do not ignore a skill silently).',
+            '</skills>',
+          ].join('\n')
+        : '';
+
+      session.history.push(
+        createUserHistoryMessage([header, ...blocks].filter(Boolean).join('\n\n'), {
+          synthetic: true,
+          skill: true,
+        }),
+      );
     }
   }
 
@@ -1255,6 +1264,7 @@ export class LingyunAgent {
           });
         }
 
+        this.ensureModePromptState(params.session, execution);
         await this.injectSkillsForUserText(
           params.session,
           execution,
@@ -1281,8 +1291,6 @@ export class LingyunAgent {
         queue.push({ type: 'status', status: { type: 'error', message: err.message } as any });
         queue.fail(err);
         throw err;
-      } finally {
-        params.session.history = stripSkillInjectedMessages(params.session.history);
       }
     })();
 
@@ -1292,6 +1300,7 @@ export class LingyunAgent {
   async resume(params: { session: LingyunSession; callbacks?: AgentCallbacks; signal?: AbortSignal }): Promise<string> {
     const prepared = await this.prepareRun(params.session, undefined, params.signal);
     const modelId = String(prepared.execution.config.model || '').trim();
+    this.ensureModePromptState(params.session, prepared.execution);
     const syntheticResumeUserText = this.providerBehavior.getSyntheticResumeUserText(
       modelId,
       params.session.history,

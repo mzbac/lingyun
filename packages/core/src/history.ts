@@ -2,6 +2,10 @@ import type { DynamicToolUIPart, ReasoningUIPart, TextUIPart, UIMessage } from '
 
 export type AgentHistoryMetadata = {
   mode?: 'build' | 'plan';
+  modeReminder?: {
+    mode: 'build' | 'plan';
+    kind: 'plan' | 'build-switch';
+  };
   finishReason?: string;
   synthetic?: boolean;
   skill?: boolean;
@@ -155,6 +159,34 @@ export function createUserHistoryMessage(
     role: 'user',
     ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
     parts,
+  };
+}
+
+export function createSystemHistoryMessage(
+  text: string,
+  options?: {
+    synthetic?: boolean;
+    modeReminder?: NonNullable<AgentHistoryMetadata['modeReminder']>;
+  },
+): AgentHistoryMessage {
+  const metadata: AgentHistoryMetadata = {};
+
+  if (options?.synthetic) {
+    metadata.synthetic = true;
+  }
+
+  if (options?.modeReminder) {
+    metadata.modeReminder = {
+      mode: options.modeReminder.mode,
+      kind: options.modeReminder.kind,
+    };
+  }
+
+  return {
+    id: crypto.randomUUID(),
+    role: 'system',
+    ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
+    parts: [{ type: 'text', text: String(text || '') }] as AgentHistoryMessage['parts'],
   };
 }
 

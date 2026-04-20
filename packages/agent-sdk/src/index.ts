@@ -20,6 +20,7 @@ export type {
 export type { AgentHistoryMessage, CompactionConfig, ModelLimit } from '@kooka/core';
 
 export { OpenAICompatibleProvider, type OpenAICompatibleProviderOptions } from './llm/openaiCompatible.js';
+export { streamTextWithLingyunDefaults } from './llm/streamText.js';
 export { ToolRegistry } from './tools/registry.js';
 export {
   createAgentBrowserToolProvider,

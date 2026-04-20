@@ -1,13 +1,16 @@
 import type { AgentHistoryMessage } from '@kooka/core';
+import { createSystemHistoryMessage } from '@kooka/core';
+
 import { BUILD_SWITCH_PROMPT, PLAN_PROMPT } from './prompts.js';
 
 type ReminderOptions = {
-  allowExternalPaths?: boolean;
   prompts?: {
     planPrompt?: string;
     buildSwitchPrompt?: string;
   };
 };
+
+type ModeReminderKind = 'plan' | 'build-switch';
 
 function wrapSystemReminder(text: string): string {
   const trimmed = (text || '').trim();
@@ -15,49 +18,64 @@ function wrapSystemReminder(text: string): string {
   return `<system-reminder>\n${trimmed}\n</system-reminder>`;
 }
 
-export function insertModeReminders(
+function getModeReminderText(kind: ModeReminderKind, options?: ReminderOptions): string {
+  if (kind === 'plan') {
+    return wrapSystemReminder(options?.prompts?.planPrompt ?? PLAN_PROMPT);
+  }
+  return wrapSystemReminder(options?.prompts?.buildSwitchPrompt ?? BUILD_SWITCH_PROMPT);
+}
+
+function getLastExplicitMode(history: readonly AgentHistoryMessage[]): 'build' | 'plan' | undefined {
+  for (let idx = history.length - 1; idx >= 0; idx--) {
+    const mode = history[idx]?.metadata?.modeReminder?.mode;
+    if (mode === 'build' || mode === 'plan') {
+      return mode;
+    }
+  }
+  return undefined;
+}
+
+function getLastAssistantMode(history: readonly AgentHistoryMessage[]): 'build' | 'plan' | undefined {
+  for (let idx = history.length - 1; idx >= 0; idx--) {
+    const message = history[idx];
+    if (message?.role !== 'assistant') continue;
+    const mode = message.metadata?.mode;
+    if (mode === 'build' || mode === 'plan') {
+      return mode;
+    }
+  }
+  return undefined;
+}
+
+export function getLastPromptMode(history: readonly AgentHistoryMessage[]): 'build' | 'plan' | undefined {
+  return getLastExplicitMode(history) ?? getLastAssistantMode(history);
+}
+
+export function appendModeReminderMessage(
   history: AgentHistoryMessage[],
   mode: 'build' | 'plan',
   options?: ReminderOptions,
 ): AgentHistoryMessage[] {
-  let lastUserIndex = -1;
-  for (let idx = history.length - 1; idx >= 0; idx--) {
-    if (history[idx].role === 'user') {
-      lastUserIndex = idx;
-      break;
-    }
-  }
+  const previousMode = getLastPromptMode(history);
 
-  if (lastUserIndex === -1) return history;
-
-  const additions: string[] = [];
   if (mode === 'plan') {
-    additions.push(wrapSystemReminder(options?.prompts?.planPrompt ?? PLAN_PROMPT));
-  }
-
-  const wasPlan = history.some((msg) => msg.role === 'assistant' && msg.metadata?.mode === 'plan');
-  if (wasPlan && mode === 'build') {
-    additions.push(wrapSystemReminder(options?.prompts?.buildSwitchPrompt ?? BUILD_SWITCH_PROMPT));
-  }
-
-  if (typeof options?.allowExternalPaths === 'boolean') {
-    additions.push(
-      wrapSystemReminder(
-        options.allowExternalPaths
-          ? 'External paths are enabled (allowExternalPaths=true). Tools like list/read can access paths outside the workspace.'
-          : 'External paths are disabled (allowExternalPaths=false). Tools must stay within the current workspace.',
-      ),
+    if (previousMode === 'plan') return history;
+    history.push(
+      createSystemHistoryMessage(getModeReminderText('plan', options), {
+        synthetic: true,
+        modeReminder: { mode: 'plan', kind: 'plan' },
+      }),
     );
+    return history;
   }
 
-  if (additions.length === 0) return history;
+  if (previousMode !== 'plan') return history;
 
-  const out = history.slice();
-  const userMessage = history[lastUserIndex];
-  const parts = [...userMessage.parts];
-  for (const text of additions) {
-    parts.push({ type: 'text', text } as any);
-  }
-  out[lastUserIndex] = { ...userMessage, parts };
-  return out;
+  history.push(
+    createSystemHistoryMessage(getModeReminderText('build-switch', options), {
+      synthetic: true,
+      modeReminder: { mode: 'build', kind: 'build-switch' },
+    }),
+  );
+  return history;
 }

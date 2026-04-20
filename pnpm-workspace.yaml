@@ -3,5 +3,4 @@ packages:
 
 allowBuilds:
   esbuild: true
-  "@vscode/vsce-sign": true
   keytar: true

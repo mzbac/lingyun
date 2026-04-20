@@ -127,6 +127,7 @@ export {
   cloneAgentHistoryMessages,
   cloneUserHistoryInput,
   createAssistantHistoryMessage,
+  createSystemHistoryMessage,
   createUserHistoryMessage,
   finalizeStreamingParts,
   getUserHistoryInputText,

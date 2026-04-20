@@ -21,6 +21,7 @@ import {
   LingyunAgent,
   LingyunSession,
   PluginManager,
+  restoreSession,
   snapshotSession,
   ToolRegistry,
   type AgentHistoryMessage,
@@ -149,6 +150,286 @@ function generateResultForResponse(response: ScriptedResponse): LanguageModelV3G
   };
 }
 
+function getToolNamesFromOptions(tools: unknown): string[] {
+  if (Array.isArray(tools)) {
+    return tools
+      .map((tool: any) => {
+        if (typeof tool?.name === 'string' && tool.name) return tool.name;
+        if (typeof tool?.id === 'string' && tool.id) return tool.id;
+        if (typeof tool?.toolName === 'string' && tool.toolName) return tool.toolName;
+        return '';
+      })
+      .filter(Boolean);
+  }
+
+  if (tools && typeof tools === 'object') {
+    return Object.keys(tools as Record<string, unknown>);
+  }
+
+  return [];
+}
+
+function normalizePromptForCache(prompt: unknown): unknown[] {
+  return Array.isArray(prompt) ? prompt : prompt === undefined ? [] : [prompt];
+}
+
+function hasPromptCachePrefix(previousPrompt: unknown, currentPrompt: unknown): boolean {
+  const previous = normalizePromptForCache(previousPrompt);
+  const current = normalizePromptForCache(currentPrompt);
+  if (previous.length > current.length) return false;
+  for (let i = 0; i < previous.length; i++) {
+    if (JSON.stringify(previous[i]) !== JSON.stringify(current[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function estimatePromptCacheFootprint(prompt: unknown, tools: unknown): number {
+  return estimateTokenCount(
+    JSON.stringify({
+      prompt: normalizePromptForCache(prompt),
+      toolNames: getToolNamesFromOptions(tools),
+    }),
+  );
+}
+
+function estimateTokenCount(text: string): number {
+  return Math.max(1, Math.ceil(String(text || '').length / 4));
+}
+
+function getAssistantTokenHistoryFromSession(
+  session: LingyunSession,
+): Array<{ input?: number; output?: number; cacheRead?: number; cacheWrite?: number; total?: number; raw?: unknown }> {
+  return session
+    .getHistory()
+    .filter((message) => message.role === 'assistant')
+    .map((message) => message.metadata?.tokens)
+    .filter((tokens): tokens is NonNullable<typeof tokens> => !!tokens && typeof tokens.total === 'number');
+}
+
+function getModeReminderMessages(session: LingyunSession): AgentHistoryMessage[] {
+  return session
+    .getHistory()
+    .filter(
+      (message) =>
+        message.role === 'system' &&
+        message.metadata?.synthetic === true &&
+        !!message.metadata?.modeReminder,
+    );
+}
+
+function getBestPriorCacheCandidate(
+  llm: CacheAwareMockLLMProvider,
+  turnIndex: number,
+): { sourceTurnIndex: number; footprint: number } | undefined {
+  const currentPrompt = llm.promptHistory[turnIndex];
+  const currentTools = llm.toolNameHistory[turnIndex] ?? [];
+  let best: { sourceTurnIndex: number; footprint: number } | undefined;
+
+  for (let idx = 0; idx < turnIndex; idx++) {
+    const priorPrompt = llm.promptHistory[idx];
+    const priorTools = llm.toolNameHistory[idx] ?? [];
+    if (JSON.stringify(priorTools) !== JSON.stringify(currentTools)) {
+      continue;
+    }
+    if (!hasPromptCachePrefix(priorPrompt, currentPrompt)) {
+      continue;
+    }
+
+    const footprint = estimatePromptCacheFootprint(priorPrompt, priorTools);
+    if (!best || footprint >= best.footprint) {
+      best = { sourceTurnIndex: idx, footprint };
+    }
+  }
+
+  return best;
+}
+
+function assertCacheReuseAgainstTurn(
+  llm: CacheAwareMockLLMProvider,
+  session: LingyunSession,
+  turnIndex: number,
+  sourceTurnIndex: number,
+  message: string,
+  options?: { expectPositiveSuffix?: boolean },
+): void {
+  const tokenHistory = getAssistantTokenHistoryFromSession(session);
+  assert.ok(turnIndex > sourceTurnIndex, `${message}: source turn must precede the current turn`);
+  assert.ok(turnIndex < tokenHistory.length, `${message}: missing assistant token record for turn ${turnIndex}`);
+
+  const currentTokens = tokenHistory[turnIndex]!;
+  const sourcePrompt = llm.promptHistory[sourceTurnIndex];
+  const currentPrompt = llm.promptHistory[turnIndex];
+  const sourceTools = llm.toolNameHistory[sourceTurnIndex] ?? [];
+  const currentTools = llm.toolNameHistory[turnIndex] ?? [];
+  const sourceFootprint = estimatePromptCacheFootprint(sourcePrompt, sourceTools);
+  const currentFootprint = estimatePromptCacheFootprint(currentPrompt, currentTools);
+  const expectedSuffix = currentFootprint - sourceFootprint;
+
+  assert.ok(hasPromptCachePrefix(sourcePrompt, currentPrompt), `${message}: current prompt should extend the selected cached source prompt`);
+  assert.deepStrictEqual(currentTools, sourceTools, `${message}: tool ordering should match the selected cached source prompt`);
+  assert.strictEqual(
+    llm.cacheReadSourceIndexHistory[turnIndex],
+    sourceTurnIndex,
+    `${message}: provider should reuse the expected cached source turn`,
+  );
+  assert.strictEqual(
+    llm.cacheReadHistory[turnIndex],
+    sourceFootprint,
+    `${message}: provider should record a cache read equal to the selected source footprint`,
+  );
+  assert.strictEqual(currentTokens.cacheRead, sourceFootprint, `${message}: current turn should read the selected source footprint from cache`);
+  assert.strictEqual(currentTokens.cacheWrite ?? 0, 0, `${message}: current turn should not rewrite cached prefix tokens`);
+  assert.strictEqual(currentTokens.input, expectedSuffix, `${message}: uncached input should equal only the appended suffix after the cached source prompt`);
+  if (options?.expectPositiveSuffix !== false) {
+    assert.ok(expectedSuffix > 0, `${message}: expected a positive uncached suffix`);
+  }
+  assert.strictEqual(
+    currentTokens.total,
+    (currentTokens.input ?? 0) + (currentTokens.cacheRead ?? 0) + (currentTokens.output ?? 0),
+    `${message}: total tokens should equal uncached input + cache read + output`,
+  );
+}
+
+function assertCacheReuseBetweenTurns(
+  llm: CacheAwareMockLLMProvider,
+  session: LingyunSession,
+  turnIndex: number,
+  message: string,
+  options?: { expectPositiveSuffix?: boolean },
+): void {
+  const candidate = getBestPriorCacheCandidate(llm, turnIndex);
+  assert.ok(candidate, `${message}: expected at least one cached prefix candidate`);
+  assert.strictEqual(
+    candidate!.sourceTurnIndex,
+    turnIndex - 1,
+    `${message}: expected the immediately previous turn to provide the best cached prefix`,
+  );
+  assertCacheReuseAgainstTurn(llm, session, turnIndex, turnIndex - 1, message, options);
+}
+
+function assertCacheInvalidationBetweenTurns(
+  llm: CacheAwareMockLLMProvider,
+  session: LingyunSession,
+  turnIndex: number,
+  message: string,
+  expectations?: {
+    promptPrefixPreserved?: boolean;
+    toolOrderingPreserved?: boolean;
+  },
+): void {
+  const tokenHistory = getAssistantTokenHistoryFromSession(session);
+  assert.ok(turnIndex > 0, `${message}: turnIndex must be greater than 0`);
+  assert.ok(turnIndex < tokenHistory.length, `${message}: missing assistant token record for turn ${turnIndex}`);
+
+  const currentTokens = tokenHistory[turnIndex]!;
+  const previousPrompt = llm.promptHistory[turnIndex - 1];
+  const currentPrompt = llm.promptHistory[turnIndex];
+  const previousTools = llm.toolNameHistory[turnIndex - 1] ?? [];
+  const currentTools = llm.toolNameHistory[turnIndex] ?? [];
+
+  const promptPrefixPreserved = hasPromptCachePrefix(previousPrompt, currentPrompt);
+  const toolOrderingPreserved = JSON.stringify(previousTools) === JSON.stringify(currentTools);
+
+  if (typeof expectations?.promptPrefixPreserved === 'boolean') {
+    assert.strictEqual(
+      promptPrefixPreserved,
+      expectations.promptPrefixPreserved,
+      `${message}: unexpected prompt-prefix preservation state`,
+    );
+  }
+  if (typeof expectations?.toolOrderingPreserved === 'boolean') {
+    assert.strictEqual(
+      toolOrderingPreserved,
+      expectations.toolOrderingPreserved,
+      `${message}: unexpected tool-order preservation state`,
+    );
+  }
+
+  const currentFootprint = estimatePromptCacheFootprint(currentPrompt, currentTools);
+  assert.strictEqual(llm.cacheReadHistory[turnIndex] ?? 0, 0, `${message}: provider should record no cache read`);
+  assert.strictEqual(currentTokens.cacheRead ?? 0, 0, `${message}: current turn should not read from cache`);
+  assert.strictEqual(currentTokens.cacheWrite, currentFootprint, `${message}: current turn should rewrite the full prompt footprint`);
+  assert.strictEqual(currentTokens.input, currentFootprint, `${message}: current turn input should be fully uncached`);
+  assert.strictEqual(
+    currentTokens.total,
+    (currentTokens.input ?? 0) + (currentTokens.cacheRead ?? 0) + (currentTokens.output ?? 0),
+    `${message}: total tokens should equal uncached input + cache read + output`,
+  );
+}
+
+function assertSecondTurnCacheReuse(
+  llm: CacheAwareMockLLMProvider,
+  session: LingyunSession,
+  message: string,
+): void {
+  const tokenHistory = getAssistantTokenHistoryFromSession(session);
+  assert.strictEqual(tokenHistory.length, 2, `${message}: expected exactly two assistant token records`);
+
+  const [firstTokens, secondTokens] = tokenHistory;
+  const firstPrompt = llm.promptHistory[0];
+  const secondPrompt = llm.promptHistory[1];
+  const firstTools = llm.toolNameHistory[0] ?? [];
+  const secondTools = llm.toolNameHistory[1] ?? [];
+
+  assert.ok(hasPromptCachePrefix(firstPrompt, secondPrompt), `${message}: second prompt should extend the first prompt`);
+  assert.deepStrictEqual(secondTools, firstTools, `${message}: tool ordering should remain stable across turns`);
+
+  const firstFootprint = estimatePromptCacheFootprint(firstPrompt, firstTools);
+
+  assert.strictEqual(firstTokens.cacheRead ?? 0, 0, `${message}: first turn should not read from cache`);
+  assert.strictEqual(firstTokens.cacheWrite, firstFootprint, `${message}: first turn should write the full prompt footprint`);
+  assert.strictEqual(firstTokens.input, firstFootprint, `${message}: first turn input should be fully uncached`);
+  assert.strictEqual(llm.cacheReadHistory[0] ?? 0, 0, `${message}: provider should record no cache read on first turn`);
+  assertCacheReuseBetweenTurns(llm, session, 1, message);
+}
+
+function assertSecondTurnCacheInvalidation(
+  llm: CacheAwareMockLLMProvider,
+  session: LingyunSession,
+  message: string,
+  expectations?: {
+    promptPrefixPreserved?: boolean;
+    toolOrderingPreserved?: boolean;
+  },
+): void {
+  const tokenHistory = getAssistantTokenHistoryFromSession(session);
+  assert.strictEqual(tokenHistory.length, 2, `${message}: expected exactly two assistant token records`);
+
+  const [firstTokens, secondTokens] = tokenHistory;
+  const firstPrompt = llm.promptHistory[0];
+  const secondPrompt = llm.promptHistory[1];
+  const firstTools = llm.toolNameHistory[0] ?? [];
+  const secondTools = llm.toolNameHistory[1] ?? [];
+
+  const promptPrefixPreserved = hasPromptCachePrefix(firstPrompt, secondPrompt);
+  const toolOrderingPreserved = JSON.stringify(firstTools) === JSON.stringify(secondTools);
+
+  if (typeof expectations?.promptPrefixPreserved === 'boolean') {
+    assert.strictEqual(
+      promptPrefixPreserved,
+      expectations.promptPrefixPreserved,
+      `${message}: unexpected prompt-prefix preservation state`,
+    );
+  }
+  if (typeof expectations?.toolOrderingPreserved === 'boolean') {
+    assert.strictEqual(
+      toolOrderingPreserved,
+      expectations.toolOrderingPreserved,
+      `${message}: unexpected tool-order preservation state`,
+    );
+  }
+
+  const firstFootprint = estimatePromptCacheFootprint(firstPrompt, firstTools);
+
+  assert.strictEqual(firstTokens.cacheRead ?? 0, 0, `${message}: first turn should not read from cache`);
+  assert.strictEqual(firstTokens.cacheWrite, firstFootprint, `${message}: first turn should write the full prompt footprint`);
+  assert.strictEqual(firstTokens.input, firstFootprint, `${message}: first turn input should be fully uncached`);
+  assert.strictEqual(llm.cacheReadHistory[0] ?? 0, 0, `${message}: provider should record no cache read on first turn`);
+  assertCacheInvalidationBetweenTurns(llm, session, 1, message, expectations);
+}
+
 class MockLLMProvider implements LLMProvider {
   readonly id: string = 'mock';
   readonly name: string = 'Mock LLM';
@@ -158,6 +439,9 @@ class MockLLMProvider implements LLMProvider {
   modelCalls: string[] = [];
   callCount = 0;
   lastPrompt: unknown;
+  promptHistory: unknown[] = [];
+  lastToolNames: string[] = [];
+  toolNameHistory: string[][] = [];
 
   queueResponse(response: ScriptedResponse): void {
     this.responses.push(response);
@@ -167,8 +451,20 @@ class MockLLMProvider implements LLMProvider {
     this.unavailableModels.add(modelId);
   }
 
-  private nextResponse(): ScriptedResponse {
+  protected nextResponse(): ScriptedResponse {
     return this.responses.shift() ?? { kind: 'text', content: 'No response configured' };
+  }
+
+  protected recordRequest(options: any): void {
+    this.callCount++;
+    this.lastPrompt = structuredClone(options?.prompt);
+    this.promptHistory.push(structuredClone(options?.prompt));
+    this.lastToolNames = getToolNamesFromOptions(options?.tools);
+    this.toolNameHistory.push([...this.lastToolNames]);
+  }
+
+  protected prepareResponse(response: ScriptedResponse, _options: any): ScriptedResponse {
+    return response;
   }
 
   async getModel(modelId: string): Promise<unknown> {
@@ -183,16 +479,13 @@ class MockLLMProvider implements LLMProvider {
       modelId,
       supportedUrls: {},
       doGenerate: async (options: any) => {
-        this.callCount++;
-        this.lastPrompt = options?.prompt;
-        const response = this.nextResponse();
+        this.recordRequest(options);
+        const response = this.prepareResponse(this.nextResponse(), options);
         return generateResultForResponse(response);
       },
       doStream: async (options: any): Promise<LanguageModelV3StreamResult> => {
-        this.callCount++;
-        this.lastPrompt = options?.prompt;
-
-        const response = this.nextResponse();
+        this.recordRequest(options);
+        const response = this.prepareResponse(this.nextResponse(), options);
         const chunks =
           response.kind === 'tool-call'
             ? streamPartsForToolCall(response)
@@ -207,6 +500,69 @@ class MockLLMProvider implements LLMProvider {
     };
 
     return model;
+  }
+}
+
+class CacheAwareMockLLMProvider extends MockLLMProvider {
+  private readonly cachedRequests: Array<{ prompt: unknown; toolNames: string[]; footprint: number }> = [];
+  cacheReadHistory: number[] = [];
+  cacheReadSourceIndexHistory: Array<number | undefined> = [];
+
+  protected override prepareResponse(response: ScriptedResponse, options: any): ScriptedResponse {
+    const toolNames = getToolNamesFromOptions(options?.tools);
+    const inputTotal = estimatePromptCacheFootprint(options?.prompt, toolNames);
+    let cacheRead = 0;
+    let cacheReadSourceIndex: number | undefined;
+
+    for (let idx = 0; idx < this.cachedRequests.length; idx++) {
+      const candidate = this.cachedRequests[idx]!;
+      if (JSON.stringify(candidate.toolNames) !== JSON.stringify(toolNames)) {
+        continue;
+      }
+      if (!hasPromptCachePrefix(candidate.prompt, options?.prompt)) {
+        continue;
+      }
+      if (candidate.footprint >= cacheRead) {
+        cacheRead = candidate.footprint;
+        cacheReadSourceIndex = idx;
+      }
+    }
+
+    this.cachedRequests.push({
+      prompt: structuredClone(options?.prompt),
+      toolNames: [...toolNames],
+      footprint: inputTotal,
+    });
+    this.cacheReadHistory.push(cacheRead);
+    this.cacheReadSourceIndexHistory.push(cacheReadSourceIndex);
+
+    if (response.kind === 'stream' || response.usage) {
+      return response;
+    }
+
+    if (response.kind === 'tool-call') {
+      return {
+        ...response,
+        usage: {
+          inputTotal,
+          inputNoCache: Math.max(0, inputTotal - cacheRead),
+          cacheRead,
+          cacheWrite: cacheRead > 0 ? 0 : inputTotal,
+          outputTotal: estimateTokenCount(JSON.stringify(response.input)),
+        },
+      };
+    }
+
+    return {
+      ...response,
+      usage: {
+        inputTotal,
+        inputNoCache: Math.max(0, inputTotal - cacheRead),
+        cacheRead,
+        cacheWrite: cacheRead > 0 ? 0 : inputTotal,
+        outputTotal: estimateTokenCount(response.content),
+      },
+    };
   }
 }
 
@@ -520,24 +876,830 @@ suite('LingYun Agent SDK', () => {
     }
   });
 
-  test('prompt - injects external path access reminder', async () => {
-    const llm = new MockLLMProvider();
+  test('prompt cache - changing allowExternalPaths preserves cache hits', async () => {
+    const llm = new CacheAwareMockLLMProvider();
     const registry = new ToolRegistry();
-
-    llm.queueResponse({ kind: 'text', content: 'ok' });
-
-    const agent = new LingyunAgent(llm, { model: 'mock-model' }, registry, { allowExternalPaths: true });
     const session = new LingyunSession();
 
-    const run = agent.run({ session, input: 'hi' });
+    llm.queueResponse({ kind: 'text', content: 'first' });
+    const firstAgent = new LingyunAgent(llm, { model: 'mock-model' }, registry, {
+      allowExternalPaths: false,
+      skills: { enabled: false },
+    });
+    for await (const _event of firstAgent.run({ session, input: 'hi' }).events) {
+      // drain
+    }
+
+    llm.queueResponse({ kind: 'text', content: 'second' });
+    const secondAgent = new LingyunAgent(llm, { model: 'mock-model' }, registry, {
+      allowExternalPaths: true,
+      skills: { enabled: false },
+    });
+    for await (const _event of secondAgent.run({ session, input: 'follow up' }).events) {
+      // drain
+    }
+
+    assertSecondTurnCacheReuse(llm, session, 'allowExternalPaths toggle');
+  });
+
+  test('prompt cache - switching to plan mode appends a synthetic system reminder without invalidating the prefix', async () => {
+    const llm = new CacheAwareMockLLMProvider();
+    const registry = new ToolRegistry();
+    const session = new LingyunSession();
+
+    llm.queueResponse({ kind: 'text', content: 'build reply' });
+    const buildAgent = new LingyunAgent(llm, { model: 'mock-model', mode: 'build' }, registry, {
+      allowExternalPaths: false,
+      skills: { enabled: false },
+    });
+    for await (const _event of buildAgent.run({ session, input: 'hello' }).events) {
+      // drain
+    }
+
+    llm.queueResponse({ kind: 'text', content: 'plan reply' });
+    const planAgent = new LingyunAgent(llm, { model: 'mock-model', mode: 'plan' }, registry, {
+      allowExternalPaths: false,
+      skills: { enabled: false },
+    });
+    for await (const _event of planAgent.run({ session, input: 'make a plan' }).events) {
+      // drain
+    }
+
+    const firstPrompt = JSON.stringify(llm.promptHistory[0] ?? '');
+    const secondPrompt = JSON.stringify(llm.promptHistory[1] ?? '');
+    assert.ok(!firstPrompt.includes('Plan mode is active'), 'first prompt should not contain the plan reminder');
+    assert.ok(secondPrompt.includes('Plan mode is active'), 'second prompt should contain the plan reminder');
+    const modeReminders = getModeReminderMessages(session);
+    assert.strictEqual(modeReminders.length, 1, 'expected one persisted mode reminder after entering plan mode');
+    assert.strictEqual(modeReminders[0]?.metadata?.modeReminder?.mode, 'plan');
+    assert.strictEqual(modeReminders[0]?.metadata?.modeReminder?.kind, 'plan');
+    assertSecondTurnCacheReuse(llm, session, 'switch to plan mode');
+  });
+
+  test('prompt cache - switching from plan to build appends a synthetic system reminder without invalidating the prefix', async () => {
+    const llm = new CacheAwareMockLLMProvider();
+    const registry = new ToolRegistry();
+    const session = new LingyunSession();
+
+    llm.queueResponse({ kind: 'text', content: 'plan reply' });
+    const planAgent = new LingyunAgent(llm, { model: 'mock-model', mode: 'plan' }, registry, {
+      allowExternalPaths: false,
+      skills: { enabled: false },
+    });
+    for await (const _event of planAgent.run({ session, input: 'make a plan' }).events) {
+      // drain
+    }
+
+    llm.queueResponse({ kind: 'text', content: 'build reply' });
+    const buildAgent = new LingyunAgent(llm, { model: 'mock-model', mode: 'build' }, registry, {
+      allowExternalPaths: false,
+      skills: { enabled: false },
+    });
+    for await (const _event of buildAgent.run({ session, input: 'now execute' }).events) {
+      // drain
+    }
+
+    const firstPrompt = JSON.stringify(llm.promptHistory[0] ?? '');
+    const secondPrompt = JSON.stringify(llm.promptHistory[1] ?? '');
+    assert.ok(firstPrompt.includes('Plan mode is active'), 'first prompt should contain the plan reminder');
+    assert.ok(
+      secondPrompt.includes('operational mode has changed from plan to build'),
+      'second prompt should contain the build-switch reminder',
+    );
+    const modeReminders = getModeReminderMessages(session);
+    assert.strictEqual(modeReminders.length, 2, 'expected persisted plan + build-switch reminders');
+    assert.deepStrictEqual(
+      modeReminders.map((message) => message.metadata?.modeReminder),
+      [
+        { mode: 'plan', kind: 'plan' },
+        { mode: 'build', kind: 'build-switch' },
+      ],
+    );
+    assertSecondTurnCacheReuse(llm, session, 'switch from plan to build');
+  });
+
+  test('prompt cache - repeated turns in the same mode do not append duplicate mode reminders', async () => {
+    const llm = new CacheAwareMockLLMProvider();
+    const registry = new ToolRegistry();
+    const session = new LingyunSession();
+
+    llm.queueResponse({ kind: 'text', content: 'plan reply 1' });
+    const firstPlanAgent = new LingyunAgent(llm, { model: 'mock-model', mode: 'plan' }, registry, {
+      allowExternalPaths: false,
+      skills: { enabled: false },
+    });
+    for await (const _event of firstPlanAgent.run({ session, input: 'make a plan' }).events) {
+      // drain
+    }
+
+    llm.queueResponse({ kind: 'text', content: 'plan reply 2' });
+    const secondPlanAgent = new LingyunAgent(llm, { model: 'mock-model', mode: 'plan' }, registry, {
+      allowExternalPaths: false,
+      skills: { enabled: false },
+    });
+    for await (const _event of secondPlanAgent.run({ session, input: 'refine the plan' }).events) {
+      // drain
+    }
+
+    const prompt = JSON.stringify(llm.promptHistory[1] ?? '');
+    const reminderOccurrences = prompt.split('Plan mode is active').length - 1;
+    assert.strictEqual(reminderOccurrences, 1, 'expected the plan reminder text to appear once in the second prompt');
+
+    const modeReminders = getModeReminderMessages(session);
+    assert.strictEqual(modeReminders.length, 1, 'expected only one persisted plan-mode reminder');
+    assertSecondTurnCacheReuse(llm, session, 'repeated plan mode turn');
+  });
+
+  test('prompt cache - multi-turn mode cycles preserve cache and append only transition reminders', async () => {
+    const llm = new CacheAwareMockLLMProvider();
+    const registry = new ToolRegistry();
+    const session = new LingyunSession();
+
+    const turns: Array<{ mode: 'build' | 'plan'; input: string; reply: string }> = [
+      { mode: 'build', input: 'hello', reply: 'build-1' },
+      { mode: 'plan', input: 'make a plan', reply: 'plan-1' },
+      { mode: 'build', input: 'execute it', reply: 'build-2' },
+      { mode: 'build', input: 'keep going', reply: 'build-3' },
+      { mode: 'plan', input: 're-plan', reply: 'plan-2' },
+    ];
+
+    for (const turn of turns) {
+      llm.queueResponse({ kind: 'text', content: turn.reply });
+      const agent = new LingyunAgent(llm, { model: 'mock-model', mode: turn.mode }, registry, {
+        allowExternalPaths: false,
+        skills: { enabled: false },
+      });
+      for await (const _event of agent.run({ session, input: turn.input }).events) {
+        // drain
+      }
+    }
+
+    const tokenHistory = getAssistantTokenHistoryFromSession(session);
+    assert.strictEqual(tokenHistory.length, turns.length);
+    for (let turnIndex = 1; turnIndex < turns.length; turnIndex++) {
+      assertCacheReuseBetweenTurns(llm, session, turnIndex, `mode cycle turn ${turnIndex}`);
+    }
+
+    const modeReminders = getModeReminderMessages(session);
+    assert.deepStrictEqual(
+      modeReminders.map((message) => message.metadata?.modeReminder),
+      [
+        { mode: 'plan', kind: 'plan' },
+        { mode: 'build', kind: 'build-switch' },
+        { mode: 'plan', kind: 'plan' },
+      ],
+      'expected only actual mode transitions to append persisted reminders',
+    );
+
+    const lastPrompt = JSON.stringify(llm.promptHistory[3] ?? '');
+    assert.strictEqual(
+      lastPrompt.split('operational mode has changed from plan to build').length - 1,
+      1,
+      'steady-state build turns should not duplicate the build-switch reminder',
+    );
+  });
+
+  test('prompt cache - resume in plan mode preserves cache and does not append duplicate reminders', async () => {
+    const llm = new CacheAwareMockLLMProvider();
+    const registry = new ToolRegistry();
+    const session = new LingyunSession();
+
+    llm.queueResponse({ kind: 'text', content: 'plan reply' });
+    const agent = new LingyunAgent(llm, { model: 'claude-sonnet-4.5', mode: 'plan' }, registry, {
+      allowExternalPaths: false,
+      skills: { enabled: false },
+    });
+
+    for await (const _event of agent.run({ session, input: 'make a plan' }).events) {
+      // drain
+    }
+
+    llm.queueResponse({ kind: 'text', content: 'continued plan reply' });
+    await agent.resume({ session });
+
+    assertCacheReuseBetweenTurns(llm, session, 1, 'plan resume');
+
+    const prompt = JSON.stringify(llm.promptHistory[1] ?? '');
+    assert.strictEqual(
+      prompt.split('Plan mode is active').length - 1,
+      1,
+      'resume prompt should contain exactly one persisted plan reminder',
+    );
+
+    const modeReminders = getModeReminderMessages(session);
+    assert.strictEqual(modeReminders.length, 1, 'resume should not append a duplicate plan reminder');
+  });
+
+  test('prompt cache - restored sessions preserve explicit mode reminders and cacheable prefixes', async () => {
+    const llm = new CacheAwareMockLLMProvider();
+    const registry = new ToolRegistry();
+
+    llm.queueResponse({ kind: 'text', content: 'plan reply' });
+    const originalAgent = new LingyunAgent(llm, { model: 'mock-model', mode: 'plan', sessionId: 'cache-restore-session' }, registry, {
+      allowExternalPaths: false,
+      skills: { enabled: false },
+    });
+    const originalSession = new LingyunSession();
+
+    for await (const _event of originalAgent.run({ session: originalSession, input: 'make a plan' }).events) {
+      // drain
+    }
+
+    const restoredSession = restoreSession(snapshotSession(originalSession, { sessionId: 'cache-restore-session' }));
+    llm.queueResponse({ kind: 'text', content: 'refined plan reply' });
+    const restoredAgent = new LingyunAgent(llm, { model: 'mock-model', mode: 'plan', sessionId: 'cache-restore-session' }, registry, {
+      allowExternalPaths: false,
+      skills: { enabled: false },
+    });
+    for await (const _event of restoredAgent.run({ session: restoredSession, input: 'refine it' }).events) {
+      // drain
+    }
+
+    assertCacheReuseBetweenTurns(llm, restoredSession, 1, 'restored plan session');
+
+    const modeReminders = getModeReminderMessages(restoredSession);
+    assert.strictEqual(modeReminders.length, 1, 'restored session should retain the original plan reminder without duplicating it');
+    assert.strictEqual(modeReminders[0]?.metadata?.modeReminder?.mode, 'plan');
+  });
+
+  test('prompt cache - steered pending input preserves cache and does not duplicate mode reminders', async () => {
+    const llm = new CacheAwareMockLLMProvider();
+    const registry = new ToolRegistry();
+
+    llm.queueResponse({ kind: 'text', content: 'first plan reply' });
+    llm.queueResponse({ kind: 'text', content: 'follow-up plan reply' });
+
+    const agent = new LingyunAgent(llm, { model: 'mock-model', mode: 'plan' }, registry, {
+      allowExternalPaths: false,
+      skills: { enabled: false },
+    });
+    const session = new LingyunSession();
+
+    let injected = false;
+    const run = agent.run({
+      session,
+      input: 'start',
+      callbacks: {
+        onAssistantToken: () => {
+          if (injected) return;
+          injected = true;
+          session.enqueuePendingInput('follow-up from user');
+        },
+      },
+    });
+
     for await (const _event of run.events) {
       // drain
     }
-    await run.done;
+    const result = await run.done;
 
-    const prompt = JSON.stringify(llm.lastPrompt ?? '');
-    assert.ok(prompt.includes('<system-reminder>'), 'system-reminder tag should be present in prompt');
-    assert.ok(prompt.includes('External paths are enabled'), 'external path reminder should reflect setting');
+    assert.strictEqual(result.text, 'follow-up plan reply');
+    assert.strictEqual(llm.callCount, 2);
+    assertCacheReuseBetweenTurns(llm, session, 1, 'plan-mode steered input');
+
+    const modeReminders = getModeReminderMessages(session);
+    assert.strictEqual(modeReminders.length, 1, 'draining pending input should not append duplicate plan reminders');
+    assert.strictEqual(modeReminders[0]?.metadata?.modeReminder?.kind, 'plan');
+  });
+
+  test('prompt cache invalidation - changing systemPrompt invalidates the prompt prefix', async () => {
+    const llm = new CacheAwareMockLLMProvider();
+    const registry = new ToolRegistry();
+    const session = new LingyunSession();
+
+    llm.queueResponse({ kind: 'text', content: 'default reply' });
+    const defaultAgent = new LingyunAgent(llm, { model: 'mock-model' }, registry, {
+      allowExternalPaths: false,
+      skills: { enabled: false },
+    });
+    for await (const _event of defaultAgent.run({ session, input: 'hello' }).events) {
+      // drain
+    }
+
+    llm.queueResponse({ kind: 'text', content: 'custom reply' });
+    const customAgent = new LingyunAgent(
+      llm,
+      { model: 'mock-model', systemPrompt: 'Custom cache-sensitive system prompt.' },
+      registry,
+      {
+        allowExternalPaths: false,
+        skills: { enabled: false },
+      },
+    );
+    for await (const _event of customAgent.run({ session, input: 'follow up' }).events) {
+      // drain
+    }
+
+    const firstPrompt = JSON.stringify(llm.promptHistory[0] ?? '');
+    const secondPrompt = JSON.stringify(llm.promptHistory[1] ?? '');
+    assert.ok(!firstPrompt.includes('Custom cache-sensitive system prompt.'), 'first prompt should use the default system prompt');
+    assert.ok(secondPrompt.includes('Custom cache-sensitive system prompt.'), 'second prompt should include the custom system prompt');
+    assertSecondTurnCacheInvalidation(llm, session, 'systemPrompt change', {
+      promptPrefixPreserved: false,
+      toolOrderingPreserved: true,
+    });
+  });
+
+  test('prompt cache - restoring a previous systemPrompt can reuse an older cached baseline', async () => {
+    const llm = new CacheAwareMockLLMProvider();
+    const registry = new ToolRegistry();
+    const session = new LingyunSession();
+
+    llm.queueResponse({ kind: 'text', content: 'default reply' });
+    const defaultAgent = new LingyunAgent(llm, { model: 'mock-model' }, registry, {
+      allowExternalPaths: false,
+      skills: { enabled: false },
+    });
+    for await (const _event of defaultAgent.run({ session, input: 'hello' }).events) {
+      // drain
+    }
+
+    llm.queueResponse({ kind: 'text', content: 'custom reply' });
+    const customAgent = new LingyunAgent(
+      llm,
+      { model: 'mock-model', systemPrompt: 'Custom cache-sensitive system prompt.' },
+      registry,
+      {
+        allowExternalPaths: false,
+        skills: { enabled: false },
+      },
+    );
+    for await (const _event of customAgent.run({ session, input: 'follow up with custom prompt' }).events) {
+      // drain
+    }
+
+    llm.queueResponse({ kind: 'text', content: 'default reply again' });
+    for await (const _event of defaultAgent.run({ session, input: 'back to the default prompt' }).events) {
+      // drain
+    }
+
+    assertCacheInvalidationBetweenTurns(llm, session, 1, 'systemPrompt change still invalidates immediately', {
+      promptPrefixPreserved: false,
+      toolOrderingPreserved: true,
+    });
+    assertCacheReuseAgainstTurn(llm, session, 2, 0, 'restored default systemPrompt baseline');
+  });
+
+  test('prompt cache invalidation - changing toolFilter invalidates via tool set drift', async () => {
+    const llm = new CacheAwareMockLLMProvider();
+    const registry = new ToolRegistry();
+    const session = new LingyunSession();
+
+    registry.registerTool(
+      {
+        id: 'z_tool',
+        name: 'Z tool',
+        description: 'last alphabetically',
+        parameters: { type: 'object', properties: {} },
+        execution: { type: 'function', handler: 'test.z_tool' },
+      },
+      async () => ({ success: true, data: 'z' }),
+    );
+    registry.registerTool(
+      {
+        id: 'a_tool',
+        name: 'A tool',
+        description: 'first alphabetically',
+        parameters: { type: 'object', properties: {} },
+        execution: { type: 'function', handler: 'test.a_tool' },
+      },
+      async () => ({ success: true, data: 'a' }),
+    );
+
+    llm.queueResponse({ kind: 'text', content: 'first' });
+    const wideAgent = new LingyunAgent(
+      llm,
+      { model: 'mock-model', toolFilter: ['a_tool', 'z_tool'] },
+      registry,
+      { allowExternalPaths: false, skills: { enabled: false } },
+    );
+    for await (const _event of wideAgent.run({ session, input: 'hello' }).events) {
+      // drain
+    }
+
+    llm.queueResponse({ kind: 'text', content: 'second' });
+    const narrowAgent = new LingyunAgent(
+      llm,
+      { model: 'mock-model', toolFilter: ['a_tool'] },
+      registry,
+      { allowExternalPaths: false, skills: { enabled: false } },
+    );
+    for await (const _event of narrowAgent.run({ session, input: 'follow up' }).events) {
+      // drain
+    }
+
+    assert.deepStrictEqual(
+      (llm.toolNameHistory[0] ?? []).filter((tool) => tool === 'a_tool' || tool === 'z_tool'),
+      ['a_tool', 'z_tool'],
+      'first turn should expose both filtered tools in sorted order',
+    );
+    assert.deepStrictEqual(
+      (llm.toolNameHistory[1] ?? []).filter((tool) => tool === 'a_tool' || tool === 'z_tool'),
+      ['a_tool'],
+      'second turn should expose only the narrowed tool set',
+    );
+    assertSecondTurnCacheInvalidation(llm, session, 'toolFilter change', {
+      promptPrefixPreserved: true,
+      toolOrderingPreserved: false,
+    });
+  });
+
+  test('prompt cache - restoring a previous toolFilter can reuse an older cached baseline', async () => {
+    const llm = new CacheAwareMockLLMProvider();
+    const registry = new ToolRegistry();
+    const session = new LingyunSession();
+
+    registry.registerTool(
+      {
+        id: 'z_tool',
+        name: 'Z tool',
+        description: 'last alphabetically',
+        parameters: { type: 'object', properties: {} },
+        execution: { type: 'function', handler: 'test.z_tool' },
+      },
+      async () => ({ success: true, data: 'z' }),
+    );
+    registry.registerTool(
+      {
+        id: 'a_tool',
+        name: 'A tool',
+        description: 'first alphabetically',
+        parameters: { type: 'object', properties: {} },
+        execution: { type: 'function', handler: 'test.a_tool' },
+      },
+      async () => ({ success: true, data: 'a' }),
+    );
+
+    const wideAgent = new LingyunAgent(
+      llm,
+      { model: 'mock-model', toolFilter: ['a_tool', 'z_tool'] },
+      registry,
+      { allowExternalPaths: false, skills: { enabled: false } },
+    );
+    const narrowAgent = new LingyunAgent(
+      llm,
+      { model: 'mock-model', toolFilter: ['a_tool'] },
+      registry,
+      { allowExternalPaths: false, skills: { enabled: false } },
+    );
+
+    llm.queueResponse({ kind: 'text', content: 'wide-1' });
+    for await (const _event of wideAgent.run({ session, input: 'hello' }).events) {
+      // drain
+    }
+
+    llm.queueResponse({ kind: 'text', content: 'narrow-1' });
+    for await (const _event of narrowAgent.run({ session, input: 'narrow it' }).events) {
+      // drain
+    }
+
+    llm.queueResponse({ kind: 'text', content: 'wide-2' });
+    for await (const _event of wideAgent.run({ session, input: 'widen it again' }).events) {
+      // drain
+    }
+
+    assertCacheInvalidationBetweenTurns(llm, session, 1, 'toolFilter narrowing still invalidates immediately', {
+      promptPrefixPreserved: true,
+      toolOrderingPreserved: false,
+    });
+    assertCacheReuseAgainstTurn(llm, session, 2, 0, 'restored wide toolFilter baseline');
+  });
+
+  test('prompt cache invalidation - allowExternalPaths can invalidate via the available-skills catalog', async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'lingyun-sdk-test-skill-catalog-workspace-'));
+    const externalSkillRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'lingyun-sdk-test-skill-catalog-external-'));
+    const skillDir = path.join(externalSkillRoot, 'ext-skill');
+    try {
+      await fs.mkdir(skillDir, { recursive: true });
+      await fs.writeFile(
+        path.join(skillDir, 'SKILL.md'),
+        [
+          '---',
+          'name: external-cache-skill',
+          'description: external skill used for prompt cache invalidation tests.',
+          '---',
+          '',
+          '# External Cache Skill',
+          '',
+          '- This skill exists outside the workspace.',
+        ].join('\n'),
+      );
+
+      const llm = new CacheAwareMockLLMProvider();
+      const registry = new ToolRegistry();
+      const session = new LingyunSession();
+
+      llm.queueResponse({ kind: 'text', content: 'first' });
+      const blockedAgent = new LingyunAgent(llm, { model: 'mock-model' }, registry, {
+        workspaceRoot,
+        allowExternalPaths: false,
+        skills: { enabled: true, paths: [externalSkillRoot] },
+      });
+      for await (const _event of blockedAgent.run({ session, input: 'hello' }).events) {
+        // drain
+      }
+
+      llm.queueResponse({ kind: 'text', content: 'second' });
+      const allowedAgent = new LingyunAgent(llm, { model: 'mock-model' }, registry, {
+        workspaceRoot,
+        allowExternalPaths: true,
+        skills: { enabled: true, paths: [externalSkillRoot] },
+      });
+      for await (const _event of allowedAgent.run({ session, input: 'follow up' }).events) {
+        // drain
+      }
+
+      const firstPrompt = JSON.stringify(llm.promptHistory[0] ?? '');
+      const secondPrompt = JSON.stringify(llm.promptHistory[1] ?? '');
+      assert.ok(
+        !firstPrompt.includes('external-cache-skill'),
+        'first prompt should not list the external skill when external paths are disabled',
+      );
+      assert.ok(
+        secondPrompt.includes('external-cache-skill'),
+        'second prompt should list the external skill when external paths are enabled',
+      );
+      assertSecondTurnCacheInvalidation(llm, session, 'allowExternalPaths-driven skills catalog change', {
+        promptPrefixPreserved: false,
+        toolOrderingPreserved: true,
+      });
+    } finally {
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+      await fs.rm(externalSkillRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('prompt cache - toggling the external skill catalog back to a previous state reuses the matching cached baseline', async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'lingyun-sdk-test-skill-catalog-toggle-workspace-'));
+    const externalSkillRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'lingyun-sdk-test-skill-catalog-toggle-external-'));
+    const skillDir = path.join(externalSkillRoot, 'ext-skill');
+    try {
+      await fs.mkdir(skillDir, { recursive: true });
+      await fs.writeFile(
+        path.join(skillDir, 'SKILL.md'),
+        [
+          '---',
+          'name: external-cache-skill',
+          'description: external skill used for prompt cache toggle tests.',
+          '---',
+          '',
+          '# External Cache Skill',
+          '',
+          '- This skill exists outside the workspace.',
+        ].join('\n'),
+      );
+
+      const llm = new CacheAwareMockLLMProvider();
+      const registry = new ToolRegistry();
+      const session = new LingyunSession();
+
+      const allowedAgent = new LingyunAgent(llm, { model: 'mock-model' }, registry, {
+        workspaceRoot,
+        allowExternalPaths: true,
+        skills: { enabled: true, paths: [externalSkillRoot] },
+      });
+      const blockedAgent = new LingyunAgent(llm, { model: 'mock-model' }, registry, {
+        workspaceRoot,
+        allowExternalPaths: false,
+        skills: { enabled: true, paths: [externalSkillRoot] },
+      });
+
+      llm.queueResponse({ kind: 'text', content: 'allowed-1' });
+      for await (const _event of allowedAgent.run({ session, input: 'hello with external skills' }).events) {
+        // drain
+      }
+
+      llm.queueResponse({ kind: 'text', content: 'allowed-2' });
+      for await (const _event of allowedAgent.run({ session, input: 'follow up with external skills' }).events) {
+        // drain
+      }
+
+      llm.queueResponse({ kind: 'text', content: 'blocked-1' });
+      for await (const _event of blockedAgent.run({ session, input: 'hide external skills now' }).events) {
+        // drain
+      }
+
+      llm.queueResponse({ kind: 'text', content: 'blocked-2' });
+      for await (const _event of blockedAgent.run({ session, input: 'stay hidden' }).events) {
+        // drain
+      }
+
+      llm.queueResponse({ kind: 'text', content: 'allowed-3' });
+      for await (const _event of allowedAgent.run({ session, input: 'show external skills again' }).events) {
+        // drain
+      }
+
+      assertCacheReuseBetweenTurns(llm, session, 1, 'steady-state external skill catalog');
+      assertCacheInvalidationBetweenTurns(llm, session, 2, 'blocking external skill catalog', {
+        promptPrefixPreserved: false,
+        toolOrderingPreserved: true,
+      });
+      assertCacheReuseBetweenTurns(llm, session, 3, 'steady-state blocked external skill catalog');
+      assertCacheReuseAgainstTurn(llm, session, 4, 1, 'restored external skill catalog baseline');
+      assert.strictEqual(
+        llm.cacheReadSourceIndexHistory[4],
+        1,
+        're-enabling external skills should reuse the latest matching cached allowed baseline',
+      );
+    } finally {
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+      await fs.rm(externalSkillRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('prompt cache invalidation - compaction resets the prompt baseline for subsequent turns', async () => {
+    const llm = new CacheAwareMockLLMProvider();
+    const registry = new ToolRegistry();
+    const session = new LingyunSession();
+
+    llm.queueResponse({ kind: 'text', content: 'first reply' });
+    const agent = new LingyunAgent(llm, { model: 'mock-model' }, registry, {
+      allowExternalPaths: false,
+      skills: { enabled: false },
+    });
+    for await (const _event of agent.run({ session, input: 'hello' }).events) {
+      // drain
+    }
+
+    llm.queueResponse({ kind: 'text', content: 'summary after compaction' });
+    await agent.compactSession(session);
+
+    llm.queueResponse({ kind: 'text', content: 'follow-up after compaction' });
+    for await (const _event of agent.run({ session, input: 'continue' }).events) {
+      // drain
+    }
+
+    const tokenHistory = getAssistantTokenHistoryFromSession(session);
+    assert.strictEqual(tokenHistory.length, 2, 'expected compaction to replace earlier history with summary + follow-up reply');
+    assert.strictEqual(llm.promptHistory.length, 3, 'expected one main turn, one compaction request, and one follow-up turn');
+    assert.ok(session.getHistory().some((message) => message.role === 'assistant' && message.metadata?.summary), 'expected compaction summary to be retained in effective history');
+
+    const followUpTokens = tokenHistory[1]!;
+    const followUpTools = llm.toolNameHistory[2] ?? [];
+    const followUpFootprint = estimatePromptCacheFootprint(llm.promptHistory[2], followUpTools);
+    assert.strictEqual(llm.cacheReadHistory[2] ?? 0, 0, 'follow-up after compaction should not reuse the compaction prompt');
+    assert.strictEqual(followUpTokens.cacheRead ?? 0, 0, 'follow-up after compaction should record no cache read');
+    assert.strictEqual(followUpTokens.cacheWrite, followUpFootprint, 'follow-up after compaction should rewrite the full prompt footprint');
+    assert.strictEqual(followUpTokens.input, followUpFootprint, 'follow-up after compaction should be fully uncached');
+    assert.strictEqual(
+      hasPromptCachePrefix(llm.promptHistory[1], llm.promptHistory[2]),
+      false,
+      'follow-up after compaction should not extend the compaction prompt as a cacheable prefix',
+    );
+  });
+
+  test('prompt cache - a newly mentioned skill mid-session preserves the cached prefix', async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'lingyun-sdk-test-cache-new-skill-'));
+    const skillDir = path.join(workspaceRoot, '.lingyun', 'skills', 'ask');
+    try {
+      await fs.mkdir(skillDir, { recursive: true });
+      await fs.writeFile(
+        path.join(skillDir, 'SKILL.md'),
+        [
+          '---',
+          'name: ask-questions-if-underspecified',
+          'description: Clarify requirements before implementing.',
+          '---',
+          '',
+          '# Ask Questions If Underspecified',
+          '',
+          '- Ask must-have questions before implementing.',
+        ].join('\n'),
+      );
+
+      const llm = new CacheAwareMockLLMProvider();
+      const registry = new ToolRegistry();
+      const session = new LingyunSession();
+      const agent = new LingyunAgent(llm, { model: 'mock-model' }, registry, {
+        workspaceRoot,
+        allowExternalPaths: false,
+        skills: { enabled: true, paths: ['.lingyun/skills'] },
+      });
+
+      llm.queueResponse({ kind: 'text', content: 'first reply' });
+      for await (const _event of agent.run({ session, input: 'hello there' }).events) {
+        // drain
+      }
+
+      llm.queueResponse({ kind: 'text', content: 'second reply' });
+      for await (const _event of agent.run({ session, input: 'Please use $ask-questions-if-underspecified now' }).events) {
+        // drain
+      }
+
+      assertSecondTurnCacheReuse(llm, session, 'mid-session skill activation');
+      const prompt = JSON.stringify(llm.promptHistory[1] ?? '');
+      assert.ok(prompt.includes('<skill>'), 'second prompt should include the newly injected skill block');
+      assert.ok(prompt.includes('$ask-questions-if-underspecified') || prompt.includes('ask-questions-if-underspecified'), 'second prompt should reflect the activated skill');
+      assert.strictEqual(
+        session.getHistory().filter((message) => message.role === 'user' && message.metadata?.skill).length,
+        1,
+        'skill activation should persist a single synthetic skill message in history',
+      );
+    } finally {
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('prompt cache - a new baseline is cacheable again after compaction', async () => {
+    const llm = new CacheAwareMockLLMProvider();
+    const registry = new ToolRegistry();
+    const session = new LingyunSession();
+    const agent = new LingyunAgent(llm, { model: 'mock-model' }, registry, {
+      allowExternalPaths: false,
+      skills: { enabled: false },
+    });
+
+    llm.queueResponse({ kind: 'text', content: 'first reply' });
+    for await (const _event of agent.run({ session, input: 'hello' }).events) {
+      // drain
+    }
+
+    llm.queueResponse({ kind: 'text', content: 'summary after compaction' });
+    await agent.compactSession(session);
+
+    llm.queueResponse({ kind: 'text', content: 'follow-up after compaction' });
+    for await (const _event of agent.run({ session, input: 'continue' }).events) {
+      // drain
+    }
+
+    llm.queueResponse({ kind: 'text', content: 'second follow-up after compaction' });
+    for await (const _event of agent.run({ session, input: 'continue again' }).events) {
+      // drain
+    }
+
+    const tokenHistory = getAssistantTokenHistoryFromSession(session);
+    assert.strictEqual(tokenHistory.length, 3, 'expected compaction summary plus two post-compaction assistant replies');
+    assert.strictEqual(llm.promptHistory.length, 4, 'expected one normal turn, one compaction request, and two follow-up turns');
+
+    const previousPrompt = llm.promptHistory[2];
+    const currentPrompt = llm.promptHistory[3];
+    const previousTools = llm.toolNameHistory[2] ?? [];
+    const currentTools = llm.toolNameHistory[3] ?? [];
+    const currentTokens = tokenHistory[2]!;
+    const previousFootprint = estimatePromptCacheFootprint(previousPrompt, previousTools);
+
+    assert.ok(hasPromptCachePrefix(previousPrompt, currentPrompt), 'second post-compaction turn should extend the first post-compaction prompt');
+    assert.deepStrictEqual(currentTools, previousTools, 'tool ordering should stay stable after compaction baseline is re-established');
+    assert.strictEqual(llm.cacheReadHistory[3], previousFootprint, 'second post-compaction turn should read the full rebuilt baseline from cache');
+    assert.strictEqual(currentTokens.cacheRead, previousFootprint, 'second post-compaction assistant tokens should record a full cache read');
+    assert.strictEqual(currentTokens.cacheWrite ?? 0, 0, 'second post-compaction turn should not rewrite cached prefix tokens');
+  });
+
+  test('prompt cache - plan mode survives compaction without duplicate reminders and still reuses cache', async () => {
+    const llm = new CacheAwareMockLLMProvider();
+    const registry = new ToolRegistry();
+    const session = new LingyunSession();
+    const agent = new LingyunAgent(llm, { model: 'mock-model', mode: 'plan' }, registry, {
+      allowExternalPaths: false,
+      skills: { enabled: false },
+    });
+
+    llm.queueResponse({ kind: 'text', content: 'plan reply before compaction' });
+    for await (const _event of agent.run({ session, input: 'make a plan' }).events) {
+      // drain
+    }
+
+    llm.queueResponse({ kind: 'text', content: 'plan summary after compaction' });
+    await agent.compactSession(session);
+
+    llm.queueResponse({ kind: 'text', content: 'plan reply after compaction' });
+    for await (const _event of agent.run({ session, input: 'continue planning' }).events) {
+      // drain
+    }
+
+    llm.queueResponse({ kind: 'text', content: 'another plan reply after compaction' });
+    for await (const _event of agent.run({ session, input: 'refine the plan again' }).events) {
+      // drain
+    }
+
+    const firstPostCompactionPrompt = JSON.stringify(llm.promptHistory[2] ?? '');
+    const secondPostCompactionPrompt = JSON.stringify(llm.promptHistory[3] ?? '');
+    assert.strictEqual(
+      firstPostCompactionPrompt.split('Plan mode is active').length - 1,
+      0,
+      'first post-compaction plan turn should preserve plan mode via existing history without re-emitting a reminder',
+    );
+    assert.strictEqual(
+      secondPostCompactionPrompt.split('Plan mode is active').length - 1,
+      0,
+      'second post-compaction plan turn should not duplicate the plan reminder',
+    );
+
+    const modeReminders = getModeReminderMessages(session);
+    assert.strictEqual(modeReminders.length, 0, 'effective post-compaction history should not need an explicit plan reminder');
+
+    const tokenHistory = getAssistantTokenHistoryFromSession(session);
+    const previousPrompt = llm.promptHistory[2];
+    const currentPrompt = llm.promptHistory[3];
+    const previousTools = llm.toolNameHistory[2] ?? [];
+    const currentTools = llm.toolNameHistory[3] ?? [];
+    const currentTokens = tokenHistory[2]!;
+    const previousFootprint = estimatePromptCacheFootprint(previousPrompt, previousTools);
+
+    assert.ok(hasPromptCachePrefix(previousPrompt, currentPrompt), 'second post-compaction plan turn should extend the re-established baseline');
+    assert.deepStrictEqual(currentTools, previousTools, 'tool ordering should stay stable in plan mode after compaction');
+    assert.strictEqual(llm.cacheReadHistory[3], previousFootprint, 'second post-compaction plan turn should read from cache');
+    assert.strictEqual(currentTokens.cacheRead, previousFootprint, 'assistant token accounting should show a cache read on the second post-compaction plan turn');
   });
 
   test('prompt - replays reasoning_content + raw assistant text for openaiCompatible providers', async () => {
@@ -639,19 +1801,29 @@ suite('LingYun Agent SDK', () => {
       allowExternalPaths: false,
     });
     const session = new LingyunSession();
+    const originalConsoleError = console.error;
+    const consoleErrors: unknown[][] = [];
+    console.error = (...args: unknown[]) => {
+      consoleErrors.push(args);
+    };
 
-    const run = agent.run({ session, input: 'Hi' });
-    for await (const _event of run.events) {
-      // drain
+    try {
+      const run = agent.run({ session, input: 'Hi' });
+      for await (const _event of run.events) {
+        // drain
+      }
+      const result = await run.done;
+
+      assert.strictEqual(result.text, 'Hello');
+      assert.strictEqual(llm.callCount, 2);
+
+      const history = session.getHistory();
+      assert.strictEqual(history.filter((m) => m.role === 'assistant').length, 1);
+      assert.strictEqual(getMessageText(history[history.length - 1]!), 'Hello');
+      assert.deepStrictEqual(consoleErrors, []);
+    } finally {
+      console.error = originalConsoleError;
     }
-    const result = await run.done;
-
-    assert.strictEqual(result.text, 'Hello');
-    assert.strictEqual(llm.callCount, 2);
-
-    const history = session.getHistory();
-    assert.strictEqual(history.filter((m) => m.role === 'assistant').length, 1);
-    assert.strictEqual(getMessageText(history[history.length - 1]!), 'Hello');
   });
 
   test('file handles - registry repairs malformed state before resolving ids', () => {
@@ -1106,7 +2278,7 @@ suite('LingYun Agent SDK', () => {
     }
   });
 
-  test('injects skill blocks before the user prompt and does not persist them', async () => {
+  test('prompt cache - persisted skill blocks preserve cache hits on follow-up turns', async () => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'lingyun-sdk-test-skill-inject-'));
     const skillDir = path.join(workspaceRoot, '.lingyun', 'skills', 'ask');
     try {
@@ -1125,7 +2297,7 @@ suite('LingYun Agent SDK', () => {
         ].join('\n')
       );
 
-      const llm = new MockLLMProvider();
+      const llm = new CacheAwareMockLLMProvider();
       llm.queueResponse({ kind: 'text', content: 'ok' });
 
       const registry = new ToolRegistry();
@@ -1143,19 +2315,83 @@ suite('LingYun Agent SDK', () => {
       }
       await run.done;
 
+      llm.queueResponse({ kind: 'text', content: 'follow-up ok' });
+      const followUp = agent.run({ session, input: 'Follow up without re-mentioning the skill' });
+      for await (const _event of followUp.events) {
+        // drain
+      }
+      await followUp.done;
+
       const promptJson = JSON.stringify(llm.lastPrompt ?? '');
       const idxSkill = promptJson.lastIndexOf('<skill>');
-      const idxInput = promptJson.lastIndexOf(input);
+      const idxInput = promptJson.lastIndexOf('Follow up without re-mentioning the skill');
       assert.ok(idxSkill >= 0, 'expected <skill> block to be present in the prompt');
       assert.ok(idxInput >= 0, 'expected user input to be present in the prompt');
       assert.ok(idxInput > idxSkill, 'expected user input to appear after the injected <skill> block');
 
       const history = session.getHistory();
-      assert.strictEqual(history.some((m) => m.role === 'user' && m.metadata?.skill), false);
+      assert.strictEqual(history.some((m) => m.role === 'user' && m.metadata?.skill), true);
       assert.deepStrictEqual(session.mentionedSkills, ['ask-questions-if-underspecified']);
+      assertSecondTurnCacheReuse(llm, session, 'persisted skill prompt cache');
     } finally {
       await fs.rm(workspaceRoot, { recursive: true, force: true });
     }
+  });
+
+  test('prompt cache - follow-up turns record cache reads', async () => {
+    const llm = new CacheAwareMockLLMProvider();
+    const registry = new ToolRegistry();
+
+    llm.queueResponse({ kind: 'text', content: 'first' });
+    llm.queueResponse({ kind: 'text', content: 'second' });
+
+    const agent = new LingyunAgent(llm, { model: 'mock-model' }, registry, { allowExternalPaths: true });
+    const session = new LingyunSession();
+
+    for await (const _event of agent.run({ session, input: 'hello' }).events) {
+      // drain
+    }
+    await agent.run({ session, input: 'follow up' }).done;
+
+    assertSecondTurnCacheReuse(llm, session, 'plain follow-up prompt cache');
+  });
+
+  test('tools - orders prompt tool definitions deterministically by id', async () => {
+    const llm = new MockLLMProvider();
+    const registry = new ToolRegistry();
+
+    registry.registerTool(
+      {
+        id: 'z_tool',
+        name: 'Z tool',
+        description: 'last alphabetically',
+        parameters: { type: 'object', properties: {} },
+        execution: { type: 'function', handler: 'test.z_tool' },
+      },
+      async () => ({ success: true, data: 'z' }),
+    );
+    registry.registerTool(
+      {
+        id: 'a_tool',
+        name: 'A tool',
+        description: 'first alphabetically',
+        parameters: { type: 'object', properties: {} },
+        execution: { type: 'function', handler: 'test.a_tool' },
+      },
+      async () => ({ success: true, data: 'a' }),
+    );
+
+    llm.queueResponse({ kind: 'text', content: 'ok' });
+
+    const agent = new LingyunAgent(llm, { model: 'mock-model' }, registry, { allowExternalPaths: false });
+    const session = new LingyunSession();
+
+    for await (const _event of agent.run({ session, input: 'hello' }).events) {
+      // drain
+    }
+
+    const toolNames = llm.lastToolNames.filter((name) => name === 'a_tool' || name === 'z_tool');
+    assert.deepStrictEqual(toolNames, ['a_tool', 'z_tool']);
   });
 
   test('requires approval for curl-like bash commands by default', async () => {

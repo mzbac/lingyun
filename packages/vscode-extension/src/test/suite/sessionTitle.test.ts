@@ -9,6 +9,7 @@ import type {
 
 import type { LLMProvider } from '../../core/types';
 import { generateSessionTitle } from '../../core/sessionTitle';
+import { createCopilotResponsesModel } from '../../providers/copilotResponsesModel';
 import { createResponsesModel } from '../../providers/responsesModel';
 
 function usage(): LanguageModelV3Usage {
@@ -103,6 +104,48 @@ class MockResponsesLLMProvider implements LLMProvider {
           status: 200,
           headers: { 'Content-Type': 'text/event-stream' },
         }),
+    });
+  }
+}
+
+class MockFailingLLMProvider implements LLMProvider {
+  readonly id = 'copilot';
+  readonly name = 'Mock Copilot';
+  onRequestErrorCalls: Array<{ error: unknown; context: unknown }> = [];
+
+  async getModel(modelId: string): Promise<unknown> {
+    const model: LanguageModelV3 = {
+      specificationVersion: 'v3',
+      provider: 'copilot',
+      modelId,
+      supportedUrls: {},
+      doGenerate: async () => {
+        throw new Error('Not implemented');
+      },
+      doStream: async () => {
+        const error = Object.assign(new Error('401 expired token'), { status: 401 });
+        throw error;
+      },
+    };
+
+    return model;
+  }
+
+  onRequestError(error: unknown, context?: unknown): void {
+    this.onRequestErrorCalls.push({ error, context });
+  }
+}
+
+class CapturingCopilotTitleProvider implements LLMProvider {
+  readonly id = 'copilot';
+  readonly name = 'Mock Copilot';
+
+  async getModel(modelId: string): Promise<unknown> {
+    return createCopilotResponsesModel({
+      baseURL: 'https://example.invalid',
+      apiKey: 'test',
+      modelId,
+      headers: {},
     });
   }
 }
@@ -210,5 +253,82 @@ suite('sessionTitle', () => {
     });
 
     assert.strictEqual(title, 'Fixing session title fallback');
+  });
+
+  test('notifies provider request-error hook when title generation fails', async () => {
+    const llm = new MockFailingLLMProvider();
+
+    await assert.rejects(() =>
+      generateSessionTitle({
+        llm,
+        modelId: 'gpt-5.4',
+        message: 'copilot title request failed',
+      }),
+    );
+
+    assert.strictEqual(llm.onRequestErrorCalls.length, 1);
+    assert.deepStrictEqual(llm.onRequestErrorCalls[0]?.context, {
+      modelId: 'gpt-5.4',
+      mode: 'build',
+    });
+  });
+
+  test('uses top-level instructions for Copilot GPT-5.4 title generation', async () => {
+    const originalFetch = globalThis.fetch;
+    let capturedBody: Record<string, unknown> | undefined;
+
+    try {
+      globalThis.fetch = async (_input, init) => {
+        capturedBody = JSON.parse(String(init?.body ?? '{}'));
+        return new Response(
+          encodeSseEvents([
+            {
+              type: 'response.output_text.done',
+              item_id: 'text_1',
+              output_index: 0,
+              text: 'Copilot title via instructions',
+            },
+            {
+              type: 'response.completed',
+              response: {
+                id: 'resp_3',
+                model: 'gpt-5.4',
+                usage: {
+                  input_tokens: 0,
+                  input_tokens_details: { cached_tokens: 0 },
+                  output_tokens: 0,
+                  output_tokens_details: { reasoning_tokens: 0 },
+                },
+              },
+            },
+          ]),
+          {
+            status: 200,
+            headers: { 'Content-Type': 'text/event-stream' },
+          },
+        );
+      };
+
+      const llm = new CapturingCopilotTitleProvider();
+      const title = await generateSessionTitle({
+        llm,
+        modelId: 'gpt-5.4',
+        message: 'copilot title should use top-level instructions',
+      });
+
+      assert.strictEqual(title, 'Copilot title via instructions');
+      assert.ok(String(capturedBody?.instructions || '').includes('You are a title generator.'));
+      const input = (capturedBody?.input ?? []) as Array<Record<string, unknown>>;
+      assert.deepStrictEqual(
+        input.map((entry) => entry.role ?? entry.type),
+        ['user', 'user'],
+      );
+      assert.ok(
+        input.every((entry) => entry.role !== 'system'),
+        'copilot title generation should not send the title prompt as a system input item',
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });

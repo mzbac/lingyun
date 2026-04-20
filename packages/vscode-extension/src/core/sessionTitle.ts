@@ -1,6 +1,7 @@
 import { convertToModelMessages, extractReasoningMiddleware, streamText, wrapLanguageModel } from 'ai';
 import type { LLMProvider } from './types';
-import { createUserHistoryMessage, normalizeTemperatureForModel, stripThinkBlocks } from '@kooka/core';
+import { createUserHistoryMessage, isCopilotResponsesModelId, normalizeTemperatureForModel, stripThinkBlocks } from '@kooka/core';
+import { streamTextWithLingyunDefaults } from './streamText';
 
 const TITLE_SYSTEM_PROMPT = `You are a title generator. You output ONLY a thread title. Nothing else.
 
@@ -55,30 +56,47 @@ export async function generateSessionTitle(params: {
   const maxChars = Math.max(10, Math.floor(params.maxChars ?? 50));
   const maxRetries = Math.max(0, Math.floor(params.maxRetries ?? 0));
 
-  const rawModel = await params.llm.getModel(params.modelId);
-  const model = wrapLanguageModel({
-    model: rawModel as unknown as Parameters<typeof wrapLanguageModel>[0]['model'],
-    middleware: [extractReasoningMiddleware({ tagName: 'think', startWithReasoning: false })],
-  });
+  try {
+    const rawModel = await params.llm.getModel(params.modelId);
+    const model = wrapLanguageModel({
+      model: rawModel as unknown as Parameters<typeof wrapLanguageModel>[0]['model'],
+      middleware: [extractReasoningMiddleware({ tagName: 'think', startWithReasoning: false })],
+    });
 
-  const messages = await convertToModelMessages(
-    [
-      createUserHistoryMessage('Generate a title for this conversation:', { synthetic: true }),
-      createUserHistoryMessage(params.message),
-    ] as unknown as Parameters<typeof convertToModelMessages>[0],
-    { tools: {} } as Parameters<typeof convertToModelMessages>[1],
-  );
+    const messages = await convertToModelMessages(
+      [
+        createUserHistoryMessage('Generate a title for this conversation:', { synthetic: true }),
+        createUserHistoryMessage(params.message),
+      ] as unknown as Parameters<typeof convertToModelMessages>[0],
+      { tools: {} } as Parameters<typeof convertToModelMessages>[1],
+    );
+    const useInstructionsOverride =
+      params.llm.id === 'copilot' && isCopilotResponsesModelId(params.modelId);
 
-  const stream = streamText({
-    model: model as unknown as Parameters<typeof streamText>[0]['model'],
-    system: TITLE_SYSTEM_PROMPT,
-    messages,
-    temperature: normalizeTemperatureForModel(params.modelId, 0),
-    maxRetries,
-    maxOutputTokens,
-    abortSignal: params.abortSignal,
-  });
+    const stream = streamTextWithLingyunDefaults({
+      model: model as unknown as Parameters<typeof streamText>[0]['model'],
+      system: useInstructionsOverride ? undefined : TITLE_SYSTEM_PROMPT,
+      messages,
+      providerOptions: useInstructionsOverride
+        ? {
+            openai: { instructions: TITLE_SYSTEM_PROMPT },
+            copilot: { instructions: TITLE_SYSTEM_PROMPT },
+          }
+        : undefined,
+      temperature: normalizeTemperatureForModel(params.modelId, 0),
+      maxRetries,
+      maxOutputTokens,
+      abortSignal: params.abortSignal,
+    });
 
-  const text = await stream.text;
-  return cleanTitleLine(String(text || ''), maxChars);
+    const text = await stream.text;
+    return cleanTitleLine(String(text || ''), maxChars);
+  } catch (error) {
+    try {
+      params.llm.onRequestError?.(error, { modelId: params.modelId, mode: 'build' });
+    } catch {
+      // Ignore provider error hooks; preserve the original title-generation failure.
+    }
+    throw error;
+  }
 }

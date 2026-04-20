@@ -196,6 +196,68 @@ suite('CopilotResponsesModel', () => {
     }
   });
 
+  test('uses top-level instructions when providerOptions override them explicitly', async () => {
+    const originalFetch = globalThis.fetch;
+    let capturedBody: Record<string, unknown> | undefined;
+
+    try {
+      globalThis.fetch = async (_input, init) => {
+        capturedBody = JSON.parse(String(init?.body ?? '{}'));
+        return new Response(
+          encodeSseEvents([
+            {
+              type: 'response.completed',
+              response: {
+                id: 'resp_2',
+                model: 'gpt-5.4',
+                usage: {
+                  input_tokens: 0,
+                  input_tokens_details: { cached_tokens: 0 },
+                  output_tokens: 0,
+                  output_tokens_details: { reasoning_tokens: 0 },
+                },
+              },
+            },
+          ]),
+          {
+            status: 200,
+            headers: { 'Content-Type': 'text/event-stream' },
+          },
+        );
+      };
+
+      const model = createCopilotResponsesModel({
+        baseURL: 'https://example.invalid',
+        apiKey: 'test',
+        modelId: 'gpt-5.4',
+        headers: {},
+      });
+
+      await model.doStream({
+        prompt: [
+          { role: 'system', content: 'System rule' },
+          { role: 'user', content: [{ type: 'text', text: 'Say hello' }] },
+        ],
+        providerOptions: {
+          openai: { instructions: 'Override instructions' },
+          copilot: { instructions: 'Override instructions' },
+        },
+        tools: [],
+        toolChoice: undefined,
+        temperature: 0.2,
+        topP: undefined,
+        maxOutputTokens: 16,
+      } as any);
+
+      assert.strictEqual(capturedBody?.instructions, 'Override instructions');
+      assert.deepStrictEqual(capturedBody?.input, [
+        { role: 'user', content: [{ type: 'input_text', text: 'Say hello' }] },
+      ]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test('does not duplicate assistant text when message.done also includes full content', async () => {
     const originalFetch = globalThis.fetch;
 

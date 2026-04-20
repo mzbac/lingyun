@@ -15,7 +15,6 @@ import {
   normalizeSessionId,
   requireString,
   resolveBuiltinSubagent,
-  stripSkillInjectedMessages,
   type UserHistoryInput,
 } from '@kooka/core';
 
@@ -383,9 +382,6 @@ export class TaskSubagentRunner {
         error: error instanceof Error ? error.message : String(error),
         metadata: { errorCode: TOOL_ERROR_CODES.task_subagent_failed },
       };
-    } finally {
-      // Avoid leaking subagent's temporary skill injection messages to later turns.
-      childSession.history = stripSkillInjectedMessages(childSession.history);
     }
   }
 }

@@ -2646,7 +2646,7 @@ suite('AgentLoop', () => {
     );
   });
 
-  test('prompt - injects external path access reminder', async () => {
+  test('prompt - does not inject external path access state into the prompt', async () => {
     const cfg = vscode.workspace.getConfiguration('lingyun');
     const prevAllow = cfg.get<unknown>('security.allowExternalPaths');
     await cfg.update('security.allowExternalPaths', true, true);
@@ -2656,8 +2656,8 @@ suite('AgentLoop', () => {
       await agent.run('Hello');
 
       const prompt = JSON.stringify(mockLLM.lastPrompt ?? '');
-      assert.ok(prompt.includes('<system-reminder>'), 'system-reminder tag should be present in prompt');
-      assert.ok(prompt.includes('External paths are enabled'), 'external path reminder should reflect setting');
+      assert.ok(!prompt.includes('External paths are enabled'), 'external path setting should not be embedded in the prompt');
+      assert.ok(!prompt.includes('External paths are disabled'), 'external path setting should not be embedded in the prompt');
     } finally {
       await cfg.update('security.allowExternalPaths', prevAllow as any, true);
     }

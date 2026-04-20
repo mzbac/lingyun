@@ -18,7 +18,6 @@ import {
   cloneUserHistoryInput,
   createUserHistoryMessage,
   parseUserHistoryInput,
-  stripSkillInjectedMessages,
 } from '@kooka/core';
 
 import type {
@@ -140,9 +139,7 @@ export class AgentLoop {
   }
 
   exportState(): AgentSessionState {
-    const history = cloneAgentHistoryMessages(
-      stripTransientSyntheticMessages(stripSkillInjectedMessages(this.session.history)),
-    );
+    const history = cloneAgentHistoryMessages(stripTransientSyntheticMessages(this.session.history));
     const fileHandles = cloneFileHandlesState(this.session.fileHandles);
 
     return {

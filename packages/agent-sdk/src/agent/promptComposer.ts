@@ -70,7 +70,9 @@ export class PromptComposer {
       signal: options?.signal,
       allowExternalPaths: options?.allowExternalPaths,
     });
-    let system = [[basePrompt, skillsPromptText].filter(Boolean).join('\n')].filter(Boolean) as string[];
+    let system = [
+      [basePrompt, skillsPromptText].filter(Boolean).join('\n'),
+    ].filter(Boolean) as string[];
     const header = system[0] ?? '';
 
     const out = await this.params.plugins.trigger(

@@ -351,18 +351,23 @@ function createResponsesBody(
   options: LanguageModelV3CallOptions,
   behavior: ResponsesModelBehavior,
 ): Record<string, unknown> {
-  const promptParts = promptToResponsesRequest(options.prompt, behavior);
   const effort = extractProviderOptionString(options.providerOptions, behavior.providerOptionKeys, 'reasoningEffort');
   const verbosity = extractProviderOptionString(options.providerOptions, behavior.providerOptionKeys, 'textVerbosity');
-  const instructionsOverride =
-    behavior.systemPromptMode === 'instructions'
-      ? extractProviderOptionString(options.providerOptions, behavior.providerOptionKeys, 'instructions')
-      : undefined;
+  const instructionsOverride = extractProviderOptionString(
+    options.providerOptions,
+    behavior.providerOptionKeys,
+    'instructions',
+  );
+  const effectiveBehavior =
+    instructionsOverride !== undefined
+      ? { ...behavior, systemPromptMode: 'instructions' as const }
+      : behavior;
+  const promptParts = promptToResponsesRequest(options.prompt, effectiveBehavior);
 
   return {
     model: modelId,
     input: promptParts.input,
-    ...(behavior.systemPromptMode === 'instructions'
+    ...(effectiveBehavior.systemPromptMode === 'instructions'
       ? { instructions: instructionsOverride ?? promptParts.instructions }
       : {}),
     stream: true,

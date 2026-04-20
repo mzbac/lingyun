@@ -1,6 +1,5 @@
 import {
   extractReasoningMiddleware,
-  streamText,
   wrapLanguageModel,
   type ModelMessage,
   type TextStreamPart,
@@ -37,6 +36,7 @@ import { SemanticHandleRegistry } from './semanticHandles.js';
 import { buildStreamReplay, type StreamReplayUpdate } from './streamAdapters.js';
 import { delay as getRetryDelayMs, retryable as getRetryableLlmError, sleep as retrySleep } from './retry.js';
 import { LingyunSession } from './session.js';
+import { streamTextWithLingyunDefaults } from '../llm/streamText.js';
 
 type PluginManagerLike = {
   trigger: <Name extends LingyunHookName, Output>(
@@ -232,7 +232,7 @@ export async function runOnce(params: {
 
         try {
           const streamAdapter = providerBehavior.createStreamAdapter(modelId);
-          const stream = streamText({
+          const stream = streamTextWithLingyunDefaults({
             model: model as any,
             messages: promptMessages,
             tools: aiTools as any,
