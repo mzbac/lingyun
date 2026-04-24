@@ -107,7 +107,7 @@ suite('CodexSubscriptionProvider', () => {
           name: 'GPT-5.3 Codex',
           vendor: 'chatgpt',
           family: 'gpt-codex',
-          maxInputTokens: 400000,
+          maxInputTokens: 380000,
           maxOutputTokens: 128000,
         },
         {
@@ -115,7 +115,7 @@ suite('CodexSubscriptionProvider', () => {
           name: 'GPT-5.4',
           vendor: 'chatgpt',
           family: 'gpt-5',
-          maxInputTokens: 272000,
+          maxInputTokens: 258400,
           maxOutputTokens: undefined,
         },
       ]);
@@ -166,6 +166,7 @@ suite('CodexSubscriptionProvider', () => {
         logLines.some((line) => line.includes('Failed to load Codex models (falling back to bundled list)')),
         'expected model discovery fallback to be logged',
       );
+      assert.ok(logLines.some((line) => line.includes('status=500')), 'expected model discovery status to be logged');
       assert.deepStrictEqual(
         models.map((model) => model.id),
         [
@@ -178,7 +179,7 @@ suite('CodexSubscriptionProvider', () => {
           'gpt-5.1-codex-mini',
         ],
       );
-      assert.ok(models.every((model) => model.maxInputTokens === undefined));
+      assert.ok(models.every((model) => model.maxInputTokens === 258400));
     } finally {
       provider.dispose();
     }

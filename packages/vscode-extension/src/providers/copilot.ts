@@ -7,6 +7,7 @@ import { appendErrorLog } from '../core/logger';
 import { normalizeResponsesStreamModel } from '../core/utils/normalizeResponsesStream';
 import { createCopilotResponsesModel } from './copilotResponsesModel';
 import type { ModelInfo } from './modelCatalog';
+import { createProviderHttpError, isProviderAuthError } from './providerErrors';
 
 const COPILOT_TOKEN_URL = 'https://api.github.com/copilot_internal/v2/token';
 const COPILOT_BASE_URL = 'https://api.githubcopilot.com';
@@ -80,7 +81,12 @@ export class CopilotProvider implements LLMProvider {
 
     if (!response.ok) {
       const text = await response.text();
-      throw new Error(`Failed to get Copilot token: ${response.status} ${text}`);
+      throw createProviderHttpError({
+        message: `Failed to get Copilot token: ${response.status} ${text}`,
+        url: COPILOT_TOKEN_URL,
+        response,
+        responseBody: text,
+      });
     }
 
     const data = (await response.json()) as { token: string; expires_at: number };
@@ -123,34 +129,7 @@ export class CopilotProvider implements LLMProvider {
   }
 
   private isAuthError(error: unknown): boolean {
-    const statusCode = (() => {
-      const candidates = [
-        (error as any)?.status,
-        (error as any)?.statusCode,
-        (error as any)?.response?.status,
-        (error as any)?.cause?.status,
-        (error as any)?.cause?.statusCode,
-      ];
-
-      for (const value of candidates) {
-        if (typeof value === 'number' && Number.isFinite(value)) return value;
-        if (typeof value === 'string') {
-          const parsed = Number(value);
-          if (Number.isFinite(parsed)) return parsed;
-        }
-      }
-
-      return undefined;
-    })();
-
-    const message = error instanceof Error ? error.message : String(error);
-    return (
-      statusCode === 401 ||
-      statusCode === 403 ||
-      /\b401\b/i.test(message) ||
-      /\b403\b/i.test(message) ||
-      /unauthori[sz]ed|forbidden|invalid token|expired/i.test(message)
-    );
+    return isProviderAuthError(error);
   }
 
   getAuthRetryLabel(error: unknown, _context?: { modelId: string; mode: 'plan' | 'build' }): string | undefined {

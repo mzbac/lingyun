@@ -13,6 +13,7 @@ import { createFetchWithStreamingDefaults } from './openaiFetch';
 import type { ModelInfo } from './modelCatalog';
 import type { LLMProviderWithUi, ProviderAuthStatus } from './providerUi';
 import { appendErrorLog } from '../core/logger';
+import { createProviderHttpError, isProviderAuthError } from './providerErrors';
 
 const OPENAI_AUTH_ISSUER = 'https://auth.openai.com';
 const CODEX_BASE_URL = 'https://chatgpt.com/backend-api/codex';
@@ -67,34 +68,7 @@ export class CodexSubscriptionProvider implements LLMProviderWithUi {
   }
 
   private isAuthError(error: unknown): boolean {
-    const statusCode = (() => {
-      const candidates = [
-        (error as any)?.status,
-        (error as any)?.statusCode,
-        (error as any)?.response?.status,
-        (error as any)?.cause?.status,
-        (error as any)?.cause?.statusCode,
-      ];
-
-      for (const value of candidates) {
-        if (typeof value === 'number' && Number.isFinite(value)) return value;
-        if (typeof value === 'string') {
-          const parsed = Number(value);
-          if (Number.isFinite(parsed)) return parsed;
-        }
-      }
-
-      return undefined;
-    })();
-
-    const message = error instanceof Error ? error.message : String(error);
-    return (
-      statusCode === 401 ||
-      statusCode === 403 ||
-      /\b401\b/i.test(message) ||
-      /\b403\b/i.test(message) ||
-      /unauthori[sz]ed|forbidden|invalid token|expired/i.test(message)
-    );
+    return isProviderAuthError(error);
   }
 
   async getAuthStatus(): Promise<ProviderAuthStatus> {
@@ -184,8 +158,11 @@ export class CodexSubscriptionProvider implements LLMProviderWithUi {
 
         if (!response.ok) {
           const text = await response.text();
-          throw Object.assign(new Error(`Failed to list Codex models: ${response.status} ${text}`), {
-            status: response.status,
+          throw createProviderHttpError({
+            message: `Failed to list Codex models: ${response.status} ${text}`,
+            url: url.toString(),
+            response,
+            responseBody: text,
           });
         }
 

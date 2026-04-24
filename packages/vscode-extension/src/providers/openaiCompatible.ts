@@ -3,6 +3,7 @@ import type { FetchFunction } from '@ai-sdk/provider-utils';
 import type { LLMProvider } from '../core/types';
 import type { ModelInfo } from './modelCatalog';
 import { createFetchWithStreamingDefaults, normalizeBaseURL } from './openaiFetch';
+import { createProviderHttpError } from './providerErrors';
 
 export interface OpenAICompatibleProviderOptions {
   baseURL: string;
@@ -72,7 +73,12 @@ export class OpenAICompatibleProvider implements LLMProvider {
     const response = await this.fetchFn(`${this.baseURL}/models`, { headers });
     if (!response.ok) {
       const text = await response.text();
-      throw new Error(`Failed to list models: ${response.status} ${text}`);
+      throw createProviderHttpError({
+        message: `Failed to list models: ${response.status} ${text}`,
+        url: `${this.baseURL}/models`,
+        response,
+        responseBody: text,
+      });
     }
 
     const data = (await response.json()) as { data?: Array<{ id: string; owned_by?: string }> };

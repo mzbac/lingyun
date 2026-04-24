@@ -26,6 +26,7 @@ suite('Codex subscription model catalog', () => {
           visibility: 'list',
           priority: 2,
           context_window: 272000,
+          max_context_window: 1000000,
         },
         {
           slug: 'custom-codex-model',
@@ -44,7 +45,7 @@ suite('Codex subscription model catalog', () => {
         name: 'Custom Codex Model',
         vendor: 'chatgpt',
         family: 'gpt-codex',
-        maxInputTokens: 111000,
+        maxInputTokens: 105450,
         maxOutputTokens: 22000,
       },
       {
@@ -52,7 +53,7 @@ suite('Codex subscription model catalog', () => {
         name: 'GPT-5.4',
         vendor: 'chatgpt',
         family: 'gpt-5',
-        maxInputTokens: 272000,
+        maxInputTokens: 258400,
         maxOutputTokens: undefined,
       },
       {
@@ -60,9 +61,44 @@ suite('Codex subscription model catalog', () => {
         name: 'GPT-5.3 Codex',
         vendor: 'chatgpt',
         family: 'gpt-codex',
+        maxInputTokens: 258400,
       },
     ]);
     assert.ok(!models.some((model) => model.id === 'hidden-model'));
+  });
+
+  test('uses explicit max input tokens and max context fallback before bundled metadata', () => {
+    const models = normalizeCodexModelsResponse({
+      models: [
+        {
+          slug: 'explicit-input',
+          display_name: 'Explicit Input',
+          visibility: 'list',
+          priority: 1,
+          context_window: 400000,
+          effective_context_window_percent: 50,
+          max_input_tokens: 123456,
+        },
+        {
+          slug: 'max-context-only',
+          display_name: 'Max Context Only',
+          visibility: 'list',
+          priority: 2,
+          max_context_window: 400000,
+          effective_context_window_percent: 50,
+        },
+        {
+          slug: 'gpt-5.3-codex',
+          display_name: 'GPT-5.3 Codex',
+          visibility: 'list',
+          priority: 3,
+        },
+      ],
+    });
+
+    assert.strictEqual(models.find((model) => model.id === 'explicit-input')?.maxInputTokens, 123456);
+    assert.strictEqual(models.find((model) => model.id === 'max-context-only')?.maxInputTokens, 200000);
+    assert.strictEqual(models.find((model) => model.id === 'gpt-5.3-codex')?.maxInputTokens, 258400);
   });
 
   test('falls back to the built-in list when the payload is empty', () => {
@@ -79,5 +115,6 @@ suite('Codex subscription model catalog', () => {
         'gpt-5.1-codex-mini',
       ],
     );
+    assert.ok(models.every((model) => model.maxInputTokens === 258400));
   });
 });

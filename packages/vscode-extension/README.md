@@ -130,12 +130,12 @@ Per-model context limits live under `lingyun.modelLimits`. Keys can be either pl
 {
   "lingyun.modelLimits": {
     "gpt-4o": { "context": 128000, "output": 32000 },
-    "codexSubscription:gpt-5.4": { "context": 272000, "output": 32000 }
+    "codexSubscription:gpt-5.4": { "context": 258400, "output": 32000 }
   }
 }
 ```
 
-Provider-scoped entries take precedence, and plain model-id entries still work as the backward-compatible fallback.
+Provider-scoped entries take precedence, and plain model-id entries still work as the backward-compatible fallback. Codex Subscription model limits are normally discovered from the provider; the bundled fallback uses Codex's 95% effective window for the 272k-token default context.
 
 ### Memories
 

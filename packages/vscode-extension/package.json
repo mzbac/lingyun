@@ -294,7 +294,7 @@
         "lingyun.modelLimits": {
           "type": "object",
           "default": {},
-          "description": "Per-model token limits used for context tracking and auto-compaction. Keys may be either \"modelId\" or \"providerId:modelId\"; provider-scoped entries take precedence. Example: { \"gpt-4o\": { \"context\": 128000, \"output\": 32000 }, \"codexSubscription:gpt-5.4\": { \"context\": 272000, \"output\": 32000 } }",
+          "description": "Per-model token limits used for context tracking and auto-compaction. Keys may be either \"modelId\" or \"providerId:modelId\"; provider-scoped entries take precedence. Example: { \"gpt-4o\": { \"context\": 128000, \"output\": 32000 }, \"codexSubscription:gpt-5.4\": { \"context\": 258400, \"output\": 32000 } }",
           "additionalProperties": {
             "type": "object",
             "properties": {

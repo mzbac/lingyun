@@ -132,7 +132,24 @@ export async function runOnce(params: {
     return undefined;
   }
 
+  function getProviderAuthRetryLabel(error: unknown, context: { modelId: string; mode: 'plan' | 'build' }): string | undefined {
+    const statusCode = getStatusCode(error);
+    const msg = getErrorMessage(error);
+    const lower = msg.toLowerCase();
+    const legacyCopilotAuthError =
+      llm.id === 'copilot' &&
+      (statusCode === 401 ||
+        statusCode === 403 ||
+        lower.includes('unauthorized') ||
+        lower.includes('forbidden') ||
+        lower.includes('invalid token') ||
+        lower.includes('token expired') ||
+        lower.includes('expired token'));
+    return llm.getAuthRetryLabel?.(error, context) ?? (legacyCopilotAuthError ? 'GitHub Copilot' : undefined);
+  }
+
   try {
+    const callbacksSafe = callbacks;
     const modelMiddleware = [extractReasoningMiddleware({ tagName: 'think', startWithReasoning: false })];
     const wrapModel = (rawModel: unknown) =>
       wrapLanguageModel({
@@ -140,13 +157,54 @@ export async function runOnce(params: {
         middleware: modelMiddleware,
       });
 
-    let model: any = wrapModel(await llm.getModel(modelId));
+    const loadModel = async () => wrapModel(await llm.getModel(modelId));
+    const loadModelWithAuthRetry = async (): Promise<any> => {
+      try {
+        return await loadModel();
+      } catch (error) {
+        const context = { modelId, mode };
+        const authRetryLabel = getProviderAuthRetryLabel(error, context);
+        if (!authRetryLabel || signal?.aborted) {
+          throw error;
+        }
+
+        invokeCallbackSafely(
+          callbacksSafe?.onStatusChange,
+          { label: 'onStatusChange', onDebug: callbacksSafe?.onDebug },
+          {
+            type: 'retry',
+            attempt: 1,
+            nextRetryTime: Date.now(),
+            message: `Refreshing ${authRetryLabel} auth…`,
+          },
+        );
+
+        try {
+          llm.onRequestError?.(error, context);
+        } catch {
+          // ignore
+        }
+
+        try {
+          return await loadModel();
+        } catch (retryError) {
+          if (!signal?.aborted) {
+            try {
+              llm.onRequestError?.(retryError, context);
+            } catch {
+              // ignore
+            }
+          }
+          throw retryError;
+        }
+      }
+    };
+
+    let model: any = await loadModelWithAuthRetry();
 
     const systemParts = await params.composeSystemPrompt(modelId, { signal });
     const tools = params.filterTools(await registry.getTools());
     const toolNameToDefinition = new Map<string, ToolDefinition>();
-
-    const callbacksSafe = callbacks;
 
     const callParams = await plugins.trigger(
       'chat.params',
@@ -391,20 +449,8 @@ export async function runOnce(params: {
           streamReplayUpdates = streamAdapter.getReplayUpdates();
           break;
         } catch (e) {
-          const statusCode = getStatusCode(e);
-          const msg = getErrorMessage(e);
-          const lower = msg.toLowerCase();
           const context = { modelId, mode };
-          const legacyCopilotAuthError =
-            llm.id === 'copilot' &&
-            (statusCode === 401 ||
-              statusCode === 403 ||
-              lower.includes('unauthorized') ||
-              lower.includes('forbidden') ||
-              lower.includes('invalid token') ||
-              lower.includes('token expired') ||
-              lower.includes('expired token'));
-          const authRetryLabel = llm.getAuthRetryLabel?.(e, context) ?? (legacyCopilotAuthError ? 'GitHub Copilot' : undefined);
+          const authRetryLabel = getProviderAuthRetryLabel(e, context);
           const isAuthRetry = !!authRetryLabel;
 
           const retryable = isAuthRetry

@@ -134,4 +134,49 @@ suite('OpenAICompatibleProvider fetch', () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
+
+  test('attaches structured metadata to model-list HTTP errors', async () => {
+    let requestAuth = '';
+    const server = http.createServer((req, res) => {
+      requestAuth = String(req.headers.authorization || '');
+      res.writeHead(503, {
+        'Content-Type': 'application/json',
+        'x-request-id': 'req_models_1',
+      });
+      res.end(JSON.stringify({ error: 'model catalog unavailable' }));
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      server.close();
+      assert.fail('Expected server to bind to a TCP port');
+    }
+
+    const provider = new OpenAICompatibleProvider({
+      baseURL: `http://127.0.0.1:${address.port}`,
+      apiKey: 'test-api-key',
+    });
+
+    try {
+      let thrown: any;
+      try {
+        await provider.getModels();
+      } catch (error) {
+        thrown = error;
+      }
+
+      assert.ok(thrown, 'expected getModels to reject');
+      assert.strictEqual(requestAuth, 'Bearer test-api-key');
+      assert.strictEqual(thrown.status, 503);
+      assert.strictEqual(thrown.statusCode, 503);
+      assert.strictEqual(thrown.url, `http://127.0.0.1:${address.port}/models`);
+      assert.match(thrown.responseBody, /model catalog unavailable/);
+      assert.strictEqual(thrown.responseHeaders?.['x-request-id'], 'req_models_1');
+      assert.strictEqual(thrown.headers?.['x-request-id'], 'req_models_1');
+    } finally {
+      provider.dispose();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
 });

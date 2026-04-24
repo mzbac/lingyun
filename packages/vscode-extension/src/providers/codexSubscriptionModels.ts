@@ -2,14 +2,62 @@ import type { ModelInfo } from './modelCatalog';
 
 export const CODEX_SUBSCRIPTION_DEFAULT_MODEL_ID = 'gpt-5.3-codex';
 
+const CODEX_DEFAULT_CONTEXT_WINDOW = 272000;
+const CODEX_DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT = 95;
+const CODEX_DEFAULT_MAX_INPUT_TOKENS = Math.floor(
+  (CODEX_DEFAULT_CONTEXT_WINDOW * CODEX_DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT) / 100,
+);
+
 export const CODEX_SUBSCRIPTION_FALLBACK_MODELS: ModelInfo[] = [
-  { id: 'gpt-5.4', name: 'GPT-5.4', vendor: 'chatgpt', family: 'gpt-5' },
-  { id: 'gpt-5.3-codex', name: 'GPT-5.3 Codex', vendor: 'chatgpt', family: 'gpt-codex' },
-  { id: 'gpt-5.2', name: 'GPT-5.2', vendor: 'chatgpt', family: 'gpt-5' },
-  { id: 'gpt-5.2-codex', name: 'GPT-5.2 Codex', vendor: 'chatgpt', family: 'gpt-codex' },
-  { id: 'gpt-5.1-codex', name: 'GPT-5.1 Codex', vendor: 'chatgpt', family: 'gpt-codex' },
-  { id: 'gpt-5.1-codex-max', name: 'GPT-5.1 Codex Max', vendor: 'chatgpt', family: 'gpt-codex' },
-  { id: 'gpt-5.1-codex-mini', name: 'GPT-5.1 Codex Mini', vendor: 'chatgpt', family: 'gpt-codex' },
+  {
+    id: 'gpt-5.4',
+    name: 'GPT-5.4',
+    vendor: 'chatgpt',
+    family: 'gpt-5',
+    maxInputTokens: CODEX_DEFAULT_MAX_INPUT_TOKENS,
+  },
+  {
+    id: 'gpt-5.3-codex',
+    name: 'GPT-5.3 Codex',
+    vendor: 'chatgpt',
+    family: 'gpt-codex',
+    maxInputTokens: CODEX_DEFAULT_MAX_INPUT_TOKENS,
+  },
+  {
+    id: 'gpt-5.2',
+    name: 'GPT-5.2',
+    vendor: 'chatgpt',
+    family: 'gpt-5',
+    maxInputTokens: CODEX_DEFAULT_MAX_INPUT_TOKENS,
+  },
+  {
+    id: 'gpt-5.2-codex',
+    name: 'GPT-5.2 Codex',
+    vendor: 'chatgpt',
+    family: 'gpt-codex',
+    maxInputTokens: CODEX_DEFAULT_MAX_INPUT_TOKENS,
+  },
+  {
+    id: 'gpt-5.1-codex',
+    name: 'GPT-5.1 Codex',
+    vendor: 'chatgpt',
+    family: 'gpt-codex',
+    maxInputTokens: CODEX_DEFAULT_MAX_INPUT_TOKENS,
+  },
+  {
+    id: 'gpt-5.1-codex-max',
+    name: 'GPT-5.1 Codex Max',
+    vendor: 'chatgpt',
+    family: 'gpt-codex',
+    maxInputTokens: CODEX_DEFAULT_MAX_INPUT_TOKENS,
+  },
+  {
+    id: 'gpt-5.1-codex-mini',
+    name: 'GPT-5.1 Codex Mini',
+    vendor: 'chatgpt',
+    family: 'gpt-codex',
+    maxInputTokens: CODEX_DEFAULT_MAX_INPUT_TOKENS,
+  },
 ];
 
 const FALLBACK_MODEL_MAP = new Map(CODEX_SUBSCRIPTION_FALLBACK_MODELS.map((model) => [model.id, model]));
@@ -22,6 +70,10 @@ export type CodexModelRecord = {
   visibility?: string;
   priority?: number;
   context_window?: number;
+  max_context_window?: number;
+  maxContextWindow?: number;
+  effective_context_window_percent?: number;
+  effectiveContextWindowPercent?: number;
   max_input_tokens?: number;
   maxInputTokens?: number;
   max_output_tokens?: number;
@@ -45,6 +97,26 @@ function inferCodexModelFamily(modelId: string): string {
   const fallback = FALLBACK_MODEL_MAP.get(modelId);
   if (fallback?.family) return fallback.family;
   return modelId.includes('codex') ? 'gpt-codex' : 'gpt-5';
+}
+
+function effectiveContextWindow(value: number, percent: number | undefined): number {
+  if (typeof percent !== 'number' || !Number.isFinite(percent) || percent <= 0) {
+    return Math.floor(value);
+  }
+  return Math.floor((value * percent) / 100);
+}
+
+function resolveMaxInputTokens(record: CodexModelRecord, fallback?: ModelInfo): number | undefined {
+  const explicitMaxInput = positiveFiniteNumber(record.max_input_tokens, record.maxInputTokens);
+  if (explicitMaxInput !== undefined) return Math.floor(explicitMaxInput);
+
+  const contextWindow = positiveFiniteNumber(record.context_window, record.max_context_window, record.maxContextWindow);
+  if (contextWindow !== undefined) {
+    const percent = positiveFiniteNumber(record.effective_context_window_percent, record.effectiveContextWindowPercent);
+    return effectiveContextWindow(contextWindow, percent ?? CODEX_DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT);
+  }
+
+  return fallback?.maxInputTokens;
 }
 
 function sortCodexModels(models: Array<ModelInfo & { priority?: number }>): ModelInfo[] {
@@ -78,8 +150,9 @@ function normalizeCodexModelInfo(record: CodexModelRecord): (ModelInfo & { prior
     name,
     vendor: fallback?.vendor || 'chatgpt',
     family: fallback?.family || inferCodexModelFamily(id),
-    maxInputTokens: positiveFiniteNumber(record.context_window, record.max_input_tokens, record.maxInputTokens),
-    maxOutputTokens: positiveFiniteNumber(record.max_output_tokens, record.maxOutputTokens),
+    maxInputTokens: resolveMaxInputTokens(record, fallback),
+    maxOutputTokens:
+      positiveFiniteNumber(record.max_output_tokens, record.maxOutputTokens) ?? fallback?.maxOutputTokens,
     priority: typeof record.priority === 'number' && Number.isFinite(record.priority) ? record.priority : undefined,
   };
 }
@@ -105,6 +178,8 @@ export function normalizeCodexModelsResponse(payload: CodexModelsResponse): Mode
       ...model,
       vendor: model.vendor || fallback?.vendor || 'chatgpt',
       family: model.family || fallback?.family || inferCodexModelFamily(model.id),
+      maxInputTokens: model.maxInputTokens ?? fallback?.maxInputTokens,
+      maxOutputTokens: model.maxOutputTokens ?? fallback?.maxOutputTokens,
     });
     seen.add(model.id);
   }

@@ -1,6 +1,8 @@
 import * as http from 'node:http';
 import * as vscode from 'vscode';
 
+import { createProviderHttpError } from './providerErrors';
+
 const HTML_SUCCESS = `<!doctype html>
 <html>
   <head>
@@ -318,7 +320,8 @@ export class OpenAIAccountAuth {
   }
 
   private async exchangeCodeForTokens(code: string, redirectUri: string, verifier: string): Promise<TokenResponse> {
-    const response = await fetch(`${this.issuer}${this.tokenPath}`, {
+    const url = `${this.issuer}${this.tokenPath}`;
+    const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
@@ -331,14 +334,21 @@ export class OpenAIAccountAuth {
     });
 
     if (!response.ok) {
-      throw new Error(`Token exchange failed: HTTP ${response.status}`);
+      const text = await response.text().catch(() => '');
+      throw createProviderHttpError({
+        message: `Token exchange failed: HTTP ${response.status}`,
+        url,
+        response,
+        responseBody: text,
+      });
     }
 
     return (await response.json()) as TokenResponse;
   }
 
   private async refreshAccessToken(refreshToken: string): Promise<TokenResponse> {
-    const response = await fetch(`${this.issuer}${this.tokenPath}`, {
+    const url = `${this.issuer}${this.tokenPath}`;
+    const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
@@ -349,7 +359,13 @@ export class OpenAIAccountAuth {
     });
 
     if (!response.ok) {
-      throw new Error(`Token refresh failed: HTTP ${response.status}`);
+      const text = await response.text().catch(() => '');
+      throw createProviderHttpError({
+        message: `Token refresh failed: HTTP ${response.status}`,
+        url,
+        response,
+        responseBody: text,
+      });
     }
 
     return (await response.json()) as TokenResponse;

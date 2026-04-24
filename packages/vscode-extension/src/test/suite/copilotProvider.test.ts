@@ -198,4 +198,40 @@ suite('CopilotProvider', () => {
     assert.strictEqual((provider as any).copilotToken, null);
     assert.strictEqual((provider as any).tokenExpiry, 0);
   });
+
+  test('attaches structured metadata to Copilot token HTTP errors', async () => {
+    const provider = new CopilotProvider();
+    const originalFetch = globalThis.fetch;
+
+    (provider as any).getGitHubToken = async () => 'github-token';
+
+    try {
+      globalThis.fetch = async () =>
+        new Response(JSON.stringify({ message: 'Copilot entitlement expired' }), {
+          status: 403,
+          headers: {
+            'Content-Type': 'application/json',
+            'x-github-request-id': 'copilot_req_1',
+          },
+        });
+
+      let thrown: any;
+      try {
+        await (provider as any).getCopilotToken();
+      } catch (error) {
+        thrown = error;
+      }
+
+      assert.ok(thrown, 'expected getCopilotToken to reject');
+      assert.strictEqual(thrown.status, 403);
+      assert.strictEqual(thrown.statusCode, 403);
+      assert.strictEqual(thrown.url, 'https://api.github.com/copilot_internal/v2/token');
+      assert.match(thrown.responseBody, /Copilot entitlement expired/);
+      assert.strictEqual(thrown.responseHeaders?.['x-github-request-id'], 'copilot_req_1');
+      assert.strictEqual(provider.getAuthRetryLabel?.(thrown, { modelId: 'gpt-4o', mode: 'build' }), provider.name);
+    } finally {
+      globalThis.fetch = originalFetch;
+      provider.dispose();
+    }
+  });
 });

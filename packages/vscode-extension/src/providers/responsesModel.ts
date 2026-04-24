@@ -14,6 +14,7 @@ import type { FetchFunction } from '@ai-sdk/provider-utils';
 import { Buffer } from 'buffer';
 import { normalizeTemperatureForModel } from '@kooka/core';
 import { normalizeBaseURL } from './openaiFetch';
+import { createProviderHttpError, headersToRecord } from './providerErrors';
 
 type PendingToolCall = {
   toolCallId: string;
@@ -105,12 +106,6 @@ function mapFinishReason(rawReason: unknown, hasToolCall: boolean): LanguageMode
   if (raw === 'content_filter' || raw === 'content-filter') return { unified: 'content-filter', raw };
   if (raw === 'error') return { unified: 'error', raw };
   return { unified: 'other', raw };
-}
-
-function headersToRecord(headers: Headers): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const [key, value] of headers.entries()) out[key] = value;
-  return out;
 }
 
 function toBase64(data: Uint8Array): string {
@@ -923,17 +918,12 @@ function responsesHttpError(
   response: Response,
   responseBody: string,
 ): Error {
-  const error = new Error(`${errorLabel} request failed`);
-  const headers = headersToRecord(response.headers);
-  Object.assign(error, {
-    status: response.status,
-    statusCode: response.status,
+  return createProviderHttpError({
+    message: `${errorLabel} request failed`,
     url: endpoint,
+    response,
     responseBody,
-    responseHeaders: headers,
-    headers,
   });
-  return error;
 }
 
 export function createResponsesModel(options: ResponsesModelOptions): LanguageModelV3 {
