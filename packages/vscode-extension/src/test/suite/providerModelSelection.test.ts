@@ -81,6 +81,28 @@ suite('Provider model selection', () => {
       'gpt-5.3-codex',
     );
   });
+
+  test('falls back to the OpenAI-compatible default when the configured model is the copilot default', () => {
+    assert.strictEqual(
+      resolveModelIdForProvider({
+        providerId: 'openaiCompatible',
+        configuredModel: 'gpt-4o',
+        openaiCompatibleDefaultModelId: 'local-coder',
+      }),
+      'local-coder',
+    );
+  });
+
+  test('preserves an explicit OpenAI-compatible model selection', () => {
+    assert.strictEqual(
+      resolveModelIdForProvider({
+        providerId: 'openaiCompatible',
+        configuredModel: 'qwen3-coder',
+        openaiCompatibleDefaultModelId: 'local-coder',
+      }),
+      'qwen3-coder',
+    );
+  });
 });
 
 suite('Chat controller codex provider integration', () => {

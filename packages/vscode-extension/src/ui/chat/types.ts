@@ -66,6 +66,7 @@ export interface ChatMessage {
   timestamp: number;
   turnId?: string;
   stepId?: string;
+  memoryExcluded?: boolean;
   checkpoint?: {
     historyLength: number;
   };
@@ -109,6 +110,7 @@ export interface ChatMessage {
     diffUnavailableReason?: string;
     diffView?: ToolDiffView;
     path?: string;
+    memoryContextSource?: string;
     isProtected?: boolean;
     approvalReason?: string;
     isOutsideWorkspace?: boolean;

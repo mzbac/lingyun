@@ -122,14 +122,7 @@ export class CopilotProvider implements LLMProvider {
     });
   }
 
-  onRequestError(error: unknown, _context?: { modelId: string; mode: 'plan' | 'build' }): void {
-    // Ensure the next request uses a fresh client instance and re-evaluated headers.
-    this.provider = null;
-    this.cachedProviderToken = null;
-    this.cachedProviderEditorVersion = null;
-    this.cachedProviderPluginVersion = null;
-
-    // If the token was rejected, force-refresh it on the next call.
+  private isAuthError(error: unknown): boolean {
     const statusCode = (() => {
       const candidates = [
         (error as any)?.status,
@@ -151,13 +144,28 @@ export class CopilotProvider implements LLMProvider {
     })();
 
     const message = error instanceof Error ? error.message : String(error);
-    if (
+    return (
       statusCode === 401 ||
       statusCode === 403 ||
       /\b401\b/i.test(message) ||
       /\b403\b/i.test(message) ||
       /unauthori[sz]ed|forbidden|invalid token|expired/i.test(message)
-    ) {
+    );
+  }
+
+  getAuthRetryLabel(error: unknown, _context?: { modelId: string; mode: 'plan' | 'build' }): string | undefined {
+    return this.isAuthError(error) ? this.name : undefined;
+  }
+
+  onRequestError(error: unknown, _context?: { modelId: string; mode: 'plan' | 'build' }): void {
+    // Ensure the next request uses a fresh client instance and re-evaluated headers.
+    this.provider = null;
+    this.cachedProviderToken = null;
+    this.cachedProviderEditorVersion = null;
+    this.cachedProviderPluginVersion = null;
+
+    // If the token was rejected, force-refresh it on the next call.
+    if (this.isAuthError(error)) {
       this.copilotToken = null;
       this.tokenExpiry = 0;
     }

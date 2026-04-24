@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import type { ChatMessage, ChatSessionInfo } from '../../ui/chat/types';
-import { createBlankSessionSignals } from '../../core/sessionSignals';
+import { createBlankSessionSignals, isSessionMemoryDisabled, setSessionMemoryMode } from '../../core/sessionSignals';
 import { createStandaloneChatController } from './chatControllerHarness';
 
 function createPendingPlanMessage(overrides?: Partial<ChatMessage>): ChatMessage {
@@ -834,6 +834,36 @@ suite('Pending plan send', () => {
     const processingIndex = posted.findIndex(message => message?.type === 'processing' && message?.value === true);
     assert.ok(userMessageIndex >= 0);
     assert.ok(processingIndex > userMessageIndex);
+  });
+
+  test('handleUserMessage marks user turns memory-excluded while session memory is disabled', async () => {
+    const provider = createPendingPlanController();
+    installActiveSession(provider, []);
+    const posted: any[] = [];
+
+    provider.webviewApi.postMessage = (message: unknown) => {
+      posted.push(JSON.parse(JSON.stringify(message)));
+    };
+    provider.runnerInputApi.isPlanFirstEnabled = () => false;
+    provider.loopManager.onRunStart = () => {};
+    provider.loopManager.onRunEnd = () => {};
+    provider.queueManager.scheduleAutosendForSession = () => {};
+    provider.runnerCallbacksApi.createAgentCallbacks = () => ({}) as any;
+    provider.agent.run = async () => 'done';
+    setSessionMemoryMode(provider.signals, 'disabled', 'test disabled memory mode');
+
+    await provider.runnerInputApi.handleUserMessage('This turn should stay out of transcript memory.');
+
+    const userMessage = posted.find(message => message?.type === 'message' && message?.message?.role === 'user')?.message;
+    assert.ok(userMessage);
+    assert.strictEqual(userMessage.memoryExcluded, true);
+    assert.strictEqual(provider.messages.find(message => message.role === 'user')?.memoryExcluded, true);
+
+    await provider.runnerInputApi.handleUserMessage('Enable memory for this session again.');
+
+    const enableMessage = provider.messages.filter(message => message.role === 'user').at(-1);
+    assert.strictEqual(enableMessage?.memoryExcluded, true);
+    assert.strictEqual(isSessionMemoryDisabled(provider.signals), false);
   });
 
   test('handleUserMessage clears stale abort state before ordinary execution failures', async () => {

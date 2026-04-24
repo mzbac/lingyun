@@ -99,6 +99,12 @@ export function createRunCoordinatorHostForController(controller: ChatController
     get messages() {
       return controller.messages;
     },
+    get signals() {
+      return controller.signals;
+    },
+    set signals(value) {
+      controller.signals = value;
+    },
     get mode() {
       return controller.mode;
     },

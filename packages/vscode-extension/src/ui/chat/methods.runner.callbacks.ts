@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 
 import type { AgentCallbacks } from '../../core/types';
-import { recordAssistantOutcome } from '../../core/sessionSignals';
+import { deriveStructuredMemoriesFromText, hasExternalMemoryContext, recordAssistantOutcome, recordStructuredMemory } from '../../core/sessionSignals';
 import { getDebugSettings } from '../../core/debugSettings';
 import { appendErrorLog, appendLog } from '../../core/logger';
 import { bindChatControllerService } from './controllerService';
@@ -25,6 +25,21 @@ import { createChatRunnerCallbacksDepsForController } from './runner/callbackCon
  * compaction, and step snapshot behavior. This module wires them together.
  */
 type ChatRunnerCallbacksRuntime = ChatRunnerCallbacksDeps & ChatRunnerCallbacksService;
+
+function currentTurnHasExternalMemoryContextAttempt(messages: ChatMessage[], currentTurnId?: string): boolean {
+  const turnId = typeof currentTurnId === 'string' && currentTurnId.trim() ? currentTurnId.trim() : undefined;
+  return messages.some((message) => {
+    if (!message.toolCall?.memoryContextSource) return false;
+    if (!turnId) return true;
+    return message.turnId === turnId;
+  });
+}
+
+function currentTurnIsMemoryExcluded(messages: ChatMessage[], currentTurnId?: string): boolean {
+  const turnId = typeof currentTurnId === 'string' && currentTurnId.trim() ? currentTurnId.trim() : undefined;
+  if (!turnId) return false;
+  return messages.some((message) => message.memoryExcluded && (message.id === turnId || message.turnId === turnId));
+}
 
 export function createChatRunnerCallbacksService(controller: ChatRunnerCallbacksDeps): ChatRunnerCallbacksService {
   const runtime = controller as ChatRunnerCallbacksRuntime;
@@ -122,8 +137,22 @@ export function createChatRunnerCallbacksService(controller: ChatRunnerCallbacks
         if (!executionState.hasAssistantMessage() && response) {
           executionState.pushAssistant(response);
         }
-        if (this.mode === 'build' && response) {
+        if (
+          this.mode === 'build' &&
+          response &&
+          !hasExternalMemoryContext(this.signals) &&
+          !currentTurnHasExternalMemoryContextAttempt(this.messages, this.currentTurnId) &&
+          !currentTurnIsMemoryExcluded(this.messages, this.currentTurnId)
+        ) {
           recordAssistantOutcome(this.signals, response);
+          const turnId = typeof this.currentTurnId === 'string' && this.currentTurnId.trim() ? [this.currentTurnId.trim()] : undefined;
+          for (const candidate of deriveStructuredMemoriesFromText(response, {
+            source: 'assistant',
+            defaultScope: 'workspace',
+            sourceTurnIds: turnId,
+          })) {
+            recordStructuredMemory(this.signals, candidate);
+          }
         }
         if (this.currentTurnId) {
           this.postMessage({ type: 'turnStatus', turnId: this.currentTurnId, status: { type: 'done' } });

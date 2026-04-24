@@ -33,7 +33,10 @@ export function resolveModelIdForProvider(options: ResolveModelOptions): string 
   }
 
   if (providerId === 'openaiCompatible') {
-    return configuredModel || openaiCompatibleDefaultModelId || MODELS.GPT_4O;
+    if (!configuredModel || configuredModel === MODELS.GPT_4O) {
+      return openaiCompatibleDefaultModelId || MODELS.GPT_4O;
+    }
+    return configuredModel;
   }
 
   return configuredModel || MODELS.GPT_4O;

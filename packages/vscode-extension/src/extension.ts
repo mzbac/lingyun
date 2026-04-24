@@ -214,6 +214,7 @@ function createLLMProviderFromConfig(context: vscode.ExtensionContext): LLMProvi
       context,
       defaultModelId,
       timeoutMs,
+      outputChannel: extensionState?.outputChannel,
     });
   }
 

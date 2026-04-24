@@ -20,11 +20,11 @@ import { WorkspaceMemories } from '../../core/memories';
 import { SessionStore } from '../../core/sessionStore';
 import { ToolRegistry } from '../../core/registry';
 import type { LLMProvider } from '../../core/types';
-import { getMessageText, TOOL_ERROR_CODES } from '@kooka/core';
+import { createAssistantHistoryMessage, getMessageText, TOOL_ERROR_CODES } from '@kooka/core';
 import { COMPACTED_TOOL_PLACEHOLDER, COMPACTION_AUTO_CONTINUE_TEXT, createHistoryForModel } from '../../core/compaction';
 import { PluginManager } from '../../core/hooks/pluginManager';
 import { backgroundTerminalManager } from '../../core/terminal/backgroundTerminal';
-import { createBlankSessionSignals } from '../../core/sessionSignals';
+import { createBlankSessionSignals, recordConstraint, recordDecision, recordProcedure, recordStructuredMemory } from '../../core/sessionSignals';
 import { createCopilotResponsesModel } from '../../providers/copilotResponsesModel';
 import { bashHandler, bashTool } from '../../tools/builtin/bash';
 import { taskHandler, taskTool } from '../../tools/builtin/task';
@@ -56,6 +56,12 @@ function getPromptMessageText(content: unknown): string {
     .filter((part: any) => part?.type === 'text' && typeof part?.text === 'string')
     .map((part: any) => part.text)
     .join('');
+}
+
+function extractRecallBlockFromPrompt(prompt: string): string {
+  const recallStart = prompt.indexOf('<memory_recall_context>');
+  const recallEnd = prompt.indexOf('</memory_recall_context>');
+  return recallStart >= 0 && recallEnd > recallStart ? prompt.slice(recallStart, recallEnd) : '';
 }
 
 function usage(override?: UsageOverride): LanguageModelV3Usage {
@@ -2708,7 +2714,7 @@ suite('AgentLoop', () => {
     const prevAutoTokens = cfg.get<unknown>('memories.maxAutoRecallTokens');
     const prevMemoryRoot = process.env.LINGYUN_MEMORIES_DIR;
 
-    const storageRoot = vscode.Uri.joinPath(root, '.lingyun-agent-memory-storage');
+    const storageRoot = vscode.Uri.joinPath(root, '.lingyun-agent-memory-reference-storage');
     const memoriesDir = vscode.Uri.joinPath(storageRoot, 'memories');
     await vscode.workspace.fs.createDirectory(storageRoot);
 
@@ -2718,19 +2724,19 @@ suite('AgentLoop', () => {
       await cfg.update('memories.minRolloutIdleHours', 0, true);
       await cfg.update('memories.autoRecall', true, true);
       await cfg.update('memories.maxAutoRecallResults', 3, true);
-      await cfg.update('memories.maxAutoRecallTokens', 400, true);
+      await cfg.update('memories.maxAutoRecallTokens', 500, true);
 
       const now = Date.now();
       const signals = createBlankSessionSignals(now);
-      signals.userIntents = ['Improve memory recall'];
-      signals.assistantOutcomes = ['Inject memory recall in AgentLoop.withRun before main execution'];
-      signals.filesTouched = ['packages/vscode-extension/src/core/agent/index.ts'];
+      signals.userIntents = ['Remember where external pipeline context lives'];
+      signals.assistantOutcomes = ['Use external tracker pointers as current-truth entrypoints'];
       signals.toolsUsed = ['get_memory'];
+      recordDecision(signals, 'Pipeline bugs are tracked in Linear project INGEST.');
 
       await seedAgentPersistedSessions(storageRoot, [
         {
-          id: 'persisted-memory-session',
-          title: 'Prior memory design',
+          id: 'persisted-reference-memory-session',
+          title: 'Reference recall design',
           createdAt: now - 10_000,
           updatedAt: now - 10_000,
           signals,
@@ -2740,18 +2746,25 @@ suite('AgentLoop', () => {
           agentState: { history: [] },
           messages: [
             {
-              id: 'pm1',
+              id: 'rm1',
               role: 'user',
-              content: 'Where should auto recall be injected?',
+              content: 'Where do we track pipeline bugs?',
               timestamp: now - 10_000,
-              turnId: 'turn-a',
+              turnId: 'turn-reference',
             },
             {
-              id: 'pm2',
+              id: 'rm2',
               role: 'assistant',
-              content: 'Inject it in AgentLoop.withRun near maybeRunExplorePrepass before the main agent execution.',
+              content: 'Check Linear project INGEST for pipeline bugs.',
+              timestamp: now - 9_950,
+              turnId: 'turn-reference',
+            },
+            {
+              id: 'rm3',
+              role: 'assistant',
+              content: 'Use Linear project INGEST and open ticket PIPE-421 for the latest pipeline bug context.',
               timestamp: now - 9_900,
-              turnId: 'turn-a',
+              turnId: 'turn-reference',
             },
           ],
           runtime: { wasRunning: false, updatedAt: now - 9_900 },
@@ -2764,23 +2777,41 @@ suite('AgentLoop', () => {
       agent = new AgentLoop(mockLLM, writableContext, { model: 'mock-model' }, registry);
       mockLLM.setNextResponse({ kind: 'text', content: 'Ok' });
 
-      await agent.run('Remind me where auto recall should be injected.');
+      await agent.run('Where should I check for pipeline bugs in INGEST, including PIPE-421?');
 
       const prompt = JSON.stringify(mockLLM.lastPrompt ?? '');
-      assert.ok(prompt.includes('memory_recall_context'), 'prompt should include auto-recall injected context');
-      assert.ok(prompt.includes('AgentLoop.withRun'), 'prompt should include recalled transcript text');
-
-      const history = agent.getHistory();
-      const injected = history.find(
-        (msg) =>
-          msg.role === 'assistant' &&
-          msg.metadata?.synthetic &&
-          String((msg.metadata as any).transientContext) === 'memoryRecall',
+      const recallStart = prompt.indexOf('<memory_recall_context>');
+      const recallEnd = prompt.indexOf('</memory_recall_context>');
+      assert.ok(recallStart >= 0 && recallEnd > recallStart, 'prompt should include auto-recall injected context');
+      const recallBlock = prompt.slice(recallStart, recallEnd);
+      const pointerIndex = recallBlock.indexOf('pointer: Pipeline bugs are tracked in Linear project INGEST.');
+      const rawSupportIndex = recallBlock.indexOf('evidence: Use Linear project INGEST and open ticket PIPE-421 for the latest pipeline bug context.');
+      assert.ok(pointerIndex >= 0, 'reference durable recall should label the primary text as a pointer');
+      assert.ok(
+        recallBlock.includes(
+          'how_to_apply: Use this as a pointer to the relevant external context, then open the referenced system or document for current details.',
+        ),
+        'reference durable recall should preserve pointer-to-current-truth guidance even when it is synthesized',
       );
-      assert.strictEqual(
-        injected,
-        undefined,
-        'transient memory recall context should be injected into the prompt without persisting in history',
+      assert.ok(
+        rawSupportIndex > pointerIndex,
+        `reference durable recall should keep additive same-cluster raw support when it contributes a distinct external identifier\n${recallBlock}`,
+      );
+      assert.ok(
+        recallBlock.includes('evidence_title: Reference recall design'),
+        'reference durable recall should keep a compact title pointer for transcript-backed evidence',
+      );
+      assert.ok(
+        recallBlock.includes('Linear project INGEST') && recallBlock.includes('PIPE-421'),
+        'reference durable recall should preserve distinct external identifiers that improve current-truth navigation',
+      );
+      assert.ok(
+        !recallBlock.includes('fact: Pipeline bugs are tracked in Linear project INGEST.'),
+        'reference durable recall should avoid flattening pointers into ordinary facts',
+      );
+      assert.ok(
+        !recallBlock.includes('Structured memory candidates:'),
+        'auto-recall should not dump summary wrapper text when a summary-like record survives selection',
       );
     } finally {
       if (prevMemoryRoot === undefined) {
@@ -2798,6 +2829,2456 @@ suite('AgentLoop', () => {
       } catch {
         // ignore
       }
+    }
+  });
+
+  test('autoRecall - renders surviving summary records as navigational summaries instead of wrapper dumps', async () => {
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri;
+    assert.ok(root, 'Workspace folder must be available for agent memory tests');
+
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const prevEnabled = cfg.get<unknown>('features.memories');
+    const prevIdleHours = cfg.get<unknown>('memories.minRolloutIdleHours');
+    const prevAutoRecall = cfg.get<unknown>('memories.autoRecall');
+    const prevAutoResults = cfg.get<unknown>('memories.maxAutoRecallResults');
+    const prevAutoTokens = cfg.get<unknown>('memories.maxAutoRecallTokens');
+    const prevAutoMinScore = cfg.get<unknown>('memories.autoRecallMinScore');
+    const prevAutoMinScoreGap = cfg.get<unknown>('memories.autoRecallMinScoreGap');
+    const prevMemoryRoot = process.env.LINGYUN_MEMORIES_DIR;
+
+    const storageRoot = vscode.Uri.joinPath(root, '.lingyun-agent-memory-summary-render-storage');
+    const memoriesDir = vscode.Uri.joinPath(storageRoot, 'memories');
+    await vscode.workspace.fs.createDirectory(storageRoot);
+
+    try {
+      process.env.LINGYUN_MEMORIES_DIR = memoriesDir.fsPath;
+      await cfg.update('features.memories', true, true);
+      await cfg.update('memories.minRolloutIdleHours', 0, true);
+      await cfg.update('memories.autoRecall', true, true);
+      await cfg.update('memories.maxAutoRecallResults', 3, true);
+      await cfg.update('memories.maxAutoRecallTokens', 500, true);
+      await cfg.update('memories.autoRecallMinScore', 1, true);
+      await cfg.update('memories.autoRecallMinScoreGap', 0, true);
+
+      const now = Date.now();
+      const signals = createBlankSessionSignals(now);
+      signals.userIntents = [];
+      signals.assistantOutcomes = [];
+      signals.toolsUsed = ['edit'];
+      signals.filesTouched = ['packages/vscode-extension/src/core/memories/search.ts'];
+
+      await seedAgentPersistedSessions(storageRoot, [
+        {
+          id: 'persisted-summary-render-session',
+          title: 'Memory search refinement session',
+          createdAt: now - 10_000,
+          updatedAt: now - 10_000,
+          signals,
+          mode: 'build',
+          stepCounter: 0,
+          currentModel: 'mock-model',
+          agentState: { history: [] },
+          messages: [
+            {
+              id: 'sm1',
+              role: 'user',
+              content: 'What should we change in memory search?',
+              timestamp: now - 10_000,
+              turnId: 'turn-summary-render',
+            },
+              {
+                id: 'sm2',
+                role: 'assistant',
+                content: 'Wire summary suppression into filteredRawMatches in packages/vscode-extension/src/core/memories/search.ts.',
+                timestamp: now - 9_950,
+                turnId: 'turn-summary-render',
+              },
+
+          ],
+          runtime: { wasRunning: false, updatedAt: now - 9_950 },
+        },
+      ]);
+
+      const writableContext = createWritableMockExtensionContext(storageRoot);
+      const memoryManager = new WorkspaceMemories(writableContext);
+      await memoryManager.updateFromSessions(root);
+      agent = new AgentLoop(mockLLM, writableContext, { model: 'mock-model' }, registry);
+      mockLLM.setNextResponse({ kind: 'text', content: 'Ok' });
+
+      await agent.run('What file should I edit for the memory search change?');
+
+      const prompt = JSON.stringify(mockLLM.lastPrompt ?? '');
+      const recallStart = prompt.indexOf('<memory_recall_context>');
+      const recallEnd = prompt.indexOf('</memory_recall_context>');
+      const recallBlock = recallStart >= 0 && recallEnd > recallStart ? prompt.slice(recallStart, recallEnd) : '';
+      assert.ok(recallStart >= 0 && recallEnd > recallStart, `prompt should include auto-recall injected context\n${prompt}`);
+      assert.ok(
+        recallBlock.includes('summary: Memory search refinement session'),
+        'auto-recall should render surviving summary hits as compact navigational summaries',
+      );
+      assert.ok(
+        recallBlock.includes('summary_files: packages/vscode-extension/src/core/memories/search.ts'),
+        'auto-recall should preserve compact navigational file pointers for surviving summary hits',
+      );
+      assert.ok(
+        recallBlock.includes('summary_tools: edit'),
+        'auto-recall should preserve compact navigational tool pointers for surviving summary hits',
+      );
+      assert.ok(!recallBlock.includes('Structured memory candidates:'));
+      assert.ok(!recallBlock.includes('Session "Memory search refinement session" updated at'));
+    } finally {
+      if (prevMemoryRoot === undefined) {
+        delete process.env.LINGYUN_MEMORIES_DIR;
+      } else {
+        process.env.LINGYUN_MEMORIES_DIR = prevMemoryRoot;
+      }
+      await cfg.update('features.memories', prevEnabled as any, true);
+      await cfg.update('memories.minRolloutIdleHours', prevIdleHours as any, true);
+      await cfg.update('memories.autoRecall', prevAutoRecall as any, true);
+      await cfg.update('memories.maxAutoRecallResults', prevAutoResults as any, true);
+      await cfg.update('memories.maxAutoRecallTokens', prevAutoTokens as any, true);
+      await cfg.update('memories.autoRecallMinScore', prevAutoMinScore as any, true);
+      await cfg.update('memories.autoRecallMinScoreGap', prevAutoMinScoreGap as any, true);
+      try {
+        await vscode.workspace.fs.delete(storageRoot, { recursive: true, useTrash: false });
+      } catch {
+        // ignore
+      }
+    }
+  });
+
+  test('autoRecall - prefers durable guidance over redundant raw matches', async () => {
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri;
+    assert.ok(root, 'Workspace folder must be available for agent memory tests');
+
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const prevEnabled = cfg.get<unknown>('features.memories');
+    const prevIdleHours = cfg.get<unknown>('memories.minRolloutIdleHours');
+    const prevAutoRecall = cfg.get<unknown>('memories.autoRecall');
+    const prevAutoResults = cfg.get<unknown>('memories.maxAutoRecallResults');
+    const prevAutoTokens = cfg.get<unknown>('memories.maxAutoRecallTokens');
+    const prevMemoryRoot = process.env.LINGYUN_MEMORIES_DIR;
+
+    const storageRoot = vscode.Uri.joinPath(root, '.lingyun-agent-memory-durable-storage');
+    const memoriesDir = vscode.Uri.joinPath(storageRoot, 'memories');
+    await vscode.workspace.fs.createDirectory(storageRoot);
+
+    try {
+      process.env.LINGYUN_MEMORIES_DIR = memoriesDir.fsPath;
+      await cfg.update('features.memories', true, true);
+      await cfg.update('memories.minRolloutIdleHours', 0, true);
+      await cfg.update('memories.autoRecall', true, true);
+      await cfg.update('memories.maxAutoRecallResults', 3, true);
+      await cfg.update('memories.maxAutoRecallTokens', 500, true);
+
+      const now = Date.now();
+      const signals = createBlankSessionSignals(now);
+      signals.userIntents = ['Keep test policy recall durable-first'];
+      signals.assistantOutcomes = ['Prefer seeded ephemeral database guidance over the prior raw wording'];
+      signals.filesTouched = ['packages/vscode-extension/src/test/suite/agent.test.ts'];
+      signals.toolsUsed = ['maintain_memory'];
+      recordConstraint(signals, 'Integration tests must hit a real database, not mocks.');
+      recordDecision(signals, 'Keep durable memory recall selective and durable-first.');
+      recordProcedure(signals, 'When durable guidance exists, use it before raw transcript evidence.');
+
+      await seedAgentPersistedSessions(storageRoot, [
+        {
+          id: 'persisted-durable-memory-session',
+          title: 'Durable recall design',
+          createdAt: now - 10_000,
+          updatedAt: now - 10_000,
+          signals,
+          mode: 'build',
+          stepCounter: 0,
+          currentModel: 'mock-model',
+          agentState: { history: [] },
+          messages: [
+            {
+              id: 'dm1',
+              role: 'user',
+              content: 'What is our test policy?',
+              timestamp: now - 10_000,
+              turnId: 'turn-durable',
+            },
+            {
+              id: 'dm2',
+              role: 'assistant',
+              content: 'Integration tests must hit a real database, not mocks.',
+              timestamp: now - 9_900,
+              turnId: 'turn-durable',
+            },
+          ],
+          runtime: { wasRunning: false, updatedAt: now - 9_900 },
+        },
+      ]);
+
+      const writableContext = createWritableMockExtensionContext(storageRoot);
+      const memoryManager = new WorkspaceMemories(writableContext);
+      await memoryManager.updateFromSessions(root);
+
+      const initialSearch = await memoryManager.searchMemory({
+        query: 'real database not mocks',
+        workspaceFolder: root,
+        limit: 3,
+        neighborWindow: 0,
+      });
+      const durableHit = initialSearch.hits.find((hit) => hit.source === 'durable' && hit.durableEntry?.key);
+      assert.ok(durableHit, 'expected durable hit before maintenance');
+
+      const replacementText = [
+        'Prefer integration tests against a seeded ephemeral database instance.',
+        'Why: prior mocked tests hid migration failures until production.',
+        'How to apply: use a seeded ephemeral database path for integration and migration-sensitive tests.',
+      ].join('\n');
+      await memoryManager.maintainMemory({
+        action: 'supersede',
+        workspaceFolder: root,
+        recordId: durableHit!.record.id,
+        durableKey: durableHit!.durableEntry!.key,
+        replacementText,
+        note: 'Durable recall should favor maintained guidance.',
+      });
+
+      const updatedSearch = await memoryManager.searchMemory({
+        query: 'seeded ephemeral database instance integration tests',
+        workspaceFolder: root,
+        limit: 3,
+        neighborWindow: 0,
+      });
+      assert.ok(
+        updatedSearch.hits.some(
+          (hit) => hit.source === 'durable' && hit.durableEntry?.text.includes('seeded ephemeral database instance'),
+        ),
+        'expected durable hit after superseding the maintained memory',
+      );
+
+      agent = new AgentLoop(mockLLM, writableContext, { model: 'mock-model' }, registry);
+      mockLLM.setNextResponse({ kind: 'text', content: 'Ok' });
+
+      await agent.run('How should we apply the seeded ephemeral database instance policy for integration tests?');
+
+      const prompt = JSON.stringify(mockLLM.lastPrompt ?? '');
+      const recallStart = prompt.indexOf('<memory_recall_context>');
+      const recallEnd = prompt.indexOf('</memory_recall_context>');
+      assert.ok(recallStart >= 0 && recallEnd > recallStart, 'prompt should include auto-recall injected context');
+      const recallBlock = prompt.slice(recallStart, recallEnd);
+      assert.ok(
+        recallBlock.includes('Prefer curated durable guidance when present; treat raw memory as supporting evidence, not the primary instruction surface.'),
+        'recall block should describe durable-first recall behavior',
+      );
+      assert.ok(
+        recallBlock.includes('Prefer integration tests against a seeded ephemeral database instance.'),
+        'recall block should include the superseded durable guidance',
+      );
+      assert.ok(
+        recallBlock.includes(
+          'how_to_apply: use a seeded ephemeral database path for integration and migration-sensitive tests.',
+        ),
+        'application-seeking recall should preserve explicit durable application guidance when present',
+      );
+      assert.ok(
+        !recallBlock.includes('why: prior mocked tests hid migration failures until production.'),
+        'application-seeking recall should foreground how_to_apply instead of dumping lower-priority why text',
+      );
+      assert.ok(
+        !recallBlock.includes('Integration tests must hit a real database, not mocks.'),
+        `recall block should avoid redundant raw match text when durable guidance is available\n${recallBlock}`,
+      );
+      assert.ok(
+        !recallBlock.includes('source: user'),
+        'auto-recall should not surface bookkeeping source labels from durable metadata',
+      );
+    } finally {
+      if (prevMemoryRoot === undefined) {
+        delete process.env.LINGYUN_MEMORIES_DIR;
+      } else {
+        process.env.LINGYUN_MEMORIES_DIR = prevMemoryRoot;
+      }
+      await cfg.update('features.memories', prevEnabled as any, true);
+      await cfg.update('memories.minRolloutIdleHours', prevIdleHours as any, true);
+      await cfg.update('memories.autoRecall', prevAutoRecall as any, true);
+      await cfg.update('memories.maxAutoRecallResults', prevAutoResults as any, true);
+      await cfg.update('memories.maxAutoRecallTokens', prevAutoTokens as any, true);
+      try {
+        await vscode.workspace.fs.delete(storageRoot, { recursive: true, useTrash: false });
+      } catch {
+        // ignore
+      }
+    }
+  });
+
+  test('autoRecall - keeps one additive raw support hit alongside durable guidance when it adds distinct evidence', async () => {
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri;
+    assert.ok(root, 'Workspace folder must be available for agent memory tests');
+
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const prevEnabled = cfg.get<unknown>('features.memories');
+    const prevIdleHours = cfg.get<unknown>('memories.minRolloutIdleHours');
+    const prevAutoRecall = cfg.get<unknown>('memories.autoRecall');
+    const prevAutoResults = cfg.get<unknown>('memories.maxAutoRecallResults');
+    const prevAutoTokens = cfg.get<unknown>('memories.maxAutoRecallTokens');
+    const prevMemoryRoot = process.env.LINGYUN_MEMORIES_DIR;
+
+    const storageRoot = vscode.Uri.joinPath(root, '.lingyun-agent-memory-diverse-recall-storage');
+    const memoriesDir = vscode.Uri.joinPath(storageRoot, 'memories');
+    await vscode.workspace.fs.createDirectory(storageRoot);
+
+    try {
+      process.env.LINGYUN_MEMORIES_DIR = memoriesDir.fsPath;
+      await cfg.update('features.memories', true, true);
+      await cfg.update('memories.minRolloutIdleHours', 0, true);
+      await cfg.update('memories.autoRecall', true, true);
+      await cfg.update('memories.maxAutoRecallResults', 3, true);
+      await cfg.update('memories.maxAutoRecallTokens', 500, true);
+
+      const now = Date.now();
+      const signals = createBlankSessionSignals(now);
+      signals.userIntents = ['Remember where external pipeline context lives'];
+      signals.assistantOutcomes = ['Use external tracker pointers as current-truth entrypoints'];
+      signals.toolsUsed = ['get_memory'];
+      recordDecision(signals, 'Pipeline bugs are tracked in Linear project INGEST.');
+
+      await seedAgentPersistedSessions(storageRoot, [
+        {
+          id: 'persisted-diverse-recall-session',
+          title: 'Reference recall design',
+          createdAt: now - 10_000,
+          updatedAt: now - 10_000,
+          signals,
+          mode: 'build',
+          stepCounter: 0,
+          currentModel: 'mock-model',
+          agentState: { history: [] },
+          messages: [
+            {
+              id: 'dr1',
+              role: 'user',
+              content: 'Where do we track pipeline bugs?',
+              timestamp: now - 10_000,
+              turnId: 'turn-diverse-reference',
+            },
+            {
+              id: 'dr2',
+              role: 'assistant',
+              content: 'Check Linear project INGEST for pipeline bugs.',
+              timestamp: now - 9_950,
+              turnId: 'turn-diverse-reference',
+            },
+            {
+              id: 'dr3',
+              role: 'assistant',
+              content: 'Use Linear project INGEST and open ticket PIPE-421 for the latest pipeline bug context.',
+              timestamp: now - 9_900,
+              turnId: 'turn-diverse-reference',
+            },
+          ],
+          runtime: { wasRunning: false, updatedAt: now - 9_900 },
+        },
+      ]);
+
+      const writableContext = createWritableMockExtensionContext(storageRoot);
+      const memoryManager = new WorkspaceMemories(writableContext);
+      await memoryManager.updateFromSessions(root);
+      agent = new AgentLoop(mockLLM, writableContext, { model: 'mock-model' }, registry);
+      mockLLM.setNextResponse({ kind: 'text', content: 'Ok' });
+
+      await agent.run('Where should I check for pipeline bugs in INGEST, including PIPE-421?');
+
+      const prompt = JSON.stringify(mockLLM.lastPrompt ?? '');
+      const recallStart = prompt.indexOf('<memory_recall_context>');
+      const recallEnd = prompt.indexOf('</memory_recall_context>');
+      assert.ok(recallStart >= 0 && recallEnd > recallStart, 'prompt should include auto-recall injected context');
+      const recallBlock = prompt.slice(recallStart, recallEnd);
+      const pointerIndex = recallBlock.indexOf('pointer: Pipeline bugs are tracked in Linear project INGEST.');
+      const additiveEvidenceIndex = recallBlock.indexOf(
+        'evidence: Use Linear project INGEST and open ticket PIPE-421 for the latest pipeline bug context.',
+      );
+      assert.ok(pointerIndex >= 0, 'durable pointer guidance should still be recalled first');
+      assert.ok(additiveEvidenceIndex > pointerIndex, 'auto-recall should keep one additive raw support hit after durable guidance');
+      assert.ok(
+        recallBlock.includes('evidence_title: Reference recall design'),
+        'auto-recall should preserve compact evidence titles for additive raw support',
+      );
+    } finally {
+      if (prevMemoryRoot === undefined) {
+        delete process.env.LINGYUN_MEMORIES_DIR;
+      } else {
+        process.env.LINGYUN_MEMORIES_DIR = prevMemoryRoot;
+      }
+      await cfg.update('features.memories', prevEnabled as any, true);
+      await cfg.update('memories.minRolloutIdleHours', prevIdleHours as any, true);
+      await cfg.update('memories.autoRecall', prevAutoRecall as any, true);
+      await cfg.update('memories.maxAutoRecallResults', prevAutoResults as any, true);
+      await cfg.update('memories.maxAutoRecallTokens', prevAutoTokens as any, true);
+      try {
+        await vscode.workspace.fs.delete(storageRoot, { recursive: true, useTrash: false });
+      } catch {
+        // ignore
+      }
+    }
+  });
+
+  test('autoRecall - suppresses redundant durable hits that restate the same guidance', async () => {
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri;
+    assert.ok(root, 'Workspace folder must be available for agent memory tests');
+
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const prevEnabled = cfg.get<unknown>('features.memories');
+    const prevIdleHours = cfg.get<unknown>('memories.minRolloutIdleHours');
+    const prevAutoRecall = cfg.get<unknown>('memories.autoRecall');
+    const prevAutoResults = cfg.get<unknown>('memories.maxAutoRecallResults');
+    const prevAutoTokens = cfg.get<unknown>('memories.maxAutoRecallTokens');
+    const prevMemoryRoot = process.env.LINGYUN_MEMORIES_DIR;
+
+    const storageRoot = vscode.Uri.joinPath(root, '.lingyun-agent-memory-durable-dedup-storage');
+    const memoriesDir = vscode.Uri.joinPath(storageRoot, 'memories');
+    await vscode.workspace.fs.createDirectory(storageRoot);
+
+    try {
+      process.env.LINGYUN_MEMORIES_DIR = memoriesDir.fsPath;
+      await cfg.update('features.memories', true, true);
+      await cfg.update('memories.minRolloutIdleHours', 0, true);
+      await cfg.update('memories.autoRecall', true, true);
+      await cfg.update('memories.maxAutoRecallResults', 3, true);
+      await cfg.update('memories.maxAutoRecallTokens', 500, true);
+
+      const now = Date.now();
+      const primarySignals = createBlankSessionSignals(now);
+      recordConstraint(primarySignals, 'Integration tests must hit a real database, not mocks.');
+      const duplicateSignals = createBlankSessionSignals(now - 2_000);
+      recordStructuredMemory(duplicateSignals, {
+        kind: 'preference',
+        scope: 'workspace',
+        source: 'user',
+        confidence: 0.91,
+        text: 'Prefer integration tests against a real database instead of mocks.',
+      });
+
+      await seedAgentPersistedSessions(storageRoot, [
+        {
+          id: 'persisted-durable-dedup-primary',
+          title: 'Primary test policy note',
+          createdAt: now - 10_000,
+          updatedAt: now - 10_000,
+          signals: primarySignals,
+          mode: 'build',
+          stepCounter: 0,
+          currentModel: 'mock-model',
+          agentState: { history: [] },
+          messages: [
+            {
+              id: 'dd1',
+              role: 'assistant',
+              content: 'Integration tests must hit a real database, not mocks.',
+              timestamp: now - 9_900,
+              turnId: 'turn-durable-dedup-primary',
+            },
+          ],
+          runtime: { wasRunning: false, updatedAt: now - 9_900 },
+        },
+        {
+          id: 'persisted-durable-dedup-duplicate',
+          title: 'Duplicate test policy note',
+          createdAt: now - 8_000,
+          updatedAt: now - 8_000,
+          signals: duplicateSignals,
+          mode: 'build',
+          stepCounter: 0,
+          currentModel: 'mock-model',
+          agentState: { history: [] },
+          messages: [
+            {
+              id: 'dd2',
+              role: 'assistant',
+              content: 'Prefer integration tests against a real database instead of mocks.',
+              timestamp: now - 7_900,
+              turnId: 'turn-durable-dedup-duplicate',
+            },
+          ],
+          runtime: { wasRunning: false, updatedAt: now - 7_900 },
+        },
+      ]);
+
+      const writableContext = createWritableMockExtensionContext(storageRoot);
+      const memoryManager = new WorkspaceMemories(writableContext);
+      await memoryManager.updateFromSessions(root);
+      agent = new AgentLoop(mockLLM, writableContext, { model: 'mock-model' }, registry);
+      mockLLM.setNextResponse({ kind: 'text', content: 'Ok' });
+
+      await agent.run('What is our real database test policy?');
+
+      const prompt = JSON.stringify(mockLLM.lastPrompt ?? '');
+      const recallStart = prompt.indexOf('<memory_recall_context>');
+      const recallEnd = prompt.indexOf('</memory_recall_context>');
+      assert.ok(recallStart >= 0 && recallEnd > recallStart, 'prompt should include auto-recall injected context');
+      const recallBlock = prompt.slice(recallStart, recallEnd);
+      const canonicalCount = (recallBlock.match(/real database/gi) || []).length;
+      assert.ok(canonicalCount >= 1, 'expected at least one durable hit covering the real database policy');
+      assert.ok(
+        !recallBlock.includes('Prefer integration tests against a real database instead of mocks.'),
+        `auto-recall should suppress redundant durable restatements of the same policy\n${recallBlock}`,
+      );
+    } finally {
+      if (prevMemoryRoot === undefined) {
+        delete process.env.LINGYUN_MEMORIES_DIR;
+      } else {
+        process.env.LINGYUN_MEMORIES_DIR = prevMemoryRoot;
+      }
+      await cfg.update('features.memories', prevEnabled as any, true);
+      await cfg.update('memories.minRolloutIdleHours', prevIdleHours as any, true);
+      await cfg.update('memories.autoRecall', prevAutoRecall as any, true);
+      await cfg.update('memories.maxAutoRecallResults', prevAutoResults as any, true);
+      await cfg.update('memories.maxAutoRecallTokens', prevAutoTokens as any, true);
+      try {
+        await vscode.workspace.fs.delete(storageRoot, { recursive: true, useTrash: false });
+      } catch {
+        // ignore
+      }
+    }
+  });
+
+  test('autoRecall - keeps additive durable hits when a later same-family memory adds query-relevant rationale or application guidance', async () => {
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const prevEnabled = cfg.get<unknown>('features.memories');
+    const prevAutoRecall = cfg.get<unknown>('memories.autoRecall');
+    const prevAutoResults = cfg.get<unknown>('memories.maxAutoRecallResults');
+    const prevAutoTokens = cfg.get<unknown>('memories.maxAutoRecallTokens');
+
+    const originalSearchMemory = WorkspaceMemories.prototype.searchMemory;
+
+    try {
+      await cfg.update('features.memories', true, true);
+      await cfg.update('memories.autoRecall', true, true);
+      await cfg.update('memories.maxAutoRecallResults', 3, true);
+      await cfg.update('memories.maxAutoRecallTokens', 500, true);
+
+      const now = Date.now();
+      const makeRecord = (id: string, sessionId: string, text: string, memoryKey: string) => ({
+        id,
+        workspaceId: 'test-workspace',
+        sessionId,
+        kind: 'semantic' as const,
+        title: 'Testing policy',
+        text,
+        sourceUpdatedAt: now - 10_000,
+        generatedAt: now - 10_000,
+        filesTouched: [],
+        toolsUsed: [],
+        index: 0,
+        scope: 'workspace' as const,
+        confidence: 0.9,
+        evidenceCount: 2,
+        lastConfirmedAt: now - 10_000,
+        staleness: 'fresh' as const,
+        signalKind: 'constraint' as const,
+        memoryKey,
+      });
+      const makeEntry = (sessionId: string, text: string, lastConfirmedAt: number) => ({
+        key: 'feedback:test-policy',
+        text,
+        category: 'feedback' as const,
+        scope: 'workspace' as const,
+        confidence: 0.9,
+        evidenceCount: 2,
+        freshness: 'fresh' as const,
+        lastConfirmedAt,
+        sessionIds: [sessionId],
+        titles: ['Testing policy'],
+        rolloutFiles: [],
+        filesTouched: [],
+        toolsUsed: [],
+        sources: ['user'],
+      });
+
+      WorkspaceMemories.prototype.searchMemory = async function (params) {
+        return {
+          query: params.query,
+          workspaceId: 'test-workspace',
+          hits: [
+            {
+              record: makeRecord(
+                'durable-additive-base-record',
+                'durable-additive-base-session',
+                'Integration tests must hit a real database, not mocks.',
+                'feedback:test-policy',
+              ),
+              source: 'durable' as const,
+              durableEntry: makeEntry(
+                'durable-additive-base-session',
+                'Integration tests must hit a real database, not mocks.',
+                now - 1_000,
+              ),
+              score: 24,
+              reason: 'match' as const,
+              matchedTerms: ['real', 'database', 'policy'],
+            },
+            {
+              record: makeRecord(
+                'durable-additive-richer-record',
+                'durable-additive-richer-session',
+                'Integration tests must hit a real database, not mocks. How to apply: use a seeded ephemeral database path for migration-sensitive tests.',
+                'feedback:test-policy-richer',
+              ),
+              source: 'durable' as const,
+              durableEntry: makeEntry(
+                'durable-additive-richer-session',
+                'Integration tests must hit a real database, not mocks.\nWhy: prior mocked tests hid migration failures until production.\nHow to apply: use a seeded ephemeral database path for migration-sensitive tests.',
+                now - 5_000,
+              ),
+              score: 23.7,
+              reason: 'match' as const,
+              matchedTerms: ['apply', 'migration-sensitive', 'database'],
+            },
+          ],
+          totalTokens: 0,
+          truncated: false,
+        };
+      };
+
+      const readRecallBlock = (): string => {
+        const prompt = JSON.stringify(mockLLM.lastPrompt ?? '');
+        const recallStart = prompt.indexOf('<memory_recall_context>');
+        const recallEnd = prompt.indexOf('</memory_recall_context>');
+        assert.ok(recallStart >= 0 && recallEnd > recallStart, 'prompt should include auto-recall injected context');
+        return prompt.slice(recallStart, recallEnd);
+      };
+
+      mockLLM.setNextResponse({ kind: 'text', content: 'Ok' });
+      await agent.run('What is our real database test policy?');
+      const compactRecallBlock = readRecallBlock();
+      const compactMemorySections = compactRecallBlock.match(/## Memory \d+ \[durable:feedback\]/g) || [];
+      assert.strictEqual(
+        compactMemorySections.length,
+        1,
+        `generic policy queries should stay compact even when a richer overlapping durable memory exists\n${compactRecallBlock}`,
+      );
+      assert.ok(
+        !compactRecallBlock.includes('how_to_apply: use a seeded ephemeral database path for migration-sensitive tests.'),
+        'generic policy queries should not surface additive how-to-apply guidance unless the query asks for application details',
+      );
+
+      mockLLM.setNextResponse({ kind: 'text', content: 'Ok' });
+      await agent.run('How should we apply the real database policy for migration-sensitive integration tests?');
+      const recallBlock = readRecallBlock();
+      assert.ok(
+        recallBlock.includes('how_to_apply: use a seeded ephemeral database path for migration-sensitive tests.'),
+        'auto-recall should keep a later same-family durable hit when it adds query-relevant application guidance',
+      );
+      const memorySections = recallBlock.match(/## Memory \d+ \[durable:feedback\]/g) || [];
+      assert.ok(
+        memorySections.length >= 2,
+        `auto-recall should allow a later same-family durable hit when its additional guidance is query-relevant\n${recallBlock}`,
+      );
+    } finally {
+      WorkspaceMemories.prototype.searchMemory = originalSearchMemory;
+      await cfg.update('features.memories', prevEnabled as any, true);
+      await cfg.update('memories.autoRecall', prevAutoRecall as any, true);
+      await cfg.update('memories.maxAutoRecallResults', prevAutoResults as any, true);
+      await cfg.update('memories.maxAutoRecallTokens', prevAutoTokens as any, true);
+    }
+  });
+
+  test('autoRecall - suppresses active-tool usage docs while preserving active-tool failure shields', async () => {
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const prevEnabled = cfg.get<unknown>('features.memories');
+    const prevAutoRecall = cfg.get<unknown>('memories.autoRecall');
+    const prevAutoResults = cfg.get<unknown>('memories.maxAutoRecallResults');
+    const prevAutoTokens = cfg.get<unknown>('memories.maxAutoRecallTokens');
+    const prevAutoMinScoreGap = cfg.get<unknown>('memories.autoRecallMinScoreGap');
+
+    const originalSearchMemory = WorkspaceMemories.prototype.searchMemory;
+
+    try {
+      await cfg.update('features.memories', true, true);
+      await cfg.update('memories.autoRecall', true, true);
+      await cfg.update('memories.maxAutoRecallResults', 2, true);
+      await cfg.update('memories.maxAutoRecallTokens', 500, true);
+      await cfg.update('memories.autoRecallMinScoreGap', 0, true);
+
+      mockLLM.setNextResponse({
+        kind: 'tool-call',
+        toolCallId: 'call_recent_read',
+        toolName: 'read',
+        input: { filePath: 'README.md' },
+      });
+      mockLLM.queueResponse({ kind: 'text', content: 'Read complete' });
+      await agent.run('Read the README');
+
+      const now = Date.now();
+      const makeRecord = (params: {
+        id: string;
+        sessionId: string;
+        title: string;
+        text: string;
+        memoryKey: string;
+        signalKind: 'procedure' | 'failed_attempt';
+      }) => ({
+        id: params.id,
+        workspaceId: 'test-workspace',
+        sessionId: params.sessionId,
+        kind: 'procedural' as const,
+        title: params.title,
+        text: params.text,
+        sourceUpdatedAt: now - 10_000,
+        generatedAt: now - 10_000,
+        filesTouched: [],
+        toolsUsed: ['read'],
+        index: 0,
+        scope: 'workspace' as const,
+        confidence: 0.92,
+        evidenceCount: 2,
+        lastConfirmedAt: now - 10_000,
+        staleness: 'fresh' as const,
+        signalKind: params.signalKind,
+        memoryKey: params.memoryKey,
+      });
+      const makeEntry = (params: {
+        key: string;
+        text: string;
+        category: 'procedure' | 'failure_shield';
+        sessionId: string;
+      }) => ({
+        key: params.key,
+        text: params.text,
+        category: params.category,
+        scope: 'workspace' as const,
+        confidence: 0.92,
+        evidenceCount: 2,
+        freshness: 'fresh' as const,
+        lastConfirmedAt: now - 10_000,
+        sessionIds: [params.sessionId],
+        titles: ['Read tool memory'],
+        rolloutFiles: [],
+        filesTouched: [],
+        toolsUsed: ['read'],
+        sources: ['assistant'],
+      });
+      const usageRecord = makeRecord({
+        id: 'active-tool-usage-doc-record',
+        sessionId: 'active-tool-usage-doc-session',
+        title: 'Read tool usage reference',
+        text: 'How to use read: pass filePath and optional offset/limit for large files.',
+        memoryKey: 'procedure:read-usage-doc',
+        signalKind: 'procedure',
+      });
+      const usageEntry = makeEntry({
+        key: 'procedure:read-usage-doc',
+        text: 'How to use read: pass filePath and optional offset/limit for large files.',
+        category: 'procedure',
+        sessionId: 'active-tool-usage-doc-session',
+      });
+      const shieldRecord = makeRecord({
+        id: 'active-tool-failure-shield-record',
+        sessionId: 'active-tool-failure-shield-session',
+        title: 'Read tool large-file gotcha',
+        text: 'Warning: read fails on large files unless offset and limit are provided.',
+        memoryKey: 'failure:read-large-file-offset-limit',
+        signalKind: 'failed_attempt',
+      });
+      const shieldEntry = makeEntry({
+        key: 'failure:read-large-file-offset-limit',
+        text: 'Warning: read fails on large files unless offset and limit are provided. How to apply: when a file is large, call read with offset and limit instead of reading the whole file.',
+        category: 'failure_shield',
+        sessionId: 'active-tool-failure-shield-session',
+      });
+
+      WorkspaceMemories.prototype.searchMemory = async function (params) {
+        return {
+          query: params.query,
+          workspaceId: 'test-workspace',
+          hits: [
+            {
+              record: usageRecord,
+              source: 'durable' as const,
+              durableEntry: usageEntry,
+              score: 24,
+              reason: 'match' as const,
+              matchedTerms: ['read', 'use', 'parameters'],
+            },
+            {
+              record: shieldRecord,
+              source: 'durable' as const,
+              durableEntry: shieldEntry,
+              score: 23,
+              reason: 'match' as const,
+              matchedTerms: ['read', 'large', 'files'],
+            },
+          ],
+          totalTokens: 0,
+          truncated: false,
+        };
+      };
+
+      mockLLM.setNextResponse({ kind: 'text', content: 'Ok' });
+      await agent.continue('How do I use read on large files?');
+
+      const prompt = JSON.stringify(mockLLM.lastPrompt ?? '');
+      const recallBlock = extractRecallBlockFromPrompt(prompt);
+      assert.ok(recallBlock, 'prompt should still include the active-tool warning memory');
+      assert.ok(
+        recallBlock.includes('Warning: read fails on large files unless offset and limit are provided.'),
+        `active-tool failure shields should still surface because active use is when gotchas matter\n${recallBlock}`,
+      );
+      assert.ok(
+        !recallBlock.includes('How to use read: pass filePath and optional offset/limit for large files.'),
+        `generic usage docs for a recently used tool should be suppressed so recall budget is spent on fresh/gotcha context\n${recallBlock}`,
+      );
+    } finally {
+      WorkspaceMemories.prototype.searchMemory = originalSearchMemory;
+      await cfg.update('features.memories', prevEnabled as any, true);
+      await cfg.update('memories.autoRecall', prevAutoRecall as any, true);
+      await cfg.update('memories.maxAutoRecallResults', prevAutoResults as any, true);
+      await cfg.update('memories.maxAutoRecallTokens', prevAutoTokens as any, true);
+      await cfg.update('memories.autoRecallMinScoreGap', prevAutoMinScoreGap as any, true);
+    }
+  });
+
+  test('autoRecall - renders last-confirmed age metadata so drift-prone recalled facts can be judged', async () => {
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const prevEnabled = cfg.get<unknown>('features.memories');
+    const prevAutoRecall = cfg.get<unknown>('memories.autoRecall');
+    const prevAutoResults = cfg.get<unknown>('memories.maxAutoRecallResults');
+    const prevAutoTokens = cfg.get<unknown>('memories.maxAutoRecallTokens');
+
+    const originalSearchMemory = WorkspaceMemories.prototype.searchMemory;
+
+    try {
+      await cfg.update('features.memories', true, true);
+      await cfg.update('memories.autoRecall', true, true);
+      await cfg.update('memories.maxAutoRecallResults', 2, true);
+      await cfg.update('memories.maxAutoRecallTokens', 500, true);
+
+      const threeDaysMs = 3 * 24 * 60 * 60 * 1000;
+      const now = Date.now();
+      const lastConfirmedAt = now - threeDaysMs;
+      const agingLastConfirmedAt = now - 25 * 24 * 60 * 60 * 1000 - 120_000;
+      const record = {
+        id: 'freshness-metadata-record',
+        workspaceId: 'test-workspace',
+        sessionId: 'freshness-metadata-session',
+        kind: 'semantic' as const,
+        title: 'Deploy runbook pointer',
+        text: 'Use the deployment runbook before touching production release gates.',
+        sourceUpdatedAt: lastConfirmedAt,
+        generatedAt: lastConfirmedAt,
+        filesTouched: ['docs/deploy.md'],
+        toolsUsed: [],
+        index: 0,
+        scope: 'workspace' as const,
+        confidence: 0.9,
+        evidenceCount: 2,
+        lastConfirmedAt,
+        staleness: 'fresh' as const,
+        signalKind: 'decision' as const,
+        memoryKey: 'procedure:deploy-runbook-freshness',
+      };
+      const entry = {
+        key: 'procedure:deploy-runbook-freshness',
+        text: 'Use the deployment runbook before touching production release gates.',
+        category: 'procedure' as const,
+        scope: 'workspace' as const,
+        confidence: 0.9,
+        evidenceCount: 2,
+        freshness: 'fresh' as const,
+        lastConfirmedAt,
+        sessionIds: ['freshness-metadata-session'],
+        titles: ['Deploy runbook pointer'],
+        rolloutFiles: [],
+        filesTouched: ['docs/deploy.md'],
+        toolsUsed: [],
+        sources: ['assistant'],
+      };
+      const agingRecord = {
+        ...record,
+        id: 'aging-freshness-metadata-record',
+        sessionId: 'aging-freshness-metadata-session',
+        text: 'The canary release gate currently points at ROLL-42.',
+        sourceUpdatedAt: agingLastConfirmedAt,
+        generatedAt: agingLastConfirmedAt,
+        lastConfirmedAt: agingLastConfirmedAt,
+        staleness: 'aging' as const,
+        memoryKey: 'project:canary-release-gate',
+      };
+      const agingEntry = {
+        ...entry,
+        key: 'project:canary-release-gate',
+        text: 'The canary release gate currently points at ROLL-42.',
+        category: 'project' as const,
+        freshness: 'aging' as const,
+        lastConfirmedAt: agingLastConfirmedAt,
+        sessionIds: ['aging-freshness-metadata-session'],
+        titles: ['Canary release gate'],
+      };
+
+      WorkspaceMemories.prototype.searchMemory = async function (params) {
+        return {
+          query: params.query,
+          workspaceId: 'test-workspace',
+          hits: [
+            {
+              record,
+              source: 'durable' as const,
+              durableEntry: entry,
+              score: 24,
+              reason: 'match' as const,
+              matchedTerms: ['deployment', 'runbook', 'release'],
+            },
+            {
+              record: agingRecord,
+              source: 'durable' as const,
+              durableEntry: agingEntry,
+              score: 23,
+              reason: 'match' as const,
+              matchedTerms: ['canary', 'release', 'gate'],
+            },
+          ],
+          totalTokens: 0,
+          truncated: false,
+        };
+      };
+
+      mockLLM.setNextResponse({ kind: 'text', content: 'Ok' });
+      await agent.run('What deployment runbook should I use before touching release gates?');
+
+      const prompt = JSON.stringify(mockLLM.lastPrompt ?? '');
+      const recallBlock = extractRecallBlockFromPrompt(prompt).replace(/\\"/g, '"');
+      assert.ok(recallBlock, 'prompt should include auto-recall injected context');
+      assert.ok(
+        recallBlock.includes('## Before recommending from recalled memory'),
+        `auto-recall should include action-oriented verification guidance before memory content\n${recallBlock}`,
+      );
+      assert.ok(
+        recallBlock.indexOf('## Before recommending from recalled memory') < recallBlock.indexOf('## Memory 1 [durable:procedure]'),
+        `verification guidance should appear before recalled memories\n${recallBlock}`,
+      );
+      assert.ok(
+        recallBlock.includes('If a recalled memory names a file path, check that the file still exists before recommending or editing it.'),
+        `auto-recall should tell the model to verify file-path claims from memory\n${recallBlock}`,
+      );
+      assert.ok(
+        recallBlock.includes('If current evidence contradicts recalled memory, trust the current evidence and use maintain_memory to confirm, invalidate, or supersede the stale memory.'),
+        `auto-recall should tell the model how to handle contradicted memory\n${recallBlock}`,
+      );
+      assert.ok(
+        recallBlock.includes(`last_confirmed: ${new Date(lastConfirmedAt).toISOString()} age_days=3 age_label="3 days old"`),
+        `auto-recall should expose exact last-confirmed time plus human-readable age for drift-risk judgment\n${recallBlock}`,
+      );
+      assert.ok(
+        recallBlock.indexOf('last_confirmed:') < recallBlock.indexOf('fact: Use the deployment runbook before touching production release gates.'),
+        `freshness metadata should appear before recalled content so the model sees provenance first\n${recallBlock}`,
+      );
+      assert.ok(
+        recallBlock.includes(`last_confirmed: ${new Date(agingLastConfirmedAt).toISOString()} age_days=25 age_label="25 days old"`),
+        `aging auto-recall should expose human-readable age metadata\n${recallBlock}`,
+      );
+      assert.ok(
+        recallBlock.includes('verification_caveat: memory is 25 days old and marked aging; verify against current workspace/source before relying on it.'),
+        `aging auto-recall should include an item-level verification caveat\n${recallBlock}`,
+      );
+    } finally {
+      WorkspaceMemories.prototype.searchMemory = originalSearchMemory;
+      await cfg.update('features.memories', prevEnabled as any, true);
+      await cfg.update('memories.autoRecall', prevAutoRecall as any, true);
+      await cfg.update('memories.maxAutoRecallResults', prevAutoResults as any, true);
+      await cfg.update('memories.maxAutoRecallTokens', prevAutoTokens as any, true);
+    }
+  });
+
+  test('autoRecall - frames explicit forget requests as memory maintenance lookup', async () => {
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const prevEnabled = cfg.get<unknown>('features.memories');
+    const prevAutoRecall = cfg.get<unknown>('memories.autoRecall');
+    const prevAutoResults = cfg.get<unknown>('memories.maxAutoRecallResults');
+    const prevAutoTokens = cfg.get<unknown>('memories.maxAutoRecallTokens');
+
+    const originalSearchMemory = WorkspaceMemories.prototype.searchMemory;
+
+    try {
+      await cfg.update('features.memories', true, true);
+      await cfg.update('memories.autoRecall', true, true);
+      await cfg.update('memories.maxAutoRecallResults', 2, true);
+      await cfg.update('memories.maxAutoRecallTokens', 500, true);
+
+      const now = Date.now();
+      let observedScope: unknown;
+      const record = {
+        id: 'forget-runbook-record',
+        workspaceId: 'test-workspace',
+        sessionId: 'forget-runbook-session',
+        kind: 'semantic' as const,
+        title: 'Deploy runbook pointer',
+        text: 'Use the deployment runbook before touching production release gates.',
+        sourceUpdatedAt: now,
+        generatedAt: now,
+        filesTouched: [],
+        toolsUsed: [],
+        index: 0,
+        scope: 'workspace' as const,
+        confidence: 0.9,
+        evidenceCount: 2,
+        lastConfirmedAt: now,
+        staleness: 'fresh' as const,
+        signalKind: 'decision' as const,
+        memoryKey: 'procedure:deploy-runbook-forget',
+      };
+      const entry = {
+        key: 'procedure:deploy-runbook-forget',
+        text: 'Use the deployment runbook before touching production release gates.',
+        category: 'procedure' as const,
+        scope: 'workspace' as const,
+        confidence: 0.9,
+        evidenceCount: 2,
+        freshness: 'fresh' as const,
+        lastConfirmedAt: now,
+        sessionIds: ['forget-runbook-session'],
+        titles: ['Deploy runbook pointer'],
+        rolloutFiles: [],
+        filesTouched: [],
+        toolsUsed: [],
+        sources: ['assistant'],
+      };
+
+      WorkspaceMemories.prototype.searchMemory = async function (params) {
+        observedScope = params.scope;
+        return {
+          query: params.query,
+          workspaceId: 'test-workspace',
+          hits: [
+            {
+              record,
+              source: 'durable' as const,
+              durableEntry: entry,
+              score: 24,
+              reason: 'match' as const,
+              matchedTerms: ['forget', 'deployment', 'runbook'],
+            },
+          ],
+          totalTokens: 0,
+          truncated: false,
+        };
+      };
+
+      mockLLM.setNextResponse({ kind: 'text', content: 'Ok' });
+      await agent.run('Forget project memory about the deployment runbook.');
+
+      const prompt = JSON.stringify(mockLLM.lastPrompt ?? '');
+      const recallBlock = extractRecallBlockFromPrompt(prompt).replace(/\\"/g, '"');
+      assert.ok(recallBlock, 'forget requests should still get memory recall so the target can be identified');
+      assert.strictEqual(observedScope, 'workspace');
+      assert.ok(
+        recallBlock.includes('The user is asking to forget memory. Use matching recalled entries only to identify recordId/durableKey for maintain_memory action=invalidate'),
+        `forget recall should steer the model toward invalidation instead of relying on recalled content\n${recallBlock}`,
+      );
+      assert.ok(recallBlock.includes('scope_filter: workspace'));
+      assert.ok(
+        recallBlock.indexOf('The user is asking to forget memory.') < recallBlock.indexOf('## Memory 1 [durable:procedure]'),
+        `forget guidance should appear before recalled memory content\n${recallBlock}`,
+      );
+    } finally {
+      WorkspaceMemories.prototype.searchMemory = originalSearchMemory;
+      await cfg.update('features.memories', prevEnabled as any, true);
+      await cfg.update('memories.autoRecall', prevAutoRecall as any, true);
+      await cfg.update('memories.maxAutoRecallResults', prevAutoResults as any, true);
+      await cfg.update('memories.maxAutoRecallTokens', prevAutoTokens as any, true);
+    }
+  });
+
+  test('autoRecall - frames explicit recall requests as memory lookup', async () => {
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const prevEnabled = cfg.get<unknown>('features.memories');
+    const prevAutoRecall = cfg.get<unknown>('memories.autoRecall');
+    const prevAutoResults = cfg.get<unknown>('memories.maxAutoRecallResults');
+    const prevAutoTokens = cfg.get<unknown>('memories.maxAutoRecallTokens');
+
+    const originalSearchMemory = WorkspaceMemories.prototype.searchMemory;
+
+    try {
+      await cfg.update('features.memories', true, true);
+      await cfg.update('memories.autoRecall', true, true);
+      await cfg.update('memories.maxAutoRecallResults', 2, true);
+      await cfg.update('memories.maxAutoRecallTokens', 500, true);
+
+      const now = Date.now();
+      let observedScope: unknown;
+      const record = {
+        id: 'recall-pipeline-record',
+        workspaceId: 'test-workspace',
+        sessionId: 'recall-pipeline-session',
+        kind: 'semantic' as const,
+        title: 'Pipeline tracker pointer',
+        text: 'Pipeline bugs are tracked in Linear project INGEST.',
+        sourceUpdatedAt: now,
+        generatedAt: now,
+        filesTouched: [],
+        toolsUsed: [],
+        index: 0,
+        scope: 'workspace' as const,
+        confidence: 0.9,
+        evidenceCount: 2,
+        lastConfirmedAt: now,
+        staleness: 'fresh' as const,
+        signalKind: 'decision' as const,
+        memoryKey: 'reference:pipeline-ingest-recall',
+      };
+      const entry = {
+        key: 'reference:pipeline-ingest-recall',
+        text: 'Pipeline bugs are tracked in Linear project INGEST.',
+        category: 'reference' as const,
+        scope: 'workspace' as const,
+        confidence: 0.9,
+        evidenceCount: 2,
+        freshness: 'fresh' as const,
+        lastConfirmedAt: now,
+        sessionIds: ['recall-pipeline-session'],
+        titles: ['Pipeline tracker pointer'],
+        rolloutFiles: [],
+        filesTouched: [],
+        toolsUsed: [],
+        sources: ['user'],
+      };
+
+      WorkspaceMemories.prototype.searchMemory = async function (params) {
+        observedScope = params.scope;
+        return {
+          query: params.query,
+          workspaceId: 'test-workspace',
+          hits: [
+            {
+              record,
+              source: 'durable' as const,
+              durableEntry: entry,
+              score: 24,
+              reason: 'match' as const,
+              matchedTerms: ['remember', 'pipeline', 'ingest'],
+            },
+          ],
+          totalTokens: 0,
+          truncated: false,
+        };
+      };
+
+      mockLLM.setNextResponse({ kind: 'text', content: 'Ok' });
+      await agent.run('What do you remember for this project about pipeline bugs in INGEST?');
+
+      const prompt = JSON.stringify(mockLLM.lastPrompt ?? '');
+      const recallBlock = extractRecallBlockFromPrompt(prompt).replace(/\\"/g, '"');
+      assert.ok(recallBlock, 'explicit recall requests should get memory recall when matches exist');
+      assert.strictEqual(observedScope, 'workspace');
+      assert.ok(
+        prompt.includes('If the user explicitly asks what you remember, or asks you to check/recall memory, access memory with get_memory search unless the auto-recalled context fully answers it.'),
+        'system prompt should require memory access for explicit recall requests',
+      );
+      assert.ok(
+        recallBlock.includes('The user explicitly asked to recall/check memory. Use this recalled context as a starting point; call get_memory search if it is insufficient or missing expected details.'),
+        `recall guidance should steer the model to use/get_memory for explicit recall requests\n${recallBlock}`,
+      );
+      assert.ok(recallBlock.includes('scope_filter: workspace'));
+      assert.ok(recallBlock.includes('## Memory 1 [durable:reference] scope=workspace'));
+      assert.ok(
+        recallBlock.indexOf('The user explicitly asked to recall/check memory.') < recallBlock.indexOf('## Memory 1 [durable:reference]'),
+        `recall guidance should appear before recalled memory content\n${recallBlock}`,
+      );
+    } finally {
+      WorkspaceMemories.prototype.searchMemory = originalSearchMemory;
+      await cfg.update('features.memories', prevEnabled as any, true);
+      await cfg.update('memories.autoRecall', prevAutoRecall as any, true);
+      await cfg.update('memories.maxAutoRecallResults', prevAutoResults as any, true);
+      await cfg.update('memories.maxAutoRecallTokens', prevAutoTokens as any, true);
+    }
+  });
+
+  test('autoRecall - frames surviving project snapshot recall as prior context for current-state queries', async () => {
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const prevEnabled = cfg.get<unknown>('features.memories');
+    const prevAutoRecall = cfg.get<unknown>('memories.autoRecall');
+    const prevAutoResults = cfg.get<unknown>('memories.maxAutoRecallResults');
+    const prevAutoTokens = cfg.get<unknown>('memories.maxAutoRecallTokens');
+
+    const originalSearchMemory = WorkspaceMemories.prototype.searchMemory;
+
+    try {
+      await cfg.update('features.memories', true, true);
+      await cfg.update('memories.autoRecall', true, true);
+      await cfg.update('memories.maxAutoRecallResults', 3, true);
+      await cfg.update('memories.maxAutoRecallTokens', 500, true);
+
+      const now = Date.now();
+      const record = {
+        id: 'project-current-prior-record',
+        workspaceId: 'test-workspace',
+        sessionId: 'project-current-prior-session',
+        kind: 'semantic' as const,
+        title: 'Release coordination',
+        text: 'Merge freeze begins 2026-03-05 for mobile release cut.',
+        sourceUpdatedAt: now - 10_000,
+        generatedAt: now - 10_000,
+        filesTouched: [],
+        toolsUsed: [],
+        index: 0,
+        scope: 'workspace' as const,
+        confidence: 0.9,
+        evidenceCount: 2,
+        lastConfirmedAt: now - 10_000,
+        staleness: 'fresh' as const,
+        signalKind: 'decision' as const,
+        memoryKey: 'project:merge-freeze-current-render',
+      };
+      const entry = {
+        key: 'project:merge-freeze-current-render',
+        text: 'Merge freeze begins 2026-03-05 for mobile release cut.',
+        category: 'project' as const,
+        scope: 'workspace' as const,
+        confidence: 0.9,
+        evidenceCount: 2,
+        freshness: 'fresh' as const,
+        lastConfirmedAt: now - 10_000,
+        sessionIds: ['project-current-prior-session'],
+        titles: ['Release coordination'],
+        rolloutFiles: [],
+        filesTouched: [],
+        toolsUsed: [],
+        sources: ['user'],
+      };
+
+      WorkspaceMemories.prototype.searchMemory = async function (params) {
+        return {
+          query: params.query,
+          workspaceId: 'test-workspace',
+          hits: [
+            {
+              record,
+              source: 'durable' as const,
+              durableEntry: entry,
+              score: 24,
+              reason: 'match' as const,
+              matchedTerms: ['2026-03-05', 'merge', 'freeze', 'mobile'],
+            },
+          ],
+          totalTokens: 0,
+          truncated: false,
+        };
+      };
+
+      mockLLM.setNextResponse({ kind: 'text', content: 'Ok' });
+      await agent.run('Is the 2026-03-05 merge freeze still in effect for mobile release cut?');
+
+      const prompt = JSON.stringify(mockLLM.lastPrompt ?? '');
+      const recallStart = prompt.indexOf('<memory_recall_context>');
+      const recallEnd = prompt.indexOf('</memory_recall_context>');
+      assert.ok(recallStart >= 0 && recallEnd > recallStart, 'prompt should include auto-recall injected context');
+      const recallBlock = prompt.slice(recallStart, recallEnd);
+      assert.ok(
+        recallBlock.includes('prior: Merge freeze begins 2026-03-05 for mobile release cut.'),
+        `current-state project recall should be framed as prior context instead of a plain fact\n${recallBlock}`,
+      );
+      assert.ok(
+        !recallBlock.includes('fact: Merge freeze begins 2026-03-05 for mobile release cut.'),
+        'current-state project recall should avoid presenting snapshot memory as confirmed-current fact',
+      );
+    } finally {
+      WorkspaceMemories.prototype.searchMemory = originalSearchMemory;
+      await cfg.update('features.memories', prevEnabled as any, true);
+      await cfg.update('memories.autoRecall', prevAutoRecall as any, true);
+      await cfg.update('memories.maxAutoRecallResults', prevAutoResults as any, true);
+      await cfg.update('memories.maxAutoRecallTokens', prevAutoTokens as any, true);
+    }
+  });
+
+  test('autoRecall - suppresses redundant current-state project durable hits when a stronger reference pointer is already selected', async () => {
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const prevEnabled = cfg.get<unknown>('features.memories');
+    const prevAutoRecall = cfg.get<unknown>('memories.autoRecall');
+    const prevAutoResults = cfg.get<unknown>('memories.maxAutoRecallResults');
+    const prevAutoTokens = cfg.get<unknown>('memories.maxAutoRecallTokens');
+
+    const originalSearchMemory = WorkspaceMemories.prototype.searchMemory;
+
+    try {
+      await cfg.update('features.memories', true, true);
+      await cfg.update('memories.autoRecall', true, true);
+      await cfg.update('memories.maxAutoRecallResults', 3, true);
+      await cfg.update('memories.maxAutoRecallTokens', 500, true);
+
+      const now = Date.now();
+      const referenceRecord = {
+        id: 'current-state-reference-record',
+        workspaceId: 'test-workspace',
+        sessionId: 'current-state-reference-session',
+        kind: 'semantic' as const,
+        title: 'External bug tracker',
+        text: 'Pipeline bugs are tracked in Linear project INGEST.',
+        sourceUpdatedAt: now - 10_000,
+        generatedAt: now - 10_000,
+        filesTouched: [],
+        toolsUsed: [],
+        index: 0,
+        scope: 'workspace' as const,
+        confidence: 0.9,
+        evidenceCount: 2,
+        lastConfirmedAt: now - 10_000,
+        staleness: 'fresh' as const,
+        signalKind: 'decision' as const,
+        memoryKey: 'reference:linear-ingest-auto',
+      };
+      const referenceEntry = {
+        key: 'reference:linear-ingest-auto',
+        text: 'Pipeline bugs are tracked in Linear project INGEST.',
+        category: 'reference' as const,
+        scope: 'workspace' as const,
+        confidence: 0.9,
+        evidenceCount: 2,
+        freshness: 'fresh' as const,
+        lastConfirmedAt: now - 10_000,
+        sessionIds: ['current-state-reference-session'],
+        titles: ['External bug tracker'],
+        rolloutFiles: [],
+        filesTouched: [],
+        toolsUsed: [],
+        sources: ['user'],
+      };
+      const projectRecord = {
+        id: 'current-state-project-record',
+        workspaceId: 'test-workspace',
+        sessionId: 'current-state-project-session',
+        kind: 'semantic' as const,
+        title: 'Incident coordination',
+        text: 'Pipeline incident review happens in the Tuesday release triage notes.',
+        sourceUpdatedAt: now - 11_000,
+        generatedAt: now - 11_000,
+        filesTouched: [],
+        toolsUsed: [],
+        index: 0,
+        scope: 'workspace' as const,
+        confidence: 0.89,
+        evidenceCount: 2,
+        lastConfirmedAt: now - 11_000,
+        staleness: 'fresh' as const,
+        signalKind: 'decision' as const,
+        memoryKey: 'project:incident-triage-auto',
+      };
+      const projectEntry = {
+        key: 'project:incident-triage-auto',
+        text: 'Pipeline incident review happens in the Tuesday release triage notes.',
+        category: 'project' as const,
+        scope: 'workspace' as const,
+        confidence: 0.89,
+        evidenceCount: 2,
+        freshness: 'fresh' as const,
+        lastConfirmedAt: now - 11_000,
+        sessionIds: ['current-state-project-session'],
+        titles: ['Incident coordination'],
+        rolloutFiles: [],
+        filesTouched: [],
+        toolsUsed: [],
+        sources: ['user'],
+      };
+
+      WorkspaceMemories.prototype.searchMemory = async function (params) {
+        return {
+          query: params.query,
+          workspaceId: 'test-workspace',
+          hits: [
+            {
+              record: referenceRecord,
+              source: 'durable' as const,
+              durableEntry: referenceEntry,
+              score: 28,
+              reason: 'match' as const,
+              matchedTerms: ['latest', 'pipeline', 'ingest'],
+            },
+            {
+              record: projectRecord,
+              source: 'durable' as const,
+              durableEntry: projectEntry,
+              score: 26.5,
+              reason: 'match' as const,
+              matchedTerms: ['latest', 'pipeline'],
+            },
+          ],
+          totalTokens: 0,
+          truncated: false,
+        };
+      };
+
+      mockLLM.setNextResponse({ kind: 'text', content: 'Ok' });
+      await agent.run('Where should I check the latest pipeline bugs in INGEST?');
+
+      const prompt = JSON.stringify(mockLLM.lastPrompt ?? '');
+      const recallStart = prompt.indexOf('<memory_recall_context>');
+      const recallEnd = prompt.indexOf('</memory_recall_context>');
+      assert.ok(recallStart >= 0 && recallEnd > recallStart, 'prompt should include auto-recall injected context');
+      const recallBlock = prompt.slice(recallStart, recallEnd);
+      assert.ok(
+        recallBlock.includes('pointer: Pipeline bugs are tracked in Linear project INGEST.'),
+        `current-state auto-recall should keep the stronger reference pointer\n${recallBlock}`,
+      );
+      assert.ok(
+        !recallBlock.includes('Pipeline incident review happens in the Tuesday release triage notes.'),
+        `current-state auto-recall should suppress redundant project snapshot guidance when a stronger current-truth pointer is already selected\n${recallBlock}`,
+      );
+    } finally {
+      WorkspaceMemories.prototype.searchMemory = originalSearchMemory;
+      await cfg.update('features.memories', prevEnabled as any, true);
+      await cfg.update('memories.autoRecall', prevAutoRecall as any, true);
+      await cfg.update('memories.maxAutoRecallResults', prevAutoResults as any, true);
+      await cfg.update('memories.maxAutoRecallTokens', prevAutoTokens as any, true);
+    }
+  });
+
+  test('autoRecall - prefers raw current-truth reference pointers over raw project snapshots when no durable pointer exists', async () => {
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const prevEnabled = cfg.get<unknown>('features.memories');
+    const prevAutoRecall = cfg.get<unknown>('memories.autoRecall');
+    const prevAutoResults = cfg.get<unknown>('memories.maxAutoRecallResults');
+    const prevAutoTokens = cfg.get<unknown>('memories.maxAutoRecallTokens');
+    const prevAutoMinScoreGap = cfg.get<unknown>('memories.autoRecallMinScoreGap');
+
+    const originalSearchMemory = WorkspaceMemories.prototype.searchMemory;
+
+    try {
+      await cfg.update('features.memories', true, true);
+      await cfg.update('memories.autoRecall', true, true);
+      await cfg.update('memories.maxAutoRecallResults', 3, true);
+      await cfg.update('memories.maxAutoRecallTokens', 500, true);
+      await cfg.update('memories.autoRecallMinScoreGap', 0, true);
+
+      const now = Date.now();
+      const rawReferenceRecord = {
+        id: 'current-state-reference-raw-record',
+        workspaceId: 'test-workspace',
+        sessionId: 'current-state-reference-raw-session',
+        kind: 'episodic' as const,
+        title: 'External bug tracker details',
+        text: 'Assistant: Use Linear project INGEST for the latest pipeline bug context.',
+        sourceUpdatedAt: now - 10_000,
+        generatedAt: now - 10_000,
+        filesTouched: [],
+        toolsUsed: [],
+        index: 0,
+        scope: 'session' as const,
+        confidence: 0.78,
+        evidenceCount: 1,
+        lastConfirmedAt: now - 10_000,
+        staleness: 'fresh' as const,
+      };
+      const rawProjectRecord = {
+        id: 'current-state-project-raw-record',
+        workspaceId: 'test-workspace',
+        sessionId: 'current-state-project-raw-session',
+        kind: 'episodic' as const,
+        title: 'Incident coordination details',
+        text: 'Assistant: Pipeline incident review happens in the Tuesday release triage notes.',
+        sourceUpdatedAt: now - 9_000,
+        generatedAt: now - 9_000,
+        filesTouched: [],
+        toolsUsed: [],
+        index: 1,
+        scope: 'session' as const,
+        confidence: 0.79,
+        evidenceCount: 1,
+        lastConfirmedAt: now - 9_000,
+        staleness: 'fresh' as const,
+      };
+
+      WorkspaceMemories.prototype.searchMemory = async function (params) {
+        return {
+          query: params.query,
+          workspaceId: 'test-workspace',
+          hits: [
+            {
+              record: rawProjectRecord,
+              source: 'record' as const,
+              score: 28.4,
+              reason: 'match' as const,
+              matchedTerms: ['latest', 'pipeline'],
+            },
+            {
+              record: rawReferenceRecord,
+              source: 'record' as const,
+              score: 27.8,
+              reason: 'match' as const,
+              matchedTerms: ['latest', 'pipeline', 'ingest'],
+            },
+          ],
+          totalTokens: 0,
+          truncated: false,
+        };
+      };
+
+      mockLLM.setNextResponse({ kind: 'text', content: 'Ok' });
+      await agent.run('Where should I check the latest pipeline bugs in INGEST?');
+
+      const prompt = JSON.stringify(mockLLM.lastPrompt ?? '');
+      const recallStart = prompt.indexOf('<memory_recall_context>');
+      const recallEnd = prompt.indexOf('</memory_recall_context>');
+      assert.ok(recallStart >= 0 && recallEnd > recallStart, 'prompt should include auto-recall injected context');
+      const recallBlock = prompt.slice(recallStart, recallEnd);
+      const memorySections = recallBlock.match(/## Memory \d+ \[[^\]]+\]/g) || [];
+      const firstSectionStart = recallBlock.indexOf(memorySections[0] || '');
+      const secondSectionStart = memorySections.length > 1
+        ? recallBlock.indexOf(memorySections[1] || '')
+        : -1;
+      const firstSection = firstSectionStart >= 0
+        ? recallBlock.slice(firstSectionStart, secondSectionStart >= 0 ? secondSectionStart : undefined)
+        : '';
+      assert.ok(memorySections.length >= 1, `raw current-state recall should emit at least one memory section\n${recallBlock}`);
+      assert.ok(
+        firstSection.includes('Linear project INGEST') || firstSection.includes('External bug tracker details'),
+        `raw current-state recall should surface the reference pointer evidence before any project snapshot evidence\n${recallBlock}`,
+      );
+      assert.ok(
+        !firstSection.includes('Tuesday release triage notes'),
+        `raw current-state recall should not lead with project snapshot evidence when a stronger reference pointer is available\n${recallBlock}`,
+      );
+      assert.ok(
+        !recallBlock.includes('Pipeline incident review happens in the Tuesday release triage notes.'),
+        `raw current-state recall should stay compact and suppress redundant project snapshot evidence once a raw reference pointer is selected\n${recallBlock}`,
+      );
+    } finally {
+      WorkspaceMemories.prototype.searchMemory = originalSearchMemory;
+      await cfg.update('features.memories', prevEnabled as any, true);
+      await cfg.update('memories.autoRecall', prevAutoRecall as any, true);
+      await cfg.update('memories.maxAutoRecallResults', prevAutoResults as any, true);
+      await cfg.update('memories.maxAutoRecallTokens', prevAutoTokens as any, true);
+      await cfg.update('memories.autoRecallMinScoreGap', prevAutoMinScoreGap as any, true);
+    }
+  });
+
+  test('autoRecall - keeps current-state project durable hits when they add distinct concrete anchors beyond a selected reference pointer', async () => {
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const prevEnabled = cfg.get<unknown>('features.memories');
+    const prevAutoRecall = cfg.get<unknown>('memories.autoRecall');
+    const prevAutoResults = cfg.get<unknown>('memories.maxAutoRecallResults');
+    const prevAutoTokens = cfg.get<unknown>('memories.maxAutoRecallTokens');
+
+    const originalSearchMemory = WorkspaceMemories.prototype.searchMemory;
+
+    try {
+      await cfg.update('features.memories', true, true);
+      await cfg.update('memories.autoRecall', true, true);
+      await cfg.update('memories.maxAutoRecallResults', 3, true);
+      await cfg.update('memories.maxAutoRecallTokens', 500, true);
+
+      const now = Date.now();
+      const referenceRecord = {
+        id: 'current-state-reference-record-specific',
+        workspaceId: 'test-workspace',
+        sessionId: 'current-state-reference-session-specific',
+        kind: 'semantic' as const,
+        title: 'External bug tracker',
+        text: 'Pipeline bugs are tracked in Linear project INGEST.',
+        sourceUpdatedAt: now - 10_000,
+        generatedAt: now - 10_000,
+        filesTouched: [],
+        toolsUsed: [],
+        index: 0,
+        scope: 'workspace' as const,
+        confidence: 0.9,
+        evidenceCount: 2,
+        lastConfirmedAt: now - 10_000,
+        staleness: 'fresh' as const,
+        signalKind: 'decision' as const,
+        memoryKey: 'reference:linear-ingest-auto-specific',
+      };
+      const referenceEntry = {
+        key: 'reference:linear-ingest-auto-specific',
+        text: 'Pipeline bugs are tracked in Linear project INGEST.',
+        category: 'reference' as const,
+        scope: 'workspace' as const,
+        confidence: 0.9,
+        evidenceCount: 2,
+        freshness: 'fresh' as const,
+        lastConfirmedAt: now - 10_000,
+        sessionIds: ['current-state-reference-session-specific'],
+        titles: ['External bug tracker'],
+        rolloutFiles: [],
+        filesTouched: [],
+        toolsUsed: [],
+        sources: ['user'],
+      };
+      const projectRecord = {
+        id: 'current-state-project-record-specific',
+        workspaceId: 'test-workspace',
+        sessionId: 'current-state-project-session-specific',
+        kind: 'semantic' as const,
+        title: 'Release coordination',
+        text: 'Merge freeze begins 2026-03-05 for mobile release cut.',
+        sourceUpdatedAt: now - 11_000,
+        generatedAt: now - 11_000,
+        filesTouched: [],
+        toolsUsed: [],
+        index: 0,
+        scope: 'workspace' as const,
+        confidence: 0.89,
+        evidenceCount: 2,
+        lastConfirmedAt: now - 11_000,
+        staleness: 'fresh' as const,
+        signalKind: 'decision' as const,
+        memoryKey: 'project:merge-freeze-auto-specific',
+      };
+      const projectEntry = {
+        key: 'project:merge-freeze-auto-specific',
+        text: 'Merge freeze begins 2026-03-05 for mobile release cut.',
+        category: 'project' as const,
+        scope: 'workspace' as const,
+        confidence: 0.89,
+        evidenceCount: 2,
+        freshness: 'fresh' as const,
+        lastConfirmedAt: now - 11_000,
+        sessionIds: ['current-state-project-session-specific'],
+        titles: ['Release coordination'],
+        rolloutFiles: [],
+        filesTouched: [],
+        toolsUsed: [],
+        sources: ['user'],
+      };
+
+      WorkspaceMemories.prototype.searchMemory = async function (params) {
+        return {
+          query: params.query,
+          workspaceId: 'test-workspace',
+          hits: [
+            {
+              record: projectRecord,
+              source: 'durable' as const,
+              durableEntry: projectEntry,
+              score: 29.2,
+              reason: 'match' as const,
+              matchedTerms: ['2026-03-05', 'merge', 'freeze', 'mobile'],
+            },
+            {
+              record: referenceRecord,
+              source: 'durable' as const,
+              durableEntry: referenceEntry,
+              score: 28,
+              reason: 'match' as const,
+              matchedTerms: ['latest', 'pipeline', 'ingest'],
+            },
+          ],
+          totalTokens: 0,
+          truncated: false,
+        };
+      };
+
+      mockLLM.setNextResponse({ kind: 'text', content: 'Ok' });
+      await agent.run('Where should I check the latest pipeline bugs in INGEST, and is the 2026-03-05 merge freeze still in effect for mobile release cut?');
+
+      const prompt = JSON.stringify(mockLLM.lastPrompt ?? '');
+      const recallStart = prompt.indexOf('<memory_recall_context>');
+      const recallEnd = prompt.indexOf('</memory_recall_context>');
+      assert.ok(recallStart >= 0 && recallEnd > recallStart, 'prompt should include auto-recall injected context');
+      const recallBlock = prompt.slice(recallStart, recallEnd);
+      const pointerIndex = recallBlock.indexOf('pointer: Pipeline bugs are tracked in Linear project INGEST.');
+      const priorIndex = recallBlock.indexOf('prior: Merge freeze begins 2026-03-05 for mobile release cut.');
+      assert.ok(pointerIndex >= 0);
+      assert.ok(
+        priorIndex >= 0,
+        `current-state auto-recall should keep project context when it adds distinct concrete anchors the query explicitly asks about\n${recallBlock}`,
+      );
+      assert.ok(
+        pointerIndex < priorIndex,
+        `current-state auto-recall should order the stronger current-truth reference pointer ahead of project prior context\n${recallBlock}`,
+      );
+      assert.ok(
+        !recallBlock.includes('how_to_apply: Apply this by default on similar tasks in this workspace unless newer guidance overrides it.'),
+        `current-state auto-recall should keep later project prior context compact after a stronger reference pointer already provides current-truth routing\n${recallBlock}`,
+      );
+      const laterProjectSectionStart = recallBlock.indexOf('## Memory 2 [durable:project]');
+      const laterProjectSection = laterProjectSectionStart >= 0
+        ? recallBlock.slice(laterProjectSectionStart)
+        : recallBlock;
+      assert.ok(
+        !laterProjectSection.includes('session_id:'),
+        `current-state auto-recall should suppress low-value metadata on later additive project prior hits after a stronger reference pointer already leads\n${recallBlock}`,
+      );
+    } finally {
+      WorkspaceMemories.prototype.searchMemory = originalSearchMemory;
+      await cfg.update('features.memories', prevEnabled as any, true);
+      await cfg.update('memories.autoRecall', prevAutoRecall as any, true);
+      await cfg.update('memories.maxAutoRecallResults', prevAutoResults as any, true);
+      await cfg.update('memories.maxAutoRecallTokens', prevAutoTokens as any, true);
+    }
+  });
+
+  test('autoRecall - suppresses current-state raw project snapshot support when a selected reference pointer already provides better current-truth routing', async () => {
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const prevEnabled = cfg.get<unknown>('features.memories');
+    const prevAutoRecall = cfg.get<unknown>('memories.autoRecall');
+    const prevAutoResults = cfg.get<unknown>('memories.maxAutoRecallResults');
+    const prevAutoTokens = cfg.get<unknown>('memories.maxAutoRecallTokens');
+
+    const originalSearchMemory = WorkspaceMemories.prototype.searchMemory;
+
+    try {
+      await cfg.update('features.memories', true, true);
+      await cfg.update('memories.autoRecall', true, true);
+      await cfg.update('memories.maxAutoRecallResults', 3, true);
+      await cfg.update('memories.maxAutoRecallTokens', 500, true);
+
+      const now = Date.now();
+      const referenceRecord = {
+        id: 'current-state-reference-record-raw-gap',
+        workspaceId: 'test-workspace',
+        sessionId: 'current-state-reference-session-raw-gap',
+        kind: 'semantic' as const,
+        title: 'External bug tracker',
+        text: 'Pipeline bugs are tracked in Linear project INGEST.',
+        sourceUpdatedAt: now - 10_000,
+        generatedAt: now - 10_000,
+        filesTouched: [],
+        toolsUsed: [],
+        index: 0,
+        scope: 'workspace' as const,
+        confidence: 0.9,
+        evidenceCount: 2,
+        lastConfirmedAt: now - 10_000,
+        staleness: 'fresh' as const,
+        signalKind: 'decision' as const,
+        memoryKey: 'reference:linear-ingest-auto-raw-gap',
+      };
+      const referenceEntry = {
+        key: 'reference:linear-ingest-auto-raw-gap',
+        text: 'Pipeline bugs are tracked in Linear project INGEST.',
+        category: 'reference' as const,
+        scope: 'workspace' as const,
+        confidence: 0.9,
+        evidenceCount: 2,
+        freshness: 'fresh' as const,
+        lastConfirmedAt: now - 10_000,
+        sessionIds: ['current-state-reference-session-raw-gap'],
+        titles: ['External bug tracker'],
+        rolloutFiles: [],
+        filesTouched: [],
+        toolsUsed: [],
+        sources: ['user'],
+      };
+      const rawProjectRecord = {
+        id: 'current-state-project-raw-record-gap',
+        workspaceId: 'test-workspace',
+        sessionId: 'current-state-project-raw-session-gap',
+        kind: 'episodic' as const,
+        title: 'Incident coordination details',
+        text: 'Assistant: Pipeline incident review happens in the Tuesday release triage notes for current incident coordination.',
+        sourceUpdatedAt: now - 11_000,
+        generatedAt: now - 11_000,
+        filesTouched: [],
+        toolsUsed: [],
+        index: 1,
+        scope: 'session' as const,
+        confidence: 0.78,
+        evidenceCount: 1,
+        lastConfirmedAt: now - 11_000,
+        staleness: 'fresh' as const,
+      };
+
+      WorkspaceMemories.prototype.searchMemory = async function (params) {
+        return {
+          query: params.query,
+          workspaceId: 'test-workspace',
+          hits: [
+            {
+              record: referenceRecord,
+              source: 'durable' as const,
+              durableEntry: referenceEntry,
+              score: 28,
+              reason: 'match' as const,
+              matchedTerms: ['latest', 'pipeline', 'ingest'],
+            },
+            {
+              record: rawProjectRecord,
+              source: 'record' as const,
+              score: 25.4,
+              reason: 'match' as const,
+              matchedTerms: ['current', 'incident', 'triage'],
+            },
+          ],
+          totalTokens: 0,
+          truncated: false,
+        };
+      };
+
+      mockLLM.setNextResponse({ kind: 'text', content: 'Ok' });
+      await agent.run('Where should I check the latest pipeline bugs in INGEST?');
+
+      const prompt = JSON.stringify(mockLLM.lastPrompt ?? '');
+      const recallStart = prompt.indexOf('<memory_recall_context>');
+      const recallEnd = prompt.indexOf('</memory_recall_context>');
+      assert.ok(recallStart >= 0 && recallEnd > recallStart, 'prompt should include auto-recall injected context');
+      const recallBlock = prompt.slice(recallStart, recallEnd);
+      assert.ok(recallBlock.includes('pointer: Pipeline bugs are tracked in Linear project INGEST.'));
+      assert.ok(
+        !recallBlock.includes('Pipeline incident review happens in the Tuesday release triage notes'),
+        `current-state auto-recall should suppress raw project snapshot restatement when a better reference pointer is already selected\n${recallBlock}`,
+      );
+    } finally {
+      WorkspaceMemories.prototype.searchMemory = originalSearchMemory;
+      await cfg.update('features.memories', prevEnabled as any, true);
+      await cfg.update('memories.autoRecall', prevAutoRecall as any, true);
+      await cfg.update('memories.maxAutoRecallResults', prevAutoResults as any, true);
+      await cfg.update('memories.maxAutoRecallTokens', prevAutoTokens as any, true);
+    }
+  });
+
+  test('autoRecall - keeps current-state raw support when it adds a concrete query anchor beyond the selected reference pointer', async () => {
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const prevEnabled = cfg.get<unknown>('features.memories');
+    const prevAutoRecall = cfg.get<unknown>('memories.autoRecall');
+    const prevAutoResults = cfg.get<unknown>('memories.maxAutoRecallResults');
+    const prevAutoTokens = cfg.get<unknown>('memories.maxAutoRecallTokens');
+
+    const originalSearchMemory = WorkspaceMemories.prototype.searchMemory;
+
+    try {
+      await cfg.update('features.memories', true, true);
+      await cfg.update('memories.autoRecall', true, true);
+      await cfg.update('memories.maxAutoRecallResults', 3, true);
+      await cfg.update('memories.maxAutoRecallTokens', 500, true);
+
+      const now = Date.now();
+      const referenceRecord = {
+        id: 'current-state-reference-record-raw-anchor',
+        workspaceId: 'test-workspace',
+        sessionId: 'current-state-reference-session-raw-anchor',
+        kind: 'semantic' as const,
+        title: 'External bug tracker',
+        text: 'Pipeline bugs are tracked in Linear project INGEST.',
+        sourceUpdatedAt: now - 10_000,
+        generatedAt: now - 10_000,
+        filesTouched: [],
+        toolsUsed: [],
+        index: 0,
+        scope: 'workspace' as const,
+        confidence: 0.9,
+        evidenceCount: 2,
+        lastConfirmedAt: now - 10_000,
+        staleness: 'fresh' as const,
+        signalKind: 'decision' as const,
+        memoryKey: 'reference:linear-ingest-auto-raw-anchor',
+      };
+      const referenceEntry = {
+        key: 'reference:linear-ingest-auto-raw-anchor',
+        text: 'Pipeline bugs are tracked in Linear project INGEST.',
+        category: 'reference' as const,
+        scope: 'workspace' as const,
+        confidence: 0.9,
+        evidenceCount: 2,
+        freshness: 'fresh' as const,
+        lastConfirmedAt: now - 10_000,
+        sessionIds: ['current-state-reference-session-raw-anchor'],
+        titles: ['External bug tracker'],
+        rolloutFiles: [],
+        filesTouched: [],
+        toolsUsed: [],
+        sources: ['user'],
+      };
+      const rawProjectRecord = {
+        id: 'current-state-project-raw-record-anchor',
+        workspaceId: 'test-workspace',
+        sessionId: 'current-state-project-raw-session-anchor',
+        kind: 'episodic' as const,
+        title: 'Release coordination details',
+        text: 'Assistant: The 2026-03-05 merge freeze for mobile release cut is tracked in Tuesday release triage notes.',
+        sourceUpdatedAt: now - 11_000,
+        generatedAt: now - 11_000,
+        filesTouched: [],
+        toolsUsed: [],
+        index: 1,
+        scope: 'session' as const,
+        confidence: 0.78,
+        evidenceCount: 1,
+        lastConfirmedAt: now - 11_000,
+        staleness: 'fresh' as const,
+      };
+
+      WorkspaceMemories.prototype.searchMemory = async function (params) {
+        return {
+          query: params.query,
+          workspaceId: 'test-workspace',
+          hits: [
+            {
+              record: referenceRecord,
+              source: 'durable' as const,
+              durableEntry: referenceEntry,
+              score: 28,
+              reason: 'match' as const,
+              matchedTerms: ['latest', 'pipeline', 'ingest'],
+            },
+            {
+              record: rawProjectRecord,
+              source: 'record' as const,
+              score: 25.6,
+              reason: 'match' as const,
+              matchedTerms: ['2026-03-05', 'merge', 'freeze', 'mobile'],
+            },
+          ],
+          totalTokens: 0,
+          truncated: false,
+        };
+      };
+
+      mockLLM.setNextResponse({ kind: 'text', content: 'Ok' });
+      await agent.run('Where should I check the latest pipeline bugs in INGEST, and is the 2026-03-05 merge freeze still in effect for mobile release cut?');
+
+      const prompt = JSON.stringify(mockLLM.lastPrompt ?? '');
+      const recallStart = prompt.indexOf('<memory_recall_context>');
+      const recallEnd = prompt.indexOf('</memory_recall_context>');
+      assert.ok(recallStart >= 0 && recallEnd > recallStart, 'prompt should include auto-recall injected context');
+      const recallBlock = prompt.slice(recallStart, recallEnd);
+      assert.ok(recallBlock.includes('pointer: Pipeline bugs are tracked in Linear project INGEST.'));
+      assert.ok(
+        recallBlock.includes('evidence: The 2026-03-05 merge freeze for mobile release cut is tracked in Tuesday release triage notes.'),
+        `current-state auto-recall should keep raw support when it adds a concrete query anchor beyond the selected reference pointer\n${recallBlock}`,
+      );
+      const laterRawSectionStart = recallBlock.indexOf('evidence: The 2026-03-05 merge freeze for mobile release cut is tracked in Tuesday release triage notes.');
+      const laterRawSection = laterRawSectionStart >= 0 ? recallBlock.slice(laterRawSectionStart) : recallBlock;
+      assert.ok(
+        !laterRawSection.includes('evidence_title:'),
+        `current-state auto-recall should keep later raw project support compact after a stronger reference pointer already leads\n${recallBlock}`,
+      );
+      assert.ok(
+        !laterRawSection.includes('session_id:'),
+        `current-state auto-recall should suppress low-value metadata on later raw project support after a stronger reference pointer already leads\n${recallBlock}`,
+      );
+    } finally {
+      WorkspaceMemories.prototype.searchMemory = originalSearchMemory;
+      await cfg.update('features.memories', prevEnabled as any, true);
+      await cfg.update('memories.autoRecall', prevAutoRecall as any, true);
+      await cfg.update('memories.maxAutoRecallResults', prevAutoResults as any, true);
+      await cfg.update('memories.maxAutoRecallTokens', prevAutoTokens as any, true);
+    }
+  });
+
+  test('autoRecall - suppresses immediately repeated identical recall for non-current-state follow-up turns', async () => {
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const prevEnabled = cfg.get<unknown>('features.memories');
+    const prevAutoRecall = cfg.get<unknown>('memories.autoRecall');
+    const prevAutoResults = cfg.get<unknown>('memories.maxAutoRecallResults');
+    const prevAutoTokens = cfg.get<unknown>('memories.maxAutoRecallTokens');
+
+    const originalSearchMemory = WorkspaceMemories.prototype.searchMemory;
+
+    try {
+      await cfg.update('features.memories', true, true);
+      await cfg.update('memories.autoRecall', true, true);
+      await cfg.update('memories.maxAutoRecallResults', 3, true);
+      await cfg.update('memories.maxAutoRecallTokens', 500, true);
+
+      const now = Date.now();
+      const durableRecord = {
+        id: 'repeat-policy-record',
+        workspaceId: 'test-workspace',
+        sessionId: 'repeat-policy-session',
+        kind: 'procedural' as const,
+        title: 'Testing policy',
+        text: 'Prefer integration tests against a seeded ephemeral database instance.',
+        sourceUpdatedAt: now - 10_000,
+        generatedAt: now - 10_000,
+        filesTouched: [],
+        toolsUsed: [],
+        index: 0,
+        scope: 'workspace' as const,
+        confidence: 0.93,
+        evidenceCount: 2,
+        lastConfirmedAt: now - 10_000,
+        staleness: 'fresh' as const,
+        signalKind: 'procedure' as const,
+        memoryKey: 'procedure:seeded-ephemeral-db-repeat',
+      };
+      const durableEntry = {
+        key: 'procedure:seeded-ephemeral-db-repeat',
+        text: 'Prefer integration tests against a seeded ephemeral database instance.',
+        category: 'procedure' as const,
+        scope: 'workspace' as const,
+        confidence: 0.93,
+        evidenceCount: 2,
+        freshness: 'fresh' as const,
+        lastConfirmedAt: now - 10_000,
+        sessionIds: ['repeat-policy-session'],
+        titles: ['Testing policy'],
+        rolloutFiles: [],
+        filesTouched: [],
+        toolsUsed: [],
+        sources: ['user'],
+      };
+
+      WorkspaceMemories.prototype.searchMemory = async function (params) {
+        return {
+          query: params.query,
+          workspaceId: 'test-workspace',
+          hits: [
+            {
+              record: durableRecord,
+              source: 'durable' as const,
+              durableEntry,
+              score: 22,
+              reason: 'match' as const,
+              matchedTerms: ['integration', 'tests', 'database'],
+            },
+          ],
+          totalTokens: 0,
+          truncated: false,
+        };
+      };
+
+      mockLLM.setNextResponse({ kind: 'text', content: 'Ok' });
+      await agent.run('What testing policy should I follow for integration tests?');
+      const firstPrompt = JSON.stringify(mockLLM.lastPrompt ?? '');
+      const firstRecallBlock = extractRecallBlockFromPrompt(firstPrompt);
+      assert.ok(firstRecallBlock.includes('Prefer integration tests against a seeded ephemeral database instance.'));
+
+      mockLLM.setNextResponse({ kind: 'text', content: 'Ok again' });
+      await agent.continue('What testing policy should I follow for integration tests?');
+      const secondPrompt = JSON.stringify(mockLLM.lastPrompt ?? '');
+      const secondRecallBlock = extractRecallBlockFromPrompt(secondPrompt);
+      assert.strictEqual(
+        secondRecallBlock,
+        '',
+        'adjacent non-current-state follow-up should not re-inject the same recalled hit set again',
+      );
+    } finally {
+      WorkspaceMemories.prototype.searchMemory = originalSearchMemory;
+      await cfg.update('features.memories', prevEnabled as any, true);
+      await cfg.update('memories.autoRecall', prevAutoRecall as any, true);
+      await cfg.update('memories.maxAutoRecallResults', prevAutoResults as any, true);
+      await cfg.update('memories.maxAutoRecallTokens', prevAutoTokens as any, true);
+    }
+  });
+
+  test('autoRecall - still re-surfaces current-state pointer recall even after a similar prior recall block', async () => {
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const prevEnabled = cfg.get<unknown>('features.memories');
+    const prevAutoRecall = cfg.get<unknown>('memories.autoRecall');
+    const prevAutoResults = cfg.get<unknown>('memories.maxAutoRecallResults');
+    const prevAutoTokens = cfg.get<unknown>('memories.maxAutoRecallTokens');
+
+    const originalSearchMemory = WorkspaceMemories.prototype.searchMemory;
+
+    try {
+      await cfg.update('features.memories', true, true);
+      await cfg.update('memories.autoRecall', true, true);
+      await cfg.update('memories.maxAutoRecallResults', 3, true);
+      await cfg.update('memories.maxAutoRecallTokens', 500, true);
+
+      const now = Date.now();
+      const referenceRecord = {
+        id: 'repeat-current-state-pointer-record',
+        workspaceId: 'test-workspace',
+        sessionId: 'repeat-current-state-pointer-session',
+        kind: 'semantic' as const,
+        title: 'External bug tracker',
+        text: 'Pipeline bugs are tracked in Linear project INGEST.',
+        sourceUpdatedAt: now - 10_000,
+        generatedAt: now - 10_000,
+        filesTouched: [],
+        toolsUsed: [],
+        index: 0,
+        scope: 'workspace' as const,
+        confidence: 0.9,
+        evidenceCount: 2,
+        lastConfirmedAt: now - 10_000,
+        staleness: 'fresh' as const,
+        signalKind: 'decision' as const,
+        memoryKey: 'reference:linear-ingest-repeat-current-state',
+      };
+      const referenceEntry = {
+        key: 'reference:linear-ingest-repeat-current-state',
+        text: 'Pipeline bugs are tracked in Linear project INGEST.',
+        category: 'reference' as const,
+        scope: 'workspace' as const,
+        confidence: 0.9,
+        evidenceCount: 2,
+        freshness: 'fresh' as const,
+        lastConfirmedAt: now - 10_000,
+        sessionIds: ['repeat-current-state-pointer-session'],
+        titles: ['External bug tracker'],
+        rolloutFiles: [],
+        filesTouched: [],
+        toolsUsed: [],
+        sources: ['user'],
+      };
+
+      WorkspaceMemories.prototype.searchMemory = async function (params) {
+        return {
+          query: params.query,
+          workspaceId: 'test-workspace',
+          hits: [
+            {
+              record: referenceRecord,
+              source: 'durable' as const,
+              durableEntry: referenceEntry,
+              score: 27,
+              reason: 'match' as const,
+              matchedTerms: ['latest', 'pipeline', 'ingest'],
+            },
+          ],
+          totalTokens: 0,
+          truncated: false,
+        };
+      };
+
+      mockLLM.setNextResponse({ kind: 'text', content: 'Ok' });
+      await agent.run('Where do we track pipeline bugs?');
+      const firstPrompt = JSON.stringify(mockLLM.lastPrompt ?? '');
+      assert.ok(extractRecallBlockFromPrompt(firstPrompt).includes('Linear project INGEST'));
+
+      mockLLM.setNextResponse({ kind: 'text', content: 'Still ok' });
+      await agent.continue('Where should I check the latest pipeline bugs right now?');
+      const secondPrompt = JSON.stringify(mockLLM.lastPrompt ?? '');
+      const secondRecallBlock = extractRecallBlockFromPrompt(secondPrompt);
+      assert.ok(
+        secondRecallBlock.includes('pointer: Pipeline bugs are tracked in Linear project INGEST.'),
+        'current-state follow-up should still re-surface pointer-to-current-truth recall',
+      );
+    } finally {
+      WorkspaceMemories.prototype.searchMemory = originalSearchMemory;
+      await cfg.update('features.memories', prevEnabled as any, true);
+      await cfg.update('memories.autoRecall', prevAutoRecall as any, true);
+      await cfg.update('memories.maxAutoRecallResults', prevAutoResults as any, true);
+      await cfg.update('memories.maxAutoRecallTokens', prevAutoTokens as any, true);
+    }
+  });
+
+  test('autoRecall - re-surfaces the same durable hit when a follow-up changes from policy recall to why-oriented recall', async () => {
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const prevEnabled = cfg.get<unknown>('features.memories');
+    const prevAutoRecall = cfg.get<unknown>('memories.autoRecall');
+    const prevAutoResults = cfg.get<unknown>('memories.maxAutoRecallResults');
+    const prevAutoTokens = cfg.get<unknown>('memories.maxAutoRecallTokens');
+
+    const originalSearchMemory = WorkspaceMemories.prototype.searchMemory;
+
+    try {
+      await cfg.update('features.memories', true, true);
+      await cfg.update('memories.autoRecall', true, true);
+      await cfg.update('memories.maxAutoRecallResults', 3, true);
+      await cfg.update('memories.maxAutoRecallTokens', 500, true);
+
+      const now = Date.now();
+      const durableRecord = {
+        id: 'angle-aware-recall-record',
+        workspaceId: 'test-workspace',
+        sessionId: 'angle-aware-recall-session',
+        kind: 'procedural' as const,
+        title: 'Testing policy',
+        text: 'Prefer integration tests against a seeded ephemeral database instance.\nWhy: prior mocked tests hid migration failures until production.\nHow to apply: use a seeded ephemeral database path for integration and migration-sensitive tests.',
+        sourceUpdatedAt: now - 10_000,
+        generatedAt: now - 10_000,
+        filesTouched: [],
+        toolsUsed: [],
+        index: 0,
+        scope: 'workspace' as const,
+        confidence: 0.94,
+        evidenceCount: 2,
+        lastConfirmedAt: now - 10_000,
+        staleness: 'fresh' as const,
+        signalKind: 'procedure' as const,
+        memoryKey: 'procedure:seeded-ephemeral-db-angle-aware',
+      };
+      const durableEntry = {
+        key: 'procedure:seeded-ephemeral-db-angle-aware',
+        text: 'Prefer integration tests against a seeded ephemeral database instance.\nWhy: prior mocked tests hid migration failures until production.\nHow to apply: use a seeded ephemeral database path for integration and migration-sensitive tests.',
+        category: 'procedure' as const,
+        scope: 'workspace' as const,
+        confidence: 0.94,
+        evidenceCount: 2,
+        freshness: 'fresh' as const,
+        lastConfirmedAt: now - 10_000,
+        sessionIds: ['angle-aware-recall-session'],
+        titles: ['Testing policy'],
+        rolloutFiles: [],
+        filesTouched: [],
+        toolsUsed: [],
+        sources: ['user'],
+      };
+
+      WorkspaceMemories.prototype.searchMemory = async function (params) {
+        return {
+          query: params.query,
+          workspaceId: 'test-workspace',
+          hits: [
+            {
+              record: durableRecord,
+              source: 'durable' as const,
+              durableEntry,
+              score: 24,
+              reason: 'match' as const,
+              matchedTerms: ['integration', 'tests', 'database'],
+            },
+          ],
+          totalTokens: 0,
+          truncated: false,
+        };
+      };
+
+      mockLLM.setNextResponse({ kind: 'text', content: 'Ok' });
+      await agent.run('What testing policy should I follow for integration tests?');
+      const firstPrompt = JSON.stringify(mockLLM.lastPrompt ?? '');
+      const firstRecallBlock = extractRecallBlockFromPrompt(firstPrompt);
+      assert.ok(firstRecallBlock.includes('Prefer integration tests against a seeded ephemeral database instance.'));
+      assert.ok(!firstRecallBlock.includes('why: prior mocked tests hid migration failures until production.'));
+
+      mockLLM.setNextResponse({ kind: 'text', content: 'Ok again' });
+      await agent.continue('Why do we prefer that testing policy for integration tests?');
+      const secondPrompt = JSON.stringify(mockLLM.lastPrompt ?? '');
+      const secondRecallBlock = extractRecallBlockFromPrompt(secondPrompt);
+      assert.ok(
+        secondRecallBlock.includes('Prefer integration tests against a seeded ephemeral database instance.'),
+        'angle-aware follow-up should allow the same durable guidance to re-surface',
+      );
+      assert.ok(
+        secondRecallBlock.includes('why: prior mocked tests hid migration failures until production.'),
+        'why-oriented follow-up should re-surface the same durable hit with its rationale',
+      );
+    } finally {
+      WorkspaceMemories.prototype.searchMemory = originalSearchMemory;
+      await cfg.update('features.memories', prevEnabled as any, true);
+      await cfg.update('memories.autoRecall', prevAutoRecall as any, true);
+      await cfg.update('memories.maxAutoRecallResults', prevAutoResults as any, true);
+      await cfg.update('memories.maxAutoRecallTokens', prevAutoTokens as any, true);
+    }
+  });
+
+  test('autoRecall - spends follow-up recall budget on fresh non-current-state context instead of repeating the prior durable hit', async () => {
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const prevEnabled = cfg.get<unknown>('features.memories');
+    const prevAutoRecall = cfg.get<unknown>('memories.autoRecall');
+    const prevAutoResults = cfg.get<unknown>('memories.maxAutoRecallResults');
+    const prevAutoTokens = cfg.get<unknown>('memories.maxAutoRecallTokens');
+
+    const originalSearchMemory = WorkspaceMemories.prototype.searchMemory;
+
+    try {
+      await cfg.update('features.memories', true, true);
+      await cfg.update('memories.autoRecall', true, true);
+      await cfg.update('memories.maxAutoRecallResults', 1, true);
+      await cfg.update('memories.maxAutoRecallTokens', 500, true);
+
+      const now = Date.now();
+      const policyRecord = {
+        id: 'fresh-follow-up-policy-record',
+        workspaceId: 'test-workspace',
+        sessionId: 'fresh-follow-up-session',
+        kind: 'procedural' as const,
+        title: 'Testing policy',
+        text: 'Prefer integration tests against a seeded ephemeral database instance.',
+        sourceUpdatedAt: now - 10_000,
+        generatedAt: now - 10_000,
+        filesTouched: [],
+        toolsUsed: [],
+        index: 0,
+        scope: 'workspace' as const,
+        confidence: 0.95,
+        evidenceCount: 2,
+        lastConfirmedAt: now - 10_000,
+        staleness: 'fresh' as const,
+        signalKind: 'procedure' as const,
+        memoryKey: 'procedure:seeded-ephemeral-db-fresh-follow-up',
+      };
+      const policyEntry = {
+        key: 'procedure:seeded-ephemeral-db-fresh-follow-up',
+        text: 'Prefer integration tests against a seeded ephemeral database instance.',
+        category: 'procedure' as const,
+        scope: 'workspace' as const,
+        confidence: 0.95,
+        evidenceCount: 2,
+        freshness: 'fresh' as const,
+        lastConfirmedAt: now - 10_000,
+        sessionIds: ['fresh-follow-up-session'],
+        titles: ['Testing policy'],
+        rolloutFiles: [],
+        filesTouched: [],
+        toolsUsed: [],
+        sources: ['user'],
+      };
+      const migrationRecord = {
+        id: 'fresh-follow-up-migration-record',
+        workspaceId: 'test-workspace',
+        sessionId: 'fresh-follow-up-session',
+        kind: 'procedural' as const,
+        title: 'Migration test caution',
+        text: 'Run migration-sensitive integration tests serially to avoid cross-test schema drift.',
+        sourceUpdatedAt: now - 8_000,
+        generatedAt: now - 8_000,
+        filesTouched: [],
+        toolsUsed: [],
+        index: 1,
+        scope: 'workspace' as const,
+        confidence: 0.91,
+        evidenceCount: 2,
+        lastConfirmedAt: now - 8_000,
+        staleness: 'fresh' as const,
+        signalKind: 'procedure' as const,
+        memoryKey: 'procedure:serial-migration-tests-fresh-follow-up',
+      };
+      const migrationEntry = {
+        key: 'procedure:serial-migration-tests-fresh-follow-up',
+        text: 'Run migration-sensitive integration tests serially to avoid cross-test schema drift.',
+        category: 'procedure' as const,
+        scope: 'workspace' as const,
+        confidence: 0.91,
+        evidenceCount: 2,
+        freshness: 'fresh' as const,
+        lastConfirmedAt: now - 8_000,
+        sessionIds: ['fresh-follow-up-session'],
+        titles: ['Migration test caution'],
+        rolloutFiles: [],
+        filesTouched: [],
+        toolsUsed: [],
+        sources: ['user'],
+      };
+
+      WorkspaceMemories.prototype.searchMemory = async function (params) {
+        return {
+          query: params.query,
+          workspaceId: 'test-workspace',
+          hits: [
+            {
+              record: policyRecord,
+              source: 'durable' as const,
+              durableEntry: policyEntry,
+              score: 25,
+              reason: 'match' as const,
+              matchedTerms: ['integration', 'tests', 'database'],
+            },
+            {
+              record: migrationRecord,
+              source: 'durable' as const,
+              durableEntry: migrationEntry,
+              score: 24,
+              reason: 'match' as const,
+              matchedTerms: ['integration', 'tests', 'migration'],
+            },
+          ],
+          totalTokens: 0,
+          truncated: false,
+        };
+      };
+
+      mockLLM.setNextResponse({ kind: 'text', content: 'Ok' });
+      await agent.run('What testing policy should I follow for integration tests?');
+      const firstPrompt = JSON.stringify(mockLLM.lastPrompt ?? '');
+      const firstRecallBlock = extractRecallBlockFromPrompt(firstPrompt);
+      assert.ok(firstRecallBlock.includes('seeded ephemeral database instance'));
+      assert.ok(!firstRecallBlock.includes('schema drift'));
+
+      mockLLM.setNextResponse({ kind: 'text', content: 'Still ok' });
+      await agent.continue('What testing policy should I follow for migration-sensitive integration tests?');
+      const secondPrompt = JSON.stringify(mockLLM.lastPrompt ?? '');
+      const secondRecallBlock = extractRecallBlockFromPrompt(secondPrompt);
+      assert.ok(
+        secondRecallBlock.includes('Run migration-sensitive integration tests serially'),
+        'follow-up recall should spend limited budget on fresh supporting memory when available',
+      );
+      assert.ok(
+        secondRecallBlock.includes('cross-test schema drift'),
+        'fresh follow-up recall should preserve the selected memory rationale when it is rendered as a separate why field',
+      );
+      assert.ok(
+        !secondRecallBlock.includes('Prefer integration tests against a seeded ephemeral database instance.'),
+        'follow-up recall should not spend limited budget repeating the immediately prior durable hit',
+      );
+    } finally {
+      WorkspaceMemories.prototype.searchMemory = originalSearchMemory;
+      await cfg.update('features.memories', prevEnabled as any, true);
+      await cfg.update('memories.autoRecall', prevAutoRecall as any, true);
+      await cfg.update('memories.maxAutoRecallResults', prevAutoResults as any, true);
+      await cfg.update('memories.maxAutoRecallTokens', prevAutoTokens as any, true);
+    }
+  });
+
+  test('autoRecall - keeps suppressing a repeated durable hit on a why-oriented follow-up when it has no new rationale to surface', async () => {
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const prevEnabled = cfg.get<unknown>('features.memories');
+    const prevAutoRecall = cfg.get<unknown>('memories.autoRecall');
+    const prevAutoResults = cfg.get<unknown>('memories.maxAutoRecallResults');
+    const prevAutoTokens = cfg.get<unknown>('memories.maxAutoRecallTokens');
+
+    const originalSearchMemory = WorkspaceMemories.prototype.searchMemory;
+
+    try {
+      await cfg.update('features.memories', true, true);
+      await cfg.update('memories.autoRecall', true, true);
+      await cfg.update('memories.maxAutoRecallResults', 3, true);
+      await cfg.update('memories.maxAutoRecallTokens', 500, true);
+
+      const now = Date.now();
+      const durableRecord = {
+        id: 'angle-aware-no-new-why-record',
+        workspaceId: 'test-workspace',
+        sessionId: 'angle-aware-no-new-why-session',
+        kind: 'procedural' as const,
+        title: 'Testing policy',
+        text: 'Prefer integration tests against a seeded ephemeral database instance.',
+        sourceUpdatedAt: now - 10_000,
+        generatedAt: now - 10_000,
+        filesTouched: [],
+        toolsUsed: [],
+        index: 0,
+        scope: 'workspace' as const,
+        confidence: 0.94,
+        evidenceCount: 2,
+        lastConfirmedAt: now - 10_000,
+        staleness: 'fresh' as const,
+        signalKind: 'procedure' as const,
+        memoryKey: 'procedure:seeded-ephemeral-db-angle-aware-no-why',
+      };
+      const durableEntry = {
+        key: 'procedure:seeded-ephemeral-db-angle-aware-no-why',
+        text: 'Prefer integration tests against a seeded ephemeral database instance.',
+        category: 'procedure' as const,
+        scope: 'workspace' as const,
+        confidence: 0.94,
+        evidenceCount: 2,
+        freshness: 'fresh' as const,
+        lastConfirmedAt: now - 10_000,
+        sessionIds: ['angle-aware-no-new-why-session'],
+        titles: ['Testing policy'],
+        rolloutFiles: [],
+        filesTouched: [],
+        toolsUsed: [],
+        sources: ['user'],
+      };
+
+      WorkspaceMemories.prototype.searchMemory = async function (params) {
+        return {
+          query: params.query,
+          workspaceId: 'test-workspace',
+          hits: [
+            {
+              record: durableRecord,
+              source: 'durable' as const,
+              durableEntry,
+              score: 24,
+              reason: 'match' as const,
+              matchedTerms: ['integration', 'tests', 'database'],
+            },
+          ],
+          totalTokens: 0,
+          truncated: false,
+        };
+      };
+
+      mockLLM.setNextResponse({ kind: 'text', content: 'Ok' });
+      await agent.run('What testing policy should I follow for integration tests?');
+      const firstPrompt = JSON.stringify(mockLLM.lastPrompt ?? '');
+      const firstRecallBlock = extractRecallBlockFromPrompt(firstPrompt);
+      assert.ok(firstRecallBlock.includes('Prefer integration tests against a seeded ephemeral database instance.'));
+
+      mockLLM.setNextResponse({ kind: 'text', content: 'Ok again' });
+      await agent.continue('Why do we prefer that testing policy for integration tests?');
+      const secondPrompt = JSON.stringify(mockLLM.lastPrompt ?? '');
+      const secondRecallBlock = extractRecallBlockFromPrompt(secondPrompt);
+      assert.strictEqual(
+        secondRecallBlock,
+        '',
+        'why-oriented follow-up should still suppress the repeated durable hit when it has no new rationale field to expose',
+      );
+    } finally {
+      WorkspaceMemories.prototype.searchMemory = originalSearchMemory;
+      await cfg.update('features.memories', prevEnabled as any, true);
+      await cfg.update('memories.autoRecall', prevAutoRecall as any, true);
+      await cfg.update('memories.maxAutoRecallResults', prevAutoResults as any, true);
+      await cfg.update('memories.maxAutoRecallTokens', prevAutoTokens as any, true);
     }
   });
 
@@ -2892,6 +5373,8 @@ suite('AgentLoop', () => {
       signals.assistantOutcomes = ['Resume with recalled memory context and session state intact'];
       signals.filesTouched = ['packages/vscode-extension/src/core/agent/index.ts'];
       signals.toolsUsed = ['get_memory'];
+      recordDecision(signals, 'Compaction should restore memory recall context and session state.');
+      recordProcedure(signals, 'Rehydrate recalled context after compaction before resume.');
 
       await seedAgentPersistedSessions(storageRoot, [
         {
@@ -2989,6 +5472,54 @@ suite('AgentLoop', () => {
         // ignore
       }
     }
+  });
+
+  test('autoRecall - strips restored memory context when the user asks not to use memory', async () => {
+    const restoredState = createAssistantHistoryMessage();
+    restoredState.metadata = {
+      synthetic: true,
+      compactionRestore: { source: 'sessionState' },
+    } as any;
+    restoredState.parts.push({
+      type: 'text',
+      text: '<compaction_session_state>\nfile handles: F1\n</compaction_session_state>',
+      state: 'done',
+    } as any);
+
+    const restoredRecall = createAssistantHistoryMessage();
+    restoredRecall.metadata = {
+      synthetic: true,
+      compactionRestore: { source: 'memoryRecall' },
+    } as any;
+    restoredRecall.parts.push({
+      type: 'text',
+      text: '<memory_recall_context>\nStale recalled memory that must not be used.\n</memory_recall_context>',
+      state: 'done',
+    } as any);
+
+    agent.importState({
+      history: [restoredState, restoredRecall],
+      compactionSyntheticContexts: [
+        {
+          transientContext: 'memoryRecall',
+          text: '<memory_recall_context>\nStale recalled memory that must not be restored later.\n</memory_recall_context>',
+        },
+      ],
+    });
+
+    mockLLM.setNextResponse({ kind: 'text', content: 'Ok' });
+    await agent.continue('Do not use memory. Answer only from this prompt.');
+
+    const prompt = JSON.stringify(mockLLM.lastPrompt ?? '');
+    assert.ok(!prompt.includes('memory_recall_context'), 'memory opt-out should remove restored recall from the prompt');
+    assert.ok(!prompt.includes('Stale recalled memory'), 'memory opt-out should remove recalled memory text');
+    assert.ok(prompt.includes('compaction_session_state'), 'memory opt-out should preserve non-memory session state');
+
+    const exported = agent.exportState();
+    assert.ok(
+      !(exported.compactionSyntheticContexts || []).some((context) => context.transientContext === 'memoryRecall'),
+      'memory opt-out should clear recall context from future compaction restores',
+    );
   });
 
   test('run - fires onToken callback', async () => {

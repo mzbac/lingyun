@@ -2,6 +2,29 @@ import { TOOL_ERROR_CODES, optionalNumber, optionalString } from '@kooka/core';
 
 import type { ToolDefinition, ToolHandler } from '../../core/types';
 import { WorkspaceMemories, isMemoriesEnabled, readMemoryArtifacts } from '../../core/memories';
+import { redactMemorySecrets } from '../../core/memories/privacy';
+import {
+  formatMemoryLastConfirmedMetadata,
+  formatMemoryVerificationCaveat,
+  renderRawRecordEvidence,
+  renderSelectiveMemorySurfaceLines,
+  renderSummaryRecordText,
+  selectiveMemoryPrimaryLabel,
+} from '../../core/memories/consolidate';
+import {
+  memoryRecordLooksLikeProjectStateSnapshot,
+  memoryRecordLooksLikeReferencePointer,
+  shouldCompactLaterCurrentStateProjectSupport,
+  shouldCompactLaterProjectPriorContext,
+} from '../../core/memories/currentState';
+
+function recordLooksLikeReferencePointer(hit: { record: { title?: string; text?: string; memoryKey?: string } }): boolean {
+  return memoryRecordLooksLikeReferencePointer(hit.record);
+}
+
+function recordLooksLikeProjectStateSnapshot(hit: { record: { title?: string; text?: string; memoryKey?: string } }): boolean {
+  return memoryRecordLooksLikeProjectStateSnapshot(hit.record);
+}
 
 const DEFAULT_MAX_CHARS = 12_000;
 const MAX_MAX_CHARS = 50_000;
@@ -22,18 +45,48 @@ function trimForOutput(text: string, maxChars: number): { text: string; truncate
   };
 }
 
+function normalizeMemoryScopeArg(scope: string | undefined): 'user' | 'workspace' | 'session' | undefined {
+  switch ((scope || '').trim().toLowerCase()) {
+    case 'user':
+    case 'global':
+    case 'personal':
+    case 'private':
+    case 'profile':
+      return 'user';
+    case 'workspace':
+    case 'project':
+    case 'repo':
+    case 'repository':
+    case 'codebase':
+    case 'team':
+      return 'workspace';
+    case 'session':
+    case 'local':
+    case 'chat':
+    case 'thread':
+    case 'conversation':
+      return 'session';
+    default:
+      return undefined;
+  }
+}
+
 export const getMemoryTool: ToolDefinition = {
   id: 'get_memory',
   name: 'Get Memory',
   description:
-    'Read generated memory artifacts or search transcript-backed memory records. Default returns memory summary.',
+    'Read generated memory artifacts, topic files, or search transcript-backed memory records. Default returns memory summary.',
   parameters: {
     type: 'object',
     properties: {
       view: {
         type: 'string',
-        enum: ['summary', 'memory', 'raw', 'list', 'rollout', 'search'],
-        description: 'summary (default), memory (MEMORY.md), raw (raw_memories.md), list, rollout, or search',
+        enum: ['summary', 'memory', 'raw', 'list', 'topic', 'rollout', 'search'],
+        description: 'summary (default), memory (MEMORY.md index), raw (raw_memories.md), list, topic, rollout, or search',
+      },
+      topicFile: {
+        type: 'string',
+        description: 'When view=topic, the topic filename under memory_topics/*.md',
       },
       rolloutFile: {
         type: 'string',
@@ -47,6 +100,29 @@ export const getMemoryTool: ToolDefinition = {
         type: 'string',
         enum: ['episodic', 'semantic', 'procedural'],
         description: 'Optional memory kind filter for search.',
+      },
+      scope: {
+        type: 'string',
+        enum: [
+          'user',
+          'global',
+          'personal',
+          'private',
+          'profile',
+          'workspace',
+          'project',
+          'repo',
+          'repository',
+          'codebase',
+          'team',
+          'session',
+          'local',
+          'chat',
+          'thread',
+          'conversation',
+        ],
+        description:
+          'Optional memory scope filter for search. Aliases: project/repo/repository/codebase/team -> workspace, local/chat/thread/conversation -> session, global/personal/private/profile -> user.',
       },
       limit: {
         type: 'number',
@@ -94,6 +170,7 @@ export const getMemoryHandler: ToolHandler = async (args, context) => {
       viewRaw === 'memory' ||
       viewRaw === 'raw' ||
       viewRaw === 'list' ||
+      viewRaw === 'topic' ||
       viewRaw === 'rollout' ||
       viewRaw === 'search'
         ? viewRaw
@@ -102,7 +179,7 @@ export const getMemoryHandler: ToolHandler = async (args, context) => {
     if (!view) {
       return {
         success: false,
-        error: 'view must be one of: summary, memory, raw, list, rollout, search.',
+        error: 'view must be one of: summary, memory, raw, list, topic, rollout, search.',
       };
     }
 
@@ -116,8 +193,36 @@ export const getMemoryHandler: ToolHandler = async (args, context) => {
           hasSummary: typeof artifacts.summary === 'string' && artifacts.summary.trim().length > 0,
           hasMemory: typeof artifacts.memory === 'string' && artifacts.memory.trim().length > 0,
           hasRawMemories: typeof artifacts.raw === 'string' && artifacts.raw.trim().length > 0,
+          topicFiles: artifacts.topics,
           rolloutSummaries: artifacts.rollouts,
         },
+      };
+    }
+
+    if (view === 'topic') {
+      const topicFile = optionalString(args, 'topicFile')?.trim();
+      if (!topicFile) {
+        return {
+          success: false,
+          error: 'topicFile is required when view="topic". First call get_memory with view="list".',
+        };
+      }
+
+      const content = await manager.readMemoryFile('topic', topicFile, context.workspaceFolder);
+      if (!content || !content.trim()) {
+        return {
+          success: false,
+          error: `Memory topic not found: ${topicFile}`,
+          metadata: { errorCode: TOOL_ERROR_CODES.memory_missing },
+        };
+      }
+
+      const trimmed = trimForOutput(content, maxChars);
+      const normalizedFile = topicFile.replace(/\\/g, '/');
+      return {
+        success: true,
+        data: `<memory view="topic" file="${normalizedFile}">\n${trimmed.text}\n</memory>`,
+        metadata: { view, topicFile: normalizedFile, truncated: trimmed.truncated },
       };
     }
 
@@ -159,13 +264,24 @@ export const getMemoryHandler: ToolHandler = async (args, context) => {
       const kindRaw = optionalString(args, 'kind')?.trim().toLowerCase();
       const kind =
         kindRaw === 'episodic' || kindRaw === 'semantic' || kindRaw === 'procedural' ? kindRaw : undefined;
+      const scopeRaw = optionalString(args, 'scope')?.trim().toLowerCase();
+      const scope = normalizeMemoryScopeArg(scopeRaw);
+      if (scopeRaw && !scope) {
+        return {
+          success: false,
+          error:
+            'scope must be one of: user/global/personal/private/profile, workspace/project/repo/repository/codebase/team, or session/local/chat/thread/conversation.',
+        };
+      }
       const limit = optionalNumber(args, 'limit');
       const neighborWindow = optionalNumber(args, 'neighborWindow');
 
       const search = await manager.searchMemory({
         query,
         workspaceFolder: context.workspaceFolder,
+        preferDurableFirst: true,
         ...(kind ? { kind } : {}),
+        ...(scope ? { scope } : {}),
         ...(Number.isFinite(limit as number) ? { limit: Math.max(1, Math.floor(limit as number)) } : {}),
         ...(Number.isFinite(neighborWindow as number)
           ? { neighborWindow: Math.max(0, Math.floor(neighborWindow as number)) }
@@ -181,37 +297,109 @@ export const getMemoryHandler: ToolHandler = async (args, context) => {
       if (search.hits.length === 0) {
         return {
           success: true,
-          data: `<memory view="search" query="${query.replace(/"/g, '&quot;')}">\n(no matching memory)\n</memory>`,
-          metadata: { view, query, matchCount: 0 },
+          data: `<memory view="search" query="${query.replace(/"/g, '&quot;')}"${scope ? ` scope="${scope}"` : ''}>\n(no matching memory)\n</memory>`,
+          metadata: { view, query, ...(scope ? { scope } : {}), matchCount: 0 },
         };
       }
 
-      const lines: string[] = [`<memory view="search" query="${query.replace(/"/g, '&quot;')}">`];
+      const lines: string[] = [`<memory view="search" query="${query.replace(/"/g, '&quot;')}"${scope ? ` scope="${scope}"` : ''}>`];
+      const now = Date.now();
+      let sawCurrentStateReferencePointer = false;
       for (const [index, hit] of search.hits.entries()) {
+        const updatedAt = hit.durableEntry?.lastConfirmedAt ?? hit.record.lastConfirmedAt ?? hit.record.sourceUpdatedAt;
+        const freshness = hit.durableEntry?.freshness ?? hit.record.staleness;
+        const confidence = hit.durableEntry?.confidence ?? hit.record.confidence;
+        const evidence = hit.durableEntry?.evidenceCount ?? hit.record.evidenceCount;
+        const files = hit.durableEntry?.filesTouched ?? hit.record.filesTouched;
+        const tools = hit.durableEntry?.toolsUsed ?? hit.record.toolsUsed;
+        const maintenanceHint =
+          hit.source === 'durable'
+            ? `maintain_memory action=<invalidate|confirm|supersede> recordId=${hit.record.id}${hit.durableEntry?.key ? ` durableKey=${hit.durableEntry.key}` : ''}`
+            : `maintain_memory action=<invalidate|confirm|supersede> recordId=${hit.record.id}`;
+        const primaryLabel = hit.durableEntry
+          ? selectiveMemoryPrimaryLabel(hit.durableEntry, 'guidance', query)
+          : undefined;
+        const compactPriorContext = !!hit.durableEntry && shouldCompactLaterProjectPriorContext({
+          hasLeadingReferencePointer: sawCurrentStateReferencePointer,
+          isProjectCategory: hit.durableEntry.category === 'project',
+          primaryLabel,
+        });
+        const compactMetadata = compactPriorContext;
         lines.push(
-          `## Match ${index + 1} [${hit.record.kind}] score=${hit.score.toFixed(2)} reason=${hit.reason}`,
+          `## Match ${index + 1} [${hit.source === 'durable' ? `durable:${hit.durableEntry?.category || 'memory'}` : hit.record.kind}] score=${hit.score.toFixed(2)} reason=${hit.reason}`,
         );
-        lines.push(`session_id: ${hit.record.sessionId}`);
-        lines.push(`chunk_id: ${hit.record.id}`);
-        lines.push(`updated_at: ${new Date(hit.record.sourceUpdatedAt).toISOString()}`);
-        if (hit.record.filesTouched.length > 0) {
-          lines.push(`files: ${hit.record.filesTouched.join(', ')}`);
+        if (!compactMetadata) {
+          lines.push(`source: ${hit.source || 'record'}`);
+          lines.push(`scope: ${hit.durableEntry?.scope ?? hit.record.scope}`);
+          lines.push(`session_id: ${hit.record.sessionId}`);
+          lines.push(`chunk_id: ${hit.record.id}`);
+          lines.push(`updated_at: ${new Date(updatedAt).toISOString()}`);
+          lines.push(formatMemoryLastConfirmedMetadata(updatedAt, now));
+          const verificationCaveat = formatMemoryVerificationCaveat(freshness, updatedAt, now);
+          if (verificationCaveat) {
+            lines.push(verificationCaveat);
+          }
+          lines.push(`confidence=${confidence.toFixed(2)} staleness=${freshness} evidence=${evidence}`);
+          if (files.length > 0) {
+            lines.push(`files: ${files.join(', ')}`);
+          }
+          if (tools.length > 0) {
+            lines.push(`tools: ${tools.join(', ')}`);
+          }
+          if (hit.durableEntry) {
+            lines.push(`durable_key: ${hit.durableEntry.key}`);
+          }
+          lines.push(`maintenance_hint: ${maintenanceHint}`);
+          if (hit.scoreBreakdown) {
+            const parts = Object.entries(hit.scoreBreakdown)
+              .map(([key, value]) => `${key}=${Number(value).toFixed(2)}`)
+              .join(' ');
+            lines.push(`score_breakdown: ${parts}`);
+          }
         }
-        if (hit.record.toolsUsed.length > 0) {
-          lines.push(`tools: ${hit.record.toolsUsed.join(', ')}`);
+        if (hit.durableEntry) {
+          lines.push(...renderSelectiveMemorySurfaceLines(hit.durableEntry, {
+            fallbackLabel: 'guidance',
+            query,
+            compactPriorContext,
+          }));
+          if (hit.durableEntry.category === 'reference') {
+            sawCurrentStateReferencePointer = true;
+          }
+        } else if (hit.record.signalKind === 'summary') {
+          const summary = renderSummaryRecordText(hit.record);
+          lines.push(`summary: ${summary.summary}`);
+          for (const detail of summary.details) {
+            lines.push(detail);
+          }
+        } else {
+          const compactRawSupport = shouldCompactLaterCurrentStateProjectSupport({
+            query,
+            hasLeadingReferencePointer: sawCurrentStateReferencePointer,
+            isProjectStateLike: recordLooksLikeProjectStateSnapshot(hit),
+          });
+          const evidence = renderRawRecordEvidence(hit.record, compactRawSupport ? { compact: true } : undefined);
+
+          lines.push(`evidence: ${evidence.evidence}`);
+          for (const detail of evidence.details) {
+            lines.push(detail);
+          }
+          if (recordLooksLikeReferencePointer(hit)) {
+            sawCurrentStateReferencePointer = true;
+          }
         }
-        lines.push(hit.record.text.trim());
         lines.push('');
       }
       lines.push('</memory>');
 
-      const trimmed = trimForOutput(lines.join('\n'), maxChars);
+      const trimmed = trimForOutput(redactMemorySecrets(lines.join('\n')), maxChars);
       return {
         success: true,
         data: trimmed.text,
         metadata: {
           view,
           query,
+          ...(scope ? { scope } : {}),
           matchCount: search.hits.length,
           truncated: trimmed.truncated,
           totalTokens: search.totalTokens,

@@ -2,7 +2,7 @@
   "name": "lingyun",
   "displayName": "LingYun",
   "description": "Agentic AI assistant for VS Code",
-  "version": "2.3.2",
+  "version": "2.3.3",
   "publisher": "mzbac",
   "icon": "images/icon.png",
   "license": "MIT",
@@ -388,6 +388,12 @@
           "minimum": 1,
           "description": "Default maximum number of transcript-backed memory matches returned by search."
         },
+        "lingyun.memories.maxResultsPerKind": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "description": "Maximum number of top-level matches returned per memory kind before neighbor expansion."
+        },
         "lingyun.memories.searchNeighborWindow": {
           "type": "number",
           "default": 1,
@@ -410,6 +416,24 @@
           "default": 1200,
           "minimum": 100,
           "description": "Maximum estimated tokens allocated to automatically recalled memory context."
+        },
+        "lingyun.memories.autoRecallMinScore": {
+          "type": "number",
+          "default": 7,
+          "minimum": 0,
+          "description": "Minimum retrieval score required before auto-recalled memory is injected into the prompt."
+        },
+        "lingyun.memories.autoRecallMinScoreGap": {
+          "type": "number",
+          "default": 1.25,
+          "minimum": 0,
+          "description": "Minimum score gap between the top two recall candidates before auto recall proceeds."
+        },
+        "lingyun.memories.autoRecallMaxAgeDays": {
+          "type": "number",
+          "default": 45,
+          "minimum": 1,
+          "description": "Ignore auto-recall matches whose last confirmation is older than this many days."
         },
         "lingyun.autoApprove": {
           "type": "boolean",

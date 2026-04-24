@@ -363,6 +363,7 @@ function createResponsesBody(
       ? { ...behavior, systemPromptMode: 'instructions' as const }
       : behavior;
   const promptParts = promptToResponsesRequest(options.prompt, effectiveBehavior);
+  const reasoning = effort ? { effort } : undefined;
 
   return {
     model: modelId,
@@ -372,7 +373,7 @@ function createResponsesBody(
       : {}),
     stream: true,
     store: false,
-    include: ['reasoning.encrypted_content'],
+    ...(reasoning ? { include: ['reasoning.encrypted_content'] } : {}),
     tools: toolsToResponses(options.tools),
     tool_choice: toolChoiceToResponses(options.toolChoice),
     ...(behavior.includeSamplingOptions
@@ -383,7 +384,7 @@ function createResponsesBody(
         }
       : {}),
     text: verbosity ? { verbosity } : undefined,
-    reasoning: effort ? { effort } : undefined,
+    reasoning,
   };
 }
 
@@ -420,6 +421,55 @@ function nextEventBoundary(buffer: string): { index: number; length: number } | 
   return lf < crlf ? { index: lf, length: 2 } : { index: crlf, length: 4 };
 }
 
+function nonEmptyString(value: unknown): string | undefined {
+  const text = asString(value)?.trim();
+  return text || undefined;
+}
+
+function formatResponsesErrorMessage(
+  fallback: string,
+  message?: string,
+  code?: string,
+  type?: string,
+  param?: string,
+): string {
+  const base = message || fallback;
+  const details = [
+    code ? `code=${code}` : undefined,
+    type ? `type=${type}` : undefined,
+    param ? `param=${param}` : undefined,
+  ].filter(Boolean);
+  return details.length > 0 ? `${base} (${details.join(', ')})` : base;
+}
+
+function extractNestedResponsesError(
+  event: Record<string, unknown>,
+): { message?: string; code?: string; type?: string; param?: string } {
+  const response = asRecord(event['response']);
+  const nested = asRecord(response?.['error']) ?? asRecord(event['error']);
+
+  const message =
+    nonEmptyString(nested?.['message']) ??
+    nonEmptyString(event['message']) ??
+    (typeof event['error'] === 'string' ? nonEmptyString(event['error']) : undefined);
+
+  return {
+    message,
+    code: nonEmptyString(nested?.['code']) ?? nonEmptyString(event['code']),
+    type: nonEmptyString(nested?.['type']) ?? nonEmptyString(event['error_type']) ?? nonEmptyString(event['type']),
+    param: nonEmptyString(nested?.['param']) ?? nonEmptyString(event['param']),
+  };
+}
+
+function responsesStreamError(event: Record<string, unknown>, fallback: string): Error {
+  const { message, code, type, param } = extractNestedResponsesError(event);
+  const error = new Error(formatResponsesErrorMessage(fallback, message, code, type, param));
+  if (code) {
+    (error as Error & { code?: string }).code = code;
+  }
+  return error;
+}
+
 function buildFinishProviderMetadata(
   behavior: ResponsesModelBehavior,
   replay: { id: string; encryptedContent?: string } | undefined,
@@ -448,6 +498,7 @@ function createResponsesStream(
       void (async () => {
         let buffer = '';
         let finished = false;
+        let terminalError = false;
         let hasFunctionCall = false;
         let usage: LanguageModelV3Usage = EMPTY_USAGE;
         let finishReason: LanguageModelV3FinishReason = { unified: 'stop', raw: 'stop' };
@@ -547,6 +598,13 @@ function createResponsesStream(
           emittedToolCallIds.add(toolCallId);
         };
 
+        const emitTerminalError = (error: unknown) => {
+          closeOpenParts();
+          controller.enqueue({ type: 'error', error });
+          terminalError = true;
+          finished = true;
+        };
+
         try {
           while (true) {
             const { value, done } = await reader.read();
@@ -577,6 +635,17 @@ function createResponsesStream(
 
               const eventType = asString(event['type']);
               if (!eventType) continue;
+
+              if (eventType === 'response.failed') {
+                emitTerminalError(responsesStreamError(event, 'Responses stream failed'));
+                break;
+              }
+
+              if (eventType === 'response.incomplete') {
+                const reason = nonEmptyString(asRecord(asRecord(event['response'])?.['incomplete_details'])?.['reason']);
+                emitTerminalError(new Error(`Incomplete response returned, reason: ${reason ?? 'unknown'}`));
+                break;
+              }
 
               if (eventType === 'response.created') {
                 const response = asRecord(event['response']);
@@ -693,7 +762,11 @@ function createResponsesStream(
                     const textValue = content
                       .map((entry) => {
                         const part = asRecord(entry);
-                        return asString(part?.['type']) === 'output_text' ? asString(part?.['text']) ?? '' : '';
+                        const partType = asString(part?.['type']);
+                        if (partType === 'output_text' || partType === 'text') {
+                          return asString(part?.['text']) ?? '';
+                        }
+                        return '';
                       })
                       .join('');
                     emitFinalText(messageId, textValue);
@@ -799,16 +872,19 @@ function createResponsesStream(
               }
 
               if (eventType === 'error') {
-                const message = asString(event['message']) ?? 'Responses stream error';
+                const error = responsesStreamError(event, 'Responses stream error');
+                const message = error.message;
                 if (finished && isSummaryPartsParserStateError(message)) {
                   continue;
                 }
-                controller.enqueue({ type: 'error', error: new Error(message) });
+                emitTerminalError(error);
+                break;
               }
             }
+            if (terminalError) break;
           }
 
-          if (!finished) {
+          if (!finished && !terminalError) {
             closeOpenParts();
             controller.enqueue({ type: 'error', error: new Error('Connection terminated') });
           }
@@ -841,6 +917,25 @@ function buildHeaders(options: ResponsesModelOptions): Record<string, string> {
   };
 }
 
+function responsesHttpError(
+  errorLabel: string,
+  endpoint: string,
+  response: Response,
+  responseBody: string,
+): Error {
+  const error = new Error(`${errorLabel} request failed`);
+  const headers = headersToRecord(response.headers);
+  Object.assign(error, {
+    status: response.status,
+    statusCode: response.status,
+    url: endpoint,
+    responseBody,
+    responseHeaders: headers,
+    headers,
+  });
+  return error;
+}
+
 export function createResponsesModel(options: ResponsesModelOptions): LanguageModelV3 {
   const endpoint = `${normalizeBaseURL(options.baseURL)}/responses`;
   const fetchFn = options.fetch ?? globalThis.fetch;
@@ -856,7 +951,7 @@ export function createResponsesModel(options: ResponsesModelOptions): LanguageMo
 
     if (!response.ok || !response.body) {
       const text = await response.text().catch(() => '');
-      throw new Error(`${options.errorLabel} request failed: ${response.status} ${text}`.trim());
+      throw responsesHttpError(options.errorLabel, endpoint, response, text);
     }
 
     return {

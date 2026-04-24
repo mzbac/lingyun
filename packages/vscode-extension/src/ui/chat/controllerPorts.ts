@@ -3,6 +3,7 @@ import * as vscode from 'vscode';
 import type { AgentHistoryMessage, UserHistoryInput } from '@kooka/core';
 
 import type { AgentSessionState } from '../../core/agent';
+import type { SessionSignals } from '../../core/sessionSignals';
 import type { AgentApprovalContext, AgentCallbacks, LLMProvider } from '../../core/types';
 import type { OfficeSync } from '../office/sync';
 import type { ChatMessage, ChatMode, ChatQueuedInput, ChatSessionInfo, ChatUserInput } from './types';
@@ -123,6 +124,7 @@ export interface RunCoordinatorHost {
   queueManager: RunCoordinatorQueuePort;
   recordInputHistory(content: string): void;
   recordUserIntent(text: string): void;
+  signals?: SessionSignals;
   setModeAndPersist(
     mode: ChatMode,
     options?: { persistConfig?: boolean; notifyWebview?: boolean; persistSession?: boolean }

@@ -12,16 +12,19 @@ import { OpenAIAccountAuth } from './openaiAccountAuth';
 import { createFetchWithStreamingDefaults } from './openaiFetch';
 import type { ModelInfo } from './modelCatalog';
 import type { LLMProviderWithUi, ProviderAuthStatus } from './providerUi';
+import { appendErrorLog } from '../core/logger';
 
 const OPENAI_AUTH_ISSUER = 'https://auth.openai.com';
 const CODEX_BASE_URL = 'https://chatgpt.com/backend-api/codex';
 const CODEX_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
+const CODEX_ORIGINATOR = 'lingyun';
 const AUTH_SECRET_STORAGE_KEY = 'providers.codexSubscription.auth';
 
 export interface CodexSubscriptionProviderOptions {
   context: vscode.ExtensionContext;
   defaultModelId?: string;
   timeoutMs?: number;
+  outputChannel?: vscode.OutputChannel;
 }
 
 export class CodexSubscriptionProvider implements LLMProviderWithUi {
@@ -31,6 +34,7 @@ export class CodexSubscriptionProvider implements LLMProviderWithUi {
   private readonly auth: OpenAIAccountAuth;
   private readonly context: vscode.ExtensionContext;
   private readonly defaultModelId?: string;
+  private readonly outputChannel?: vscode.OutputChannel;
   private fetchFn: ReturnType<typeof createFetchWithStreamingDefaults>['fetch'];
   private readonly disposeFetch: () => void;
 
@@ -40,6 +44,7 @@ export class CodexSubscriptionProvider implements LLMProviderWithUi {
   constructor(options: CodexSubscriptionProviderOptions) {
     this.context = options.context;
     this.defaultModelId = options.defaultModelId || CODEX_SUBSCRIPTION_DEFAULT_MODEL_ID;
+    this.outputChannel = options.outputChannel;
     const fetchWithDefaults = createFetchWithStreamingDefaults(options.timeoutMs);
     this.fetchFn = fetchWithDefaults.fetch;
     this.disposeFetch = fetchWithDefaults.dispose;
@@ -52,7 +57,7 @@ export class CodexSubscriptionProvider implements LLMProviderWithUi {
       authorizeParams: {
         id_token_add_organizations: 'true',
         codex_cli_simplified_flow: 'true',
-        originator: 'opencode',
+        originator: CODEX_ORIGINATOR,
       },
       browserInstructions: 'Complete ChatGPT authorization in your browser.',
       redirectPort: 1455,
@@ -111,6 +116,10 @@ export class CodexSubscriptionProvider implements LLMProviderWithUi {
     this.clearModelCache();
   }
 
+  getAuthRetryLabel(error: unknown, _context?: { modelId: string; mode: 'plan' | 'build' }): string | undefined {
+    return this.isAuthError(error) ? this.name : undefined;
+  }
+
   onRequestError(error: unknown, _context?: { modelId: string; mode: 'plan' | 'build' }): void {
     if (this.isAuthError(error)) {
       this.auth.invalidateAccessToken();
@@ -126,7 +135,7 @@ export class CodexSubscriptionProvider implements LLMProviderWithUi {
 
   private createRequestHeaders(session: { accountId?: string }): Record<string, string> {
     const headers: Record<string, string> = {
-      originator: 'opencode',
+      originator: CODEX_ORIGINATOR,
       'User-Agent': `lingyun/${this.getExtensionVersion()}`,
       session_id: crypto.randomUUID(),
     };
@@ -187,6 +196,9 @@ export class CodexSubscriptionProvider implements LLMProviderWithUi {
         if (this.isAuthError(error)) {
           this.auth.invalidateAccessToken();
         }
+        appendErrorLog(this.outputChannel, 'Failed to load Codex models (falling back to bundled list)', error, {
+          tag: 'Codex',
+        });
       }
 
       this.cachedModels = CODEX_SUBSCRIPTION_FALLBACK_MODELS.map((model) => ({ ...model }));

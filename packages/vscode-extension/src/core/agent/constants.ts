@@ -12,6 +12,8 @@ const STATUS_MESSAGES: Record<string, string> = {
   grep: 'Searching code',
   lsp: 'Querying symbols',
   get_memory: 'Reading memory',
+  maintain_memory: 'Maintaining memory',
+  update_memory: 'Updating memory',
   edit: 'Making edits',
   write: 'Writing files',
   bash: 'Running commands',

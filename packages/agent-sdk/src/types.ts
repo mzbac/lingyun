@@ -162,6 +162,10 @@ export interface LLMProvider {
    * Providers can use this to clear cached clients/tokens so the next request can recover.
    */
   onRequestError?(error: unknown, context: { modelId: string; mode: 'plan' | 'build' }): void;
+  /**
+   * Return a provider label when an auth failure should refresh credentials and retry once.
+   */
+  getAuthRetryLabel?(error: unknown, context: { modelId: string; mode: 'plan' | 'build' }): string | undefined;
   dispose?(): void;
 }
 

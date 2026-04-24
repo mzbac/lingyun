@@ -97,7 +97,7 @@ suite('CodexSubscriptionProvider', () => {
       );
       assert.strictEqual(requestHeaders?.get('authorization'), 'Bearer test-access-token');
       assert.strictEqual(requestHeaders?.get('ChatGPT-Account-Id'), 'org_123');
-      assert.strictEqual(requestHeaders?.get('originator'), 'opencode');
+      assert.strictEqual(requestHeaders?.get('originator'), 'lingyun');
       assert.strictEqual(requestHeaders?.get('user-agent'), 'lingyun/2.2.0-test');
       assert.strictEqual(requestHeaders?.get('accept'), 'application/json');
 
@@ -127,6 +127,7 @@ suite('CodexSubscriptionProvider', () => {
   });
 
   test('falls back to the hardcoded model list when metadata loading fails', async () => {
+    const logLines: string[] = [];
     const provider = new CodexSubscriptionProvider({
       context: {
         extension: { packageJSON: { version: '2.2.0-test' } },
@@ -139,6 +140,11 @@ suite('CodexSubscriptionProvider', () => {
       } as any,
       defaultModelId: 'gpt-5.3-codex',
       timeoutMs: 0,
+      outputChannel: {
+        appendLine(line: string) {
+          logLines.push(line);
+        },
+      } as any,
     });
 
     (provider as any).auth.getValidSession = async () => ({
@@ -156,6 +162,10 @@ suite('CodexSubscriptionProvider', () => {
 
     try {
       const models = await provider.getModels();
+      assert.ok(
+        logLines.some((line) => line.includes('Failed to load Codex models (falling back to bundled list)')),
+        'expected model discovery fallback to be logged',
+      );
       assert.deepStrictEqual(
         models.map((model) => model.id),
         [
@@ -268,7 +278,7 @@ suite('CodexSubscriptionProvider', () => {
       assert.strictEqual(requestUrl, 'https://chatgpt.com/backend-api/codex/responses');
       assert.strictEqual(requestHeaders?.get('authorization'), 'Bearer test-access-token');
       assert.strictEqual(requestHeaders?.get('ChatGPT-Account-Id'), 'org_123');
-      assert.strictEqual(requestHeaders?.get('originator'), 'opencode');
+      assert.strictEqual(requestHeaders?.get('originator'), 'lingyun');
       assert.strictEqual(requestHeaders?.get('user-agent'), 'lingyun/2.2.0-test');
       assert.strictEqual(requestHeaders?.get('accept'), 'text/event-stream');
       assert.strictEqual(requestBody?.model, 'gpt-5.3-codex');

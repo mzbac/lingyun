@@ -255,6 +255,129 @@ suite('sessionTitle', () => {
     assert.strictEqual(title, 'Fixing session title fallback');
   });
 
+  test('extracts title text when Responses stream only sends output_item.done (text parts)', async () => {
+    const llm = new MockResponsesLLMProvider([
+      {
+        type: 'response.output_item.done',
+        output_index: 0,
+        item: {
+          type: 'message',
+          id: 'msg_1',
+          content: [
+            {
+              type: 'text',
+              text: 'Naming Copilot sessions',
+            },
+          ],
+        },
+      },
+      {
+        type: 'response.completed',
+        response: {
+          id: 'resp_4',
+          model: 'gpt-5.4',
+          usage: {
+            input_tokens: 0,
+            input_tokens_details: { cached_tokens: 0 },
+            output_tokens: 0,
+            output_tokens_details: { reasoning_tokens: 0 },
+          },
+        },
+      },
+    ]);
+
+    const title = await generateSessionTitle({
+      llm,
+      modelId: 'gpt-5.4',
+      message: 'copilot responses returns message content parts as `text` instead of `output_text`',
+    });
+
+    assert.strictEqual(title, 'Naming Copilot sessions');
+  });
+
+  test('extracts title text when Responses stream only sends output_item.done (output_text parts)', async () => {
+    const llm = new MockResponsesLLMProvider([
+      {
+        type: 'response.output_item.done',
+        output_index: 0,
+        item: {
+          type: 'message',
+          id: 'msg_2',
+          content: [
+            {
+              type: 'output_text',
+              text: 'Summarizing Responses output_item.done',
+            },
+          ],
+        },
+      },
+      {
+        type: 'response.completed',
+        response: {
+          id: 'resp_5',
+          model: 'gpt-5.4',
+          usage: {
+            input_tokens: 0,
+            input_tokens_details: { cached_tokens: 0 },
+            output_tokens: 0,
+            output_tokens_details: { reasoning_tokens: 0 },
+          },
+        },
+      },
+    ]);
+
+    const title = await generateSessionTitle({
+      llm,
+      modelId: 'gpt-5.4',
+      message: 'copilot responses emits output_item.done content parts as `output_text`',
+    });
+
+    assert.strictEqual(title, 'Summarizing Responses output_item.done');
+  });
+
+  test('extracts title text when output_item.done omits output_index (mixed text parts)', async () => {
+    const llm = new MockResponsesLLMProvider([
+      {
+        type: 'response.output_item.done',
+        item: {
+          type: 'message',
+          id: 'msg_3',
+          content: [
+            {
+              type: 'text',
+              text: 'Naming ',
+            },
+            {
+              type: 'output_text',
+              text: 'Copilot sessions',
+            },
+          ],
+        },
+      },
+      {
+        type: 'response.completed',
+        response: {
+          id: 'resp_6',
+          model: 'gpt-5.4',
+          usage: {
+            input_tokens: 0,
+            input_tokens_details: { cached_tokens: 0 },
+            output_tokens: 0,
+            output_tokens_details: { reasoning_tokens: 0 },
+          },
+        },
+      },
+    ]);
+
+    const title = await generateSessionTitle({
+      llm,
+      modelId: 'gpt-5.4',
+      message: 'copilot responses output_item.done may not include output_index',
+    });
+
+    assert.strictEqual(title, 'Naming Copilot sessions');
+  });
+
   test('notifies provider request-error hook when title generation fails', async () => {
     const llm = new MockFailingLLMProvider();
 

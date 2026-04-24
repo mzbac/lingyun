@@ -1,7 +1,7 @@
 import { BUILD_SWITCH_PROMPT as CORE_BUILD_SWITCH_PROMPT, createPlanPrompt } from '@kooka/core';
 
 export const PLAN_PROMPT = createPlanPrompt({
-  tools: 'list, glob, grep, read, read_range, lsp, symbols_search, symbols_peek, get_memory',
+  tools: 'list, glob, grep, read, read_range, lsp, symbols_search, symbols_peek, get_memory, update_memory, maintain_memory',
   includeTodoTools: true,
   filePathGuidance:
     'Do NOT "spell" file paths. Use glob/grep/symbols_search first and then use fileId/symbolId for read/lsp/symbols_peek when possible.',
@@ -21,7 +21,11 @@ You may see <system-reminder>...</system-reminder> blocks inserted by the system
 - For symbol/code-intelligence tasks (definitions/references/types), prefer symbols_search → symbols_peek; use lsp as fallback
 - After grep, prefer symbols_peek on the matched matchId (or fileId + line/character); avoid reading whole files
 - Prefer read_range (1-based) for small snippets; use read offset+limit for larger files
-- Memory may be auto-recalled before a run; use get_memory when you need deeper search/browsing or want to inspect the backing memory artifacts directly
+- Memory may be auto-recalled before a run; treat it as prior context/pointers, not guaranteed-current truth. Prefer current workspace evidence for drift-prone facts.
+- Use get_memory when you need deeper search/browsing or want to inspect the backing memory artifacts directly; if the user asks to ignore memory, do not apply or mention recalled memory.
+- If the user explicitly asks what you remember, or asks you to check/recall memory, access memory with get_memory search unless the auto-recalled context fully answers it.
+- If the user asks to forget/remove a memory, use get_memory search to find the matching recordId/durableKey, then use maintain_memory action=invalidate; do not treat the forget request as a new memory.
+- Use update_memory to rebuild memory artifacts from persisted sessions when memory seems stale; use maintain_memory to confirm, invalidate, or supersede stale/wrong durable memories when appropriate
 - bash is slower than file tools; prefer list/glob/grep/read when possible
 - Prefer lsp for symbol navigation/refactors; use grep for plain text search
 - Use todowrite to track a multi-step plan and keep it updated as you execute

@@ -16,6 +16,17 @@ function encodeSseEvents(events: unknown[]): ReadableStream<Uint8Array> {
   });
 }
 
+async function readStreamParts(stream: ReadableStream<any>): Promise<any[]> {
+  const reader = stream.getReader();
+  const parts: any[] = [];
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    if (value) parts.push(value);
+  }
+  return parts;
+}
+
 suite('CopilotResponsesModel', () => {
   test('forces temperature=1 for fixed-temperature responses models', async () => {
     const originalFetch = globalThis.fetch;
@@ -47,6 +58,42 @@ suite('CopilotResponsesModel', () => {
       } as any);
 
       assert.strictEqual(capturedBody?.temperature, 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test('omits reasoning include when no reasoning effort is requested', async () => {
+    const originalFetch = globalThis.fetch;
+    let capturedBody: Record<string, unknown> | undefined;
+
+    try {
+      globalThis.fetch = async (_input, init) => {
+        capturedBody = JSON.parse(String(init?.body ?? '{}'));
+        return new Response(encodeSseEvents([{ type: 'response.completed', response: { id: 'resp_1', model: 'gpt-5.4' } }]), {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        });
+      };
+
+      const model = createCopilotResponsesModel({
+        baseURL: 'https://example.invalid',
+        apiKey: 'test',
+        modelId: 'gpt-5.4',
+        headers: {},
+      });
+
+      await model.doStream({
+        prompt: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+        tools: [],
+        toolChoice: undefined,
+        temperature: undefined,
+        topP: undefined,
+        maxOutputTokens: 16,
+      } as any);
+
+      assert.ok(!Object.prototype.hasOwnProperty.call(capturedBody || {}, 'include'));
+      assert.ok(!Object.prototype.hasOwnProperty.call(capturedBody || {}, 'reasoning'));
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -559,6 +606,154 @@ suite('CopilotResponsesModel', () => {
           reasoningEncryptedContent: 'enc_456',
         },
       });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test('surfaces response.failed details instead of a generic stream error', async () => {
+    const originalFetch = globalThis.fetch;
+
+    try {
+      globalThis.fetch = async () => {
+        const events = [
+          {
+            type: 'response.failed',
+            response: {
+              id: 'resp_failed',
+              status: 'failed',
+              error: {
+                code: 'model_not_found',
+                type: 'invalid_request_error',
+                message: 'Model gpt-5.5 is not available for this account.',
+              },
+            },
+          },
+        ];
+
+        return new Response(encodeSseEvents(events), {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        });
+      };
+
+      const model = createCopilotResponsesModel({
+        baseURL: 'https://example.invalid',
+        apiKey: 'test',
+        modelId: 'gpt-5.5',
+        headers: {},
+      });
+
+      const result = await model.doStream({
+        prompt: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+        tools: [],
+        toolChoice: undefined,
+        temperature: undefined,
+        topP: undefined,
+        maxOutputTokens: 16,
+      } as any);
+
+      const parts = await readStreamParts(result.stream);
+
+      assert.deepStrictEqual(parts.map((part) => part.type), ['error']);
+      assert.match(String(parts[0].error?.message ?? ''), /Model gpt-5\.5 is not available/);
+      assert.match(String(parts[0].error?.message ?? ''), /code=model_not_found/);
+      assert.doesNotMatch(String(parts[0].error?.message ?? ''), /Connection terminated/);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test('attaches structured metadata to non-ok HTTP responses', async () => {
+    const originalFetch = globalThis.fetch;
+
+    try {
+      globalThis.fetch = async () =>
+        new Response(JSON.stringify({ error: { message: 'Token expired' } }), {
+          status: 401,
+          headers: {
+            'Content-Type': 'application/json',
+            'x-request-id': 'req_http_1',
+          },
+        });
+
+      const model = createCopilotResponsesModel({
+        baseURL: 'https://example.invalid',
+        apiKey: 'test',
+        modelId: 'gpt-5.4',
+        headers: {},
+      });
+
+      let thrown: any;
+      try {
+        await model.doStream({
+          prompt: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+          tools: [],
+          toolChoice: undefined,
+          temperature: undefined,
+          topP: undefined,
+          maxOutputTokens: 16,
+        } as any);
+      } catch (error) {
+        thrown = error;
+      }
+
+      assert.ok(thrown, 'expected doStream to reject');
+      assert.strictEqual(thrown.status, 401);
+      assert.strictEqual(thrown.statusCode, 401);
+      assert.strictEqual(thrown.url, 'https://example.invalid/responses');
+      assert.match(thrown.responseBody, /Token expired/);
+      assert.strictEqual(thrown.responseHeaders?.['x-request-id'], 'req_http_1');
+      assert.strictEqual(thrown.headers?.['x-request-id'], 'req_http_1');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test('surfaces nested error event details instead of Responses stream error', async () => {
+    const originalFetch = globalThis.fetch;
+
+    try {
+      globalThis.fetch = async () => {
+        const events = [
+          {
+            type: 'error',
+            error: {
+              code: 'unsupported_model',
+              type: 'invalid_request_error',
+              message: 'Unsupported model gpt-5.5 for the Codex subscription endpoint.',
+            },
+          },
+        ];
+
+        return new Response(encodeSseEvents(events), {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        });
+      };
+
+      const model = createCopilotResponsesModel({
+        baseURL: 'https://example.invalid',
+        apiKey: 'test',
+        modelId: 'gpt-5.5',
+        headers: {},
+      });
+
+      const result = await model.doStream({
+        prompt: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+        tools: [],
+        toolChoice: undefined,
+        temperature: undefined,
+        topP: undefined,
+        maxOutputTokens: 16,
+      } as any);
+
+      const parts = await readStreamParts(result.stream);
+
+      assert.deepStrictEqual(parts.map((part) => part.type), ['error']);
+      assert.match(String(parts[0].error?.message ?? ''), /Unsupported model gpt-5\.5/);
+      assert.match(String(parts[0].error?.message ?? ''), /code=unsupported_model/);
+      assert.doesNotMatch(String(parts[0].error?.message ?? ''), /^Responses stream error$/);
     } finally {
       globalThis.fetch = originalFetch;
     }

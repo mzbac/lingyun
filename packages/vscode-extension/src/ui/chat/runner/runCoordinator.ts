@@ -1,6 +1,13 @@
 import * as vscode from 'vscode';
 
 import type { UserHistoryInputPart } from '@kooka/core';
+import {
+  hasSessionMemoryDisableIntent,
+  hasSessionMemoryEnableIntent,
+  isSessionMemoryDisabled,
+  setSessionMemoryMode,
+  shouldExcludeUserTextFromMemoryCapture,
+} from '../../../core/sessionSignals';
 import { formatErrorForUser, isCancellationMessage } from '../utils';
 
 import type { RunCoordinatorHost } from '../controllerPorts';
@@ -25,6 +32,15 @@ const ASSUMPTIONS_NOTE =
   '- Proceed without further clarification; make reasonable assumptions for unanswered questions.\n' +
   '- If multiple valid options exist, choose the simplest/lowest-risk default.\n' +
   '- Continue in Build mode; do not block waiting for user input.\n';
+
+function applySessionMemoryModeIntent(signals: RunCoordinatorHost['signals'], text: string): void {
+  if (!signals || !text.trim()) return;
+  if (hasSessionMemoryDisableIntent(text)) {
+    setSessionMemoryMode(signals, 'disabled', text);
+  } else if (hasSessionMemoryEnableIntent(text)) {
+    setSessionMemoryMode(signals, 'enabled', text);
+  }
+}
 
 type NormalizedUserInput = {
   text: string;
@@ -210,11 +226,14 @@ export class RunCoordinator {
     c.officeSync?.onRunStart();
 
     const checkpointState = c.agent.exportState();
+    const memoryExcluded =
+      shouldExcludeUserTextFromMemoryCapture(params.normalizedInput.text) || isSessionMemoryDisabled(c.signals);
     const userMsg: ChatMessage = {
       id: crypto.randomUUID(),
       role: 'user',
       content: params.displayContent ?? params.normalizedInput.displayContent,
       timestamp: Date.now(),
+      memoryExcluded: memoryExcluded || undefined,
       checkpoint: {
         historyLength: checkpointState.history.length,
       },
@@ -747,7 +766,11 @@ export class RunCoordinator {
     const normalizedInput = normalizeUserInput(content);
     if (!normalizedInput.hasContent) return;
 
-    if (normalizedInput.text && !options?.fromQueue && !options?.synthetic) {
+    if (normalizedInput.text && !options?.synthetic) {
+      applySessionMemoryModeIntent(c.signals, normalizedInput.text);
+    }
+
+    if (normalizedInput.text && !options?.fromQueue && !options?.synthetic && !shouldExcludeUserTextFromMemoryCapture(normalizedInput.text)) {
       c.recordUserIntent(normalizedInput.text);
     }
 

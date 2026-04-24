@@ -217,7 +217,7 @@ export async function runOnce(params: {
 
       const maxRetries = Math.max(0, Math.floor(params.maxRetries ?? 0));
       let retryAttempt = 0;
-      let copilotAuthRefreshAttempt = 0;
+      let authRefreshAttempt = 0;
 
       while (true) {
         assistantMessage = createAssistantHistoryMessage();
@@ -394,7 +394,8 @@ export async function runOnce(params: {
           const statusCode = getStatusCode(e);
           const msg = getErrorMessage(e);
           const lower = msg.toLowerCase();
-          const isCopilotAuthError =
+          const context = { modelId, mode };
+          const legacyCopilotAuthError =
             llm.id === 'copilot' &&
             (statusCode === 401 ||
               statusCode === 403 ||
@@ -403,26 +404,28 @@ export async function runOnce(params: {
               lower.includes('invalid token') ||
               lower.includes('token expired') ||
               lower.includes('expired token'));
+          const authRetryLabel = llm.getAuthRetryLabel?.(e, context) ?? (legacyCopilotAuthError ? 'GitHub Copilot' : undefined);
+          const isAuthRetry = !!authRetryLabel;
 
-          const retryable = isCopilotAuthError
-            ? { kind: 'auth_expired' as const, message: 'GitHub Copilot auth expired', retryAfterMs: undefined }
+          const retryable = isAuthRetry
+            ? { kind: 'auth_expired' as const, message: `${authRetryLabel} auth expired`, retryAfterMs: undefined }
             : getRetryableLlmError(e);
           const allowRetryAfterOutput = retryWithPartialOutput && !!attemptText.trim();
           const canRetry =
             !!retryable &&
-            (isCopilotAuthError ? copilotAuthRefreshAttempt < 1 : retryAttempt < maxRetries) &&
+            (isAuthRetry ? authRefreshAttempt < 1 : retryAttempt < maxRetries) &&
             !sawToolCall &&
             (!attemptText.trim() || allowRetryAfterOutput) &&
             !combined.aborted;
           if (canRetry) {
-            if (isCopilotAuthError) {
-              copilotAuthRefreshAttempt += 1;
+            if (isAuthRetry) {
+              authRefreshAttempt += 1;
             } else {
               retryAttempt += 1;
             }
 
-            const totalRetryAttempt = retryAttempt + copilotAuthRefreshAttempt;
-            const waitMs = isCopilotAuthError ? 0 : getRetryDelayMs(retryAttempt, retryable.retryAfterMs);
+            const totalRetryAttempt = retryAttempt + authRefreshAttempt;
+            const waitMs = isAuthRetry ? 0 : getRetryDelayMs(retryAttempt, retryable.retryAfterMs);
             invokeCallbackSafely(
               callbacksSafe?.onStatusChange,
               { label: 'onStatusChange', onDebug: callbacksSafe?.onDebug },
@@ -430,13 +433,13 @@ export async function runOnce(params: {
                 type: 'retry',
                 attempt: totalRetryAttempt,
                 nextRetryTime: Date.now() + waitMs,
-                message: isCopilotAuthError ? 'Refreshing GitHub Copilot auth…' : retryable.message,
+                message: isAuthRetry ? `Refreshing ${authRetryLabel} auth…` : retryable.message,
               },
             );
 
-            if (!combined.aborted && isCopilotAuthError) {
+            if (!combined.aborted && isAuthRetry) {
               try {
-                llm.onRequestError?.(e, { modelId, mode });
+                llm.onRequestError?.(e, context);
               } catch {
                 // ignore
               }
