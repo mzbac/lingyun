@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 
 export type SessionMeta = {
   title: string;
+  firstUserMessagePreview?: string;
   createdAt: number;
   updatedAt: number;
 };
@@ -21,7 +22,7 @@ export type SessionStoreOptions<TSession> = {
 };
 
 export class SessionStore<
-  TSession extends { id: string; title: string; createdAt: number; updatedAt: number },
+  TSession extends { id: string; title: string; firstUserMessagePreview?: string; createdAt: number; updatedAt: number },
 > {
   private readonly sessionsDir: vscode.Uri;
   private readonly indexUri: vscode.Uri;
@@ -99,6 +100,7 @@ export class SessionStore<
       if (!session) continue;
       sessionsMeta[id] = {
         title: session.title,
+        firstUserMessagePreview: session.firstUserMessagePreview,
         createdAt: session.createdAt,
         updatedAt: session.updatedAt,
       };

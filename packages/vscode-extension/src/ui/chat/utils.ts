@@ -75,21 +75,28 @@ function stringifyLoose(value: unknown): string | undefined {
   return undefined;
 }
 
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' ? value as Record<string, unknown> : undefined;
+}
+
 function extractServerResponseBody(error: unknown): string | undefined {
-  const err = error as any;
+  const err = asRecord(error);
+  const cause = asRecord(err?.cause);
+  const data = asRecord(err?.data);
+  const causeData = asRecord(cause?.data);
   const candidates: unknown[] = [
     err?.responseBody,
     err?.responseBodyString,
     err?.responseBodyText,
     err?.responseText,
-    err?.data?.responseBody,
+    data?.responseBody,
     err?.data,
-    err?.cause?.responseBody,
-    err?.cause?.responseBodyString,
-    err?.cause?.responseBodyText,
-    err?.cause?.responseText,
-    err?.cause?.data?.responseBody,
-    err?.cause?.data,
+    cause?.responseBody,
+    cause?.responseBodyString,
+    cause?.responseBodyText,
+    cause?.responseText,
+    causeData?.responseBody,
+    cause?.data,
   ];
 
   for (const candidate of candidates) {
@@ -99,31 +106,88 @@ function extractServerResponseBody(error: unknown): string | undefined {
   }
 
   // Some providers only surface server details in the underlying error message.
-  const cause = err?.cause;
-  const causeMessage = cause instanceof Error ? cause.message : typeof cause === 'string' ? cause : undefined;
+  const rawCause = err?.cause;
+  const causeMessage = rawCause instanceof Error ? rawCause.message : typeof rawCause === 'string' ? rawCause : undefined;
   return asMaybeNonEmptyString(causeMessage);
+}
+
+function getStringField(records: Array<Record<string, unknown> | undefined>, keys: string[]): string | undefined {
+  for (const record of records) {
+    if (!record) continue;
+    for (const key of keys) {
+      const value = record[key];
+      if (typeof value === 'string' && value.trim()) return value.trim();
+    }
+  }
+  return undefined;
+}
+
+function getNumberField(records: Array<Record<string, unknown> | undefined>, keys: string[]): number | undefined {
+  for (const record of records) {
+    if (!record) continue;
+    for (const key of keys) {
+      const value = record[key];
+      if (typeof value === 'number' && Number.isFinite(value)) return value;
+      if (typeof value === 'string' && value.trim()) {
+        const parsed = Number(value.trim());
+        if (Number.isFinite(parsed)) return parsed;
+      }
+    }
+  }
+  return undefined;
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function redactKnownSensitiveValues(text: string, records: Array<Record<string, unknown> | undefined>): string {
+  let out = text;
+  const values = new Set<string>();
+  for (const record of records) {
+    const modelId = typeof record?.modelId === 'string' ? record.modelId.trim() : '';
+    if (modelId) values.add(modelId);
+  }
+
+  for (const value of values) {
+    out = out.replace(new RegExp(escapeRegex(value), 'g'), '<model>');
+  }
+  return out;
+}
+
+function redactForUser(text: string, records: Array<Record<string, unknown> | undefined>): string {
+  return redactSensitive(redactKnownSensitiveValues(text, records));
+}
+
+function formatSafeDiagnostic(key: string, value: string | number | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const raw = typeof value === 'number' ? String(Math.ceil(value)) : value;
+  const safe = truncateForDebug(redactSensitive(raw), 160);
+  return safe ? `${key}=${safe}` : undefined;
+}
+
+function getProviderDiagnosticsForUser(records: Array<Record<string, unknown> | undefined>): string {
+  const retryAfterMs = getNumberField(records, ['retryAfterMs']);
+  const parts = [
+    formatSafeDiagnostic('provider', getStringField(records, ['providerId', 'provider'])),
+    formatSafeDiagnostic('requestId', getStringField(records, ['requestId'])),
+    formatSafeDiagnostic('cfRay', getStringField(records, ['cfRay'])),
+    retryAfterMs && retryAfterMs > 0 ? formatSafeDiagnostic('retryAfterMs', retryAfterMs) : undefined,
+    formatSafeDiagnostic('code', getStringField(records, ['code', 'errorCode'])),
+    formatSafeDiagnostic('type', getStringField(records, ['type', 'errorType'])),
+    formatSafeDiagnostic('param', getStringField(records, ['param'])),
+  ].filter(Boolean);
+  return parts.length ? `\n\nDiagnostics: ${parts.join(' ')}` : '';
 }
 
 export function formatErrorForUser(error: unknown, options?: FormatErrorForUserOptions): string {
   const err = error instanceof Error ? error : new Error(String(error));
-  const errRecord = err as Error & { statusCode?: unknown; url?: unknown; code?: unknown; cause?: unknown };
-  const causeRecord =
-    errRecord.cause && typeof errRecord.cause === 'object'
-      ? (errRecord.cause as Record<string, unknown>)
-      : undefined;
+  const errRecord = asRecord(err);
+  const causeRecord = asRecord(errRecord?.cause);
+  const records = [errRecord, causeRecord, asRecord(errRecord?.response), asRecord(causeRecord?.response)];
   const name = err.name && err.name !== 'Error' ? err.name : undefined;
-  const statusCode =
-    typeof errRecord.statusCode === 'number'
-      ? errRecord.statusCode
-      : typeof causeRecord?.statusCode === 'number'
-        ? causeRecord.statusCode
-        : undefined;
-  const urlValue =
-    typeof errRecord.url === 'string'
-      ? errRecord.url
-      : typeof causeRecord?.url === 'string'
-        ? causeRecord.url
-        : undefined;
+  const statusCode = getNumberField(records, ['statusCode', 'status']);
+  const urlValue = getStringField(records, ['url']);
   let urlPath: string | undefined;
   if (urlValue) {
     try {
@@ -132,29 +196,27 @@ export function formatErrorForUser(error: unknown, options?: FormatErrorForUserO
       // ignore parse errors
     }
   }
-  const code =
-    typeof errRecord.code === 'string'
-      ? errRecord.code
-      : typeof causeRecord?.code === 'string'
-        ? causeRecord.code
-        : undefined;
+  const code = getStringField(records, ['code', 'errorCode']);
   const causeMessage =
     typeof causeRecord?.message === 'string'
       ? causeRecord.message
-      : typeof errRecord.cause === 'string'
+      : typeof errRecord?.cause === 'string'
         ? errRecord.cause
         : undefined;
 
   const meta = [name, code, causeMessage].filter(Boolean).join(' | ');
   const message = err.message || String(error);
+  const safeMessage = truncateForDebug(redactForUser(message, records), 2000);
+  const safeMeta = truncateForDebug(redactForUser(meta, records), 2000);
 
-  const base = (meta && message ? `${meta}\n${message}` : message || meta || 'Unknown error').trim();
+  const base = (safeMeta && safeMessage ? `${safeMeta}\n${safeMessage}` : safeMessage || safeMeta || 'Unknown error').trim();
+  const diagnostics = getProviderDiagnosticsForUser(records);
 
   const isApiCallError = name === 'AI_APICallError' || typeof statusCode === 'number';
   if (isApiCallError) {
     const statusLabel = statusCode ? `HTTP ${String(statusCode)}` : 'API call failed';
     const location = urlPath ? ` (${urlPath})` : '';
-    const summary = `${statusLabel}${location}${message ? `: ${message}` : ''}`.trim();
+    const summary = `${statusLabel}${location}${safeMessage ? `: ${safeMessage}` : ''}`.trim();
 
     const tips: string[] = [];
     if (statusCode === 404) {
@@ -188,14 +250,14 @@ export function formatErrorForUser(error: unknown, options?: FormatErrorForUserO
       options?.llmProviderId === 'openaiCompatible' && (!urlValue || !/githubcopilot\.com/i.test(urlValue));
     const responseBodyRaw = includeServerResponse ? extractServerResponseBody(error) : undefined;
     const responseSnippet = responseBodyRaw
-      ? truncateForDebug(redactSensitive(responseBodyRaw), MAX_SERVER_RESPONSE_SNIPPET_CHARS)
+      ? truncateForDebug(redactForUser(responseBodyRaw, records), MAX_SERVER_RESPONSE_SNIPPET_CHARS)
       : '';
 
     const responseBlock = responseSnippet
       ? `\n\nServer response (truncated & redacted):\n${responseSnippet}`
       : '';
 
-    return `Server error: ${summary}${hint}${responseBlock}`.trim();
+    return `Server error: ${summary}${diagnostics}${hint}${responseBlock}`.trim();
   }
 
   const lower = base.toLowerCase();
@@ -205,10 +267,10 @@ export function formatErrorForUser(error: unknown, options?: FormatErrorForUserO
     lower.includes('operation was aborted due to timeout');
 
   if (isTimeoutError && !lower.includes('lingyun.llm.timeoutms')) {
-    return `${base}\n\nTip: adjust \`lingyun.llm.timeoutMs\` (set to 0 to disable timeouts, or increase it).`;
+    return `${base}${diagnostics}\n\nTip: adjust \`lingyun.llm.timeoutMs\` (set to 0 to disable timeouts, or increase it).`;
   }
 
-  return base;
+  return `${base}${diagnostics}`.trim();
 }
 
 export function isCancellationMessage(message: string | undefined): boolean {

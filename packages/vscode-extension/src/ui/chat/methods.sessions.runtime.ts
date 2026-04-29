@@ -10,7 +10,7 @@ import type { LLMProvider } from '../../core/types';
 import type { ModelInfo } from '../../providers/modelCatalog';
 import type { OfficeSync } from '../office/sync';
 import { bindChatControllerService } from './controllerService';
-import { createDefaultSessionTitle } from './sessionTitle';
+import { createDefaultSessionTitle, getSessionDisplayTitle } from './sessionTitle';
 import { formatErrorForUser, isCancellationMessage } from './utils';
 import type { ChatMessage, ChatSessionInfo } from './types';
 import type { PendingApprovalEntry } from './controllerPorts';
@@ -78,6 +78,21 @@ export interface ChatSessionRuntimeDeps {
 }
 
 type ChatSessionRuntimeRuntime = ChatSessionRuntimeDeps & ChatSessionRuntimeService;
+
+function positiveFiniteNumber(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) return Math.floor(value);
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed > 0) return Math.floor(parsed);
+  }
+  return undefined;
+}
+
+function findModelInfo(models: ModelInfo[], modelId: string): ModelInfo | undefined {
+  const normalized = modelId.trim();
+  if (!normalized) return undefined;
+  return models.find((model) => model.id === normalized);
+}
 
 export function createChatSessionRuntimeService(
   controller: ChatSessionRuntimeDeps
@@ -158,13 +173,19 @@ export function createChatSessionRuntimeService(
         }
 
         const modelLimit = getModelLimit(this.currentModel, this.llmProvider?.id);
-        const maxOutputTokens =
-          vscode.workspace.getConfiguration('lingyun').get<number>('openaiCompatible.maxTokens') ??
-          32000;
+        const modelInfo = findModelInfo(this.availableModels, this.currentModel);
+        const configuredMaxOutputTokens = positiveFiniteNumber(
+          vscode.workspace.getConfiguration('lingyun').get<unknown>('openaiCompatible.maxTokens')
+        );
 
         const totalTokens = tokens?.total;
         const contextLimitTokens =
-          modelLimit?.context && modelLimit.context > 0 ? modelLimit.context : undefined;
+          positiveFiniteNumber(modelLimit?.context) ?? positiveFiniteNumber(modelInfo?.maxInputTokens);
+        const outputLimitTokens =
+          positiveFiniteNumber(modelLimit?.output) ??
+          positiveFiniteNumber(modelInfo?.maxOutputTokens) ??
+          configuredMaxOutputTokens ??
+          32000;
         const percent =
           totalTokens && contextLimitTokens && contextLimitTokens > 0
             ? Math.max(0, Math.min(999, Math.round((totalTokens / contextLimitTokens) * 100)))
@@ -177,7 +198,7 @@ export function createChatSessionRuntimeService(
           cacheReadTokens: tokens?.cacheRead,
           cacheWriteTokens: tokens?.cacheWrite,
           contextLimitTokens,
-          outputLimitTokens: Math.max(0, Math.floor(maxOutputTokens)),
+          outputLimitTokens,
           percent,
         };
       } catch {
@@ -213,7 +234,7 @@ export function createChatSessionRuntimeService(
     getSessionsForUI(this: ChatSessionRuntimeRuntime): Array<{ id: string; title: string }> {
       return [...this.sessions.values()].map(s => ({
         id: s.id,
-        title: s.parentSessionId ? `↳ ${s.title}` : s.title,
+        title: s.parentSessionId ? `↳ ${getSessionDisplayTitle(s)}` : getSessionDisplayTitle(s),
       }));
     },
 
@@ -234,6 +255,7 @@ export function createChatSessionRuntimeService(
         return;
       }
 
+      await this.persistence.ensureSessionsLoaded();
       this.persistActiveSession();
 
       const id = crypto.randomUUID();
@@ -267,6 +289,7 @@ export function createChatSessionRuntimeService(
         );
         return;
       }
+      await this.persistence.ensureSessionsLoaded();
       if (!this.sessions.has(sessionId)) return;
 
       this.persistActiveSession();

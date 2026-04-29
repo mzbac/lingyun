@@ -1826,6 +1826,56 @@ suite('LingYun Agent SDK', () => {
     }
   });
 
+  test('aborts promptly during retry backoff without starting another request attempt', async () => {
+    const llm = new MockOpenAICompatibleProvider();
+    const registry = new ToolRegistry();
+
+    llm.queueResponse({
+      kind: 'stream',
+      chunks: [
+        {
+          type: 'error' as const,
+          error: Object.assign(new Error('rate limited'), {
+            name: 'ProviderHttpError',
+            status: 429,
+            retryAfterMs: 60_000,
+          }),
+        },
+      ],
+    });
+    llm.queueResponse({ kind: 'text', content: 'Should not run' });
+
+    const agent = new LingyunAgent(llm, { model: 'mock-model', maxRetries: 1 }, registry, {
+      allowExternalPaths: false,
+    });
+    const session = new LingyunSession();
+    const controller = new AbortController();
+
+    const run = agent.run({ session, input: 'Hi', signal: controller.signal });
+    let sawRetryStatus = false;
+    const eventsDone = (async () => {
+      try {
+        for await (const event of run.events) {
+          if (event.type === 'status' && event.status.type === 'retry') {
+            sawRetryStatus = true;
+            controller.abort();
+          }
+        }
+        return undefined;
+      } catch (error) {
+        return error;
+      }
+    })();
+
+    const [eventsResult, doneResult] = await Promise.allSettled([eventsDone, run.done]);
+    assert.strictEqual(sawRetryStatus, true, 'expected retry status before aborting backoff');
+    assert.strictEqual(llm.callCount, 1, 'aborting during retry backoff should not start a second request attempt');
+    assert.strictEqual(doneResult.status, 'rejected');
+    assert.strictEqual((doneResult as PromiseRejectedResult).reason?.name, 'AbortError');
+    assert.strictEqual(eventsResult.status, 'fulfilled');
+    assert.strictEqual(((eventsResult as PromiseFulfilledResult<unknown>).value as Error | undefined)?.name, 'AbortError');
+  });
+
   test('file handles - registry repairs malformed state before resolving ids', () => {
     const registry = new FileHandleRegistry({});
     const session = {

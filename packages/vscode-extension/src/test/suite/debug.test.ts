@@ -43,15 +43,17 @@ suite('Debug Redaction', () => {
     assert.ok(summary.includes('<url>'));
   });
 
-  test('redactSensitive redacts json and inline key-value secrets', () => {
+  test('redactSensitive redacts json, inline key-value, and standalone OpenAI-style secrets', () => {
     const input =
-      '{"authorization":"Bearer abc","apiKey":"xyz","url":"https://example.com"} token=abc secret:xyz';
+      '{"authorization":"Bearer abc","apiKey":"xyz","url":"https://example.com"} token=abc secret:xyz standalone=sk-test-secret';
     const redacted = redactSensitive(input);
 
     assert.ok(!redacted.includes('abc'));
     assert.ok(!redacted.includes('xyz'));
+    assert.ok(!redacted.includes('sk-test-secret'));
     assert.ok(redacted.includes('<url>'));
     assert.ok(redacted.includes('<redacted>'));
+    assert.ok(redacted.includes('sk-<redacted>'));
   });
 
   test('redactSensitive redacts home paths and local hosts', () => {
@@ -67,15 +69,104 @@ suite('Debug Redaction', () => {
     assert.ok(redacted.includes('<file-url>'));
   });
 
-  test('redactSensitive keeps urls and paths when using secrets-only mode', () => {
+  test('redactSensitive keeps public urls and paths but redacts private hosts in secrets-only mode', () => {
     const home = os.homedir();
-    const input = `authorization=Bearer abc https://example.com from ${home}/projects/demo via localhost:3000`;
+    const input = `authorization=Bearer abc https://example.com from ${home}/projects/demo via localhost:3000 and http://192.168.1.20:11434/v1 and http://10.0.0.2/models and https://api.internal:8443/v1 and http://[::1]:11434/v1`;
     const redacted = redactSensitive(input, { redactionLevel: 'secrets-only' });
 
     assert.ok(!redacted.includes('abc'));
     assert.ok(redacted.includes('https://example.com'));
     assert.ok(redacted.includes(home));
-    assert.ok(redacted.includes('localhost:3000'));
+    assert.ok(!redacted.includes('localhost:3000'));
+    assert.ok(!redacted.includes('192.168.1.20'));
+    assert.ok(!redacted.includes('10.0.0.2'));
+    assert.ok(!redacted.includes('api.internal:8443'));
+    assert.ok(!redacted.includes('[::1]:11434'));
+    assert.ok(redacted.includes('<local-host>'));
+    assert.ok(redacted.includes('<private-ip>'));
+    assert.ok(redacted.includes('<ip>'));
+    assert.ok(redacted.includes('<private-host>'));
+  });
+
+  test('summarizeErrorForDebug includes safe provider diagnostics without leaking URLs or model IDs', () => {
+    const err = Object.assign(
+      new Error('Provider request failed for https://private.local/v1 with authorization=Bearer secret-token'),
+      {
+        name: 'ProviderHttpError',
+        code: 'rate_limit_exceeded',
+        type: 'rate_limit_error',
+        status: 429,
+        providerId: 'openaiCompatible',
+        modelId: 'private-local-model',
+        requestId: 'req_provider_1',
+        cfRay: 'ray_provider_1',
+        retryAfterMs: 1500,
+      },
+    );
+
+    const summary = summarizeErrorForDebug(err);
+
+    assert.ok(summary.includes('provider=openaiCompatible'));
+    assert.ok(summary.includes('requestId=req_provider_1'));
+    assert.ok(summary.includes('cfRay=ray_provider_1'));
+    assert.ok(summary.includes('retryAfterMs=1500'));
+    assert.ok(summary.includes('type=rate_limit_error'));
+    assert.ok(!summary.includes('private.local'));
+    assert.ok(!summary.includes('secret-token'));
+    assert.ok(!summary.includes('private-local-model'));
+  });
+
+  test('formatDetailedErrorForDebug includes safe provider diagnostics without leaking URLs or model IDs', () => {
+    const err = Object.assign(
+      new Error('Provider request failed for https://private.local/v1 with authorization=Bearer secret-token'),
+      {
+        name: 'ProviderHttpError',
+        code: 'rate_limit_exceeded',
+        type: 'rate_limit_error',
+        status: 429,
+        providerId: 'openaiCompatible',
+        modelId: 'private-local-model',
+        requestId: 'req_provider_2',
+        cfRay: 'ray_provider_2',
+        retryAfterMs: 2500,
+      },
+    );
+
+    const details = formatDetailedErrorForDebug(err);
+
+    assert.ok(details.includes('provider=openaiCompatible'));
+    assert.ok(details.includes('requestId=req_provider_2'));
+    assert.ok(details.includes('cfRay=ray_provider_2'));
+    assert.ok(details.includes('retryAfterMs=2500'));
+    assert.ok(details.includes('type=rate_limit_error'));
+    assert.ok(!details.includes('private.local'));
+    assert.ok(!details.includes('secret-token'));
+    assert.ok(!details.includes('private-local-model'));
+  });
+
+  test('redacts provider-supplied code and type values in debug output', () => {
+    const err = Object.assign(
+      new Error('Provider request failed for http://10.0.0.9:11434/v1 token=message-secret'),
+      {
+        name: 'ProviderHttpError',
+        code: 'provider failed at http://10.0.0.4:11434/v1 with token=code-secret',
+        type: 'internal_host=http://192.168.1.20:8080 auth=Bearer type-secret',
+        providerId: 'openaiCompatible',
+      },
+    );
+
+    const summary = summarizeErrorForDebug(err);
+    const details = formatDetailedErrorForDebug(err);
+
+    for (const text of [summary, details]) {
+      assert.ok(text.includes('provider=openaiCompatible'));
+      assert.ok(!text.includes('code-secret'));
+      assert.ok(!text.includes('type-secret'));
+      assert.ok(!text.includes('message-secret'));
+      assert.ok(!text.includes('10.0.0.4'));
+      assert.ok(!text.includes('10.0.0.9'));
+      assert.ok(!text.includes('192.168.1.20'));
+    }
   });
 
   test('formatDetailedErrorForDebug redacts nested cause details and stack', () => {

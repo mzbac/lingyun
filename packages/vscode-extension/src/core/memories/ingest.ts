@@ -9,6 +9,7 @@ import {
   isExplicitMemoryCandidate,
   normalizeSessionSignals,
 } from '../sessionSignals';
+import { getSessionDisplayTitle } from '../sessionTitle';
 
 import {
   type MemoryRecord,
@@ -394,7 +395,7 @@ export function buildStage1Output(params: {
   const signals = collectSessionSignals(session, { explicitOnly: params.explicitOnly });
 
   const updatedAt = Number.isFinite(session.updatedAt) ? session.updatedAt : generatedAt;
-  const title = summarizeMessage(session.title, 140) || 'Untitled session';
+  const title = summarizeMessage(getSessionDisplayTitle(session), 140) || 'Untitled session';
   const keyIntent = redactMemorySecrets(signals.userIntents[0] ?? 'No user intent captured.');
   const keyOutcome = redactMemorySecrets(signals.assistantOutcomes[0] ?? 'No assistant outcome captured.');
   const tools = signals.toolsUsed.length > 0 ? signals.toolsUsed.map(redactMemorySecrets).join(', ') : 'none';

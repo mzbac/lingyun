@@ -7,6 +7,7 @@ import {
   applyCopilotReasoningFields,
   applyOpenAICompatibleReasoningField,
   isCopilotResponsesModelId,
+  shouldUseResponsesApiForModelId,
 } from '@kooka/core';
 
 import { createStreamAdapter, type StreamAdapter } from './streamAdapters.js';
@@ -134,14 +135,20 @@ export function createProviderBehavior(llmId: string): ProviderBehavior {
 
   if (llmId === 'openaiCompatible') {
     return {
-      getChatProviderOptions() {
-        return undefined;
+      getChatProviderOptions(modelId, params) {
+        const reasoningEffort = getGpt5ReasoningEffort(modelId, params);
+        if (!reasoningEffort || !shouldUseResponsesApiForModelId(modelId)) return undefined;
+
+        return {
+          openaiCompatible: { reasoningEffort },
+          openai: { reasoningEffort },
+        };
       },
       prepareHistoryForPrompt(history) {
         return applyAssistantReplayForPrompt(history);
       },
-      transformModelMessages(_modelId, messages) {
-        return applyOpenAICompatibleReasoningField(messages);
+      transformModelMessages(modelId, messages) {
+        return shouldUseResponsesApiForModelId(modelId) ? messages : applyOpenAICompatibleReasoningField(messages);
       },
       createStreamAdapter(modelId) {
         return createStreamAdapter({ llmId: 'openaiCompatible', modelId });

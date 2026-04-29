@@ -1,7 +1,8 @@
 import * as http from 'node:http';
 import * as vscode from 'vscode';
+import type { FetchFunction } from '@ai-sdk/provider-utils';
 
-import { createProviderHttpError } from './providerErrors';
+import { createProviderHttpError, fetchProviderResponse, isProviderAuthError, parseProviderJsonResponse, readProviderResponseBody } from './providerErrors';
 
 const HTML_SUCCESS = `<!doctype html>
 <html>
@@ -136,9 +137,58 @@ export interface OpenAIAccountSession {
 type TokenResponse = {
   id_token?: string;
   access_token: string;
-  refresh_token: string;
-  expires_in?: number;
+  refresh_token?: string;
+  expires_in?: unknown;
 };
+
+type InitialTokenResponse = TokenResponse & { refresh_token: string };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function positiveFiniteNumber(value: unknown): number | undefined {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) && value > 0 ? value : undefined;
+  }
+  if (typeof value === 'string') {
+    const parsed = Number(value.trim());
+    return value.trim() && Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+  }
+  return undefined;
+}
+
+function tokenExpiresInSeconds(tokens: TokenResponse): number {
+  return positiveFiniteNumber(tokens.expires_in) ?? 3600;
+}
+
+function validateTokenResponsePayload(
+  value: unknown,
+  options?: { requireRefreshToken?: boolean },
+): string | undefined {
+  if (!isRecord(value)) return 'token response must be a JSON object';
+  const accessToken = value.access_token;
+  const refreshToken = value.refresh_token;
+  const expiresIn = value.expires_in;
+  const idToken = value.id_token;
+
+  if (typeof accessToken !== 'string' || !accessToken.trim()) {
+    return 'token response missing access_token';
+  }
+  if (options?.requireRefreshToken && (typeof refreshToken !== 'string' || !refreshToken.trim())) {
+    return 'token response missing refresh_token';
+  }
+  if (refreshToken !== undefined && (typeof refreshToken !== 'string' || !refreshToken.trim())) {
+    return 'token response refresh_token must be a non-empty string';
+  }
+  if (expiresIn !== undefined && positiveFiniteNumber(expiresIn) === undefined) {
+    return 'token response expires_in must be a positive number';
+  }
+  if (idToken !== undefined && typeof idToken !== 'string') {
+    return 'token response id_token must be a string';
+  }
+  return undefined;
+}
 
 export interface OpenAIAccountAuthState {
   supported: true;
@@ -153,6 +203,7 @@ export interface OpenAIAccountAuthOptions {
   context: vscode.ExtensionContext;
   secretStorageKey: string;
   providerName: string;
+  providerId?: string;
   clientId: string;
   authorizePath?: string;
   tokenPath?: string;
@@ -163,6 +214,7 @@ export interface OpenAIAccountAuthOptions {
   redirectPort?: number;
   redirectPath?: string;
   useExternalUri?: boolean;
+  fetch?: FetchFunction;
 }
 
 export function parseJwtClaims(token: string): OpenAIAccountTokenClaims | undefined {
@@ -203,6 +255,7 @@ export class OpenAIAccountAuth {
   private readonly tokenPath: string;
   private readonly scope: string;
   private readonly authorizeParams: Record<string, string>;
+  private readonly fetchFn: FetchFunction;
   private sessionCache?: OpenAIAccountSession | null;
   private sessionLoadPromise?: Promise<OpenAIAccountSession | null>;
   private refreshPromise?: Promise<OpenAIAccountSession>;
@@ -214,6 +267,7 @@ export class OpenAIAccountAuth {
     this.tokenPath = options.tokenPath || '/oauth/token';
     this.scope = options.scope || 'openid profile email offline_access';
     this.authorizeParams = options.authorizeParams || {};
+    this.fetchFn = (options.fetch ?? globalThis.fetch) as FetchFunction;
   }
 
   async getAuthState(): Promise<OpenAIAccountAuthState> {
@@ -249,20 +303,20 @@ export class OpenAIAccountAuth {
       async (progress) => {
         progress.report({ message: 'Preparing browser sign-in…' });
         const callback = await this.startCallbackServer();
-        const pkce = await generatePKCE();
-        const state = generateState();
-        const redirectUri = callback.externalUri.toString(true);
-        const authUrl = this.buildAuthorizeUrl(redirectUri, pkce.challenge, state);
-        const callbackPromise = callback.waitForCallback(pkce.verifier, state, redirectUri);
-
-        progress.report({ message: this.options.browserInstructions || 'Authorization will open in your browser.' });
-        const opened = await vscode.env.openExternal(vscode.Uri.parse(authUrl));
-        if (!opened) {
-          callback.dispose();
-          throw new Error(`Failed to open the ${this.options.providerName} authorization page.`);
-        }
 
         try {
+          const pkce = await generatePKCE();
+          const state = generateState();
+          const redirectUri = callback.externalUri.toString(true);
+          const authUrl = this.buildAuthorizeUrl(redirectUri, pkce.challenge, state);
+          const callbackPromise = callback.waitForCallback(pkce.verifier, state, redirectUri);
+
+          progress.report({ message: this.options.browserInstructions || 'Authorization will open in your browser.' });
+          const opened = await vscode.env.openExternal(vscode.Uri.parse(authUrl));
+          if (!opened) {
+            throw new Error(`Failed to open the ${this.options.providerName} authorization page.`);
+          }
+
           const next = await callbackPromise;
           await this.saveSession(next);
           this.forceRefresh = false;
@@ -319,9 +373,9 @@ export class OpenAIAccountAuth {
     return `${this.issuer}${this.authorizePath}?${params.toString()}`;
   }
 
-  private async exchangeCodeForTokens(code: string, redirectUri: string, verifier: string): Promise<TokenResponse> {
+  private async exchangeCodeForTokens(code: string, redirectUri: string, verifier: string): Promise<InitialTokenResponse> {
     const url = `${this.issuer}${this.tokenPath}`;
-    const response = await fetch(url, {
+    const response = await fetchProviderResponse(this.fetchFn, url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
@@ -331,24 +385,40 @@ export class OpenAIAccountAuth {
         client_id: this.options.clientId,
         code_verifier: verifier,
       }).toString(),
+    }, {
+      message: 'Token exchange request failed',
+      url,
+      provider: this.options.providerName,
+      providerId: this.options.providerId,
     });
 
     if (!response.ok) {
-      const text = await response.text().catch(() => '');
+      const text = await readProviderResponseBody(response);
       throw createProviderHttpError({
-        message: `Token exchange failed: HTTP ${response.status}`,
+        message: 'Token exchange failed',
         url,
         response,
         responseBody: text,
+        provider: this.options.providerName,
+        providerId: this.options.providerId,
+        redactResponseBody: true,
       });
     }
 
-    return (await response.json()) as TokenResponse;
+    return parseProviderJsonResponse<InitialTokenResponse>({
+      message: 'Failed to parse token exchange response',
+      url,
+      response,
+      provider: this.options.providerName,
+      providerId: this.options.providerId,
+      redactResponseBody: true,
+      validate: (value) => validateTokenResponsePayload(value, { requireRefreshToken: true }),
+    });
   }
 
   private async refreshAccessToken(refreshToken: string): Promise<TokenResponse> {
     const url = `${this.issuer}${this.tokenPath}`;
-    const response = await fetch(url, {
+    const response = await fetchProviderResponse(this.fetchFn, url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
@@ -356,19 +426,35 @@ export class OpenAIAccountAuth {
         refresh_token: refreshToken,
         client_id: this.options.clientId,
       }).toString(),
+    }, {
+      message: 'Token refresh request failed',
+      url,
+      provider: this.options.providerName,
+      providerId: this.options.providerId,
     });
 
     if (!response.ok) {
-      const text = await response.text().catch(() => '');
+      const text = await readProviderResponseBody(response);
       throw createProviderHttpError({
-        message: `Token refresh failed: HTTP ${response.status}`,
+        message: 'Token refresh failed',
         url,
         response,
         responseBody: text,
+        provider: this.options.providerName,
+        providerId: this.options.providerId,
+        redactResponseBody: true,
       });
     }
 
-    return (await response.json()) as TokenResponse;
+    return parseProviderJsonResponse<TokenResponse>({
+      message: 'Failed to parse token refresh response',
+      url,
+      response,
+      provider: this.options.providerName,
+      providerId: this.options.providerId,
+      redactResponseBody: true,
+      validate: (value) => validateTokenResponsePayload(value),
+    });
   }
 
   private async refreshSession(session: OpenAIAccountSession): Promise<OpenAIAccountSession> {
@@ -380,8 +466,8 @@ export class OpenAIAccountAuth {
         const metadata = extractAccountMetadata(tokens);
         const next: OpenAIAccountSession = {
           accessToken: tokens.access_token,
-          refreshToken: tokens.refresh_token,
-          expiresAt: Date.now() + (tokens.expires_in ?? 3600) * 1000,
+          refreshToken: tokens.refresh_token || session.refreshToken,
+          expiresAt: Date.now() + tokenExpiresInSeconds(tokens) * 1000,
           accountId: metadata.accountId || session.accountId,
           email: metadata.email || session.email,
         };
@@ -389,7 +475,9 @@ export class OpenAIAccountAuth {
         this.forceRefresh = false;
         return next;
       } catch (error) {
-        await this.disconnect();
+        if (isProviderAuthError(error)) {
+          await this.disconnect();
+        }
         throw error;
       } finally {
         this.refreshPromise = undefined;
@@ -556,7 +644,7 @@ export class OpenAIAccountAuth {
             const session: OpenAIAccountSession = {
               accessToken: tokens.access_token,
               refreshToken: tokens.refresh_token,
-              expiresAt: Date.now() + (tokens.expires_in ?? 3600) * 1000,
+              expiresAt: Date.now() + tokenExpiresInSeconds(tokens) * 1000,
               ...(metadata.accountId ? { accountId: metadata.accountId } : {}),
               ...(metadata.email ? { email: metadata.email } : {}),
             };

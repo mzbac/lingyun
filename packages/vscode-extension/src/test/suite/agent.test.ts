@@ -361,8 +361,8 @@ suite('AgentLoop', () => {
     assert.strictEqual(options?.providerOptions?.copilot?.reasoningEffort, 'high');
   });
 
-  test('run - injects OpenAI reasoningEffort for Copilot Responses-only models', async () => {
-    for (const modelId of ['gpt-5.3-codex', 'gpt-5.4']) {
+  test('run - injects OpenAI reasoningEffort for Copilot Responses-routed models', async () => {
+    for (const modelId of ['gpt-5.3-codex', 'gpt-5.4', 'gpt-5.5']) {
       const copilotLLM = new MockCopilotProvider();
       agent = new AgentLoop(copilotLLM, mockContext, { model: modelId }, registry);
       copilotLLM.setNextResponse({ kind: 'text', content: 'OK' });
@@ -376,7 +376,7 @@ suite('AgentLoop', () => {
   });
 
   test('run - injects reasoningEffort for Codex Subscription GPT-5 models', async () => {
-    for (const modelId of ['gpt-5.3-codex', 'gpt-5.4']) {
+    for (const modelId of ['gpt-5.3-codex', 'gpt-5.4', 'gpt-5.5']) {
       const codexLLM = new MockCodexSubscriptionProvider();
       agent = new AgentLoop(codexLLM, mockContext, { model: modelId }, registry);
       codexLLM.setNextResponse({ kind: 'text', content: 'OK' });
@@ -390,7 +390,7 @@ suite('AgentLoop', () => {
   });
 
   test('run - forces temperature=1 for fixed-temperature GPT-5 models', async () => {
-    for (const modelId of ['gpt-5.3-codex', 'gpt-5.4']) {
+    for (const modelId of ['gpt-5.3-codex', 'gpt-5.4', 'gpt-5.5']) {
       const copilotLLM = new MockCopilotProvider();
       agent = new AgentLoop(copilotLLM, mockContext, { model: modelId, temperature: 0.2 }, registry);
       copilotLLM.setNextResponse({ kind: 'text', content: 'OK' });

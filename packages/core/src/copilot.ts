@@ -1,26 +1,50 @@
-const COPILOT_RESPONSES_MODEL_IDS = new Set([
-  'gpt-5.3-codex',
-  'gpt-5.4',
-]);
+const RESPONSES_API_MINIMUM_GPT_VERSION = [5, 3, 0] as const;
 
-/**
- * Returns true when the given Copilot model id must be routed through the
- * OpenAI `/responses`-style streaming path (as opposed to `/chat/completions`).
- *
- * Keep this centralized so Copilot-specific quirks (providerOptions namespaces,
- * prompt transforms, stream adapters) do not scatter across the codebase.
- */
-export function isCopilotResponsesModelId(modelId: string): boolean {
-  const normalized = String(modelId || '').trim().toLowerCase();
-  return COPILOT_RESPONSES_MODEL_IDS.has(normalized);
+function parseGptVersion(modelId: string): [number, number, number] | undefined {
+  const match = String(modelId || '')
+    .trim()
+    .toLowerCase()
+    .match(/(?:^|[/:])gpt-(\d+)(?:\.(\d+))?(?:\.(\d+))?(?=$|[-_:/])/);
+  if (!match) return undefined;
+
+  const major = Number.parseInt(match[1], 10);
+  const minor = match[2] === undefined ? 0 : Number.parseInt(match[2], 10);
+  const patch = match[3] === undefined ? 0 : Number.parseInt(match[3], 10);
+  if (![major, minor, patch].every(Number.isFinite)) return undefined;
+  return [major, minor, patch];
+}
+
+function isAtLeastMinimumGptVersion(version: [number, number, number]): boolean {
+  for (let index = 0; index < RESPONSES_API_MINIMUM_GPT_VERSION.length; index += 1) {
+    const minimum = RESPONSES_API_MINIMUM_GPT_VERSION[index];
+    if (version[index] > minimum) return true;
+    if (version[index] < minimum) return false;
+  }
+  return true;
 }
 
 /**
- * GPT-5.3 Codex and GPT-5.4 only accept the default temperature value.
+ * Returns true when the given model id must be routed through the
+ * OpenAI `/responses`-style streaming path (as opposed to `/chat/completions`).
+ *
+ * Keep this centralized so provider-specific quirks (providerOptions namespaces,
+ * prompt transforms, stream adapters) do not scatter across the codebase.
+ */
+export function shouldUseResponsesApiForModelId(modelId: string): boolean {
+  const normalized = String(modelId || '').trim().toLowerCase();
+  const version = parseGptVersion(normalized);
+  return version !== undefined && isAtLeastMinimumGptVersion(version);
+}
+
+export function isCopilotResponsesModelId(modelId: string): boolean {
+  return shouldUseResponsesApiForModelId(modelId);
+}
+
+/**
+ * Responses-routed GPT models only accept the default temperature value.
  * Normalize temperature centrally so every request path behaves the same way.
  */
 export function normalizeTemperatureForModel(modelId: string, temperature: number | undefined): number | undefined {
-  const normalized = String(modelId || '').trim().toLowerCase();
-  if (COPILOT_RESPONSES_MODEL_IDS.has(normalized)) return 1;
+  if (shouldUseResponsesApiForModelId(modelId)) return 1;
   return temperature;
 }

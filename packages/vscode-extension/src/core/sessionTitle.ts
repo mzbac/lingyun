@@ -3,6 +3,7 @@ import type { LLMProvider } from './types';
 import { createUserHistoryMessage, isCopilotResponsesModelId, normalizeTemperatureForModel, stripThinkBlocks } from '@kooka/core';
 import { streamTextWithLingyunDefaults } from './streamText';
 
+const DEFAULT_TITLE_PREFIX = 'New session - ';
 const TITLE_SYSTEM_PROMPT = `You are a title generator. You output ONLY a thread title. Nothing else.
 
 <task>
@@ -27,6 +28,44 @@ Your output must be:
   output a title reflecting the tone (Greeting, Quick check-in, etc.)
 </rules>`;
 
+export type SessionTitleLike = {
+  title?: string;
+  firstUserMessagePreview?: string;
+};
+
+export function createDefaultSessionTitle(now: Date = new Date()): string {
+  return `${DEFAULT_TITLE_PREFIX}${now.toISOString()}`;
+}
+
+export function isDefaultSessionTitle(title: string): boolean {
+  const value = (title || '').trim();
+  if (!value) return true;
+
+  // Legacy numbered titles are treated as auto-generated.
+  if (/^Session\s+\d+$/i.test(value) || value === 'Session') return true;
+
+  return new RegExp(
+    `^${escapeForRegex(DEFAULT_TITLE_PREFIX)}\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$`,
+  ).test(value);
+}
+
+export function createSessionPreview(text: string, maxChars = 80): string | undefined {
+  const collapsed = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!collapsed) return undefined;
+
+  const limit = Math.max(1, Math.floor(maxChars));
+  if (collapsed.length <= limit) return collapsed;
+  if (limit <= 3) return collapsed.slice(0, limit);
+  return collapsed.slice(0, limit - 3) + '...';
+}
+
+export function getSessionDisplayTitle(session: SessionTitleLike): string {
+  const title = String(session.title || '').trim();
+  if (title && !isDefaultSessionTitle(title)) return title;
+
+  return createSessionPreview(session.firstUserMessagePreview || '') || title || 'Untitled session';
+}
+
 function cleanTitleLine(raw: string, maxChars: number): string | undefined {
   const firstLine = stripThinkBlocks(String(raw || ''))
     .split(/\r?\n/)
@@ -41,6 +80,10 @@ function cleanTitleLine(raw: string, maxChars: number): string | undefined {
   if (collapsed.length <= limit) return collapsed;
   if (limit <= 3) return collapsed.slice(0, limit);
   return collapsed.slice(0, limit - 3) + '...';
+}
+
+function escapeForRegex(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 export async function generateSessionTitle(params: {

@@ -5,7 +5,7 @@ export { expandHome, isSubPath, normalizeFsPath, redactFsPathForPrompt } from '.
 export type { PermissionAction, PermissionRule, PermissionRuleset } from './permission';
 export { evaluatePermission, mergeRulesets, wildcardMatch } from './permission';
 
-export { isCopilotResponsesModelId, normalizeTemperatureForModel } from './copilot';
+export { isCopilotResponsesModelId, normalizeTemperatureForModel, shouldUseResponsesApiForModelId } from './copilot';
 
 export {
   THINK_BLOCK_REGEX,
@@ -167,3 +167,6 @@ export {
   applyCopilotReasoningFields,
   applyOpenAICompatibleReasoningField,
 } from './modelMessages';
+
+export type { ChatModelErrorContext } from './providerModelErrors';
+export { attachChatModelErrorMetadata, wrapChatModelErrors } from './providerModelErrors';

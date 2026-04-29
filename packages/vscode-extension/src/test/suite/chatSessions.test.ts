@@ -3,6 +3,7 @@ import * as vscode from 'vscode';
 
 import type { AgentLoop, AgentSessionState } from '../../core/agent';
 import { createBlankSessionSignals } from '../../core/sessionSignals';
+import { createDefaultSessionTitle } from '../../ui/chat/sessionTitle';
 import type { ChatSessionInfo } from '../../ui/chat/types';
 import {
   createStandaloneChatController,
@@ -56,6 +57,54 @@ function createSession(
 }
 
 suite('Chat sessions facade', () => {
+  test('session list falls back to first user message preview while title is still default', () => {
+    const controller = createStandaloneChatController();
+    const defaultTitle = createDefaultSessionTitle(new Date(0));
+    controller.sessions = new Map([
+      [
+        'session-1',
+        createSession(controller, 'session-1', {
+          title: defaultTitle,
+          firstUserMessagePreview: 'Investigate session title race',
+        }),
+      ],
+    ]);
+
+    assert.deepStrictEqual(controller.sessionApi.getSessionsForUI(), [
+      { id: 'session-1', title: 'Investigate session title race' },
+    ]);
+  });
+
+  test('loaded sessions derive first user message preview when missing', () => {
+    const controller = createStandaloneChatController();
+    const defaultTitle = createDefaultSessionTitle(new Date(0));
+    const loaded = controller.sessionApi.normalizeLoadedSession(
+      createSession(controller, 'session-1', {
+        title: defaultTitle,
+        firstUserMessagePreview: undefined,
+        messages: [
+          {
+            id: 'assistant-1',
+            role: 'assistant',
+            content: 'Hello',
+            timestamp: Date.now(),
+          },
+          {
+            id: 'user-1',
+            role: 'user',
+            content: '  Fix the session title fallback\nwhen switching away and back.  ',
+            timestamp: Date.now(),
+          },
+        ],
+      })
+    );
+
+    assert.strictEqual(
+      loaded.firstUserMessagePreview,
+      'Fix the session title fallback when switching away and back.'
+    );
+  });
+
   test('setBackend resets state and recreates the active session from current config', async () => {
     const config = vscode.workspace.getConfiguration('lingyun');
     const previousModel = config.get('model');

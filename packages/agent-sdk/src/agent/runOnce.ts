@@ -101,51 +101,8 @@ export async function runOnce(params: {
   const semanticHandles = new SemanticHandleRegistry();
   semanticHandles.importState(session.semanticHandles);
 
-  function getErrorMessage(error: unknown): string {
-    if (!error) return '';
-    if (typeof error === 'string') return error;
-    if (error instanceof Error) return error.message || String(error);
-    try {
-      return JSON.stringify(error);
-    } catch {
-      return String(error);
-    }
-  }
-
-  function getStatusCode(error: unknown): number | undefined {
-    const candidates = [
-      (error as any)?.status,
-      (error as any)?.statusCode,
-      (error as any)?.response?.status,
-      (error as any)?.cause?.status,
-      (error as any)?.cause?.statusCode,
-    ];
-
-    for (const value of candidates) {
-      if (typeof value === 'number' && Number.isFinite(value)) return value;
-      if (typeof value === 'string') {
-        const parsed = Number(value);
-        if (Number.isFinite(parsed)) return parsed;
-      }
-    }
-
-    return undefined;
-  }
-
   function getProviderAuthRetryLabel(error: unknown, context: { modelId: string; mode: 'plan' | 'build' }): string | undefined {
-    const statusCode = getStatusCode(error);
-    const msg = getErrorMessage(error);
-    const lower = msg.toLowerCase();
-    const legacyCopilotAuthError =
-      llm.id === 'copilot' &&
-      (statusCode === 401 ||
-        statusCode === 403 ||
-        lower.includes('unauthorized') ||
-        lower.includes('forbidden') ||
-        lower.includes('invalid token') ||
-        lower.includes('token expired') ||
-        lower.includes('expired token'));
-    return llm.getAuthRetryLabel?.(error, context) ?? (legacyCopilotAuthError ? 'GitHub Copilot' : undefined);
+    return llm.getAuthRetryLabel?.(error, context);
   }
 
   try {
@@ -493,7 +450,7 @@ export async function runOnce(params: {
             }
 
             if (waitMs > 0) {
-              await retrySleep(waitMs, combined).catch(() => {});
+              await retrySleep(waitMs, combined);
             }
             continue;
           }

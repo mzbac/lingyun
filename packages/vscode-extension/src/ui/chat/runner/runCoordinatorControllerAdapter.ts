@@ -79,6 +79,7 @@ export function createRunCoordinatorHostForController(controller: ChatController
       if (!message || !message.trim() || synthetic) return;
       const session = controller.sessions.get(sessionId);
       if (!session || !isDefaultSessionTitle(session.title)) return;
+      if (typeof controller.agent.generateSessionTitle !== 'function') return;
 
       void controller.agent
         .generateSessionTitle(message, { maxChars: 50 })
@@ -118,6 +119,7 @@ export function createRunCoordinatorHostForController(controller: ChatController
     postApprovalState: () => controller.approvalsApi.postApprovalState(),
     postLoopState: (session) => controller.loopApi.postLoopState(session),
     postMessage: (message: unknown) => controller.webviewApi.postMessage(message),
+    postSessions: () => controller.sessionApi.postSessions(),
     postUnknownSkillWarnings: (content: string, turnId?: string) =>
       controller.skillsApi.postUnknownSkillWarnings(content, turnId),
     queueManager: {

@@ -130,6 +130,12 @@ export interface ChatMessage {
 export interface ChatSessionInfo {
   id: string;
   title: string;
+  /**
+   * Deterministic fallback label captured from the first real user input.
+   * Generated or explicit titles remain in `title`; display code should prefer
+   * `title` once it is no longer the default placeholder.
+   */
+  firstUserMessagePreview?: string;
   createdAt: number;
   updatedAt: number;
   signals: SessionSignals;

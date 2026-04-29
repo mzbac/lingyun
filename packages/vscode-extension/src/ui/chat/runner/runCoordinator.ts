@@ -12,6 +12,7 @@ import { formatErrorForUser, isCancellationMessage } from '../utils';
 
 import type { RunCoordinatorHost } from '../controllerPorts';
 import type { ChatMessage, ChatUserInput } from '../types';
+import { createSessionPreview } from '../sessionTitle';
 import { appendTurnErrorMessage, findLatestUserTurnId } from './runCoordinatorMessageState';
 import {
   applyGeneratedPlanContent,
@@ -240,6 +241,15 @@ export class RunCoordinator {
     };
     c.messages.push(userMsg);
     c.currentTurnId = userMsg.id;
+
+    const firstUserMessagePreview = createSessionPreview(
+      params.normalizedInput.text || params.normalizedInput.displayContent,
+    );
+    if (!params.synthetic && firstUserMessagePreview && !params.activeSession.firstUserMessagePreview) {
+      params.activeSession.firstUserMessagePreview = firstUserMessagePreview;
+      params.activeSession.updatedAt = Date.now();
+      c.postSessions();
+    }
 
     c.maybeGenerateSessionTitle({
       sessionId: params.activeSession.id,
@@ -766,6 +776,8 @@ export class RunCoordinator {
     const normalizedInput = normalizeUserInput(content);
     if (!normalizedInput.hasContent) return;
 
+    await c.ensureSessionsLoaded();
+
     if (normalizedInput.text && !options?.synthetic) {
       applySessionMemoryModeIntent(c.signals, normalizedInput.text);
     }
@@ -774,11 +786,7 @@ export class RunCoordinator {
       c.recordUserIntent(normalizedInput.text);
     }
 
-    const activeSession = c.getActiveSession();
-    const pendingPlan = activeSession.pendingPlan;
-
     if (c.isProcessing) {
-      await c.ensureSessionsLoaded();
       if (normalizedInput.text && !options?.synthetic) {
         c.recordInputHistory(normalizedInput.text);
       }
@@ -786,6 +794,9 @@ export class RunCoordinator {
       this.enqueueQueuedInput({ normalized: normalizedInput });
       return;
     }
+
+    const activeSession = c.getActiveSession();
+    const pendingPlan = activeSession.pendingPlan;
 
     if (pendingPlan) {
       const handledPendingPlanInput = await this.handlePendingPlanUserInput({
@@ -797,8 +808,6 @@ export class RunCoordinator {
         return;
       }
     }
-
-    await c.ensureSessionsLoaded();
 
     if (!options?.fromQueue && !options?.synthetic) {
       c.recordInputHistory(normalizedInput.text);

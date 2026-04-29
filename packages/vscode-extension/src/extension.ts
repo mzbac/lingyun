@@ -157,6 +157,7 @@ export function createAgentConfig(): AgentConfig {
 
 function createLLMProviderFromConfig(context: vscode.ExtensionContext): LLMProvider {
   const selection = getConfig<string>('llmProvider') || 'copilot';
+  const timeoutMs = getConfiguredTimeoutMs();
 
   if (selection === 'openaiCompatible') {
     const baseURL = getConfig<string>('openaiCompatible.baseURL') || '';
@@ -165,7 +166,7 @@ function createLLMProviderFromConfig(context: vscode.ExtensionContext): LLMProvi
       vscode.window.showWarningMessage(
         'LingYun: openaiCompatible provider selected but lingyun.openaiCompatible.baseURL is not set. Falling back to Copilot.'
       );
-      return new CopilotProvider({ outputChannel: extensionState?.outputChannel });
+      return new CopilotProvider({ timeoutMs, outputChannel: extensionState?.outputChannel });
     }
 
     const apiKeyEnv = getConfig<string>('openaiCompatible.apiKeyEnv') || 'OPENAI_API_KEY';
@@ -173,16 +174,16 @@ function createLLMProviderFromConfig(context: vscode.ExtensionContext): LLMProvi
     const defaultModelId = getConfig<string>('openaiCompatible.defaultModelId') || undefined;
     const modelDisplayNames =
       getConfig<Record<string, string>>('openaiCompatible.modelDisplayNames') || undefined;
-    const timeoutMsRaw = getConfig<unknown>('llm.timeoutMs');
-    const timeoutMsParsed =
-      typeof timeoutMsRaw === 'number'
-        ? timeoutMsRaw
-        : typeof timeoutMsRaw === 'string'
-          ? Number(timeoutMsRaw)
+    const maxTokensRaw = getConfig<unknown>('openaiCompatible.maxTokens');
+    const maxTokensParsed =
+      typeof maxTokensRaw === 'number'
+        ? maxTokensRaw
+        : typeof maxTokensRaw === 'string'
+          ? Number(maxTokensRaw)
           : undefined;
-    const timeoutMs =
-      Number.isFinite(timeoutMsParsed as number) && (timeoutMsParsed as number) >= 0
-        ? Math.floor(timeoutMsParsed as number)
+    const fallbackMaxOutputTokens =
+      Number.isFinite(maxTokensParsed as number) && (maxTokensParsed as number) > 0
+        ? Math.floor(maxTokensParsed as number)
         : undefined;
 
     log('Using OpenAI-compatible provider');
@@ -191,23 +192,13 @@ function createLLMProviderFromConfig(context: vscode.ExtensionContext): LLMProvi
       apiKey,
       defaultModelId,
       modelDisplayNames,
+      fallbackMaxOutputTokens,
       timeoutMs,
     });
   }
 
   if (selection === 'codexSubscription') {
     const defaultModelId = getConfig<string>('codexSubscription.defaultModelId') || undefined;
-    const timeoutMsRaw = getConfig<unknown>('llm.timeoutMs');
-    const timeoutMsParsed =
-      typeof timeoutMsRaw === 'number'
-        ? timeoutMsRaw
-        : typeof timeoutMsRaw === 'string'
-          ? Number(timeoutMsRaw)
-          : undefined;
-    const timeoutMs =
-      Number.isFinite(timeoutMsParsed as number) && (timeoutMsParsed as number) >= 0
-        ? Math.floor(timeoutMsParsed as number)
-        : undefined;
 
     log('Using Codex subscription provider');
     return new CodexSubscriptionProvider({
@@ -219,7 +210,7 @@ function createLLMProviderFromConfig(context: vscode.ExtensionContext): LLMProvi
   }
 
   log('Using GitHub Copilot provider');
-  return new CopilotProvider({ outputChannel: extensionState?.outputChannel });
+  return new CopilotProvider({ timeoutMs, outputChannel: extensionState?.outputChannel });
 }
 
 async function initializeLLMAndAgent(context: vscode.ExtensionContext): Promise<void> {
@@ -835,6 +826,14 @@ async function cmdRunTool(): Promise<void> {
 
 function getConfig<T>(key: string): T | undefined {
   return vscode.workspace.getConfiguration('lingyun').get<T>(key);
+}
+
+function getConfiguredTimeoutMs(): number | undefined {
+  const raw = getConfig<unknown>('llm.timeoutMs');
+  const parsed = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : undefined;
+  return Number.isFinite(parsed as number) && (parsed as number) >= 0
+    ? Math.floor(parsed as number)
+    : undefined;
 }
 
 function log(message: string): void {

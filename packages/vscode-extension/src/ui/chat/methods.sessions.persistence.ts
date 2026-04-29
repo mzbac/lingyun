@@ -10,7 +10,7 @@ import { resolveModelIdWithWorkspaceDefaults } from '../../core/modelSelection';
 import { normalizeSessionSignals } from '../../core/sessionSignals';
 import { SessionStore } from '../../core/sessionStore';
 import { bindChatControllerService } from './controllerService';
-import { createDefaultSessionTitle } from './sessionTitle';
+import { createDefaultSessionTitle, createSessionPreview } from './sessionTitle';
 import type { ChatSessionInfo } from './types';
 import type { PendingApprovalEntry } from './controllerPorts';
 import type { ChatSessionRuntimeService } from './methods.sessions.runtime';
@@ -69,6 +69,15 @@ export interface ChatSessionPersistenceDeps {
 }
 
 type ChatSessionPersistenceRuntime = ChatSessionPersistenceDeps & ChatSessionPersistenceService;
+
+function deriveFirstUserMessagePreview(raw: ChatSessionInfo): string | undefined {
+  const stored = createSessionPreview((raw as any).firstUserMessagePreview || '');
+  if (stored) return stored;
+
+  const messages = Array.isArray(raw.messages) ? raw.messages : [];
+  const firstUserMessage = messages.find(message => message?.role === 'user');
+  return createSessionPreview(firstUserMessage?.content || '');
+}
 
 export function createChatSessionPersistenceService(
   controller: ChatSessionPersistenceDeps
@@ -255,6 +264,7 @@ export function createChatSessionPersistenceService(
           typeof raw.title === 'string' && raw.title.trim()
             ? raw.title
             : createDefaultSessionTitle(new Date(now)),
+        firstUserMessagePreview: deriveFirstUserMessagePreview(raw),
         createdAt: typeof raw.createdAt === 'number' ? raw.createdAt : now,
         updatedAt: typeof raw.updatedAt === 'number' ? raw.updatedAt : now,
         signals: normalizeSessionSignals((raw as any).signals, now),

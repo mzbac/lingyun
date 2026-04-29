@@ -14,10 +14,13 @@ export function truncateForDebug(value: string, max = 500): string {
 const URL_REGEX = /\bhttps?:\/\/[^\s"'<>]+/gi;
 const FILE_URL_REGEX = /\bfile:\/\/[^\s"'<>]+/gi;
 const IPV4_REGEX = /\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b/g;
+const BRACKETED_IPV6_REGEX = /\[(?:[0-9a-f]{0,4}:){1,7}[0-9a-f]{0,4}\](?::\d{1,5})?/gi;
 const LOCALHOST_REGEX = /\blocalhost\b(?::\d{1,5})?/gi;
 const LOCAL_DOMAIN_REGEX = /\b(?:[a-z0-9-]+\.)+(?:local|localhost)\b(?::\d{1,5})?/gi;
+const PRIVATE_DOMAIN_REGEX = /\b(?:[a-z0-9-]+\.)+(?:internal|lan|corp|home)\b(?::\d{1,5})?/gi;
 const BEARER_REGEX = /Bearer\s+[A-Za-z0-9._-]+/gi;
 const BASIC_AUTH_REGEX = /Basic\s+[A-Za-z0-9+/=]+/gi;
+const OPENAI_API_KEY_REGEX = /\bsk-[A-Za-z0-9_-]{6,}\b/g;
 const JSON_SECRET_KV_REGEX =
   /("(?:authorization|proxy-authorization|proxyauthorization|apikey|api_key|x-api-key|token|access_token|accesstoken|refresh_token|refreshtoken|secret|client_secret|clientsecret|password|passwd|cookie|set-cookie|private_key|privatekey)"\s*:\s*)"[^"]*"/gi;
 const INLINE_SECRET_KV_REGEX =
@@ -57,20 +60,43 @@ function redactSecrets(text: string): string {
   let out = String(text ?? '');
   out = out.replace(BEARER_REGEX, 'Bearer <redacted>');
   out = out.replace(BASIC_AUTH_REGEX, 'Basic <redacted>');
+  out = out.replace(OPENAI_API_KEY_REGEX, 'sk-<redacted>');
   out = out.replace(JSON_SECRET_KV_REGEX, '$1"<redacted>"');
   out = out.replace(INLINE_SECRET_KV_REGEX, '$1$2<redacted>');
+  return out;
+}
+
+function isPrivateIpv4(value: string): boolean {
+  const parts = value.split('.').map((part) => Number.parseInt(part, 10));
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return false;
+  const [a, b] = parts;
+  return (
+    a === 10 ||
+    a === 127 ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    (a === 169 && b === 254)
+  );
+}
+
+function redactPrivateHosts(text: string): string {
+  let out = text;
+  out = out.replace(LOCAL_DOMAIN_REGEX, '<local-host>');
+  out = out.replace(PRIVATE_DOMAIN_REGEX, '<private-host>');
+  out = out.replace(LOCALHOST_REGEX, '<local-host>');
+  out = out.replace(BRACKETED_IPV6_REGEX, '<ip>');
+  out = out.replace(IPV4_REGEX, (match) => (isPrivateIpv4(match) ? '<private-ip>' : match));
   return out;
 }
 
 export function redactSensitive(text: string, options?: DebugFormatOptions): string {
   let out = redactSecrets(text);
   if ((options?.redactionLevel ?? 'full') === 'secrets-only') {
-    return out;
+    return redactPrivateHosts(out);
   }
   out = out.replace(URL_REGEX, '<url>');
   out = out.replace(FILE_URL_REGEX, '<file-url>');
-  out = out.replace(LOCAL_DOMAIN_REGEX, '<local-host>');
-  out = out.replace(LOCALHOST_REGEX, '<local-host>');
+  out = redactPrivateHosts(out);
   out = out.replace(IPV4_REGEX, '<ip>');
   out = redactHomePath(out);
   return out;
@@ -101,10 +127,14 @@ export function summarizeErrorForDebug(error: unknown, options?: DebugFormatOpti
   const cause = getErrorCause(error);
   const causeMessage = cause ? formatErrorMessageForDebug(cause, { includeName: true }) : '';
 
+  const errorCode = getErrorCode(error);
+  const errorType = getErrorType(error);
   const parts = [
     `name=${getErrorName(error)}`,
-    getErrorCode(error) ? `code=${getErrorCode(error)}` : '',
+    errorCode ? `code=${truncateForDebug(redactSensitive(errorCode, { redactionLevel }), 160)}` : '',
+    errorType ? `type=${truncateForDebug(redactSensitive(errorType, { redactionLevel }), 160)}` : '',
     typeof getErrorStatus(error) === 'number' ? `status=${String(getErrorStatus(error))}` : '',
+    ...getProviderDiagnosticsForDebug(error, redactionLevel),
     `message=${truncateForDebug(redactSensitive(getErrorMessage(error), { redactionLevel }), 500)}`,
     causeMessage
       ? `cause=${truncateForDebug(redactSensitive(causeMessage, { redactionLevel }), 500)}`
@@ -120,10 +150,14 @@ export function formatDetailedErrorForDebug(error: unknown, options?: DebugForma
 
   for (const [index, item] of getErrorChain(error).entries()) {
     const label = index === 0 ? 'error' : `cause[${index}]`;
+    const itemCode = getErrorCode(item);
+    const itemType = getErrorType(item);
     const parts = [
       `name=${getErrorName(item)}`,
-      getErrorCode(item) ? `code=${getErrorCode(item)}` : '',
+      itemCode ? `code=${truncateForDebug(redactSensitive(itemCode, { redactionLevel }), 160)}` : '',
+      itemType ? `type=${truncateForDebug(redactSensitive(itemType, { redactionLevel }), 160)}` : '',
       typeof getErrorStatus(item) === 'number' ? `status=${String(getErrorStatus(item))}` : '',
+      ...getProviderDiagnosticsForDebug(item, redactionLevel),
       `message=${truncateForDebug(redactSensitive(getErrorMessage(item), { redactionLevel }), 1000)}`,
     ].filter(Boolean);
 
@@ -300,6 +334,64 @@ function getErrorMessage(error: unknown): string {
 function getErrorCode(error: unknown): string {
   const record = asRecord(error);
   return typeof record?.code === 'string' ? record.code : '';
+}
+
+function getErrorType(error: unknown): string {
+  const record = asRecord(error);
+  if (typeof record?.type === 'string' && record.type.trim()) return record.type.trim();
+  if (typeof record?.errorType === 'string' && record.errorType.trim()) return record.errorType.trim();
+  return '';
+}
+
+function getErrorStringField(error: unknown, keys: string[]): string {
+  const record = asRecord(error);
+  if (!record) return '';
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return '';
+}
+
+function getErrorNumberField(error: unknown, keys: string[]): number | undefined {
+  const record = asRecord(error);
+  if (!record) return undefined;
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string' && value.trim()) {
+      const parsed = Number(value.trim());
+      if (Number.isFinite(parsed)) return parsed;
+    }
+  }
+  return undefined;
+}
+
+function getProviderDiagnosticsForDebug(error: unknown, redactionLevel: DebugRedactionLevel): string[] {
+  const provider = getErrorStringField(error, ['providerId', 'provider']);
+  const requestId = getErrorStringField(error, ['requestId']);
+  const cfRay = getErrorStringField(error, ['cfRay']);
+  const authorizationError = getErrorStringField(error, ['authorizationError', 'identityAuthorizationError']);
+  const identityErrorCode = getErrorStringField(error, ['identityErrorCode']);
+  const identityErrorType = getErrorStringField(error, ['identityErrorType']);
+  const retryAfterMs = getErrorNumberField(error, ['retryAfterMs']);
+
+  const stringPart = (key: string, value: string) => {
+    const safe = truncateForDebug(redactSensitive(value, { redactionLevel }), 160);
+    return safe ? `${key}=${safe}` : '';
+  };
+
+  return [
+    provider ? stringPart('provider', provider) : '',
+    requestId ? stringPart('requestId', requestId) : '',
+    cfRay ? stringPart('cfRay', cfRay) : '',
+    typeof retryAfterMs === 'number' && Number.isFinite(retryAfterMs) && retryAfterMs > 0
+      ? `retryAfterMs=${String(Math.ceil(retryAfterMs))}`
+      : '',
+    authorizationError ? stringPart('authorizationError', authorizationError) : '',
+    identityErrorCode ? stringPart('identityErrorCode', identityErrorCode) : '',
+    identityErrorType ? stringPart('identityErrorType', identityErrorType) : '',
+  ].filter(Boolean);
 }
 
 function getErrorStatus(error: unknown): number | undefined {

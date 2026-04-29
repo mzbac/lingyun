@@ -120,6 +120,7 @@ export interface RunCoordinatorHost {
   postApprovalState(): void;
   postLoopState(session?: ChatSessionInfo): void;
   postMessage(message: unknown): void;
+  postSessions(): void;
   postUnknownSkillWarnings(content: string, turnId?: string): Promise<void>;
   queueManager: RunCoordinatorQueuePort;
   recordInputHistory(content: string): void;

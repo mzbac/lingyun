@@ -40,6 +40,7 @@ export type PersistedChatMessage = {
 export type PersistedSession = {
   id: string;
   title: string;
+  firstUserMessagePreview?: string;
   createdAt: number;
   updatedAt: number;
   signals?: SessionSignals;

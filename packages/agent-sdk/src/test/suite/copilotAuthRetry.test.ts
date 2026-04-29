@@ -56,8 +56,18 @@ class FlakyCopilotProvider implements LLMProvider {
     return model;
   }
 
+  getAuthRetryLabel(error: unknown): string | undefined {
+    return (error as any)?.statusCode === 401 ? this.name : undefined;
+  }
+
   onRequestError(): void {
     this.onRequestErrorCalls += 1;
+  }
+}
+
+class ProviderIdOnlyAuthFailureProvider extends FlakyCopilotProvider {
+  override getAuthRetryLabel(_error: unknown): string | undefined {
+    return undefined;
   }
 }
 
@@ -166,7 +176,31 @@ class FlakyModelLoadAuthProvider implements LLMProvider {
 }
 
 suite('Provider auth retry', () => {
-  test('retries once on 401 even when maxRetries=0', async () => {
+  test('does not infer auth retry from provider id alone', async () => {
+    const llm = new ProviderIdOnlyAuthFailureProvider();
+    const registry = new ToolRegistry();
+
+    const agent = new LingyunAgent(llm, { model: 'mock-model', maxRetries: 0 }, registry, { allowExternalPaths: false });
+    const session = new LingyunSession();
+
+    const run = agent.run({ session, input: 'hi' });
+    const eventsDone = (async () => {
+      for await (const _event of run.events) {
+        // drain
+      }
+    })();
+
+    const [eventsResult, doneResult] = await Promise.allSettled([eventsDone, run.done]);
+    assert.strictEqual(eventsResult.status, 'rejected');
+    assert.match(String((eventsResult as PromiseRejectedResult).reason?.message ?? (eventsResult as PromiseRejectedResult).reason), /401 Unauthorized/);
+    assert.strictEqual(doneResult.status, 'rejected');
+    assert.match(String((doneResult as PromiseRejectedResult).reason?.message ?? (doneResult as PromiseRejectedResult).reason), /401 Unauthorized/);
+    assert.strictEqual(llm.streamCalls, 1, 'provider-id-only auth failures must not be retried');
+    assert.strictEqual(llm.onRequestErrorCalls, 1, 'expected onRequestError to run before surfacing the failure');
+    assert.strictEqual(llm.getModelCalls, 1, 'expected no model reload without provider-declared auth retry');
+  });
+
+  test('retries once on provider-declared 401 even when maxRetries=0', async () => {
     const llm = new FlakyCopilotProvider();
     const registry = new ToolRegistry();
 

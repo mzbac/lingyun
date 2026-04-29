@@ -163,7 +163,10 @@ export interface LLMProvider {
    */
   onRequestError?(error: unknown, context: { modelId: string; mode: 'plan' | 'build' }): void;
   /**
-   * Return a provider label when an auth failure should refresh credentials and retry once.
+   * Return a provider label when the provider knows the failure can be recovered by
+   * refreshing credentials. The agent runtime retries these failures once regardless
+   * of the transient retry budget. Auth retry is capability-based; providers that do
+   * not implement this hook are never retried solely because of their provider id.
    */
   getAuthRetryLabel?(error: unknown, context: { modelId: string; mode: 'plan' | 'build' }): string | undefined;
   dispose?(): void;

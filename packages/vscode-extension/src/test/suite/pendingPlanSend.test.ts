@@ -1,6 +1,7 @@
 import * as assert from 'assert';
 import type { ChatMessage, ChatSessionInfo } from '../../ui/chat/types';
 import { createBlankSessionSignals, isSessionMemoryDisabled, setSessionMemoryMode } from '../../core/sessionSignals';
+import { createDefaultSessionTitle } from '../../ui/chat/sessionTitle';
 import { createStandaloneChatController } from './chatControllerHarness';
 
 function createPendingPlanMessage(overrides?: Partial<ChatMessage>): ChatMessage {
@@ -834,6 +835,53 @@ suite('Pending plan send', () => {
     const processingIndex = posted.findIndex(message => message?.type === 'processing' && message?.value === true);
     assert.ok(userMessageIndex >= 0);
     assert.ok(processingIndex > userMessageIndex);
+  });
+
+  test('handleUserMessage records first-message preview after loading the canonical active session', async () => {
+    const provider = createPendingPlanController();
+    const staleSession = installActiveSession(provider, []);
+    staleSession.id = 'stale-session';
+    provider.activeSessionId = 'stale-session';
+    provider.sessions = new Map([[staleSession.id, staleSession]]);
+
+    const loadedSession: ChatSessionInfo = {
+      id: 'loaded-session',
+      title: createDefaultSessionTitle(new Date(0)),
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      signals: createBlankSessionSignals(),
+      messages: [],
+      agentState: provider.sessionApi.getBlankAgentState(),
+      currentModel: provider.currentModel,
+      mode: provider.mode,
+      stepCounter: 0,
+      runtime: { wasRunning: false, updatedAt: Date.now() },
+    };
+    const posted: any[] = [];
+
+    provider.sessionApi.ensureSessionsLoaded = async () => {
+      provider.activeSessionId = loadedSession.id;
+      provider.sessions = new Map([[loadedSession.id, loadedSession]]);
+      provider.messages = loadedSession.messages;
+      provider.signals = loadedSession.signals;
+    };
+    provider.webviewApi.postMessage = (message: unknown) => {
+      posted.push(JSON.parse(JSON.stringify(message)));
+    };
+    provider.runnerInputApi.isPlanFirstEnabled = () => false;
+    provider.loopManager.onRunStart = () => {};
+    provider.loopManager.onRunEnd = () => {};
+    provider.queueManager.scheduleAutosendForSession = () => {};
+    provider.runnerCallbacksApi.createAgentCallbacks = () => ({}) as any;
+    provider.agent.run = async () => 'done';
+
+    await provider.runnerInputApi.handleUserMessage('Investigate stale active session title');
+
+    assert.strictEqual(staleSession.firstUserMessagePreview, undefined);
+    assert.strictEqual(loadedSession.firstUserMessagePreview, 'Investigate stale active session title');
+    const sessionUpdate = posted.find(message => message?.type === 'sessions');
+    assert.strictEqual(sessionUpdate?.activeSessionId, loadedSession.id);
+    assert.strictEqual(sessionUpdate?.sessions?.[0]?.title, 'Investigate stale active session title');
   });
 
   test('handleUserMessage marks user turns memory-excluded while session memory is disabled', async () => {

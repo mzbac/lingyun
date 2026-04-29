@@ -1,3 +1,4 @@
+import type { FetchFunction } from '@ai-sdk/provider-utils';
 import { createResponsesModel } from './responsesModel';
 
 type CopilotResponsesModelOptions = {
@@ -5,6 +6,7 @@ type CopilotResponsesModelOptions = {
   apiKey: string;
   modelId: string;
   headers: Record<string, string>;
+  fetch?: FetchFunction;
 };
 
 export function createCopilotResponsesModel(options: CopilotResponsesModelOptions) {
