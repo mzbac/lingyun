@@ -96,7 +96,7 @@ If `lingyun.model` is empty or still set to the Copilot default, LingYun falls b
   "lingyun.llmProvider": "openaiCompatible",
   "lingyun.openaiCompatible.baseURL": "http://localhost:8080/v1",
   "lingyun.openaiCompatible.defaultModelId": "your-model-id",
-  "lingyun.openaiCompatible.maxTokens": 32000
+  "lingyun.maxOutputTokens": 32000
 }
 ```
 
@@ -226,7 +226,7 @@ Default keybinding:
 ## Troubleshooting
 
 - **OpenAI-compatible models do not load**: make sure `lingyun.openaiCompatible.baseURL` includes `/v1` and the server answers `GET /v1/models`.
-- **Responses cut off**: increase `lingyun.openaiCompatible.maxTokens` or configure `lingyun.modelLimits`.
+- **Responses cut off**: increase `lingyun.maxOutputTokens` or configure `lingyun.modelLimits`.
 - **Compaction is too aggressive or not aggressive enough**: set `lingyun.modelLimits` for the exact model, or use a provider-scoped key like `codexSubscription:gpt-5.4`.
 - **Need more visibility**: use `LingYun: Show Logs` and enable `lingyun.debug.details` for fuller logs with visible paths/URLs/hosts, or turn on `lingyun.debug.llm`, `lingyun.debug.tools`, or `lingyun.debug.plugins` individually.
 

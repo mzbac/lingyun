@@ -7,6 +7,7 @@ import {
   applyCopilotReasoningFields,
   applyOpenAICompatibleReasoningField,
   isCopilotResponsesModelId,
+  isGpt5FamilyModelId,
   shouldUseResponsesApiForModelId,
 } from '@kooka/core';
 
@@ -62,8 +63,7 @@ export function createProviderBehavior(llmId: string): ProviderBehavior {
     const reasoningEffort = String(params.reasoningEffort || '').trim();
     if (!reasoningEffort) return undefined;
 
-    const lower = String(modelId || '').trim().toLowerCase();
-    return lower.startsWith('gpt-5') ? reasoningEffort : undefined;
+    return isGpt5FamilyModelId(modelId) ? reasoningEffort : undefined;
   }
 
   if (llmId === 'copilot') {

@@ -2,7 +2,7 @@
   "name": "lingyun",
   "displayName": "LingYun",
   "description": "Agentic AI assistant for VS Code",
-  "version": "2.3.4",
+  "version": "2.3.5",
   "publisher": "mzbac",
   "icon": "images/icon.png",
   "license": "MIT",
@@ -202,6 +202,11 @@
           "default": 0,
           "description": "Sampling temperature for the model (0.0 = deterministic). Increase for more creative responses."
         },
+        "lingyun.maxOutputTokens": {
+          "type": "number",
+          "default": 32000,
+          "description": "Fallback maximum generated output tokens to request when the selected model does not publish an output-token limit and lingyun.modelLimits does not override it."
+        },
         "lingyun.llm.maxRetries": {
           "type": "number",
           "default": 2,
@@ -285,11 +290,6 @@
           "type": "string",
           "default": "OPENAI_API_KEY",
           "description": "Environment variable name that contains the API key (if your server requires auth)"
-        },
-        "lingyun.openaiCompatible.maxTokens": {
-          "type": "number",
-          "default": 32000,
-          "description": "Max output tokens to request from an OpenAI-compatible server (sent as max_tokens). Increase if responses cut off early."
         },
         "lingyun.modelLimits": {
           "type": "object",

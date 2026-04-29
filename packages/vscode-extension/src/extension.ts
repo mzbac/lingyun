@@ -127,8 +127,7 @@ export function createAgentConfig(): AgentConfig {
         ? retryWithPartialOutputRaw.toLowerCase() === 'true'
         : undefined;
   const retryWithPartialOutput = typeof retryWithPartialOutputParsed === 'boolean' ? retryWithPartialOutputParsed : undefined;
-  const provider = getConfig<string>('llmProvider') || 'copilot';
-  const maxOutputTokensRaw = getConfig<unknown>('openaiCompatible.maxTokens');
+  const maxOutputTokensRaw = getConfig<unknown>('maxOutputTokens');
   const maxOutputTokensParsed =
     typeof maxOutputTokensRaw === 'number'
       ? maxOutputTokensRaw
@@ -136,7 +135,6 @@ export function createAgentConfig(): AgentConfig {
         ? Number(maxOutputTokensRaw)
         : undefined;
   const maxOutputTokens =
-    provider === 'openaiCompatible' &&
     Number.isFinite(maxOutputTokensParsed as number) &&
     (maxOutputTokensParsed as number) > 0
       ? Math.floor(maxOutputTokensParsed as number)
@@ -153,6 +151,12 @@ export function createAgentConfig(): AgentConfig {
     autoApprove: getConfig('autoApprove') || false,
     toolFilter: getConfig('toolFilter') || [],
   };
+}
+
+export function shouldRefreshChatModelStateForConfigChange(
+  e: Pick<vscode.ConfigurationChangeEvent, 'affectsConfiguration'>,
+): boolean {
+  return e.affectsConfiguration('lingyun.copilot.reasoningEffort');
 }
 
 function createLLMProviderFromConfig(context: vscode.ExtensionContext): LLMProvider {
@@ -174,25 +178,12 @@ function createLLMProviderFromConfig(context: vscode.ExtensionContext): LLMProvi
     const defaultModelId = getConfig<string>('openaiCompatible.defaultModelId') || undefined;
     const modelDisplayNames =
       getConfig<Record<string, string>>('openaiCompatible.modelDisplayNames') || undefined;
-    const maxTokensRaw = getConfig<unknown>('openaiCompatible.maxTokens');
-    const maxTokensParsed =
-      typeof maxTokensRaw === 'number'
-        ? maxTokensRaw
-        : typeof maxTokensRaw === 'string'
-          ? Number(maxTokensRaw)
-          : undefined;
-    const fallbackMaxOutputTokens =
-      Number.isFinite(maxTokensParsed as number) && (maxTokensParsed as number) > 0
-        ? Math.floor(maxTokensParsed as number)
-        : undefined;
-
     log('Using OpenAI-compatible provider');
     return new OpenAICompatibleProvider({
       baseURL,
       apiKey,
       defaultModelId,
       modelDisplayNames,
-      fallbackMaxOutputTokens,
       timeoutMs,
     });
   }
@@ -428,7 +419,6 @@ export async function activate(
           e.affectsConfiguration('lingyun.openaiCompatible.defaultModelId') ||
           e.affectsConfiguration('lingyun.openaiCompatible.modelDisplayNames') ||
           e.affectsConfiguration('lingyun.openaiCompatible.apiKeyEnv') ||
-          e.affectsConfiguration('lingyun.openaiCompatible.maxTokens') ||
           e.affectsConfiguration('lingyun.llm.timeoutMs');
 
         const sessionsChanged =
@@ -448,6 +438,7 @@ export async function activate(
           e.affectsConfiguration('lingyun.memories.autoRecall') ||
           e.affectsConfiguration('lingyun.memories.maxAutoRecallResults') ||
           e.affectsConfiguration('lingyun.memories.maxAutoRecallTokens');
+        const modelStateChanged = shouldRefreshChatModelStateForConfigChange(e);
 
         if (providerChanged) {
           initializeLLMAndAgent(context).catch(err => {
@@ -460,6 +451,12 @@ export async function activate(
         extensionState.agent.updateConfig(nextConfig);
         extensionState.agent.setMode(nextConfig.mode ?? 'build');
         log('Configuration updated');
+
+        if (modelStateChanged) {
+          extensionState.chatProvider?.controller.modelApi.postModelState().catch((err: unknown) => {
+            log(`Failed to refresh model header after configuration update: ${err instanceof Error ? err.message : String(err)}`);
+          });
+        }
 
         if (e.affectsConfiguration('lingyun.autoApprove') && nextConfig.autoApprove) {
           extensionState.chatProvider?.controller.approvalsApi.onAutoApproveEnabled();

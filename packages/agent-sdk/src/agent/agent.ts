@@ -7,7 +7,7 @@ import {
   type ToolExecutionOptions,
 } from 'ai';
 
-import type { ToolCall, ToolDefinition, ToolResult, AgentCallbacks, AgentConfig, LLMProvider, LingyunEvent, LingyunRun } from '../types.js';
+import type { ToolCall, ToolDefinition, ToolResult, AgentCallbacks, AgentConfig, LLMProvider, LingyunEvent, LingyunRun, LLMModelInfo } from '../types.js';
 import {
   createHistoryForModel,
   createUserHistoryMessage,
@@ -59,6 +59,11 @@ export type { LingyunAgentSyntheticContext } from './transientSyntheticContext.j
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function positiveInteger(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return undefined;
+  return Math.floor(value);
 }
 
 function getLastAssistantTokens(
@@ -203,6 +208,7 @@ export class LingyunAgent {
   private readonly modelLimits?: Record<string, ModelLimit>;
   private readonly compactionConfig: CompactionConfig;
   private readonly derivedModelLimits = new Map<string, ModelLimit>();
+  private readonly derivedModelOutputTokens = new Map<string, number>();
   private registeredPluginTools = new Set<string>();
   private readonly taskSessions = new Map<string, LingyunSession>();
   private readonly maxTaskSessions = 50;
@@ -553,7 +559,7 @@ export class LingyunAgent {
       plugins: this.plugins,
       providerBehavior: this.providerBehavior,
       compactionConfig: prepared.execution.runtime.compactionConfig,
-      maxOutputTokens: this.getMaxOutputTokens(prepared.execution.config),
+      maxOutputTokens: this.getMaxOutputTokens(prepared.execution.config, prepared.execution.runtime, modelId),
     });
   }
 
@@ -561,46 +567,66 @@ export class LingyunAgent {
     return config.mode === 'plan' ? 'plan' : 'build';
   }
 
+  private getConfiguredModelLimit(
+    modelId: string,
+    runtime?: Pick<LingyunAgentExecutionRuntime, 'modelLimits'>
+  ): ModelLimit | undefined {
+    return runtime?.modelLimits?.[modelId] ?? this.modelLimits?.[modelId];
+  }
+
   private getModelLimit(
     modelId: string,
     runtime?: Pick<LingyunAgentExecutionRuntime, 'modelLimits'>
   ): ModelLimit | undefined {
-    return runtime?.modelLimits?.[modelId] ?? this.modelLimits?.[modelId] ?? this.derivedModelLimits.get(modelId);
+    const configured = this.getConfiguredModelLimit(modelId, runtime);
+    const derived = this.derivedModelLimits.get(modelId);
+    const derivedOutput = this.derivedModelOutputTokens.get(modelId);
+    if (!configured) return derived;
+    if (!derived) {
+      const output = positiveInteger(configured.output) ?? positiveInteger(derivedOutput);
+      return { context: configured.context, ...(output ? { output } : {}) };
+    }
+
+    const output = positiveInteger(configured.output) ?? positiveInteger(derived.output) ?? positiveInteger(derivedOutput);
+    return {
+      context: configured.context,
+      ...(output ? { output } : {}),
+    };
   }
 
   async warmModelLimit(modelId: string): Promise<ModelLimit | undefined> {
     const trimmed = String(modelId || '').trim();
     if (!trimmed) return undefined;
 
-    const configured = this.modelLimits?.[trimmed];
-    if (configured) return configured;
+    const configured = this.getConfiguredModelLimit(trimmed);
+    if (configured && positiveInteger(configured.output)) return configured;
 
     const cached = this.derivedModelLimits.get(trimmed);
-    if (cached) return cached;
+    if (cached) return this.getModelLimit(trimmed);
+    if (positiveInteger(this.derivedModelOutputTokens.get(trimmed))) return this.getModelLimit(trimmed);
 
-    const getModels = (this.llm as any)?.getModels;
-    if (typeof getModels !== 'function') return undefined;
+    const getModels = this.llm.getModels;
+    if (typeof getModels !== 'function') return configured;
 
     try {
       const models = await Promise.resolve(getModels.call(this.llm));
       if (!Array.isArray(models)) return undefined;
-      const match = models.find((model: any) => model && typeof model.id === 'string' && model.id === trimmed);
-      const maxInputTokensRaw = match?.maxInputTokens;
-      if (typeof maxInputTokensRaw !== 'number' || !Number.isFinite(maxInputTokensRaw) || maxInputTokensRaw <= 0) {
-        return undefined;
+      const match = models.find((model: LLMModelInfo) => model && typeof model.id === 'string' && model.id === trimmed);
+      const maxInputTokens = positiveInteger(match?.maxInputTokens);
+      const maxOutputTokens = positiveInteger(match?.maxOutputTokens);
+      if (maxOutputTokens) {
+        this.derivedModelOutputTokens.set(trimmed, maxOutputTokens);
       }
+      if (!maxInputTokens) return this.getModelLimit(trimmed);
 
-      const maxOutputTokensRaw = match?.maxOutputTokens;
       const derived: ModelLimit = {
-        context: Math.floor(maxInputTokensRaw),
-        ...(typeof maxOutputTokensRaw === 'number' && Number.isFinite(maxOutputTokensRaw) && maxOutputTokensRaw > 0
-          ? { output: Math.floor(maxOutputTokensRaw) }
-          : {}),
+        context: maxInputTokens,
+        ...(maxOutputTokens ? { output: maxOutputTokens } : {}),
       };
       this.derivedModelLimits.set(trimmed, derived);
-      return derived;
+      return this.getModelLimit(trimmed);
     } catch {
-      return undefined;
+      return configured;
     }
   }
 
@@ -651,15 +677,29 @@ export class LingyunAgent {
       warmModelLimit: (modelId) => this.warmModelLimit(modelId),
       runSyntheticPass: (params) => this.runSyntheticPass(session, config, params),
     });
+    const modelId = String(config.model || '').trim();
+    if (modelId) {
+      await this.warmModelLimit(modelId);
+    }
     return {
       execution: this.resolveExecutionContext(config, prepared?.runtime),
       syntheticContexts: [...(prepared?.syntheticContexts ?? [])],
     };
   }
 
-  private getMaxOutputTokens(config: Readonly<AgentConfig>): number {
+  private getMaxOutputTokens(
+    config: Readonly<AgentConfig>,
+    runtime?: Pick<LingyunAgentExecutionRuntime, 'modelLimits'>,
+    modelId = config.model,
+  ): number {
+    const modelLimit = modelId ? this.getModelLimit(modelId, runtime) : undefined;
+    const modelOutput = positiveInteger(modelLimit?.output) ?? (modelId ? positiveInteger(this.derivedModelOutputTokens.get(modelId)) : undefined);
+    if (modelOutput) return modelOutput;
+
     const max = config.maxOutputTokens;
-    if (typeof max === 'number' && Number.isFinite(max) && max > 0) return Math.floor(max);
+    const configuredMax = positiveInteger(max);
+    if (configuredMax) return configuredMax;
+
     return 4096;
   }
 
@@ -1038,7 +1078,7 @@ export class LingyunAgent {
       temperature: execution.config.temperature ?? 0.0,
       maxRetries: execution.config.maxRetries ?? 0,
       retryWithPartialOutput: execution.config.retryWithPartialOutput === true,
-      getMaxOutputTokens: () => this.getMaxOutputTokens(execution.config),
+      getMaxOutputTokens: () => this.getMaxOutputTokens(execution.config, execution.runtime, modelId),
       getModelLimit: (id) => this.getModelLimit(id, execution.runtime),
       composeSystemPrompt: (id, options) => this.composeSystemPrompt(id, execution, options),
       filterTools: (tools) => this.filterTools(tools, execution.config),
@@ -1235,7 +1275,7 @@ export class LingyunAgent {
         const modelLimit = modelId ? this.getModelLimit(modelId, execution.runtime) : undefined;
         const reservedOutputTokens = getReservedOutputTokens({
           modelLimit,
-          maxOutputTokens: this.getMaxOutputTokens(execution.config),
+          maxOutputTokens: this.getMaxOutputTokens(execution.config, execution.runtime, modelId),
         });
         const lastTokens = getLastAssistantTokens(params.session.history);
 
@@ -1260,7 +1300,7 @@ export class LingyunAgent {
             plugins: this.plugins,
             providerBehavior: this.providerBehavior,
             compactionConfig: execution.runtime.compactionConfig,
-            maxOutputTokens: this.getMaxOutputTokens(execution.config),
+            maxOutputTokens: this.getMaxOutputTokens(execution.config, execution.runtime, modelId),
           });
         }
 

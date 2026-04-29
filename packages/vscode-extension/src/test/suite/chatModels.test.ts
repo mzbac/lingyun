@@ -179,6 +179,58 @@ suite('Chat models service', () => {
     }
   });
 
+  test('getContextForUI falls back to global maxOutputTokens when provider output metadata is absent', async () => {
+    const config = vscode.workspace.getConfiguration('lingyun');
+    const previousModelLimits = config.inspect<Record<string, unknown>>('modelLimits')?.globalValue;
+    const previousMaxOutputTokens = config.inspect<number>('maxOutputTokens')?.globalValue;
+    await config.update('modelLimits', {}, vscode.ConfigurationTarget.Global);
+    await config.update('maxOutputTokens', 45678, vscode.ConfigurationTarget.Global);
+
+    try {
+      const { agent } = createModelTrackingAgent(createBlankAgentState, [
+        {
+          role: 'assistant',
+          metadata: {
+            tokens: {
+              total: 25000,
+            },
+          },
+        },
+      ]);
+      const controller = createStandaloneChatController({
+        agent,
+        llmProvider: {
+          id: 'copilot',
+          name: 'Copilot',
+          getModel: async () => ({}),
+        } as any,
+      });
+
+      controller.currentModel = 'provider-context-only-model';
+      controller.availableModels = [
+        {
+          id: 'provider-context-only-model',
+          name: 'Provider Context Only Model',
+          maxInputTokens: 100000,
+        } as any,
+      ];
+
+      assert.deepStrictEqual(controller.sessionApi.getContextForUI(), {
+        totalTokens: 25000,
+        inputTokens: undefined,
+        outputTokens: undefined,
+        cacheReadTokens: undefined,
+        cacheWriteTokens: undefined,
+        contextLimitTokens: 100000,
+        outputLimitTokens: 45678,
+        percent: 25,
+      });
+    } finally {
+      await config.update('modelLimits', previousModelLimits, vscode.ConfigurationTarget.Global);
+      await config.update('maxOutputTokens', previousMaxOutputTokens, vscode.ConfigurationTarget.Global);
+    }
+  });
+
   test('getContextForUI prefers configured provider-scoped model limits over provider metadata', async () => {
     const config = vscode.workspace.getConfiguration('lingyun');
     const previousModelLimits = config.inspect<Record<string, unknown>>('modelLimits')?.globalValue;

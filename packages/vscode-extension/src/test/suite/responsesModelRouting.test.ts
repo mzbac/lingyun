@@ -2,6 +2,7 @@ import * as assert from 'assert';
 
 import {
   isCopilotResponsesModelId,
+  isGpt5FamilyModelId,
   normalizeTemperatureForModel,
   shouldUseResponsesApiForModelId,
 } from '@kooka/core';
@@ -20,6 +21,16 @@ suite('Responses model routing', () => {
     ]) {
       assert.strictEqual(shouldUseResponsesApiForModelId(modelId), true, modelId);
       assert.strictEqual(isCopilotResponsesModelId(modelId), true, modelId);
+    }
+  });
+
+  test('detects GPT-5 family model ids with provider prefixes', () => {
+    for (const modelId of ['gpt-5', 'gpt-5.3-codex', 'openai/gpt-5.5', 'openai:gpt-5.5-codex']) {
+      assert.strictEqual(isGpt5FamilyModelId(modelId), true, modelId);
+    }
+
+    for (const modelId of ['gpt-4o', 'gpt-50', 'my-gpt-5-wrapper', 'claude-sonnet-4.5', '']) {
+      assert.strictEqual(isGpt5FamilyModelId(modelId), false, modelId);
     }
   });
 

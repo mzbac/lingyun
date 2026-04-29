@@ -23,6 +23,10 @@ function isAtLeastMinimumGptVersion(version: [number, number, number]): boolean 
   return true;
 }
 
+export function isGpt5FamilyModelId(modelId: string): boolean {
+  return /(?:^|[/:])gpt-5(?=$|[-_.:/])/.test(String(modelId || '').trim().toLowerCase());
+}
+
 /**
  * Returns true when the given model id must be routed through the
  * OpenAI `/responses`-style streaming path (as opposed to `/chat/completions`).

@@ -375,6 +375,30 @@ suite('AgentLoop', () => {
     }
   });
 
+  test('run - injects configured xhigh reasoningEffort for GPT-5.5 Responses models', async () => {
+    const config = vscode.workspace.getConfiguration('lingyun');
+    const previousEffort = config.get('copilot.reasoningEffort');
+    await config.update('copilot.reasoningEffort', 'xhigh', vscode.ConfigurationTarget.Global);
+
+    try {
+      const copilotLLM = new MockCopilotProvider();
+      agent = new AgentLoop(copilotLLM, mockContext, { model: 'gpt-5.5' }, registry);
+      copilotLLM.setNextResponse({ kind: 'text', content: 'OK' });
+
+      await agent.run('Hi');
+
+      const options = copilotLLM.lastCallOptions as any;
+      assert.strictEqual(options?.providerOptions?.openai?.reasoningEffort, 'xhigh');
+      assert.strictEqual(options?.providerOptions?.copilot?.reasoningEffort, 'xhigh');
+    } finally {
+      if (previousEffort === undefined) {
+        await config.update('copilot.reasoningEffort', undefined, vscode.ConfigurationTarget.Global);
+      } else {
+        await config.update('copilot.reasoningEffort', previousEffort, vscode.ConfigurationTarget.Global);
+      }
+    }
+  });
+
   test('run - injects reasoningEffort for Codex Subscription GPT-5 models', async () => {
     for (const modelId of ['gpt-5.3-codex', 'gpt-5.4', 'gpt-5.5']) {
       const codexLLM = new MockCodexSubscriptionProvider();
@@ -416,6 +440,46 @@ suite('AgentLoop', () => {
 
     const options = openaiCompatibleLLM.lastCallOptions as any;
     assert.strictEqual(options?.maxOutputTokens, 12345);
+  });
+
+  test('run - prefers provider model metadata maxOutputTokens over configured maxOutputTokens', async () => {
+    const metadataLLM = new MockProviderWithModelMetadata();
+    agent = new AgentLoop(
+      metadataLLM,
+      mockContext,
+      { model: 'mock-model', maxOutputTokens: 12345 },
+      registry,
+    );
+    metadataLLM.setNextResponse({ kind: 'text', content: 'OK' });
+
+    await agent.run('Hi');
+
+    const options = metadataLLM.lastCallOptions as any;
+    assert.strictEqual(options?.maxOutputTokens, 5);
+  });
+
+  test('run - prefers configured modelLimits output over provider model metadata', async () => {
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const previousLimits = cfg.get('modelLimits');
+    const metadataLLM = new MockProviderWithModelMetadata();
+    agent = new AgentLoop(
+      metadataLLM,
+      mockContext,
+      { model: 'mock-model', maxOutputTokens: 12345 },
+      registry,
+    );
+
+    await cfg.update('modelLimits', { 'mock-model': { context: 10, output: 7 } }, true);
+    try {
+      metadataLLM.setNextResponse({ kind: 'text', content: 'OK' });
+
+      await agent.run('Hi');
+
+      const options = metadataLLM.lastCallOptions as any;
+      assert.strictEqual(options?.maxOutputTokens, 7);
+    } finally {
+      await cfg.update('modelLimits', previousLimits as any, true);
+    }
   });
 
   test('updateConfig - refreshes maxOutputTokens for later model requests', async () => {

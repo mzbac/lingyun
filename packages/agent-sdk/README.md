@@ -79,6 +79,8 @@ const { agent, llm } = createLingyunAgent({
   allowExternalPaths: false,
 });
 
+// maxOutputTokens is the fallback request limit. Provider model metadata wins
+// when available; explicit modelLimits[modelId].output wins over both.
 try {
   const session = new LingyunSession({ sessionId: 'demo' });
 

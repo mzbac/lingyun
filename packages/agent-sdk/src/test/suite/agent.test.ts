@@ -439,6 +439,7 @@ class MockLLMProvider implements LLMProvider {
   modelCalls: string[] = [];
   callCount = 0;
   lastPrompt: unknown;
+  lastOptions: any;
   promptHistory: unknown[] = [];
   lastToolNames: string[] = [];
   toolNameHistory: string[][] = [];
@@ -457,6 +458,7 @@ class MockLLMProvider implements LLMProvider {
 
   protected recordRequest(options: any): void {
     this.callCount++;
+    this.lastOptions = options;
     this.lastPrompt = structuredClone(options?.prompt);
     this.promptHistory.push(structuredClone(options?.prompt));
     this.lastToolNames = getToolNamesFromOptions(options?.tools);
@@ -576,6 +578,38 @@ class MockCopilotProvider extends MockLLMProvider {
   override readonly name = 'Copilot';
 }
 
+class MockProviderWithModelMetadata extends MockLLMProvider {
+  async getModels(): Promise<Array<{ id: string; name: string; vendor: string; family: string; maxInputTokens: number; maxOutputTokens: number }>> {
+    return [
+      {
+        id: 'mock-model',
+        name: 'Mock Model',
+        vendor: 'mock',
+        family: 'mock',
+        maxInputTokens: 100000,
+        maxOutputTokens: 64000,
+      },
+    ];
+  }
+}
+
+class MockProviderWithOutputOnlyModelMetadata extends MockLLMProvider {
+  getModelsCallCount = 0;
+
+  async getModels(): Promise<Array<{ id: string; name: string; vendor: string; family: string; maxOutputTokens: number }>> {
+    this.getModelsCallCount++;
+    return [
+      {
+        id: 'mock-model',
+        name: 'Mock Model',
+        vendor: 'mock',
+        family: 'mock',
+        maxOutputTokens: 24000,
+      },
+    ];
+  }
+}
+
 suite('LingYun Agent SDK', () => {
   test('runs a tool-call loop and stores tool parts', async () => {
     const llm = new MockLLMProvider();
@@ -651,6 +685,136 @@ suite('LingYun Agent SDK', () => {
 
     session.clearMentionedSkills();
     assert.deepStrictEqual(session.mentionedSkills, []);
+  });
+
+  test('uses configured maxOutputTokens when provider metadata has no output limit', async () => {
+    const llm = new MockLLMProvider();
+    const agent = new LingyunAgent(llm, { model: 'mock-model', maxOutputTokens: 12345 }, new ToolRegistry());
+    const session = new LingyunSession();
+    llm.queueResponse({ kind: 'text', content: 'ok' });
+
+    const run = agent.run({ session, input: 'hi' });
+    for await (const _event of run.events) {
+      // drain
+    }
+    await run.done;
+
+    assert.strictEqual(llm.lastOptions?.maxOutputTokens, 12345);
+  });
+
+  test('passes xhigh reasoning effort for prefixed OpenAI-compatible GPT-5.5 Responses models', async () => {
+    const llm = new MockOpenAICompatibleProvider();
+    const agent = new LingyunAgent(
+      llm,
+      { model: 'openai/gpt-5.5' },
+      new ToolRegistry(),
+      { reasoning: { effort: 'xhigh' } },
+    );
+    const session = new LingyunSession();
+    llm.queueResponse({ kind: 'text', content: 'ok' });
+
+    const run = agent.run({ session, input: 'hi' });
+    for await (const _event of run.events) {
+      // drain
+    }
+    await run.done;
+
+    assert.strictEqual(llm.lastOptions?.providerOptions?.openaiCompatible?.reasoningEffort, 'xhigh');
+    assert.strictEqual(llm.lastOptions?.providerOptions?.openai?.reasoningEffort, 'xhigh');
+  });
+
+  test('prefers provider model metadata over configured maxOutputTokens', async () => {
+    const llm = new MockProviderWithModelMetadata();
+    const agent = new LingyunAgent(llm, { model: 'mock-model', maxOutputTokens: 12345 }, new ToolRegistry());
+    const session = new LingyunSession();
+    llm.queueResponse({ kind: 'text', content: 'ok' });
+
+    const run = agent.run({ session, input: 'hi' });
+    for await (const _event of run.events) {
+      // drain
+    }
+    await run.done;
+
+    assert.strictEqual(llm.lastOptions?.maxOutputTokens, 64000);
+  });
+
+  test('prefers modelLimits output over provider model metadata', async () => {
+    const llm = new MockProviderWithModelMetadata();
+    const agent = new LingyunAgent(
+      llm,
+      { model: 'mock-model', maxOutputTokens: 12345 },
+      new ToolRegistry(),
+      { modelLimits: { 'mock-model': { context: 100000, output: 7777 } } },
+    );
+    const session = new LingyunSession();
+    llm.queueResponse({ kind: 'text', content: 'ok' });
+
+    const run = agent.run({ session, input: 'hi' });
+    for await (const _event of run.events) {
+      // drain
+    }
+    await run.done;
+
+    assert.strictEqual(llm.lastOptions?.maxOutputTokens, 7777);
+  });
+
+  test('uses provider metadata output when modelLimits only overrides context', async () => {
+    const llm = new MockProviderWithModelMetadata();
+    const agent = new LingyunAgent(
+      llm,
+      { model: 'mock-model', maxOutputTokens: 12345 },
+      new ToolRegistry(),
+      { modelLimits: { 'mock-model': { context: 100000 } } },
+    );
+    const session = new LingyunSession();
+    llm.queueResponse({ kind: 'text', content: 'ok' });
+
+    const run = agent.run({ session, input: 'hi' });
+    for await (const _event of run.events) {
+      // drain
+    }
+    await run.done;
+
+    assert.strictEqual(llm.lastOptions?.maxOutputTokens, 64000);
+  });
+
+  test('uses provider output metadata even when context metadata is absent', async () => {
+    const llm = new MockProviderWithOutputOnlyModelMetadata();
+    const agent = new LingyunAgent(llm, { model: 'mock-model', maxOutputTokens: 12345 }, new ToolRegistry());
+    const session = new LingyunSession();
+    llm.queueResponse({ kind: 'text', content: 'ok' });
+
+    const run = agent.run({ session, input: 'hi' });
+    for await (const _event of run.events) {
+      // drain
+    }
+    await run.done;
+
+    assert.strictEqual(llm.lastOptions?.maxOutputTokens, 24000);
+  });
+
+  test('caches provider output metadata even when context metadata is absent', async () => {
+    const llm = new MockProviderWithOutputOnlyModelMetadata();
+    const agent = new LingyunAgent(llm, { model: 'mock-model', maxOutputTokens: 12345 }, new ToolRegistry());
+    const firstSession = new LingyunSession();
+    const secondSession = new LingyunSession();
+    llm.queueResponse({ kind: 'text', content: 'first' });
+    llm.queueResponse({ kind: 'text', content: 'second' });
+
+    const firstRun = agent.run({ session: firstSession, input: 'first' });
+    for await (const _event of firstRun.events) {
+      // drain
+    }
+    await firstRun.done;
+
+    const secondRun = agent.run({ session: secondSession, input: 'second' });
+    for await (const _event of secondRun.events) {
+      // drain
+    }
+    await secondRun.done;
+
+    assert.strictEqual(llm.lastOptions?.maxOutputTokens, 24000);
+    assert.strictEqual(llm.getModelsCallCount, 1);
   });
 
   test('clearRuntimeState resets runtime session state but preserves identity metadata', () => {

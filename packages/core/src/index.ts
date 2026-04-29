@@ -5,7 +5,7 @@ export { expandHome, isSubPath, normalizeFsPath, redactFsPathForPrompt } from '.
 export type { PermissionAction, PermissionRule, PermissionRuleset } from './permission';
 export { evaluatePermission, mergeRulesets, wildcardMatch } from './permission';
 
-export { isCopilotResponsesModelId, normalizeTemperatureForModel, shouldUseResponsesApiForModelId } from './copilot';
+export { isCopilotResponsesModelId, isGpt5FamilyModelId, normalizeTemperatureForModel, shouldUseResponsesApiForModelId } from './copilot';
 
 export {
   THINK_BLOCK_REGEX,

@@ -73,6 +73,6 @@ This project is still in active development with no production users. Prefer bre
   "lingyun.llmProvider": "openaiCompatible",
   "lingyun.openaiCompatible.baseURL": "http://localhost:8080/v1",
   "lingyun.openaiCompatible.defaultModelId": "your-model-id",
-  "lingyun.openaiCompatible.maxTokens": 32000
+  "lingyun.maxOutputTokens": 32000
 }
 ```

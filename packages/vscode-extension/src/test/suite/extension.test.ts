@@ -5,8 +5,9 @@
 import * as assert from 'assert';
 import * as vscode from 'vscode';
 
-import { createAgentConfig } from '../../extension';
+import { createAgentConfig, shouldRefreshChatModelStateForConfigChange } from '../../extension';
 import { getModelLimit } from '../../core/compaction';
+import { getConfiguredReasoningEffort } from '../../core/reasoningEffort';
 import { WorkspaceToolProvider } from '../../providers/workspace';
 
 suite('Extension Integration', () => {
@@ -62,6 +63,7 @@ suite('Extension Integration', () => {
     assert.strictEqual(config.get('mode'), 'build');
     assert.strictEqual(config.get('copilot.reasoningEffort'), 'high');
     assert.strictEqual(config.get('temperature'), 0);
+    assert.strictEqual(config.get('maxOutputTokens'), 32000);
     assert.strictEqual(config.get('llm.timeoutMs'), 0);
     assert.strictEqual(config.get('toolTimeoutMs'), 0);
     assert.strictEqual(config.get('autoApprove'), false);
@@ -94,18 +96,50 @@ suite('Extension Integration', () => {
     await config.update('autoApprove', undefined, vscode.ConfigurationTarget.Global);
   });
 
-  test('createAgentConfig should map openaiCompatible.maxTokens into maxOutputTokens', async () => {
+  test('createAgentConfig should map global maxOutputTokens into agent config for all providers', async () => {
     const config = vscode.workspace.getConfiguration('lingyun');
 
-    await config.update('llmProvider', 'openaiCompatible', vscode.ConfigurationTarget.Global);
-    await config.update('openaiCompatible.maxTokens', 12345, vscode.ConfigurationTarget.Global);
+    await config.update('llmProvider', 'copilot', vscode.ConfigurationTarget.Global);
+    await config.update('maxOutputTokens', 12345, vscode.ConfigurationTarget.Global);
 
     try {
       const agentConfig = createAgentConfig();
       assert.strictEqual(agentConfig.maxOutputTokens, 12345);
     } finally {
-      await config.update('openaiCompatible.maxTokens', undefined, vscode.ConfigurationTarget.Global);
+      await config.update('maxOutputTokens', undefined, vscode.ConfigurationTarget.Global);
       await config.update('llmProvider', undefined, vscode.ConfigurationTarget.Global);
+    }
+  });
+
+  test('reasoning effort configuration changes should refresh chat model state', () => {
+    const event = {
+      affectsConfiguration(section: string) {
+        return section === 'lingyun.copilot.reasoningEffort';
+      },
+    };
+    const unrelatedEvent = {
+      affectsConfiguration(section: string) {
+        return section === 'lingyun.temperature';
+      },
+    };
+
+    assert.strictEqual(shouldRefreshChatModelStateForConfigChange(event), true);
+    assert.strictEqual(shouldRefreshChatModelStateForConfigChange(unrelatedEvent), false);
+  });
+
+  test('getConfiguredReasoningEffort preserves empty setting as disabled', async () => {
+    const config = vscode.workspace.getConfiguration('lingyun');
+    const previousEffort = config.get('copilot.reasoningEffort');
+
+    await config.update('copilot.reasoningEffort', '', vscode.ConfigurationTarget.Global);
+    try {
+      assert.strictEqual(getConfiguredReasoningEffort(), '');
+    } finally {
+      if (previousEffort === undefined) {
+        await config.update('copilot.reasoningEffort', undefined, vscode.ConfigurationTarget.Global);
+      } else {
+        await config.update('copilot.reasoningEffort', previousEffort, vscode.ConfigurationTarget.Global);
+      }
     }
   });
 

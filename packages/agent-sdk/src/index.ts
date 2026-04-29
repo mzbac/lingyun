@@ -15,6 +15,7 @@ export type {
   LingyunRun,
   LingyunRunResult,
   LLMProvider,
+  LLMModelInfo,
 } from './types.js';
 
 export type { AgentHistoryMessage, CompactionConfig, ModelLimit } from '@kooka/core';

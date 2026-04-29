@@ -157,6 +157,7 @@ export interface LLMProvider {
   readonly id: string;
   readonly name: string;
   getModel(modelId: string): Promise<unknown>;
+  getModels?(): Promise<LLMModelInfo[]>;
   /**
    * Optional hook invoked after a provider request fails (non-retryable).
    * Providers can use this to clear cached clients/tokens so the next request can recover.
@@ -170,6 +171,15 @@ export interface LLMProvider {
    */
   getAuthRetryLabel?(error: unknown, context: { modelId: string; mode: 'plan' | 'build' }): string | undefined;
   dispose?(): void;
+}
+
+export interface LLMModelInfo {
+  id: string;
+  name: string;
+  vendor: string;
+  family: string;
+  maxInputTokens?: number;
+  maxOutputTokens?: number;
 }
 
 export interface AgentConfig {

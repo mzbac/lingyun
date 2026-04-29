@@ -79,6 +79,52 @@ suite('OpenAICompatibleProvider fetch', () => {
     }
   });
 
+  test('loads OpenAI-compatible model metadata for derived token limits', async () => {
+    const server = http.createServer((req, res) => {
+      if (req.url === '/v1/models') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          data: [
+            {
+              id: 'metadata-model',
+              owned_by: 'local',
+              context_window: 131072,
+              max_output_tokens: 16384,
+            },
+          ],
+        }));
+        return;
+      }
+
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'not found' }));
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      server.close();
+      assert.fail('Expected server to bind to a TCP port');
+    }
+
+    const provider = new OpenAICompatibleProvider({ baseURL: `http://127.0.0.1:${address.port}/v1` });
+    try {
+      assert.deepStrictEqual(await provider.getModels(), [
+        {
+          id: 'metadata-model',
+          name: 'metadata-model',
+          vendor: 'local',
+          family: 'local',
+          maxInputTokens: 131072,
+          maxOutputTokens: 16384,
+        },
+      ]);
+    } finally {
+      provider.dispose();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   test('annotates chat-model generate errors with provider and model metadata', async () => {
     const provider = new OpenAICompatibleProvider({ baseURL: 'http://127.0.0.1:12345' });
     const rawError: any = Object.assign(new Error('quota exceeded'), {
