@@ -8,7 +8,6 @@ import { resolveConfiguredModelId } from '../../core/modelSelection';
 import { createBlankSessionSignals } from '../../core/sessionSignals';
 import type { LLMProvider } from '../../core/types';
 import type { ModelInfo } from '../../providers/modelCatalog';
-import type { OfficeSync } from '../office/sync';
 import { bindChatControllerService } from './controllerService';
 import { postInputNotice } from './inputNotice';
 import { createDefaultSessionTitle, getSessionDisplayTitle } from './sessionTitle';
@@ -46,7 +45,6 @@ export interface ChatSessionRuntimeService {
 export interface ChatSessionRuntimeDeps {
   view?: vscode.WebviewView;
   outputChannel?: vscode.OutputChannel;
-  officeSync?: Pick<OfficeSync, 'sync'>;
   agent: AgentLoop;
   llmProvider?: LLMProvider;
   availableModels: ModelInfo[];
@@ -245,7 +243,6 @@ export function createChatSessionRuntimeService(
         sessions: this.getSessionsForUI(),
         activeSessionId: this.activeSessionId,
       });
-      this.officeSync?.sync();
     },
 
     async createNewSession(this: ChatSessionRuntimeRuntime): Promise<void> {
@@ -325,7 +322,6 @@ export function createChatSessionRuntimeService(
       });
 
       this.loopManager.syncActiveSession({ resetSchedule: true });
-      this.officeSync?.sync();
     },
 
     async setBackend(

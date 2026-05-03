@@ -591,11 +591,6 @@ suite('Pending plan send', () => {
       assert.strictEqual(options?.approvedPlan, '1. Ship it');
       return 'done';
     };
-    provider.officeSync = {
-      onRunStart() {},
-      onRunEnd() {},
-    } as any;
-
     await provider.runnerPlanApi.executePendingPlan('plan-1');
 
     assert.strictEqual(runStartSessionId, 'session-1');
@@ -645,11 +640,6 @@ suite('Pending plan send', () => {
       assert.strictEqual(options?.approvedPlan, '1. Ship it');
       return 'done';
     };
-    provider.officeSync = {
-      onRunStart() {},
-      onRunEnd() {},
-    } as any;
-
     await provider.runnerPlanApi.executePendingPlan('plan-1');
 
     assert.strictEqual(planMsg.plan?.status, 'done');
@@ -749,11 +739,6 @@ suite('Pending plan send', () => {
       assert.match(options?.approvedPlan || '', /Proceed without further clarification/);
       return 'done';
     };
-    provider.officeSync = {
-      onRunStart() {},
-      onRunEnd() {},
-    } as any;
-
     await provider.runnerPlanApi.executePendingPlan('plan-1');
   });
 
@@ -783,11 +768,6 @@ suite('Pending plan send', () => {
     provider.agent.execute = async () => {
       throw new Error('execution failed');
     };
-    provider.officeSync = {
-      onRunStart() {},
-      onRunEnd() {},
-    } as any;
-
     await provider.runnerPlanApi.executePendingPlan('plan-1');
 
     assert.strictEqual(provider.mode, 'plan');

@@ -1,6 +1,5 @@
 const path = require('path');
 const esbuild = require('esbuild');
-const { buildOfficeWebview } = require('./office-webview-build');
 
 const args = process.argv.slice(2);
 const watch = args.includes('--watch');
@@ -26,14 +25,12 @@ const options = {
 
 async function main() {
   if (watch) {
-    await buildOfficeWebview({ watch: true, logPrefix: '[bundle] office-webview' });
     const ctx = await esbuild.context(options);
     await ctx.watch();
     console.log('[bundle] watching...');
     return;
   }
 
-  await buildOfficeWebview({ watch: false, logPrefix: '[bundle] office-webview' });
   await esbuild.build(options);
 }
 

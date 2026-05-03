@@ -5,7 +5,6 @@ import type { AgentHistoryMessage, UserHistoryInput } from '@kooka/core';
 import type { AgentSessionState } from '../../core/agent';
 import type { SessionSignals } from '../../core/sessionSignals';
 import type { AgentApprovalContext, AgentCallbacks, LLMProvider } from '../../core/types';
-import type { OfficeSync } from '../office/sync';
 import type { ChatMessage, ChatMode, ChatQueuedInput, ChatSessionInfo, ChatUserInput } from './types';
 
 export type PendingApprovalEntry = {
@@ -114,7 +113,6 @@ export interface RunCoordinatorHost {
   markActiveStepStatus(status: 'running' | 'done' | 'error' | 'canceled'): void;
   messages: ChatMessage[];
   mode: ChatMode;
-  officeSync?: OfficeSync;
   pendingApprovals: Map<string, PendingApprovalEntry>;
   persistActiveSession(): void;
   postApprovalState(): void;

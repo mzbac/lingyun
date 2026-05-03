@@ -251,7 +251,6 @@
       sessionActionPending = '';
       sessionSwitchPending = false;
       revertActionPending = '';
-      officeActionPending = '';
       clearAllPendingActionTimers();
       modelPickerOpenPending = false;
       advancedModelSettingsPending = false;
@@ -515,13 +514,6 @@
           if (!data.pending) {
             clearPendingActionTimer('revertAction');
             revertActionPending = '';
-          }
-          syncInputState();
-          break;
-        case 'officeActionState':
-          if (!data.pending) {
-            clearPendingActionTimer('officeAction');
-            officeActionPending = '';
           }
           syncInputState();
           break;

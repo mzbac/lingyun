@@ -8,7 +8,6 @@ import { createBlankSessionSignals, type SessionSignals } from '../../core/sessi
 import type { WorkspaceSnapshot } from '../../core/snapshot';
 import type { ModelInfo } from '../../providers/modelCatalog';
 import type { LLMProviderWithUi } from '../../providers/providerUi';
-import type { OfficeSync } from '../office/sync';
 
 import { loadAutoApprovedTools } from './autoApprovedToolsStore';
 import { installChatControllerComposition } from './controllerComposition';
@@ -37,9 +36,6 @@ export class ChatController {
   signals: SessionSignals = createBlankSessionSignals();
   sessions: Map<string, ChatSessionInfo> = new Map();
   activeSessionId: string = crypto.randomUUID();
-  officeSync?: OfficeSync;
-  openOfficeView?: () => Promise<void>;
-  resetOfficeLayoutAction?: () => Promise<void>;
   isProcessing = false;
   currentModel = 'gpt-4o';
   mode: ChatMode = 'build';

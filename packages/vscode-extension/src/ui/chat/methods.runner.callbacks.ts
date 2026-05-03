@@ -5,7 +5,6 @@ import { deriveStructuredMemoriesFromText, hasExternalMemoryContext, recordAssis
 import { getDebugSettings } from '../../core/debugSettings';
 import { appendErrorLog, appendLog } from '../../core/logger';
 import { bindChatControllerService } from './controllerService';
-import { decorateAgentCallbacksWithOfficeSync } from '../office/sync';
 import type { ChatMessage } from './types';
 import type { ChatController } from './controller';
 import type { ChatRunnerCallbacksDeps, ChatRunnerCallbacksService } from './runner/callbackContracts';
@@ -45,8 +44,7 @@ export function createChatRunnerCallbacksService(controller: ChatRunnerCallbacks
   const runtime = controller as ChatRunnerCallbacksRuntime;
   const service = bindChatControllerService(runtime, {
     createPlanningCallbacks(this: ChatRunnerCallbacksRuntime, planMsg: ChatMessage): AgentCallbacks {
-      const callbacks = createPlanningCallbacks(this, planMsg);
-      return this.officeSync ? decorateAgentCallbacksWithOfficeSync(callbacks, this.officeSync) : callbacks;
+      return createPlanningCallbacks(this, planMsg);
     },
 
   createAgentCallbacks(this: ChatRunnerCallbacksRuntime): AgentCallbacks {
@@ -173,7 +171,7 @@ export function createChatRunnerCallbacksService(controller: ChatRunnerCallbacks
       },
     };
 
-    return this.officeSync ? decorateAgentCallbacksWithOfficeSync(callbacks, this.officeSync) : callbacks;
+    return callbacks;
   },
   });
   Object.assign(runtime, service);

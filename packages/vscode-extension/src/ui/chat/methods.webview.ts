@@ -863,8 +863,6 @@ export interface ChatWebviewService {
   listTools(): Promise<void>;
   runTool(toolId?: string, args?: Record<string, unknown>, confirmed?: boolean): Promise<void>;
   createToolsConfig(): Promise<void>;
-  openOffice(): Promise<void>;
-  resetOfficeLayout(): Promise<void>;
   setExplorePrepass(enabled: boolean): Promise<void>;
   setExplorePrepassMaxChars(maxChars: number): Promise<void>;
   setSubagentModelOverride(model: string): Promise<void>;
@@ -948,8 +946,6 @@ export interface ChatWebviewDeps {
   clearAutoApprovedToolsForUI(): Promise<void>;
   clearCurrentSession(): Promise<void>;
   clearSavedSessions(): Promise<void>;
-  openOfficeView?(): Promise<void>;
-  resetOfficeLayoutAction?(): Promise<void>;
   executePendingPlan(planMessageId?: string): Promise<void>;
   loadModels(): Promise<void>;
   postModelState(): Promise<void>;
@@ -1802,20 +1798,6 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
             break;
           case 'createToolsConfig':
             await service.createToolsConfig();
-            break;
-          case 'openOffice':
-            try {
-              await service.openOffice();
-            } finally {
-              this.postMessage({ type: 'officeActionState', action: 'openOffice', pending: false });
-            }
-            break;
-          case 'resetOfficeLayout':
-            try {
-              await service.resetOfficeLayout();
-            } finally {
-              this.postMessage({ type: 'officeActionState', action: 'resetOfficeLayout', pending: false });
-            }
             break;
           case 'setExplorePrepass':
             if (typeof data.enabled === 'boolean') {
@@ -3173,44 +3155,6 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
     }
   },
 
-  async openOffice(this: ChatWebviewRuntime): Promise<void> {
-    if (this.isProcessing) {
-      postInputNotice(this, 'Stop the current task before opening Office from chat.');
-      return;
-    }
-
-    if (!this.openOfficeView) {
-      postInputNotice(this, 'Office view is not ready.');
-      return;
-    }
-
-    try {
-      await this.openOfficeView();
-    } catch (error) {
-      appendErrorLog(this.outputChannel, 'Failed to open Office from webview', error, { tag: 'Webview' });
-      postInputNotice(this, 'Failed to open Office. See logs for details.');
-    }
-  },
-
-  async resetOfficeLayout(this: ChatWebviewRuntime): Promise<void> {
-    if (this.isProcessing) {
-      postInputNotice(this, 'Stop the current task before resetting the Office layout.');
-      return;
-    }
-
-    if (!this.resetOfficeLayoutAction) {
-      postInputNotice(this, 'Office state is not ready.');
-      return;
-    }
-
-    try {
-      await this.resetOfficeLayoutAction();
-    } catch (error) {
-      appendErrorLog(this.outputChannel, 'Failed to reset Office layout from webview', error, { tag: 'Webview' });
-      postInputNotice(this, 'Failed to reset Office layout. See logs for details.');
-    }
-  },
-
   async setMemoryAdvancedLimits(this: ChatWebviewRuntime, limits: Partial<MemoryAdvancedLimits>): Promise<void> {
     const postCurrentState = () => this.postMessage({
       type: 'memoryAdvancedLimitsState',
@@ -3795,12 +3739,6 @@ function createChatWebviewDepsForController(controller: ChatController): ChatWeb
     clearAutoApprovedToolsForUI: () => controller.approvalsApi.clearAutoApprovedToolsForUI(),
     clearCurrentSession: () => controller.sessionApi.clearCurrentSession(),
     clearSavedSessions: () => controller.sessionApi.clearSavedSessions(),
-    get openOfficeView() {
-      return controller.openOfficeView;
-    },
-    get resetOfficeLayoutAction() {
-      return controller.resetOfficeLayoutAction;
-    },
     executePendingPlan: (planMessageId?: string) => controller.runnerPlanApi.executePendingPlan(planMessageId),
     loadModels: () => controller.modelApi.loadModels(),
     postModelState: () => controller.modelApi.postModelState(),

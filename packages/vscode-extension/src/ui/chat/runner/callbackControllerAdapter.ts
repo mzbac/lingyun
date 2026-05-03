@@ -58,9 +58,6 @@ export function createChatRunnerCallbacksDepsForController(controller: ChatContr
     get signals() {
       return controller.signals;
     },
-    get officeSync() {
-      return controller.officeSync;
-    },
     get outputChannel() {
       return controller.outputChannel;
     },

@@ -71,8 +71,6 @@
 	    const sessionClearConfirmText = document.getElementById('sessionClearConfirmText');
 	    const sessionClearCancelBtn = document.getElementById('sessionClearCancel');
 	    const sessionClearConfirmRunBtn = document.getElementById('sessionClearConfirmRun');
-	    const openOfficeBtn = document.getElementById('openOffice');
-	    const resetOfficeLayoutBtn = document.getElementById('resetOfficeLayout');
 	    const providerSelect = document.getElementById('providerSelect');
 	    const providerSettings = document.getElementById('providerSettings');
 	    const providerSettingsPopover = document.getElementById('providerSettingsPopover');
@@ -309,7 +307,6 @@
 		    let sessionSwitchPending = false;
 		    let sessionActionPending = '';
 		    let sessionClearConfirmAction = '';
-		    let officeActionPending = '';
 		    let sessionsPersistEnabled = true;
 		    let sessionsMaxSessions = 20;
 		    let sessionsMaxSessionBytes = 2000000;
@@ -1171,12 +1168,6 @@
         if (sessionClearSavedBtn) {
           sessionClearSavedBtn.disabled = true;
         }
-        if (openOfficeBtn) {
-          openOfficeBtn.disabled = true;
-        }
-        if (resetOfficeLayoutBtn) {
-          resetOfficeLayoutBtn.disabled = true;
-        }
         setInstructionFileInputsDisabled(true);
         setLoopInputsDisabled(true);
         if (thinkingToggle) {
@@ -1344,12 +1335,6 @@
 	    }
 	    if (sessionClearSavedBtn) {
 	      sessionClearSavedBtn.disabled = true;
-	    }
-	    if (openOfficeBtn) {
-	      openOfficeBtn.disabled = true;
-	    }
-	    if (resetOfficeLayoutBtn) {
-	      resetOfficeLayoutBtn.disabled = true;
 	    }
 	    setInstructionFileInputsDisabled(true);
 	    setLoopInputsDisabled(true);
@@ -4217,41 +4202,6 @@
 			      });
 			    }
 
-			    if (openOfficeBtn) {
-			      openOfficeBtn.addEventListener('click', (e) => {
-			        e.preventDefault();
-			        if (!initReceived || isProcessing || officeActionPending) return;
-			        officeActionPending = 'openOffice';
-			        armPendingActionTimer('officeAction', () => recoverPendingAction('officeAction', 'Office action is taking longer than expected. Controls were re-enabled.', () => { officeActionPending = ''; }));
-			        syncInputState();
-			        try {
-			          vscode.postMessage({ type: 'openOffice' });
-			        } catch {
-			          clearPendingActionTimer('officeAction');
-			          officeActionPending = '';
-			          showInputNotice('Failed to request Office open.');
-			          syncInputState();
-			        }
-			      });
-			    }
-
-			    if (resetOfficeLayoutBtn) {
-			      resetOfficeLayoutBtn.addEventListener('click', (e) => {
-			        e.preventDefault();
-			        if (!initReceived || isProcessing || officeActionPending) return;
-			        officeActionPending = 'resetOfficeLayout';
-			        armPendingActionTimer('officeAction', () => recoverPendingAction('officeAction', 'Office action is taking longer than expected. Controls were re-enabled.', () => { officeActionPending = ''; }));
-			        syncInputState();
-			        try {
-			          vscode.postMessage({ type: 'resetOfficeLayout' });
-			        } catch {
-			          clearPendingActionTimer('officeAction');
-			          officeActionPending = '';
-			          showInputNotice('Failed to request Office layout reset.');
-			          syncInputState();
-			        }
-			      });
-			    }
 
 			    if (sessionsMaxSessionsInput) {
 			      sessionsMaxSessionsInput.addEventListener('keydown', (e) => {
@@ -6056,9 +6006,6 @@
 		      if (sessionClearSavedBtn) sessionClearSavedBtn.disabled = !connected || isProcessing || sessionActionBusy;
 		      if (sessionClearCancelBtn) sessionClearCancelBtn.disabled = !connected || isProcessing || sessionActionBusy;
 		      if (sessionClearConfirmRunBtn) sessionClearConfirmRunBtn.disabled = !connected || isProcessing || sessionActionBusy;
-		      const officeActionBusy = !!officeActionPending;
-		      if (openOfficeBtn) openOfficeBtn.disabled = !connected || isProcessing || officeActionBusy;
-		      if (resetOfficeLayoutBtn) resetOfficeLayoutBtn.disabled = !connected || isProcessing || officeActionBusy;
 		      if (!connected || isProcessing) closeSessionSettingsPopover();
 		      const providerSettingsStatePending =
 		        hasPendingSettingState('codexSubscriptionSettingsState') ||

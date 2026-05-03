@@ -4,7 +4,6 @@ import type { AgentLoop } from '../../../core/agent';
 import type { SessionSignals } from '../../../core/sessionSignals';
 import type { WorkspaceSnapshot } from '../../../core/snapshot';
 import type { AgentApprovalContext, AgentCallbacks, ToolCall, ToolDefinition } from '../../../core/types';
-import type { OfficeSync } from '../../office/sync';
 import type { ChatMessage, ChatSessionInfo } from '../types';
 
 export interface ChatRunnerCallbacksService {
@@ -32,7 +31,6 @@ export interface ChatRunnerCallbacksDeps {
   messages: ChatMessage[];
   abortRequested: boolean;
   signals: SessionSignals;
-  officeSync?: OfficeSync;
   outputChannel?: vscode.OutputChannel;
   snapshot?: WorkspaceSnapshot;
   snapshotUnavailableReason?: string;

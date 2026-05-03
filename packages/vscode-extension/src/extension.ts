@@ -32,7 +32,6 @@ import { appendLog } from './core/logger';
 import { ChatViewProvider } from './ui/chat';
 import { LingyunDiffContentProvider, LINGYUN_DIFF_SCHEME } from './ui/chat/diffContentProvider';
 import { requestApproval } from './ui/approval';
-import { OfficeBridge, OfficeSync, OfficeViewProvider } from './ui/office';
 
 class ExtensionState implements vscode.Disposable {
   context: vscode.ExtensionContext | undefined;
@@ -41,8 +40,6 @@ class ExtensionState implements vscode.Disposable {
   workspaceProvider: WorkspaceToolProvider | undefined;
   outputChannel: vscode.OutputChannel | undefined;
   chatProvider: ChatViewProvider | undefined;
-  officeBridge: OfficeBridge | undefined;
-  officeProvider: OfficeViewProvider | undefined;
   plugins: PluginManager | undefined;
   memories: WorkspaceMemories | undefined;
 
@@ -58,8 +55,6 @@ class ExtensionState implements vscode.Disposable {
   dispose(): void {
     this.context = undefined;
     this.chatProvider = undefined;
-    this.officeProvider = undefined;
-    this.officeBridge = undefined;
 
     if (this.workspaceProvider) {
       this.workspaceProvider.dispose?.();
@@ -351,12 +346,6 @@ export async function activate(
     vscode.commands.registerCommand('lingyun.openAgent', cmdOpenAgent)
   );
   extensionState.addDisposable(
-    vscode.commands.registerCommand('lingyun.openOffice', cmdOpenOffice)
-  );
-  extensionState.addDisposable(
-    vscode.commands.registerCommand('lingyun.resetOfficeLayout', cmdResetOfficeLayout)
-  );
-  extensionState.addDisposable(
     vscode.commands.registerCommand('lingyun.abort', cmdAbort)
   );
   extensionState.addDisposable(
@@ -404,21 +393,6 @@ export async function activate(
     extensionState.outputChannel
   );
 
-  extensionState.officeBridge = new OfficeBridge(context);
-  const controller = extensionState.chatProvider.controller;
-  controller.officeSync = new OfficeSync(extensionState.officeBridge, () => ({
-    sessions: controller.sessions.values(),
-    activeSessionId: controller.activeSessionId,
-    isProcessing: controller.isProcessing,
-  }));
-  extensionState.officeProvider = new OfficeViewProvider(
-    context,
-    controller,
-    extensionState.officeBridge,
-  );
-  controller.openOfficeView = cmdOpenOffice;
-  controller.resetOfficeLayoutAction = cmdResetOfficeLayout;
-
   extensionState.addDisposable(
     vscode.workspace.registerTextDocumentContentProvider(
       LINGYUN_DIFF_SCHEME,
@@ -432,14 +406,6 @@ export async function activate(
     vscode.window.registerWebviewViewProvider(
       ChatViewProvider.viewType,
       extensionState.chatProvider,
-      { webviewOptions: { retainContextWhenHidden: true } }
-    )
-  );
-
-  extensionState.addDisposable(
-    vscode.window.registerWebviewViewProvider(
-      OfficeViewProvider.viewType,
-      extensionState.officeProvider,
       { webviewOptions: { retainContextWhenHidden: true } }
     )
   );
@@ -637,47 +603,6 @@ async function cmdOpenAgent(sessionId?: string): Promise<void> {
   if (typeof sessionId === 'string' && sessionId.trim()) {
     await controller.sessionApi.switchToSession(sessionId.trim());
   }
-}
-
-async function cmdOpenOffice(): Promise<void> {
-  if (!extensionState?.officeProvider) {
-    vscode.window.showInformationMessage('LingYun: Office view is not ready.');
-    return;
-  }
-
-  await vscode.commands.executeCommand('workbench.view.extension.lingyun');
-  await vscode.commands.executeCommand('lingyun.officeView.focus');
-}
-
-async function cmdResetOfficeLayout(): Promise<void> {
-  if (extensionState?.chatProvider?.controller.isProcessing) {
-    vscode.window.showInformationMessage('LingYun: Stop the current task before resetting the Office layout.');
-    return;
-  }
-
-  if (!extensionState?.officeBridge) {
-    vscode.window.showInformationMessage('LingYun: Office state is not ready.');
-    return;
-  }
-
-  const choice = await vscode.window.showWarningMessage(
-    'Reset the saved Office layout and use the default layout next time?',
-    { modal: true },
-    'Reset'
-  );
-  if (choice !== 'Reset') return;
-
-  extensionState.officeBridge.clearLayout();
-
-  // If the Office view is already loaded, instruct it to rebuild from the default layout immediately.
-  // Otherwise, clearing the persisted layout is enough — next open will use the default.
-  const resetApplied = extensionState.officeProvider?.resetLayoutToDefault() ?? false;
-
-  vscode.window.showInformationMessage(
-    resetApplied
-      ? 'LingYun Office: Layout reset to default.'
-      : 'LingYun Office: Layout reset. Open the Office view to load the default layout.'
-  );
 }
 
 function cmdAbort(): void {

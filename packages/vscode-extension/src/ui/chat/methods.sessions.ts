@@ -40,9 +40,6 @@ function createChatSessionRuntimeDeps(
     get outputChannel() {
       return controller.outputChannel;
     },
-    get officeSync() {
-      return controller.officeSync;
-    },
     get agent() {
       return controller.agent;
     },
@@ -384,12 +381,6 @@ function createChatSessionsDepsForController(controller: ChatController): ChatSe
     },
     get view() {
       return controller.view;
-    },
-    get officeSync() {
-      return controller.officeSync;
-    },
-    set officeSync(value) {
-      controller.officeSync = value;
     },
     get agent() {
       return controller.agent;

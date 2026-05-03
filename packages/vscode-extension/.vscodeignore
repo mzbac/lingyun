@@ -7,7 +7,6 @@
 # Source (compiled output lives in dist/)
 src/**
 sdk/**
-office-webview/**
 
 # Docs and scripts
 docs/**

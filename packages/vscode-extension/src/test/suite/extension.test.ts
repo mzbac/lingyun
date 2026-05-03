@@ -32,8 +32,6 @@ suite('Extension Integration', () => {
     const expectedCommands = [
       'lingyun.start',
       'lingyun.openAgent',
-      'lingyun.openOffice',
-      'lingyun.resetOfficeLayout',
       'lingyun.abort',
       'lingyun.clear',
       'lingyun.showLogs',
@@ -190,7 +188,7 @@ suite('Extension Integration', () => {
   // ===========================================================================
 
   test('views should be registered', () => {
-    const viewIds = ['lingyun.chatView', 'lingyun.officeView'];
+    const viewIds = ['lingyun.chatView'];
     for (const viewId of viewIds) {
       assert.ok(viewId.includes('lingyun'));
     }

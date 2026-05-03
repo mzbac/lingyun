@@ -36,7 +36,6 @@ type PendingPlanRunView = Pick<
   | 'postApprovalState'
   | 'postMessage'
   | 'persistActiveSession'
-  | 'officeSync'
   | 'pendingApprovals'
   | 'queueManager'
 > & {
@@ -52,7 +51,7 @@ type PendingPlanRunView = Pick<
  * - which placeholder text represents an in-flight plan
  * - how blank plan output falls back to a stable UI message
  * - how plan status/task fields are finalized after generation
- * - how plan update runs clear stale abort state and synchronize processing/approval/office/autosend state
+ * - how plan update runs clear stale abort state and synchronize processing/approval/autosend state
  * - how the planPending indicator is posted consistently
  */
 export function createPlanMessage(params: {
@@ -128,7 +127,6 @@ export function beginPendingPlanUpdateRun(view: PendingPlanRunView): void {
   view.abortRequested = false;
   view.autoApproveThisRun = false;
   view.postApprovalState();
-  view.officeSync?.onRunStart();
 }
 
 export function finishPendingPlanUpdateRun(
@@ -145,7 +143,6 @@ export function finishPendingPlanUpdateRun(
   view.autoApproveThisRun = false;
   view.pendingApprovals.clear();
   view.postApprovalState();
-  view.officeSync?.onRunEnd();
   view.persistActiveSession();
   view.queueManager.scheduleAutosendForSession(view.activeSessionId, { suppress: params.wasCanceled });
 }

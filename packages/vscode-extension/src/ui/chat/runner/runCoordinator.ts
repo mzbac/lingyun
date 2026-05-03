@@ -158,7 +158,6 @@ export class RunCoordinator {
     if (params?.postProcessingSignal !== false) {
       c.postMessage({ type: 'processing', value: false });
     }
-    c.officeSync?.onRunEnd();
     c.persistActiveSession();
     c.queueManager.scheduleAutosendForSession(sessionId, { suppress: params?.suppressQueueAutosend });
   }
@@ -223,7 +222,6 @@ export class RunCoordinator {
     const c = this.controller;
     this.activateRun(!params.shouldGeneratePlan);
     c.loopManager.onRunStart(params.activeSession.id);
-    c.officeSync?.onRunStart();
 
     const checkpointState = c.agent.exportState();
     const memoryExcluded =
@@ -410,7 +408,6 @@ export class RunCoordinator {
     c.postMessage({ type: 'processing', value: true });
     postPlanPendingState(c, { active: false });
     c.loopManager.onRunStart(c.activeSessionId);
-    c.officeSync?.onRunStart();
 
     const previousStatus = planMsg.plan?.status ?? 'draft';
     if (!planMsg.plan) {
@@ -913,8 +910,6 @@ export class RunCoordinator {
     this.activateRun(true);
     c.loopManager.onRunStart(c.activeSessionId);
     c.postMessage({ type: 'processing', value: true });
-
-    c.officeSync?.onRunStart({ clearTools: false });
 
     let wasCanceled = false;
     try {

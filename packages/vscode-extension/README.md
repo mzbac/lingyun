@@ -195,7 +195,6 @@ Main commands:
 
 - `LingYun: Start Task`
 - `LingYun: Open Agent`
-- `LingYun: Open Office`
 - `LingYun: Abort`
 - `LingYun: Clear History`
 - `LingYun: Show Logs`

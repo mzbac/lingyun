@@ -109,9 +109,6 @@ export function createRunCoordinatorHostForController(controller: ChatController
     get mode() {
       return controller.mode;
     },
-    get officeSync() {
-      return controller.officeSync;
-    },
     get pendingApprovals() {
       return controller.pendingApprovals;
     },
