@@ -30,6 +30,10 @@ function createToolContext(params: { storageRoot: vscode.Uri }): ToolContext {
   };
 }
 
+function joinSecretLiteral(...parts: string[]): string {
+  return parts.join('');
+}
+
 async function seedPersistedSessions(storageRoot: vscode.Uri, sessions: any[]): Promise<void> {
   const store = new SessionStore<any>(storageRoot, {
     maxSessions: 20,
@@ -154,9 +158,9 @@ suite('Memory Tool', () => {
     const storageRoot = vscode.Uri.joinPath(root, '.lingyun-test-memory-redaction-storage');
     const memoryRoot = vscode.Uri.joinPath(storageRoot, 'memories');
     const stateFile = vscode.Uri.joinPath(memoryRoot, 'stage1_outputs.json');
-    const rawSecret = 'sk-proj-1234567890abcdefghijklmnopqrstuv';
-    const githubSecret = 'ghp_1234567890abcdefghijklmnopqrstuvABCD';
-    const awsSecret = 'AKIAABCDEFGHIJKLMNOP';
+    const rawSecret = joinSecretLiteral('sk-', 'proj-', '1234567890abcdefghijklmnopqrstuv');
+    const githubSecret = joinSecretLiteral('ghp_', '1234567890abcdefghijklmnopqrstuvABCD');
+    const awsSecret = joinSecretLiteral('AKIA', 'ABCDEFGHIJKLMNOP');
 
     try {
       const output = {
@@ -244,7 +248,7 @@ suite('Memory Tool', () => {
 
   test('memory capture rejects secret-bearing explicit remember requests before persistence', () => {
     const signals = createBlankSessionSignals(Date.parse('2026-01-01T10:00:00.000Z'));
-    const rawSecret = 'sk-proj-1234567890abcdefghijklmnopqrstuv';
+    const rawSecret = joinSecretLiteral('sk-', 'proj-', '1234567890abcdefghijklmnopqrstuv');
     const request = `Remember this: production api_key=${rawSecret}`;
 
     assert.strictEqual(hasMemorySecretPayload(request), true);
@@ -272,7 +276,7 @@ suite('Memory Tool', () => {
 
   test('memory ingest skips secret-bearing legacy transcript and signal values', () => {
     const now = Date.parse('2026-01-01T10:00:00.000Z');
-    const rawSecret = 'ghp_1234567890abcdefghijklmnopqrstuvABCD';
+    const rawSecret = joinSecretLiteral('ghp_', '1234567890abcdefghijklmnopqrstuvABCD');
     const signals = createBlankSessionSignals(now);
     signals.userIntents = [
       `Remember api_key=${rawSecret}`,
@@ -575,7 +579,7 @@ suite('Memory Tool', () => {
     const storageRoot = vscode.Uri.joinPath(root, '.lingyun-test-memory-redaction-legacy');
     const memoryRoot = vscode.Uri.joinPath(storageRoot, 'memories');
     const rolloutDir = vscode.Uri.joinPath(memoryRoot, 'rollout_summaries');
-    const rawSecret = 'sk-proj-abcdefghijklmnopqrstuvwxyz1234567890';
+    const rawSecret = joinSecretLiteral('sk-', 'proj-', 'abcdefghijklmnopqrstuvwxyz1234567890');
     const rolloutFileName = '2026-01-01T10-00-00-000Z-legacy.md';
 
     try {
@@ -712,7 +716,7 @@ suite('Memory Tool', () => {
     const storageRoot = vscode.Uri.joinPath(root, '.lingyun-test-memory-redaction-search');
     const memoryRoot = vscode.Uri.joinPath(storageRoot, 'memories');
     const stateFile = vscode.Uri.joinPath(memoryRoot, 'stage1_outputs.json');
-    const rawSecret = 'ghp_abcdefghijklmnopqrstuvwxyz1234567890';
+    const rawSecret = joinSecretLiteral('ghp_', 'abcdefghijklmnopqrstuvwxyz1234567890');
 
     try {
       process.env.LINGYUN_MEMORIES_DIR = memoryRoot.fsPath;

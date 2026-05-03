@@ -161,6 +161,7 @@ async function checkTypeScriptCompilation() {
 async function checkDistOutput() {
   const requiredDist = [
     'dist/extension.js',
+    'dist/core/cancellation.js',
     'dist/core/registry.js',
     'dist/core/agent/index.js',
     'dist/core/types.js',

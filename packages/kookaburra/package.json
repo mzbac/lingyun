@@ -33,10 +33,10 @@
     "croner": "^10.0.1"
   },
   "devDependencies": {
-    "@types/node": "^20.11.16",
+    "@types/node": "^24.0.0",
     "typescript": "^5.3.3"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=24"
   }
 }

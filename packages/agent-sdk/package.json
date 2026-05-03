@@ -50,9 +50,12 @@
     "@ai-sdk/provider": "^3.0.2",
     "@ai-sdk/provider-utils": "^4.0.5",
     "@types/mocha": "^10.0.10",
-    "@types/node": "^20.11.16",
+    "@types/node": "^24.0.0",
     "esbuild": "^0.25.0",
     "mocha": "^11.7.5",
     "typescript": "^5.3.3"
+  },
+  "engines": {
+    "node": ">=24"
   }
 }

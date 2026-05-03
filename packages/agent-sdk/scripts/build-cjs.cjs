@@ -12,7 +12,7 @@ async function main() {
     bundle: true,
     platform: 'node',
     format: 'cjs',
-    target: 'node18',
+    target: 'node24',
     sourcemap: true,
     logLevel: 'info',
   });
@@ -22,4 +22,3 @@ main().catch((err) => {
   console.error(err);
   process.exit(1);
 });
-

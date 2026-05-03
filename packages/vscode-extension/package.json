@@ -11,6 +11,7 @@
     "url": "https://github.com/mzbac/lingyun"
   },
   "engines": {
+    "node": ">=24",
     "vscode": "^1.93.0"
   },
   "categories": [
@@ -635,7 +636,7 @@
     "clean": "node scripts/clean.js",
     "compile": "pnpm run clean && node ../../scripts/ensure-core-build.cjs && node ../../scripts/ensure-agent-sdk-build.cjs && tsc -p ./",
     "bundle": "node ../../scripts/ensure-core-build.cjs && node ../../scripts/ensure-agent-sdk-build.cjs && pnpm run clean && node scripts/bundle.js",
-    "watch": "node ../../scripts/ensure-core-build.cjs && node ../../scripts/ensure-agent-sdk-build.cjs && tsc -watch -p ./",
+    "watch": "pnpm run clean && node ../../scripts/ensure-core-build.cjs && node ../../scripts/ensure-agent-sdk-build.cjs && tsc -watch -p ./",
     "lint": "eslint src --ext ts",
     "test": "pnpm run compile && node ./dist/test/runTest.js",
     "test:unit": "pnpm run test",
@@ -662,7 +663,7 @@
     "@ai-sdk/provider-utils": "^4.0.5",
     "@types/diff": "^7.0.0",
     "@types/mocha": "^10.0.10",
-    "@types/node": "^20.11.16",
+    "@types/node": "^24.0.0",
     "@types/vscode": "^1.93.0",
     "@typescript-eslint/eslint-plugin": "^8.50.0",
     "@typescript-eslint/parser": "^8.50.0",

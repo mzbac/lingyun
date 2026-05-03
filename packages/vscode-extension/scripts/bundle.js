@@ -14,7 +14,7 @@ const options = {
   bundle: true,
   platform: 'node',
   format: 'cjs',
-  target: 'node18',
+  target: 'node24',
   sourcemap: true,
   external: ['vscode'],
   define: {

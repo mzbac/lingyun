@@ -23,7 +23,8 @@
       ],
       "outFiles": [
         "${workspaceFolder}/packages/vscode-extension/dist/**/*.js"
-      ]
+      ],
+      "preLaunchTask": "pnpm: compile (extension)"
     },
     {
       "name": "Run Extension Tests",

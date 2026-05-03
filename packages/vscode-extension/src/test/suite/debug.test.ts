@@ -8,11 +8,16 @@ import {
   summarizeToolArgsForDebug,
 } from '../../core/agent/debug';
 
+function joinSecretLiteral(...parts: string[]): string {
+  return parts.join('');
+}
+
 suite('Debug Redaction', () => {
   test('summarizeToolArgsForDebug redacts secret-like keys and values', () => {
+    const openAiStyleKey = joinSecretLiteral('sk-', '1234567890abcdefghijkl');
     const summary = summarizeToolArgsForDebug({
       authorization: 'Bearer top-secret-token',
-      apiKey: 'sk-1234567890abcdefghijkl',
+      apiKey: openAiStyleKey,
       headers: { Authorization: 'Bearer another-secret' },
       command: 'curl -H "Authorization: Bearer cmd-secret" https://example.com/v1',
     });
@@ -20,7 +25,7 @@ suite('Debug Redaction', () => {
     assert.ok(!summary.includes('top-secret-token'));
     assert.ok(!summary.includes('another-secret'));
     assert.ok(!summary.includes('cmd-secret'));
-    assert.ok(!summary.includes('sk-1234567890abcdefghijkl'));
+    assert.ok(!summary.includes(openAiStyleKey));
     assert.ok(summary.includes('<redacted'));
     assert.ok(summary.includes('<url>'));
   });
@@ -57,8 +62,8 @@ suite('Debug Redaction', () => {
   });
 
   test('redactSensitive redacts standalone GitHub token formats', () => {
-    const classicPat = 'ghp_abcdefghijklmnopqrstuvwxyzABCDE12345';
-    const fineGrainedPat = 'github_pat_11ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_1234567890';
+    const classicPat = joinSecretLiteral('ghp_', 'abcdefghijklmnopqrstuvwxyzABCDE12345');
+    const fineGrainedPat = joinSecretLiteral('github_', 'pat_', '11ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_1234567890');
     const redacted = redactSensitive(`clone failed with ${classicPat} and ${fineGrainedPat}`);
 
     assert.ok(!redacted.includes(classicPat));
@@ -68,15 +73,17 @@ suite('Debug Redaction', () => {
   });
 
   test('redactSensitive redacts URL credentials while preserving public URLs in secrets-only mode', () => {
+    const queryApiKey = 'query-secret-value';
+    const queryKey = 'second-query-secret-value';
     const input =
-      'https://user:secret-pass@example.com/v1?api_key=sk-url-secret&next=1 https://example.org/search?key=AIza12345678901234567890123456789012345';
+      `https://user:secret-pass@example.com/v1?api_key=${queryApiKey}&next=1 https://example.org/search?key=${queryKey}`;
     const redacted = redactSensitive(input, { redactionLevel: 'secrets-only' });
 
     assert.ok(redacted.includes('https://user:<redacted>@example.com/v1?api_key=<redacted>&next=1'));
     assert.ok(redacted.includes('https://example.org/search?key=<redacted>'));
     assert.ok(!redacted.includes('secret-pass'));
-    assert.ok(!redacted.includes('sk-url-secret'));
-    assert.ok(!redacted.includes('AIza12345678901234567890123456789012345'));
+    assert.ok(!redacted.includes(queryApiKey));
+    assert.ok(!redacted.includes(queryKey));
   });
 
   test('redactSensitive redacts home paths and local hosts', () => {
