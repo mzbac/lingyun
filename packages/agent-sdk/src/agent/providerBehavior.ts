@@ -13,11 +13,16 @@ import {
 
 import { createStreamAdapter, type StreamAdapter } from './streamAdapters.js';
 
+type ChatProviderOptionParams = {
+  reasoningEffort: string;
+  textVerbosity: string;
+};
+
 export type ProviderBehavior = {
   /**
    * Provider-specific providerOptions to pass to `streamText()`.
    */
-  getChatProviderOptions: (modelId: string, params: { reasoningEffort: string }) => unknown;
+  getChatProviderOptions: (modelId: string, params: ChatProviderOptionParams) => unknown;
   /**
    * Provider-specific history transforms before `convertToModelMessages()`.
    */
@@ -59,29 +64,46 @@ export function createProviderBehavior(llmId: string): ProviderBehavior {
     return !!last && last.role !== 'user';
   }
 
-  function getGpt5ReasoningEffort(modelId: string, params: { reasoningEffort: string }): string | undefined {
+  function getGpt5ReasoningEffort(modelId: string, params: Pick<ChatProviderOptionParams, 'reasoningEffort'>): string | undefined {
     const reasoningEffort = String(params.reasoningEffort || '').trim();
     if (!reasoningEffort) return undefined;
 
     return isGpt5FamilyModelId(modelId) ? reasoningEffort : undefined;
   }
 
+  function getTextVerbosity(params: Pick<ChatProviderOptionParams, 'textVerbosity'>): string | undefined {
+    const textVerbosity = String(params.textVerbosity || '').trim();
+    return textVerbosity || undefined;
+  }
+
+  function omitEmptyProviderOptions(options: Record<string, unknown>): Record<string, unknown> | undefined {
+    const entries = Object.entries(options).filter(([, value]) => {
+      return value && typeof value === 'object' && Object.keys(value as Record<string, unknown>).length > 0;
+    });
+    return entries.length ? Object.fromEntries(entries) : undefined;
+  }
+
   if (llmId === 'copilot') {
     return {
       getChatProviderOptions(modelId, params) {
         const reasoningEffort = getGpt5ReasoningEffort(modelId, params);
-        if (!reasoningEffort) return undefined;
+        const textVerbosity = getTextVerbosity(params);
 
-        const providerOptions: Record<string, unknown> = {
-          copilot: { reasoningEffort },
-        };
+        const copilot: Record<string, unknown> = {};
+        if (reasoningEffort) copilot.reasoningEffort = reasoningEffort;
+        if (textVerbosity) copilot.textVerbosity = textVerbosity;
+
+        const providerOptions: Record<string, unknown> = { copilot };
 
         // Copilot's /responses path expects the OpenAI Responses providerOptions namespace.
         if (isCopilotResponsesModelId(modelId)) {
-          providerOptions.openai = { reasoningEffort };
+          const openai: Record<string, unknown> = {};
+          if (reasoningEffort) openai.reasoningEffort = reasoningEffort;
+          if (textVerbosity) openai.textVerbosity = textVerbosity;
+          providerOptions.openai = openai;
         }
 
-        return providerOptions;
+        return omitEmptyProviderOptions(providerOptions);
       },
       prepareHistoryForPrompt(history) {
         return applyAssistantReplayForPrompt(history);
@@ -108,12 +130,20 @@ export function createProviderBehavior(llmId: string): ProviderBehavior {
     return {
       getChatProviderOptions(modelId, params) {
         const reasoningEffort = getGpt5ReasoningEffort(modelId, params);
-        if (!reasoningEffort) return undefined;
+        const textVerbosity = getTextVerbosity(params);
 
-        return {
-          codexSubscription: { reasoningEffort },
-          openai: { reasoningEffort },
-        };
+        const codexSubscription: Record<string, unknown> = {};
+        const openai: Record<string, unknown> = {};
+        if (reasoningEffort) {
+          codexSubscription.reasoningEffort = reasoningEffort;
+          openai.reasoningEffort = reasoningEffort;
+        }
+        if (textVerbosity) {
+          codexSubscription.textVerbosity = textVerbosity;
+          openai.textVerbosity = textVerbosity;
+        }
+
+        return omitEmptyProviderOptions({ codexSubscription, openai });
       },
       prepareHistoryForPrompt(history) {
         return applyAssistantReplayForPrompt(history);
@@ -136,13 +166,22 @@ export function createProviderBehavior(llmId: string): ProviderBehavior {
   if (llmId === 'openaiCompatible') {
     return {
       getChatProviderOptions(modelId, params) {
+        if (!shouldUseResponsesApiForModelId(modelId)) return undefined;
         const reasoningEffort = getGpt5ReasoningEffort(modelId, params);
-        if (!reasoningEffort || !shouldUseResponsesApiForModelId(modelId)) return undefined;
+        const textVerbosity = getTextVerbosity(params);
 
-        return {
-          openaiCompatible: { reasoningEffort },
-          openai: { reasoningEffort },
-        };
+        const openaiCompatible: Record<string, unknown> = {};
+        const openai: Record<string, unknown> = {};
+        if (reasoningEffort) {
+          openaiCompatible.reasoningEffort = reasoningEffort;
+          openai.reasoningEffort = reasoningEffort;
+        }
+        if (textVerbosity) {
+          openaiCompatible.textVerbosity = textVerbosity;
+          openai.textVerbosity = textVerbosity;
+        }
+
+        return omitEmptyProviderOptions({ openaiCompatible, openai });
       },
       prepareHistoryForPrompt(history) {
         return applyAssistantReplayForPrompt(history);

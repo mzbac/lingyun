@@ -10,6 +10,7 @@ import { resolveModelIdWithWorkspaceDefaults } from '../../core/modelSelection';
 import { normalizeSessionSignals } from '../../core/sessionSignals';
 import { SessionStore } from '../../core/sessionStore';
 import { bindChatControllerService } from './controllerService';
+import { postInputNotice } from './inputNotice';
 import { createDefaultSessionTitle, createSessionPreview } from './sessionTitle';
 import type { ChatSessionInfo } from './types';
 import type { PendingApprovalEntry } from './controllerPorts';
@@ -86,7 +87,7 @@ export function createChatSessionPersistenceService(
   const service = bindChatControllerService(runtime, {
     isSessionPersistenceEnabled(this: ChatSessionPersistenceRuntime): boolean {
       return (
-        vscode.workspace.getConfiguration('lingyun').get<boolean>('sessions.persist', false) ?? false
+        vscode.workspace.getConfiguration('lingyun').get<boolean>('sessions.persist', true) ?? true
       );
     },
 
@@ -502,7 +503,7 @@ export function createChatSessionPersistenceService(
 
     async clearSavedSessions(this: ChatSessionPersistenceRuntime): Promise<void> {
       if (this.isProcessing) {
-        vscode.window.showInformationMessage('LingYun: Stop the current task before clearing saved sessions.');
+        postInputNotice(this, 'Stop the current task before clearing saved sessions.');
         return;
       }
 
@@ -548,7 +549,7 @@ export function createChatSessionPersistenceService(
         await this.sendInit(true);
       }
 
-      vscode.window.showInformationMessage('LingYun: Saved sessions cleared.');
+      postInputNotice(this, 'Saved sessions cleared.');
     },
   });
   Object.assign(runtime, service);

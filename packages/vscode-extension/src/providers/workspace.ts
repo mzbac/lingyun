@@ -237,7 +237,25 @@ export async function createSampleToolsConfig(): Promise<void> {
     return;
   }
 
-  const configPath = vscode.Uri.joinPath(workspaceFolder.uri, '.vscode', 'agent-tools.json');
+  const vscodeDir = vscode.Uri.joinPath(workspaceFolder.uri, '.vscode');
+  const configPath = vscode.Uri.joinPath(vscodeDir, 'agent-tools.json');
+
+  try {
+    await vscode.workspace.fs.stat(configPath);
+    const choice = await vscode.window.showInformationMessage(
+      'LingYun: .vscode/agent-tools.json already exists.',
+      'Open Existing'
+    );
+    if (choice === 'Open Existing') {
+      const doc = await vscode.workspace.openTextDocument(configPath);
+      await vscode.window.showTextDocument(doc);
+    }
+    return;
+  } catch (error) {
+    if (!(error instanceof vscode.FileSystemError) || error.code !== 'FileNotFound') {
+      throw error;
+    }
+  }
 
   const sample: WorkspaceToolsConfig = {
     version: '1.0',
@@ -365,6 +383,7 @@ export async function createSampleToolsConfig(): Promise<void> {
   };
 
   const content = JSON.stringify(sample, null, 2);
+  await vscode.workspace.fs.createDirectory(vscodeDir);
   await vscode.workspace.fs.writeFile(configPath, Buffer.from(content));
 
   const doc = await vscode.workspace.openTextDocument(configPath);

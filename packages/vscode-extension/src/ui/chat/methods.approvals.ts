@@ -2,7 +2,13 @@ import * as vscode from 'vscode';
 
 import type { AgentApprovalContext, ToolCall, ToolDefinition } from '../../core/types';
 
-import { persistAutoApprovedTools, rememberAutoApprovedTool } from './autoApprovedToolsStore';
+import {
+  clearAutoApprovedTools,
+  forgetAutoApprovedTool,
+  getAutoApprovedToolIds,
+  persistAutoApprovedTools,
+  rememberAutoApprovedTool,
+} from './autoApprovedToolsStore';
 import {
   buildApprovalStateForUI,
   isManualApprovalContext,
@@ -19,6 +25,9 @@ import { formatWorkspacePathForUI } from './utils';
 export interface ChatApprovalsService {
   onAutoApproveEnabled(): void;
   postApprovalState(): void;
+  getAutoApprovedToolsForUI(): string[];
+  revokeAutoApprovedTool(toolId: string): Promise<void>;
+  clearAutoApprovedToolsForUI(): Promise<void>;
   handleApprovalResponse(approvalId: string, approved: boolean): void;
   handleAlwaysAllowApproval(approvalId: string): Promise<void>;
   approveAllPendingApprovals(options?: { includeManual?: boolean }): void;
@@ -75,6 +84,13 @@ function postUpdatedApprovalToolMessage(
   controller.webviewApi.postMessage({ type: 'updateTool', message: toolMsg });
 }
 
+function postAutoApprovedToolsState(controller: Pick<ChatApprovalsDeps, 'autoApprovedTools' | 'webviewApi'>): void {
+  controller.webviewApi.postMessage({
+    type: 'autoApprovedToolsState',
+    autoApprovedTools: getAutoApprovedToolIds(controller.autoApprovedTools),
+  });
+}
+
 export function createChatApprovalsService(controller: ChatApprovalsDeps): ChatApprovalsService {
   const service = bindChatControllerService(controller, {
     onAutoApproveEnabled(this: ChatApprovalsDeps): void {
@@ -94,9 +110,48 @@ export function createChatApprovalsService(controller: ChatApprovalsDeps): ChatA
       });
     },
 
+    getAutoApprovedToolsForUI(this: ChatApprovalsDeps): string[] {
+      return getAutoApprovedToolIds(this.autoApprovedTools);
+    },
+
+    async revokeAutoApprovedTool(this: ChatApprovalsDeps, toolId: string): Promise<void> {
+      if (!forgetAutoApprovedTool(this.autoApprovedTools, toolId)) {
+        service.postApprovalState();
+        postAutoApprovedToolsState(this);
+        return;
+      }
+
+      await persistAutoApprovedTools({
+        globalState: this.context.globalState,
+        autoApprovedTools: this.autoApprovedTools,
+        outputChannel: this.outputChannel,
+      });
+      service.postApprovalState();
+      postAutoApprovedToolsState(this);
+    },
+
+    async clearAutoApprovedToolsForUI(this: ChatApprovalsDeps): Promise<void> {
+      if (!clearAutoApprovedTools(this.autoApprovedTools)) {
+        service.postApprovalState();
+        postAutoApprovedToolsState(this);
+        return;
+      }
+
+      await persistAutoApprovedTools({
+        globalState: this.context.globalState,
+        autoApprovedTools: this.autoApprovedTools,
+        outputChannel: this.outputChannel,
+      });
+      service.postApprovalState();
+      postAutoApprovedToolsState(this);
+    },
+
     handleApprovalResponse(this: ChatApprovalsDeps, approvalId: string, approved: boolean): void {
       const pending = this.pendingApprovals.get(approvalId);
-      if (!pending) return;
+      if (!pending) {
+        service.postApprovalState();
+        return;
+      }
 
       pending.resolve(approved);
       this.pendingApprovals.delete(approvalId);
@@ -116,6 +171,8 @@ export function createChatApprovalsService(controller: ChatApprovalsDeps): ChatA
     async handleAlwaysAllowApproval(this: ChatApprovalsDeps, approvalId: string): Promise<void> {
       const pending = this.pendingApprovals.get(approvalId);
       if (!pending) {
+        service.postApprovalState();
+        postAutoApprovedToolsState(this);
         return;
       }
 
@@ -132,12 +189,16 @@ export function createChatApprovalsService(controller: ChatApprovalsDeps): ChatA
           autoApprovedTools: this.autoApprovedTools,
           outputChannel: this.outputChannel,
         });
+        postAutoApprovedToolsState(this);
       }
     },
 
 
     approveAllPendingApprovals(this: ChatApprovalsDeps, options?: { includeManual?: boolean }): void {
-      if (this.pendingApprovals.size === 0) return;
+      if (this.pendingApprovals.size === 0) {
+        service.postApprovalState();
+        return;
+      }
 
       const { manualEntries, approvableEntries } = partitionPendingApprovals(this.pendingApprovals, options);
       if (approvableEntries.length === 0) {

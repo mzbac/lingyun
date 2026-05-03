@@ -11,6 +11,7 @@ import type { ChatController } from './controller';
 import type { PendingApprovalEntry } from './controllerPorts';
 import type { ChatLoopManager } from './loopManager';
 import type { ChatSessionsService } from './methods.sessions';
+import { postInputNotice } from './inputNotice';
 
 function derivePendingPlanFromMessages(
   messages: ChatMessage[],
@@ -56,7 +57,7 @@ export interface ChatRevertService {
   undo(): Promise<void>;
   redo(): Promise<void>;
   redoAll(): Promise<void>;
-  discardUndone(): Promise<void>;
+  discardUndone(confirmed?: boolean): Promise<void>;
   viewRevertDiff(): Promise<void>;
   commitRevertedConversationIfNeeded(): void;
   collectPatchesFromIndex(startIndex: number): SnapshotPatch[];
@@ -168,7 +169,7 @@ export function createChatRevertService(controller: ChatRevertDeps): ChatRevertS
 
   async undo(this: ChatRevertRuntime): Promise<void> {
     if (this.isProcessing) {
-      void vscode.window.showInformationMessage('LingYun: Stop the current task before undo.');
+      postInputNotice(this, 'Stop the current task before undo.');
       return;
     }
 
@@ -188,7 +189,7 @@ export function createChatRevertService(controller: ChatRevertDeps): ChatRevertS
     })();
 
     if (userIndex === -1) {
-      void vscode.window.showInformationMessage('LingYun: Nothing to undo.');
+      postInputNotice(this, 'Nothing to undo.');
       return;
     }
 
@@ -199,7 +200,7 @@ export function createChatRevertService(controller: ChatRevertDeps): ChatRevertS
 
   async redo(this: ChatRevertRuntime): Promise<void> {
     if (this.isProcessing) {
-      void vscode.window.showInformationMessage('LingYun: Stop the current task before redo.');
+      postInputNotice(this, 'Stop the current task before redo.');
       return;
     }
 
@@ -207,7 +208,7 @@ export function createChatRevertService(controller: ChatRevertDeps): ChatRevertS
 
     const session = this.getActiveSession();
     if (!session.revert) {
-      void vscode.window.showInformationMessage('LingYun: Nothing to redo.');
+      postInputNotice(this, 'Nothing to redo.');
       return;
     }
 
@@ -230,7 +231,7 @@ export function createChatRevertService(controller: ChatRevertDeps): ChatRevertS
 
   async redoAll(this: ChatRevertRuntime): Promise<void> {
     if (this.isProcessing) {
-      void vscode.window.showInformationMessage('LingYun: Stop the current task before redo.');
+      postInputNotice(this, 'Stop the current task before redo.');
       return;
     }
 
@@ -238,16 +239,16 @@ export function createChatRevertService(controller: ChatRevertDeps): ChatRevertS
 
     const session = this.getActiveSession();
     if (!session.revert) {
-      void vscode.window.showInformationMessage('LingYun: Nothing to redo.');
+      postInputNotice(this, 'Nothing to redo.');
       return;
     }
 
     await this.clearRevert();
   },
 
-  async discardUndone(this: ChatRevertRuntime): Promise<void> {
+  async discardUndone(this: ChatRevertRuntime, confirmed?: boolean): Promise<void> {
     if (this.isProcessing) {
-      void vscode.window.showInformationMessage('LingYun: Stop the current task before discarding.');
+      postInputNotice(this, 'Stop the current task before discarding.');
       return;
     }
 
@@ -255,16 +256,14 @@ export function createChatRevertService(controller: ChatRevertDeps): ChatRevertS
 
     const session = this.getActiveSession();
     if (!session.revert) {
-      void vscode.window.showInformationMessage('LingYun: Nothing to discard.');
+      postInputNotice(this, 'Nothing to discard.');
       return;
     }
 
-    const choice = await vscode.window.showWarningMessage(
-      'Discard undone history? This cannot be undone.',
-      { modal: true },
-      'Discard'
-    );
-    if (choice !== 'Discard') return;
+    if (confirmed !== true) {
+      this.postRevertBarState();
+      return;
+    }
 
     this.commitRevertedConversationIfNeeded();
   },
@@ -275,31 +274,27 @@ export function createChatRevertService(controller: ChatRevertDeps): ChatRevertS
     const session = this.getActiveSession();
     const revert = session.revert;
     if (!revert) {
-      void vscode.window.showInformationMessage('LingYun: No undo state to show.');
+      postInputNotice(this, 'No undo state to show.');
       return;
     }
 
     const snapshot = await this.getWorkspaceSnapshot();
     if (!snapshot) {
-      void vscode.window.showWarningMessage(
-        this.snapshotUnavailableReason || 'LingYun: Undo/redo is unavailable.'
-      );
+      postInputNotice(this, this.snapshotUnavailableReason || 'Undo/redo is unavailable.');
       return;
     }
 
     try {
       const diff = await snapshot.diff(revert.snapshotHash);
       if (!diff.trim()) {
-        void vscode.window.showInformationMessage('LingYun: No changes to show.');
+        postInputNotice(this, 'No changes to show.');
         return;
       }
 
       const doc = await vscode.workspace.openTextDocument({ language: 'diff', content: diff });
       await vscode.window.showTextDocument(doc, { preview: true });
     } catch (error) {
-      void vscode.window.showErrorMessage(
-        `LingYun: Failed to show changes: ${error instanceof Error ? error.message : String(error)}`
-      );
+      postInputNotice(this, `Failed to show changes: ${error instanceof Error ? error.message : String(error)}`);
     }
   },
 
@@ -389,15 +384,13 @@ export function createChatRevertService(controller: ChatRevertDeps): ChatRevertS
     const session = this.getActiveSession();
     const boundaryIndex = this.messages.findIndex(m => m.id === boundaryMessageId);
     if (boundaryIndex === -1 || this.messages[boundaryIndex]?.role !== 'user') {
-      void vscode.window.showWarningMessage('LingYun: Unable to undo—selected message was not found.');
+      postInputNotice(this, 'Unable to undo—selected message was not found.');
       return;
     }
 
     const snapshot = await this.getWorkspaceSnapshot();
     if (!snapshot) {
-      void vscode.window.showWarningMessage(
-        this.snapshotUnavailableReason || 'LingYun: Undo/redo is unavailable.'
-      );
+      postInputNotice(this, this.snapshotUnavailableReason || 'Undo/redo is unavailable.');
       return;
     }
 
@@ -457,9 +450,7 @@ export function createChatRevertService(controller: ChatRevertDeps): ChatRevertS
       this.persistActiveSession();
       await this.sendInit(true);
     } catch (error) {
-      void vscode.window.showErrorMessage(
-        `LingYun: Undo failed: ${error instanceof Error ? error.message : String(error)}`
-      );
+      postInputNotice(this, `Undo failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   },
 
@@ -491,9 +482,7 @@ export function createChatRevertService(controller: ChatRevertDeps): ChatRevertS
       this.persistActiveSession();
       await this.sendInit(true);
     } catch (error) {
-      void vscode.window.showErrorMessage(
-        `LingYun: Redo failed: ${error instanceof Error ? error.message : String(error)}`
-      );
+      postInputNotice(this, `Redo failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   },
   });

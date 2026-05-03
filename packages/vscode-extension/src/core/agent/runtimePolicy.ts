@@ -879,9 +879,38 @@ type PreparedRuntime = {
   systemPrompt: string;
   allowExternalPaths: boolean;
   reasoningEffort: string;
+  textVerbosity: string;
   taskMaxOutputChars: number;
   snapshot: LingyunAgentRuntimeSnapshot;
 };
+
+const TEXT_VERBOSITY_VALUES = new Set(['', 'low', 'medium', 'high']);
+
+type InstructionFileLoadingSettings = {
+  includeGlobal: boolean;
+  maxCharsPerFile: number;
+  maxTotalChars: number;
+};
+
+function getConfiguredTextVerbosity(cfg: vscode.WorkspaceConfiguration): string {
+  const raw = cfg.get<unknown>('llm.textVerbosity', '');
+  const normalized = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  return TEXT_VERBOSITY_VALUES.has(normalized) ? normalized : '';
+}
+
+function getNumberSetting(cfg: vscode.WorkspaceConfiguration, path: string, fallback: number, minimum: number): number {
+  const raw = cfg.get<unknown>(path);
+  const parsed = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : undefined;
+  return Number.isFinite(parsed) && (parsed as number) >= minimum ? Math.floor(parsed as number) : fallback;
+}
+
+function getConfiguredInstructionFileSettings(cfg: vscode.WorkspaceConfiguration): InstructionFileLoadingSettings {
+  return {
+    includeGlobal: cfg.get<boolean>('instructionFiles.includeGlobal', true) ?? true,
+    maxCharsPerFile: getNumberSetting(cfg, 'instructionFiles.maxCharsPerFile', 60000, 1000),
+    maxTotalChars: getNumberSetting(cfg, 'instructionFiles.maxTotalChars', 180000, 1000),
+  };
+}
 
 export class VsCodeAgentRuntimePolicy implements LingyunAgentRuntimePolicy {
   private instructionsText?: string;
@@ -921,7 +950,15 @@ export class VsCodeAgentRuntimePolicy implements LingyunAgentRuntimePolicy {
     const allowExternalPaths =
       cfg.get<boolean>('security.allowExternalPaths', false) ?? false;
     const reasoningEffort = getConfiguredReasoningEffort();
+    const textVerbosity = getConfiguredTextVerbosity(cfg);
     const taskMaxOutputChars = cfg.get<number>('subagents.task.maxOutputChars', 8000) ?? 8000;
+    const skills = {
+      enabled: cfg.get<boolean>('skills.enabled', true) ?? true,
+      paths: cfg.get<string[]>('skills.paths') || [],
+      maxPromptSkills: getNumberSetting(cfg, 'skills.maxPromptSkills', 50, 0),
+      maxInjectSkills: getNumberSetting(cfg, 'skills.maxInjectSkills', 5, 1),
+      maxInjectChars: getNumberSetting(cfg, 'skills.maxInjectChars', 20000, 1),
+    };
 
     const modelId = String(ctx.config.model || '').trim();
     const modelLimit =
@@ -933,12 +970,15 @@ export class VsCodeAgentRuntimePolicy implements LingyunAgentRuntimePolicy {
       systemPrompt,
       allowExternalPaths,
       reasoningEffort,
+      textVerbosity,
       taskMaxOutputChars,
       snapshot: {
         systemPrompt,
         allowExternalPaths,
         reasoningEffort,
+        textVerbosity,
         taskMaxOutputChars,
+        skills,
         compaction,
         ...(modelId && modelLimit ? { modelLimits: { [modelId]: modelLimit } } : { modelLimits: undefined }),
       },
@@ -966,14 +1006,16 @@ export class VsCodeAgentRuntimePolicy implements LingyunAgentRuntimePolicy {
     if (!startDir) return;
 
     const stopDir = workspaceRoot ? await findGitRoot(startDir, workspaceRoot) : startDir;
-    const extraInstructionPatterns =
-      vscode.workspace.getConfiguration('lingyun').get<string[]>('instructions') || [];
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const extraInstructionPatterns = cfg.get<string[]>('instructions') || [];
+    const instructionFileSettings = getConfiguredInstructionFileSettings(cfg);
 
     const key = [
       startDir.toString(),
       stopDir.toString(),
       workspaceRoot?.toString() || '',
       JSON.stringify(extraInstructionPatterns),
+      JSON.stringify(instructionFileSettings),
     ].join('|');
 
     if (this.instructionsKey === key) return;
@@ -985,7 +1027,9 @@ export class VsCodeAgentRuntimePolicy implements LingyunAgentRuntimePolicy {
         workspaceRoot,
         stopDir,
         extraInstructionPatterns,
-        includeGlobal: true,
+        includeGlobal: instructionFileSettings.includeGlobal,
+        maxCharsPerFile: instructionFileSettings.maxCharsPerFile,
+        maxTotalChars: instructionFileSettings.maxTotalChars,
       });
       this.instructionsText = loaded.text;
     } catch {
@@ -1044,7 +1088,9 @@ export class VsCodeAgentRuntimePolicy implements LingyunAgentRuntimePolicy {
       runtime: {
         allowExternalPaths: runtime.allowExternalPaths,
         reasoningEffort: runtime.reasoningEffort,
+        textVerbosity: runtime.textVerbosity,
         taskMaxOutputChars: runtime.taskMaxOutputChars,
+        skills: runtime.snapshot.skills,
         compaction: runtime.snapshot.compaction,
         ...(exploreModelLimit ? { modelLimits: { [exploreModelId]: exploreModelLimit } } : {}),
       },

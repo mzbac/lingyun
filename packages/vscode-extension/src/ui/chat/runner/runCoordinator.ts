@@ -1,5 +1,3 @@
-import * as vscode from 'vscode';
-
 import type { UserHistoryInputPart } from '@kooka/core';
 import {
   hasSessionMemoryDisableIntent,
@@ -23,6 +21,7 @@ import {
   postPlanPendingState,
 } from './runCoordinatorPendingPlan';
 import { findLatestToolMessageByApprovalId } from '../toolMessageLookup';
+import { postInputNotice } from '../inputNotice';
 
 const MAX_USER_IMAGE_ATTACHMENTS = 8;
 const MAX_USER_IMAGE_DATA_URL_LENGTH = 12_000_000;
@@ -544,17 +543,29 @@ export class RunCoordinator {
 
     if (prepared.kind === 'busy') {
       if (params.action === 'execute') {
-        void vscode.window.showInformationMessage('LingYun: A task is already running.');
+        postInputNotice(this.controller, 'A task is already running.');
       }
+      const pendingPlan = this.controller.getActiveSession().pendingPlan;
+      postPlanPendingState(this.controller, {
+        active: !!pendingPlan,
+        planMessageId: pendingPlan?.planMessageId,
+      });
       return undefined;
     }
 
     if (prepared.kind === 'no-pending-plan') {
       if (params.action === 'execute') {
-        void vscode.window.showInformationMessage('LingYun: No pending plan to execute.');
+        postInputNotice(this.controller, 'No pending plan to execute.');
       }
+      postPlanPendingState(this.controller, { active: false });
       return undefined;
     }
+
+    const pendingPlan = this.controller.getActiveSession().pendingPlan;
+    postPlanPendingState(this.controller, {
+      active: !!pendingPlan,
+      planMessageId: pendingPlan?.planMessageId,
+    });
 
     const errorContent =
       params.action === 'revise'
@@ -871,14 +882,27 @@ export class RunCoordinator {
 
   async retryToolCall(approvalId: string): Promise<void> {
     const c = this.controller;
-    if (c.isProcessing || !c.view) return;
-    if (!approvalId || typeof approvalId !== 'string') return;
-    if (c.getActiveSession().pendingPlan) return;
+    if (c.isProcessing || !c.view) {
+      c.postMessage({ type: 'processing', value: c.isProcessing });
+      return;
+    }
+    if (!approvalId || typeof approvalId !== 'string') {
+      c.postMessage({ type: 'processing', value: false });
+      return;
+    }
+    const pendingPlan = c.getActiveSession().pendingPlan;
+    if (pendingPlan) {
+      postPlanPendingState(c, { active: true, planMessageId: pendingPlan.planMessageId });
+      return;
+    }
 
     await c.ensureSessionsLoaded();
 
     const toolMsg = findLatestToolMessageByApprovalId(c.messages, approvalId);
-    if (!toolMsg?.toolCall) return;
+    if (!toolMsg?.toolCall) {
+      c.postMessage({ type: 'processing', value: false });
+      return;
+    }
 
     // Keep the retry scoped to the most recent user turn by default ("continue the current task").
     const lastUserTurn = findLatestUserTurnId(c.messages);
@@ -923,7 +947,13 @@ export class RunCoordinator {
     const c = this.controller;
     const session = c.getActiveSession();
     const pendingPlan = session.pendingPlan;
-    if (!pendingPlan || pendingPlan.planMessageId !== planMessageId) return;
+    if (!pendingPlan || pendingPlan.planMessageId !== planMessageId) {
+      postPlanPendingState(c, {
+        active: !!pendingPlan,
+        planMessageId: pendingPlan?.planMessageId,
+      });
+      return;
+    }
 
     const planMsg = c.messages.find(m => m.id === planMessageId);
     if (planMsg?.role === 'plan' && planMsg.plan) {

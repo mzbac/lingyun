@@ -24,8 +24,8 @@ import { PluginToolProvider } from './core/hooks/pluginToolProvider';
 import { getSkillIndex } from './core/skills';
 import { WorkspaceMemories, getMemoriesConfig } from './core/memories';
 import { resolveConfiguredModelId } from './core/modelSelection';
-import { summarizeToolArgsForDebug } from './core/agent/debug';
-import { getDebugRedactionLevel, getDebugSettings } from './core/debugSettings';
+import { getDebugSettings } from './core/debugSettings';
+import { normalizeToolFilterSetting } from './core/toolFilter';
 import { getPrimaryWorkspaceFolderUri, getPrimaryWorkspaceRootPath } from './core/workspaceContext';
 import { appendLog } from './core/logger';
 
@@ -106,6 +106,30 @@ export function createAgentConfig(): AgentConfig {
     ? (temperatureParsed as number)
     : undefined;
 
+  const topPRaw = getConfig<unknown>('topP');
+  const topPParsed =
+    typeof topPRaw === 'number'
+      ? topPRaw
+      : typeof topPRaw === 'string'
+        ? Number(topPRaw)
+        : undefined;
+  const topP =
+    Number.isFinite(topPParsed as number) && (topPParsed as number) > 0 && (topPParsed as number) <= 1
+      ? (topPParsed as number)
+      : undefined;
+
+  const topKRaw = getConfig<unknown>('topK');
+  const topKParsed =
+    typeof topKRaw === 'number'
+      ? topKRaw
+      : typeof topKRaw === 'string'
+        ? Number(topKRaw)
+        : undefined;
+  const topK =
+    Number.isFinite(topKParsed as number) && (topKParsed as number) > 0
+      ? Math.floor(topKParsed as number)
+      : undefined;
+
   const maxRetriesRaw = getConfig<unknown>('llm.maxRetries');
   const maxRetriesParsed =
     typeof maxRetriesRaw === 'number'
@@ -145,18 +169,27 @@ export function createAgentConfig(): AgentConfig {
     subagentModel: getConfig('subagents.model') || undefined,
     mode: (getConfig<'build' | 'plan'>('mode') || 'build'),
     temperature,
+    topP,
+    topK,
     maxRetries,
     retryWithPartialOutput,
     maxOutputTokens,
     autoApprove: getConfig('autoApprove') || false,
-    toolFilter: getConfig('toolFilter') || [],
+    toolFilter: normalizeToolFilterSetting(getConfig('toolFilter')),
   };
 }
 
 export function shouldRefreshChatModelStateForConfigChange(
   e: Pick<vscode.ConfigurationChangeEvent, 'affectsConfiguration'>,
 ): boolean {
-  return e.affectsConfiguration('lingyun.copilot.reasoningEffort');
+  return e.affectsConfiguration('lingyun.model') ||
+    e.affectsConfiguration('lingyun.copilot.reasoningEffort');
+}
+
+function shouldRefreshChatSettingsStateForConfigChange(
+  e: Pick<vscode.ConfigurationChangeEvent, 'affectsConfiguration'>,
+): boolean {
+  return e.affectsConfiguration('lingyun');
 }
 
 function createLLMProviderFromConfig(context: vscode.ExtensionContext): LLMProvider {
@@ -383,6 +416,8 @@ export async function activate(
     controller,
     extensionState.officeBridge,
   );
+  controller.openOfficeView = cmdOpenOffice;
+  controller.resetOfficeLayoutAction = cmdResetOfficeLayout;
 
   extensionState.addDisposable(
     vscode.workspace.registerTextDocumentContentProvider(
@@ -439,9 +474,14 @@ export async function activate(
           e.affectsConfiguration('lingyun.memories.maxAutoRecallResults') ||
           e.affectsConfiguration('lingyun.memories.maxAutoRecallTokens');
         const modelStateChanged = shouldRefreshChatModelStateForConfigChange(e);
+        const settingsStateChanged = shouldRefreshChatSettingsStateForConfigChange(e);
 
         if (providerChanged) {
-          initializeLLMAndAgent(context).catch(err => {
+          initializeLLMAndAgent(context).then(() => {
+            extensionState?.chatProvider?.controller.webviewApi.refreshSettingsState().catch((err: unknown) => {
+              log(`Failed to refresh chat settings after provider update: ${err instanceof Error ? err.message : String(err)}`);
+            });
+          }).catch(err => {
             log(`Failed to reinitialize provider: ${err instanceof Error ? err.message : String(err)}`);
           });
           return;
@@ -450,9 +490,20 @@ export async function activate(
         const nextConfig = createAgentConfig();
         extensionState.agent.updateConfig(nextConfig);
         extensionState.agent.setMode(nextConfig.mode ?? 'build');
+        extensionState.chatProvider?.controller.modeApi.setModeAndPersist(nextConfig.mode ?? 'build', {
+          persistConfig: false,
+          notifyWebview: false,
+          persistSession: false,
+        }).catch((err: unknown) => {
+          log(`Failed to sync chat mode after configuration update: ${err instanceof Error ? err.message : String(err)}`);
+        });
         log('Configuration updated');
 
-        if (modelStateChanged) {
+        if (settingsStateChanged) {
+          extensionState.chatProvider?.controller.webviewApi.refreshSettingsState().catch((err: unknown) => {
+            log(`Failed to refresh chat settings after configuration update: ${err instanceof Error ? err.message : String(err)}`);
+          });
+        } else if (modelStateChanged) {
           extensionState.chatProvider?.controller.modelApi.postModelState().catch((err: unknown) => {
             log(`Failed to refresh model header after configuration update: ${err instanceof Error ? err.message : String(err)}`);
           });
@@ -561,15 +612,16 @@ function createAPI(): LingyunAPI {
 }
 
 async function cmdStart(): Promise<void> {
-  const task = await vscode.window.showInputBox({
-    prompt: 'What would you like the agent to do?',
-    placeHolder: 'e.g., Read the README and summarize it',
-  });
-
-  if (!task) return;
-
   await cmdOpenAgent();
-  extensionState?.chatProvider?.controller.runnerInputApi.sendMessage(task);
+
+  const controller = extensionState?.chatProvider?.controller;
+  if (!controller) return;
+
+  await controller.webviewApi.sendInit(true);
+  controller.webviewApi.postMessage({
+    type: 'focusInput',
+    placeholder: 'Describe a task…',
+  });
 }
 
 async function cmdOpenAgent(sessionId?: string): Promise<void> {
@@ -598,6 +650,11 @@ async function cmdOpenOffice(): Promise<void> {
 }
 
 async function cmdResetOfficeLayout(): Promise<void> {
+  if (extensionState?.chatProvider?.controller.isProcessing) {
+    vscode.window.showInformationMessage('LingYun: Stop the current task before resetting the Office layout.');
+    return;
+  }
+
   if (!extensionState?.officeBridge) {
     vscode.window.showInformationMessage('LingYun: Office state is not ready.');
     return;
@@ -624,6 +681,19 @@ async function cmdResetOfficeLayout(): Promise<void> {
 }
 
 function cmdAbort(): void {
+  const controller = extensionState?.chatProvider?.controller;
+  if (controller) {
+    if (!controller.isProcessing && !extensionState?.agent?.running && controller.pendingApprovals.size === 0) {
+      vscode.window.showInformationMessage('No agent running');
+      return;
+    }
+
+    controller.abortCurrentRun();
+    log('Agent aborted');
+    vscode.window.showInformationMessage('Agent aborted');
+    return;
+  }
+
   if (extensionState?.agent?.running) {
     extensionState.agent.abort();
     log('Agent aborted');
@@ -634,8 +704,23 @@ function cmdAbort(): void {
 }
 
 async function cmdClear(): Promise<void> {
+  if (extensionState?.chatProvider?.controller.isProcessing) {
+    vscode.window.showInformationMessage('LingYun: Stop the current task before clearing the session.');
+    return;
+  }
+
+  const choice = await vscode.window.showWarningMessage(
+    'Clear messages and runtime state for the current session?',
+    { modal: true },
+    'Clear Session'
+  );
+  if (choice !== 'Clear Session') return;
+
   if (extensionState?.chatProvider) {
-    await extensionState.chatProvider.controller.sessionApi.clearCurrentSession();
+    const controller = extensionState.chatProvider.controller;
+    controller.toolDiffBeforeByToolCallId.clear();
+    controller.toolDiffSnapshotsByToolCallId.clear();
+    await controller.sessionApi.clearCurrentSession();
   } else {
     await extensionState?.agent?.clear();
   }
@@ -662,6 +747,18 @@ async function cmdRedo(): Promise<void> {
 }
 
 async function cmdClearSavedSessions(): Promise<void> {
+  if (extensionState?.chatProvider?.controller.isProcessing) {
+    vscode.window.showInformationMessage('LingYun: Stop the current task before clearing saved sessions.');
+    return;
+  }
+
+  const choice = await vscode.window.showWarningMessage(
+    'Delete all saved LingYun sessions, todos, and input history from workspace storage?',
+    { modal: true },
+    'Clear Saved Sessions'
+  );
+  if (choice !== 'Clear Saved Sessions') return;
+
   await extensionState?.chatProvider?.controller.sessionApi.clearSavedSessions();
 }
 
@@ -675,6 +772,10 @@ async function cmdCompactSession(): Promise<void> {
 }
 
 async function cmdUpdateMemories(): Promise<void> {
+  if (extensionState?.chatProvider?.controller.isProcessing) {
+    vscode.window.showInformationMessage('LingYun: Stop the current task before updating memories.');
+    return;
+  }
   if (!extensionState?.memories) return;
 
   try {
@@ -692,6 +793,10 @@ async function cmdUpdateMemories(): Promise<void> {
 }
 
 async function cmdDropMemories(): Promise<void> {
+  if (extensionState?.chatProvider?.controller.isProcessing) {
+    vscode.window.showInformationMessage('LingYun: Stop the current task before dropping memories.');
+    return;
+  }
   if (!extensionState?.memories) return;
 
   const choice = await vscode.window.showWarningMessage(
@@ -718,108 +823,36 @@ function cmdShowLogs(): void {
 }
 
 async function cmdListTools(): Promise<void> {
-  const tools = await toolRegistry.getTools();
-  const providers = toolRegistry.getProviders();
-
-  const items = tools.map(tool => ({
-    label: tool.name,
-    description: tool.id,
-    detail: tool.description,
-  }));
-
-  const selected = await vscode.window.showQuickPick(items, {
-    placeHolder: `${tools.length} tools from ${providers.length} providers`,
-    matchOnDescription: true,
-    matchOnDetail: true,
-  });
-
-  if (selected) {
-    const tool = tools.find(t => t.id === selected.description);
-    if (tool) {
-      const doc = `# ${tool.name}\n\nID: \`${tool.id}\`\n\n${tool.description}\n\n## Parameters\n\`\`\`json\n${JSON.stringify(tool.parameters, null, 2)}\n\`\`\``;
-      const uri = vscode.Uri.parse('untitled:tool-info.md');
-      const document = await vscode.workspace.openTextDocument(uri);
-      const edit = new vscode.WorkspaceEdit();
-      edit.insert(uri, new vscode.Position(0, 0), doc);
-      await vscode.workspace.applyEdit(edit);
-      await vscode.window.showTextDocument(document);
-    }
+  if (extensionState?.chatProvider) {
+    await cmdOpenAgent();
+    await extensionState.chatProvider.controller.webviewApi.postToolCatalog();
+    return;
   }
+
+  void vscode.window.showInformationMessage('LingYun: Agent UI is not ready.');
 }
 
 async function cmdCreateToolsConfig(): Promise<void> {
+  if (extensionState?.chatProvider?.controller.isProcessing) {
+    vscode.window.showInformationMessage('LingYun: Stop the current task before creating a workspace tools config.');
+    return;
+  }
+
   await createSampleToolsConfig();
 }
 
 async function cmdRunTool(): Promise<void> {
-  const tools = await toolRegistry.getTools();
-
-  const items = tools.map(tool => ({
-    label: tool.name,
-    description: tool.id,
-  }));
-
-  const selected = await vscode.window.showQuickPick(items, {
-    placeHolder: 'Select a tool to run',
-  });
-
-  if (!selected) return;
-
-  const tool = tools.find(t => t.id === selected.description);
-  if (!tool) return;
-
-  const args: Record<string, unknown> = {};
-  for (const [name, schema] of Object.entries(tool.parameters.properties)) {
-    const required = tool.parameters.required?.includes(name);
-    const value = await vscode.window.showInputBox({
-      prompt: `${name}${required ? ' (required)' : ''}`,
-      placeHolder: schema.description,
-    });
-
-    if (value !== undefined && value !== '') {
-      if (schema.type === 'number') {
-        args[name] = parseFloat(value);
-      } else if (schema.type === 'boolean') {
-        args[name] = value.toLowerCase() === 'true';
-      } else if (schema.type === 'array' || schema.type === 'object') {
-        try {
-          args[name] = JSON.parse(value);
-        } catch {
-          args[name] = value;
-        }
-      } else {
-        args[name] = value;
-      }
-    }
+  if (extensionState?.chatProvider) {
+    await cmdOpenAgent();
+    const controller = extensionState.chatProvider.controller;
+    await controller.webviewApi.sendInit(true);
+    await controller.webviewApi.runTool();
+    return;
   }
 
-  extensionState?.outputChannel?.show();
-  log(`\nRunning ${tool.name}...`);
-  log(`Args: ${summarizeToolArgsForDebug(args, { redactionLevel: getDebugRedactionLevel() })}`);
-
-  const tokenSource = new vscode.CancellationTokenSource();
-  try {
-    const context = {
-      workspaceFolder: getPrimaryWorkspaceFolderUri(),
-      activeEditor: vscode.window.activeTextEditor,
-      extensionContext: {} as vscode.ExtensionContext,
-      cancellationToken: tokenSource.token,
-      progress: { report: () => {} },
-      log: (msg: string) => log(msg),
-    };
-
-    const result = await toolRegistry.executeTool(tool.id, args, context);
-
-    log(`\nResult: ${result.success ? '✅' : '❌'}`);
-    log(typeof result.data === 'string' ? result.data : JSON.stringify(result.data, null, 2));
-
-    if (result.error) {
-      log(`Error: ${result.error}`);
-    }
-  } finally {
-    tokenSource.dispose();
-  }
+  void vscode.window.showInformationMessage('LingYun: Agent UI is not ready.');
 }
+
 
 function getConfig<T>(key: string): T | undefined {
   return vscode.workspace.getConfiguration('lingyun').get<T>(key);
@@ -838,7 +871,7 @@ function log(message: string): void {
 }
 
 async function maybeWarnSessionPersistence(context: vscode.ExtensionContext): Promise<void> {
-  const enabled = getConfig<boolean>('sessions.persist') ?? false;
+  const enabled = getConfig<boolean>('sessions.persist') ?? true;
   if (!enabled) return;
 
   const warnedKey = 'lingyun.sessions.persist.warned';

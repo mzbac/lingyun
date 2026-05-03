@@ -1,8 +1,10 @@
 import * as vscode from 'vscode';
 
 import type { AgentLoop } from '../../core/agent';
+import { appendErrorLog } from '../../core/logger';
 
 import { bindChatControllerService } from './controllerService';
+import { postWebviewInputNotice as postInputNotice } from './inputNotice';
 import type { ChatLoopManager } from './loopManager';
 import type { ChatLoopService } from './methods.loop';
 import type { ChatSessionsService } from './methods.sessions';
@@ -19,6 +21,7 @@ export interface ChatModeService {
 export interface ChatModeDeps {
   mode: ChatMode;
   agent: Pick<AgentLoop, 'setMode'>;
+  outputChannel?: vscode.OutputChannel;
   loopManager: Pick<ChatLoopManager, 'syncActiveSession'>;
   loopApi: Pick<ChatLoopService, 'postLoopState'>;
   sessionApi: Pick<ChatSessionsService, 'persistActiveSession'>;
@@ -40,8 +43,9 @@ export function createChatModeService(controller: ChatModeDeps): ChatModeService
       if (changed && options?.persistConfig !== false) {
         try {
           await vscode.workspace.getConfiguration('lingyun').update('mode', nextMode, true);
-        } catch {
-          // Ignore persistence errors; mode still updates for this session.
+        } catch (error) {
+          appendErrorLog(this.outputChannel, 'Failed to persist chat mode setting', error, { tag: 'Mode' });
+          postInputNotice(this, 'Mode changed for this session, but failed to save as the default. See logs for details.');
         }
       }
 

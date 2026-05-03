@@ -8,16 +8,18 @@ import { createFallbackModelInfo, type ModelInfo } from '../../providers/modelCa
 import type { LLMProviderWithUi } from '../../providers/providerUi';
 
 import { bindChatControllerService } from './controllerService';
+import { postWebviewInputNotice as postInputNotice } from './inputNotice';
 import type { ChatSessionsService } from './methods.sessions';
 import type { ChatWebviewService } from './methods.webview';
 
 const MAX_RECENT_MODELS = 10;
+const REASONING_EFFORT_VALUES = new Set(['', 'low', 'medium', 'high', 'xhigh']);
 
-type ModelPickAction = 'refreshModels' | 'clearRecents';
-
-type ModelPickItem = vscode.QuickPickItem & {
-  action?: ModelPickAction;
-  modelId?: string;
+type ModelPickerState = {
+  currentModel: string;
+  favorites: ModelInfo[];
+  recent: ModelInfo[];
+  all: ModelInfo[];
 };
 
 type GlobalStateLike = {
@@ -29,13 +31,18 @@ export interface ChatModelsService {
   loadModels(): Promise<void>;
   getFavoriteModelIds(): Promise<string[]>;
   getRecentModelIds(): Promise<string[]>;
+  getModelPickerStateForUI(): Promise<ModelPickerState>;
+  clearRecentModels(): Promise<void>;
+  refreshModelsForUI(): Promise<void>;
   isModelFavorite(modelId: string): Promise<boolean>;
   getModelLabel(modelId: string): string;
   postModelState(): Promise<void>;
+  postModelPickerState(reveal?: boolean): Promise<void>;
   recordRecentModel(modelId: string): Promise<void>;
   toggleFavoriteModel(modelId: string): Promise<void>;
   setCurrentModel(modelId: string): Promise<void>;
-  pickModel(): Promise<void>;
+  setReasoningEffort(reasoningEffort: string): Promise<void>;
+  openAdvancedModelSettings(): Promise<void>;
 }
 
 export interface ChatModelsDeps {
@@ -67,6 +74,16 @@ function normalizeModelId(modelId: string): string {
   return modelId.trim();
 }
 
+function createCustomModelInfo(modelId: string): ModelInfo {
+  return createFallbackModelInfo(modelId, { vendor: 'custom' });
+}
+
+function normalizeReasoningEffortForConfig(reasoningEffort: string): string | undefined {
+  const normalized = String(reasoningEffort || '').trim();
+  if (!REASONING_EFFORT_VALUES.has(normalized)) return undefined;
+  return normalized;
+}
+
 function uniqById(models: ModelInfo[]): ModelInfo[] {
   const seen = new Set<string>();
   const out: ModelInfo[] = [];
@@ -79,35 +96,10 @@ function uniqById(models: ModelInfo[]): ModelInfo[] {
   return out;
 }
 
-function formatModelDetail(model: ModelInfo, currentModelId: string): string | undefined {
-  const parts: string[] = [];
-  if (model.id === currentModelId) parts.push('Current');
-  if (model.vendor) parts.push(model.vendor);
-  if (model.family && model.family !== model.vendor) parts.push(model.family);
-  if (Number.isFinite(model.maxInputTokens as number) && (model.maxInputTokens as number) > 0) {
-    parts.push(`maxIn=${Math.floor(model.maxInputTokens as number)}`);
-  }
-  const detail = parts.filter(Boolean).join(' • ');
-  return detail || undefined;
-}
-
-function toModelPickItem(params: {
-  model: ModelInfo;
-  currentModelId: string;
-  favorite: boolean;
-  favoriteButtonOn: vscode.QuickInputButton;
-  favoriteButtonOff: vscode.QuickInputButton;
-}): ModelPickItem {
-  const { model, currentModelId, favorite, favoriteButtonOn, favoriteButtonOff } = params;
-  const label = model.name || model.id;
-  const description = model.name && model.name !== model.id ? model.id : undefined;
-  return {
-    label,
-    description,
-    detail: formatModelDetail(model, currentModelId),
-    modelId: model.id,
-    buttons: [favorite ? favoriteButtonOn : favoriteButtonOff],
-  };
+function sortModelsForPicker(models: ModelInfo[]): ModelInfo[] {
+  return models
+    .slice()
+    .sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id, undefined, { sensitivity: 'base' }));
 }
 
 export function createChatModelsService(controller: ChatModelsDeps): ChatModelsService {
@@ -140,13 +132,11 @@ export function createChatModelsService(controller: ChatModelsDeps): ChatModelsS
       this.currentModel = resolveConfiguredModelId(this.llmProvider?.id) || this.currentModel;
 
       if (!this.availableModels.some((model) => model.id === this.currentModel)) {
-        this.currentModel = this.availableModels[0].id;
+        this.availableModels = uniqById([
+          createCustomModelInfo(this.currentModel),
+          ...this.availableModels,
+        ]);
         this.agent.updateConfig({ model: this.currentModel });
-        try {
-          await vscode.workspace.getConfiguration('lingyun').update('model', this.currentModel, true);
-        } catch (error) {
-          appendErrorLog(this.outputChannel, 'Failed to persist model setting', error, { tag: 'Models' });
-        }
       }
 
       await service.postModelState();
@@ -164,6 +154,66 @@ export function createChatModelsService(controller: ChatModelsDeps): ChatModelsS
       return Array.isArray(ids)
         ? ids.filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
         : [];
+    },
+
+    async getModelPickerStateForUI(this: ChatModelsDeps): Promise<ModelPickerState> {
+      if (this.availableModels.length === 0) {
+        await service.loadModels();
+      }
+
+      const currentId = this.currentModel || resolveConfiguredModelId(this.llmProvider?.id) || 'gpt-4o';
+      const models = uniqById([
+        ...this.availableModels,
+        ...(this.availableModels.some((model) => model.id === currentId)
+          ? []
+          : [createFallbackModelInfo(currentId, { vendor: 'configured' })]),
+      ]);
+      const favoriteIds = await service.getFavoriteModelIds();
+      const recentIds = await service.getRecentModelIds();
+      const favoriteSet = new Set(favoriteIds);
+      const byId = new Map(models.map((model) => [model.id, model] as const));
+      const favorites = favoriteIds.map((id) => byId.get(id)).filter((model): model is ModelInfo => !!model);
+      const recent = recentIds
+        .filter((id) => !favoriteSet.has(id))
+        .map((id) => byId.get(id))
+        .filter((model): model is ModelInfo => !!model);
+      const recentSet = new Set(recent.map((model) => model.id));
+      const all = sortModelsForPicker(models.filter((model) => !favoriteSet.has(model.id) && !recentSet.has(model.id)));
+      return { currentModel: currentId, favorites, recent, all };
+    },
+
+    async clearRecentModels(this: ChatModelsDeps): Promise<void> {
+      if (this.isProcessing) {
+        postInputNotice(this, 'Stop the current task before clearing recent models.');
+        await service.postModelPickerState(true);
+        return;
+      }
+
+      try {
+        await this.context.globalState.update(recentsStorageKey(this), []);
+      } catch (error) {
+        appendErrorLog(this.outputChannel, 'Failed to clear recent models', error, { tag: 'Models' });
+        postInputNotice(this, 'Failed to clear recent models. See logs for details.');
+      }
+      await service.postModelPickerState(true);
+    },
+
+    async refreshModelsForUI(this: ChatModelsDeps): Promise<void> {
+      if (this.isProcessing) {
+        postInputNotice(this, 'Stop the current task before refreshing models.');
+        await service.postModelPickerState(true);
+        return;
+      }
+
+      try {
+        this.llmProvider?.clearModelCache?.();
+        this.availableModels = [];
+        await service.loadModels();
+      } catch (error) {
+        appendErrorLog(this.outputChannel, 'Failed to refresh models', error, { tag: 'Models' });
+        postInputNotice(this, 'Failed to refresh models. See logs for details.');
+      }
+      await service.postModelPickerState(true);
     },
 
     async isModelFavorite(this: ChatModelsDeps, modelId: string): Promise<boolean> {
@@ -192,6 +242,14 @@ export function createChatModelsService(controller: ChatModelsDeps): ChatModelsS
       });
     },
 
+    async postModelPickerState(this: ChatModelsDeps, reveal?: boolean): Promise<void> {
+      this.webviewApi.postMessage({
+        type: 'modelPickerState',
+        picker: await service.getModelPickerStateForUI(),
+        reveal: reveal === true,
+      });
+    },
+
     async recordRecentModel(this: ChatModelsDeps, modelId: string): Promise<void> {
       const id = normalizeModelId(modelId);
       if (!id) return;
@@ -202,30 +260,62 @@ export function createChatModelsService(controller: ChatModelsDeps): ChatModelsS
     },
 
     async toggleFavoriteModel(this: ChatModelsDeps, modelId: string): Promise<void> {
-      const id = normalizeModelId(modelId);
-      if (!id) return;
+      if (this.isProcessing) {
+        postInputNotice(this, 'Stop the current task before changing favorite models.');
+        await service.postModelState();
+        await service.postModelPickerState(false);
+        return;
+      }
 
-      const existing = await service.getFavoriteModelIds();
-      const isFavorite = existing.includes(id);
-      const next = isFavorite ? existing.filter((model) => model !== id) : [id, ...existing.filter((model) => model !== id)];
-      await this.context.globalState.update(favoritesStorageKey(this), next);
+      const id = normalizeModelId(modelId);
+      if (!id) {
+        await service.postModelState();
+        await service.postModelPickerState(false);
+        return;
+      }
+
+      try {
+        const existing = await service.getFavoriteModelIds();
+        const isFavorite = existing.includes(id);
+        const next = isFavorite ? existing.filter((model) => model !== id) : [id, ...existing.filter((model) => model !== id)];
+        await this.context.globalState.update(favoritesStorageKey(this), next);
+      } catch (error) {
+        appendErrorLog(this.outputChannel, 'Failed to update favorite models', error, { tag: 'Models' });
+        postInputNotice(this, 'Failed to update favorite models. See logs for details.');
+      }
 
       if (this.currentModel === id) {
         await service.postModelState();
       }
+      await service.postModelPickerState(false);
     },
 
     async setCurrentModel(this: ChatModelsDeps, modelId: string): Promise<void> {
-      const id = normalizeModelId(modelId);
-      if (!id) return;
+      if (this.isProcessing) {
+        postInputNotice(this, 'Stop the current task before switching models.');
+        await service.postModelState();
+        return;
+      }
 
-      this.currentModel = id;
-      this.agent.updateConfig({ model: id });
+      const id = normalizeModelId(modelId);
+      if (!id) {
+        postInputNotice(this, 'Model ID is required.');
+        await service.postModelState();
+        return;
+      }
+
       try {
         await vscode.workspace.getConfiguration('lingyun').update('model', id, true);
       } catch (error) {
         appendErrorLog(this.outputChannel, 'Failed to persist model setting', error, { tag: 'Models' });
+        postInputNotice(this, 'Failed to switch models. See logs for details.');
+        await service.postModelState();
+        await service.postModelPickerState(false);
+        return;
       }
+
+      this.currentModel = id;
+      this.agent.updateConfig({ model: id });
 
       await service.recordRecentModel(id);
 
@@ -237,173 +327,47 @@ export function createChatModelsService(controller: ChatModelsDeps): ChatModelsS
         isFavorite,
         reasoningEffort: getConfiguredReasoningEffort(),
       });
+      await service.postModelPickerState(false);
 
       this.sessionApi.persistActiveSession();
     },
 
-    async pickModel(this: ChatModelsDeps): Promise<void> {
+    async setReasoningEffort(this: ChatModelsDeps, reasoningEffort: string): Promise<void> {
       if (this.isProcessing) {
-        void vscode.window.showInformationMessage('LingYun: Stop the current task before switching models.');
+        postInputNotice(this, 'Stop the current task before changing reasoning effort.');
+        await service.postModelState();
         return;
       }
 
-      if (this.availableModels.length === 0) {
-        await service.loadModels();
+      const normalized = normalizeReasoningEffortForConfig(reasoningEffort);
+      if (normalized === undefined) {
+        postInputNotice(this, 'Unsupported reasoning effort. Choose off, low, medium, high, or xhigh.');
+        await service.postModelState();
+        return;
       }
 
-      const fallbackModelId = this.currentModel || 'gpt-4o';
-      const models = uniqById([
-        ...this.availableModels,
-        ...(this.availableModels.some((model) => model.id === fallbackModelId)
-          ? []
-          : [createFallbackModelInfo(fallbackModelId, { vendor: 'configured' })]),
-      ]);
+      try {
+        await vscode.workspace.getConfiguration('lingyun').update('copilot.reasoningEffort', normalized, true);
+      } catch (error) {
+        appendErrorLog(this.outputChannel, 'Failed to persist reasoning effort setting', error, { tag: 'Models' });
+        postInputNotice(this, 'Failed to update reasoning effort. See logs for details.');
+        await service.postModelState();
+        return;
+      }
 
-      const favoriteButtonOn: vscode.QuickInputButton = {
-        iconPath: new vscode.ThemeIcon('star-full'),
-        tooltip: 'Remove from favorites',
-      };
-      const favoriteButtonOff: vscode.QuickInputButton = {
-        iconPath: new vscode.ThemeIcon('star-empty'),
-        tooltip: 'Add to favorites',
-      };
-
-      const quickPick = vscode.window.createQuickPick<ModelPickItem>();
-      quickPick.title = 'Select Model';
-      quickPick.placeholder = 'Search models by name/id/vendor…';
-      quickPick.matchOnDescription = true;
-      quickPick.matchOnDetail = true;
-
-      let activeModels = models;
-
-      const rebuildItems = async (params?: { refreshedModels?: ModelInfo[] }) => {
-        const currentId = this.currentModel || fallbackModelId;
-        if (params?.refreshedModels) {
-          activeModels = uniqById(params.refreshedModels);
-        }
-
-        const favoriteIds = await service.getFavoriteModelIds();
-        const recentIds = await service.getRecentModelIds();
-        const favoriteSet = new Set(favoriteIds);
-
-        const activeById = new Map(activeModels.map((model) => [model.id, model] as const));
-        const favoriteModels = favoriteIds.map((id) => activeById.get(id)).filter((model): model is ModelInfo => !!model);
-        const recentModels = recentIds
-          .filter((id) => !favoriteSet.has(id))
-          .map((id) => activeById.get(id))
-          .filter((model): model is ModelInfo => !!model);
-        const recentSet = new Set(recentModels.map((model) => model.id));
-
-        const rest = activeModels
-          .filter((model) => !favoriteSet.has(model.id) && !recentSet.has(model.id))
-          .slice()
-          .sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id, undefined, { sensitivity: 'base' }));
-
-        const items: ModelPickItem[] = [
-          {
-            label: '$(refresh) Refresh model list',
-            detail: 'Re-fetch models from the provider',
-            alwaysShow: true,
-            action: 'refreshModels',
-          },
-          {
-            label: '$(trash) Clear recent models',
-            detail: 'Remove recent model history for this provider',
-            alwaysShow: true,
-            action: 'clearRecents',
-          },
-          { label: 'Favorites', kind: vscode.QuickPickItemKind.Separator },
-          ...favoriteModels.map((model) =>
-            toModelPickItem({
-              model,
-              currentModelId: currentId,
-              favorite: true,
-              favoriteButtonOn,
-              favoriteButtonOff,
-            })
-          ),
-          { label: 'Recent', kind: vscode.QuickPickItemKind.Separator },
-          ...recentModels.map((model) =>
-            toModelPickItem({
-              model,
-              currentModelId: currentId,
-              favorite: favoriteSet.has(model.id),
-              favoriteButtonOn,
-              favoriteButtonOff,
-            })
-          ),
-          { label: 'All models', kind: vscode.QuickPickItemKind.Separator },
-          ...rest.map((model) =>
-            toModelPickItem({
-              model,
-              currentModelId: currentId,
-              favorite: favoriteSet.has(model.id),
-              favoriteButtonOn,
-              favoriteButtonOff,
-            })
-          ),
-        ];
-
-        quickPick.items = items;
-        const active = items.find((item) => item.modelId === currentId);
-        if (active) {
-          quickPick.activeItems = [active];
-        }
-      };
-
-      await rebuildItems();
-
-      const disposables: vscode.Disposable[] = [];
-      disposables.push(
-        quickPick.onDidAccept(async () => {
-          const picked = quickPick.selectedItems[0];
-          if (!picked) return;
-
-          if (picked.action === 'refreshModels') {
-            quickPick.busy = true;
-            try {
-              this.llmProvider?.clearModelCache?.();
-              this.availableModels = [];
-              await service.loadModels();
-              await rebuildItems({ refreshedModels: uniqById(this.availableModels) });
-            } finally {
-              quickPick.busy = false;
-            }
-            return;
-          }
-
-          if (picked.action === 'clearRecents') {
-            quickPick.busy = true;
-            try {
-              await this.context.globalState.update(recentsStorageKey(this), []);
-              await rebuildItems();
-            } finally {
-              quickPick.busy = false;
-            }
-            return;
-          }
-
-          const modelId = picked.modelId;
-          if (!modelId) return;
-
-          quickPick.hide();
-          await service.setCurrentModel(modelId);
-        }),
-        quickPick.onDidTriggerItemButton(async (event) => {
-          const modelId = event.item.modelId;
-          if (!modelId) return;
-
-          await service.toggleFavoriteModel(modelId);
-          await rebuildItems();
-        }),
-        quickPick.onDidHide(() => {
-          for (const disposable of disposables) disposable.dispose();
-          quickPick.dispose();
-        })
-      );
-
-      quickPick.show();
+      await service.postModelState();
     },
+
+    async openAdvancedModelSettings(this: ChatModelsDeps): Promise<void> {
+      if (this.isProcessing) {
+        postInputNotice(this, 'Stop the current task before opening advanced model settings.');
+        await service.postModelState();
+        return;
+      }
+
+      await vscode.commands.executeCommand('workbench.action.openSettings', '@ext:mzbac.lingyun model');
+    },
+
   });
 
   return service;

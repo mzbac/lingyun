@@ -192,6 +192,8 @@ export interface AgentConfig {
   systemPrompt?: string;
   mode?: 'build' | 'plan';
   temperature?: number;
+  topP?: number;
+  topK?: number;
   /**
    * Retry count for transient provider failures.
    * Note: by default, retries are only attempted when no tool call has started and no output was streamed.

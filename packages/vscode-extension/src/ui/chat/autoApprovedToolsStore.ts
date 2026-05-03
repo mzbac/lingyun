@@ -56,8 +56,31 @@ export function loadAutoApprovedTools(globalState: AutoApprovedToolsReader): Set
   return new Set(normalizeAutoApprovedToolIds(Array.isArray(stored) ? stored : []));
 }
 
+export function getAutoApprovedToolIds(autoApprovedTools: Set<string>): string[] {
+  return normalizeAutoApprovedToolIds(autoApprovedTools);
+}
+
 export function rememberAutoApprovedTool(autoApprovedTools: Set<string>, toolId: unknown): boolean {
   return replaceAutoApprovedTools(autoApprovedTools, [...autoApprovedTools, toolId]);
+}
+
+export function forgetAutoApprovedTool(autoApprovedTools: Set<string>, toolId: unknown): boolean {
+  const normalizedToolId = normalizeAutoApprovedToolId(toolId);
+  if (!normalizedToolId || !autoApprovedTools.has(normalizedToolId)) {
+    return false;
+  }
+
+  autoApprovedTools.delete(normalizedToolId);
+  return true;
+}
+
+export function clearAutoApprovedTools(autoApprovedTools: Set<string>): boolean {
+  if (autoApprovedTools.size === 0) {
+    return false;
+  }
+
+  autoApprovedTools.clear();
+  return true;
 }
 
 export async function persistAutoApprovedTools(params: {

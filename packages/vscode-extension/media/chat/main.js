@@ -66,7 +66,75 @@
 		      pendingTokens.delete(messageId);
 		    }
 
-			    function flushAssistantMarkdownRender(messageId) {
+		    function applySettingsState(data) {
+		      updateModelHeader({
+		        model: data.currentModel || '',
+		        label: data.currentModelLabel || data.currentModel || 'Pick model',
+		        isFavorite: !!data.currentModelIsFavorite,
+		        reasoningEffort: data.currentReasoningEffort || '',
+		      });
+		      reasoningEffortPending = false;
+		      modelSwitchPending = false;
+		      modelFavoritePending = false;
+		      providerAuthBusy = false;
+		      providerSwitchPending = false;
+		      ['reasoningEffort', 'modelSwitch', 'modelFavorite', 'modelPickerOpen', 'modelPickerRefresh', 'providerAuth', 'providerSwitch'].forEach((actionType) => clearPendingActionTimer(actionType));
+		      updateCodexSubscriptionSettingsState(data.codexSubscriptionSettings || {});
+		      updateOpenAICompatibleSettingsState(data.openAICompatibleSettings || {});
+		      updateProviderSelection(data.currentProviderId || (data.providerAuth && data.providerAuth.providerId) || '');
+		      updateProviderAuthHeader(data.providerAuth || null);
+		      updatePlanFirstState(data.planFirst !== false);
+		      updateSessionsPersistState(data.sessionsPersist !== false);
+		      updateSessionRetentionState(data.sessionsMaxSessions || 20, data.sessionsMaxSessionBytes || 2000000);
+		      updateAutoApproveState(!!data.autoApprove);
+		      updateAllowExternalPathsState(!!data.allowExternalPaths);
+		      updateBlockGitPushState(data.blockGitPush !== false);
+		      debugSettingsPending = false;
+		      pluginSettingsPending = false;
+		      clearPendingSettingStates();
+		      updateDebugSettingsState(data.debugSettings || {});
+      updatePluginSettingsState(data.pluginSettings || {});
+      updateToolFilterState(data.toolFilter || []);
+      updateAutoApprovedToolsState(data.autoApprovedTools || []);
+      updateToolsCatalogState(data.toolsCatalog || null);
+      updateWorkspaceEnvState(data.workspaceEnv || {});
+		      updateInstructionPatternsState(data.instructionPatterns || []);
+		      updateInstructionFileSettingsState(data.instructionFileSettings || {});
+		      updateToolRuntimeLimitsState(data.toolRuntimeLimits || {});
+		      updateShowThinkingState(data.showThinking !== false);
+		      updateMemoriesFeatureState(data.memoriesFeatureEnabled !== false);
+		      updateMemoryAutoRecallState(data.memoryAutoRecall !== false);
+		      updateMemoryAutoRecallBudgetState(data.memoryAutoRecallMaxResults || 4, data.memoryAutoRecallMaxTokens || 1200);
+		      updateMemoryAutoRecallFiltersState(
+		        typeof data.memoryAutoRecallMinScore === 'number' ? data.memoryAutoRecallMinScore : 7,
+		        typeof data.memoryAutoRecallMinScoreGap === 'number' ? data.memoryAutoRecallMinScoreGap : 1.25,
+		        typeof data.memoryAutoRecallMaxAgeDays === 'number' ? data.memoryAutoRecallMaxAgeDays : 45
+		      );
+      updateMemoryAdvancedLimitsState(data.memoryAdvancedLimits || {});
+      updateMemoryActionStatusState(data.memoryActionStatus || null);
+      updateExplorePrepassState(!!data.explorePrepass, data.explorePrepassMaxChars || 8000);
+
+		      updateSubagentModelOverrideState(typeof data.subagentModelOverride === 'string' ? data.subagentModelOverride : '');
+		      updateSubagentTaskMaxOutputCharsState(data.subagentTaskMaxOutputChars || 8000);
+		      updateAutoCompactionState(data.autoCompaction !== false);
+		      updateCompactionPruneState(
+		        data.compactionPrune !== false,
+		        typeof data.compactionPruneProtectTokens === 'number' ? data.compactionPruneProtectTokens : 40000,
+		        typeof data.compactionPruneMinimumTokens === 'number' ? data.compactionPruneMinimumTokens : 20000
+		      );
+		      updateCompactionToolOutputModeState(data.compactionToolOutputMode || 'afterToolCall');
+		      updateModelLimitsState(data.modelLimits || {});
+		      updateGenerationSettingsState(data.generationSettings || {});
+		      updateSkillsEnabledState(data.skillsEnabled !== false);
+		      updateSkillSearchPathsState(data.skillSearchPaths || []);
+		      updateSkillsBudgetState(data.skillsBudget || {});
+		      updateLoopDefaultsState(data.loopDefaults || {});
+		      setMode(data.mode || 'build');
+		      try { setAvailableSkills(Array.isArray(data.skills) ? data.skills : []); } catch {}
+		      syncInputState();
+		    }
+
+		    function flushAssistantMarkdownRender(messageId) {
 			      const state = assistantMarkdownRenderQueue.get(messageId);
 			      if (!state) return;
 			      if (state.timer) {
@@ -132,7 +200,9 @@
 			          messages.innerHTML = '';
 			          messages.appendChild(empty);
 			          turnEls.clear();
-			          activeTurnId = '';
+			          clearActivityOpenStates();
+				          activeTurnId = '';
+
 			          messageEls.clear();
 				          messageDataById.clear();
 				          stepBodies.clear();
@@ -152,8 +222,8 @@
 		            for (const msg of list) {
 		              try {
 		                addMessage(msg);
-		              } catch (err) {
-		                console.error('Failed to render message', err, msg);
+		              } catch {
+		                console.error('Failed to render message');
 		              }
 		            }
 		            if (list.length === 0) {
@@ -169,6 +239,7 @@
 			            const state = vscode.getState() || {};
 			            activityOpenStates = state.activityOpenStates || {};
 			          } catch {}
+			          pruneActivityOpenStatesToTurns();
 
 			          turnEls.forEach((turnData, turnId) => {
 			            const expanded = activityOpenStates[turnId];
@@ -177,26 +248,33 @@
 			            }
 			            updateTurnActivitySummary(turnData);
 			          });
-		      if (data.sessions && data.sessions.length > 0) {
-		        updateSessionSelect(data.sessions, data.activeSessionId);
-		      }
-		      updateModelHeader({
-		        model: data.currentModel || '',
-		        label: data.currentModelLabel || data.currentModel || 'Pick model',
-		        isFavorite: !!data.currentModelIsFavorite,
-		        reasoningEffort: data.currentReasoningEffort || '',
-		      });
-		      providerAuthBusy = false;
-		      updateProviderAuthHeader(data.providerAuth || null);
-			      setLoopState(data.loop);
-			      updateContextIndicatorState(data.context);
+      sessionActionPending = '';
+      sessionSwitchPending = false;
+      revertActionPending = '';
+      officeActionPending = '';
+      clearAllPendingActionTimers();
+      modelPickerOpenPending = false;
+      advancedModelSettingsPending = false;
+      showLogsPending = false;
+      abortRequestPending = false;
+      approveAllPending = false;
+      queueClearPending = false;
+      queueSteerPendingId = '';
+      if (data.sessions && data.sessions.length > 0) {
+        sessionSwitchPending = false;
+        updateSessionSelect(data.sessions, data.activeSessionId);
+      }
+      applySettingsState(data);
+		      setLoopState(data.loop);
+		      updateContextIndicatorState(data.context);
+
 			      closeContextPopover();
 			      updateTodoIndicatorState(data.todos);
 			      closeTodoPopover();
 		          setMode(data.mode || 'build');
 		          setPlanPending(!!data.planPending);
 		          setProcessing(!!data.processing);
-		          try { setQueueState(Array.isArray(data.queuedInputs) ? data.queuedInputs : []); } catch {}
+		          try { setQueueState(Array.isArray(data.queuedInputs) ? data.queuedInputs : [], { sync: false }); } catch {}
 		          try { setInputHistoryEntries(Array.isArray(data.inputHistory) ? data.inputHistory : []); } catch {}
 		          try { setAvailableSkills(Array.isArray(data.skills) ? data.skills : []); } catch {}
 		          pendingApprovalsCount = Number(data.pendingApprovals || 0) || 0;
@@ -210,10 +288,25 @@
 		          vscode.postMessage({ type: mainChatProtocol.initAck, clientInstanceId });
 		          break;
 	        case 'queueState':
+	          clearPendingActionTimer('queueAction');
+	          queueClearPending = false;
+	          queueSteerPendingId = '';
 	          try { setQueueState(Array.isArray(data.queuedInputs) ? data.queuedInputs : []); } catch {}
 	          break;
+        case 'settingsState':
+          debugSettingsPending = false;
+          pluginSettingsPending = false;
+          clearPendingSettingStates();
+          applySettingsState(data);
+          break;
 	        case 'loopState':
+	          setPendingSettingState('loopState', false);
 	          try { setLoopState(data.loop); } catch {}
+	          syncInputState();
+	          break;
+	        case 'loopDefaultsState':
+	          setPendingSettingState('loopDefaultsState', false);
+	          try { updateLoopDefaultsState(data.loopDefaults || {}); } catch {}
 	          syncInputState();
 	          break;
 	        case 'context':
@@ -222,17 +315,26 @@
 	        case 'todos':
 	          updateTodoIndicatorState(data.todos);
 	          break;
-	        case 'sessions':
-	          if (data.sessions && data.sessions.length > 0) {
-	            updateSessionSelect(data.sessions, data.activeSessionId || currentSessionId);
-	          }
-	          break;
+        case 'sessions':
+          clearPendingActionTimer('sessionSwitch');
+          sessionActionPending = '';
+          if (data.sessions && data.sessions.length > 0) {
+            sessionSwitchPending = false;
+            updateSessionSelect(data.sessions, data.activeSessionId || currentSessionId);
+          }
+          syncInputState();
+          break;
 	        case 'inputHistory':
 	          try { setInputHistoryEntries(Array.isArray(data.entries) ? data.entries : []); } catch {}
 	          break;
-	        case 'message':
-	          addMessage(data.message);
-	          break;
+        case 'message':
+          addMessage(data.message);
+          break;
+        case 'inputNotice':
+          if (typeof showInputNotice === 'function') {
+            showInputNotice(typeof data.message === 'string' ? data.message : '');
+          }
+          break;
 		        case 'token':
 		          const el = messageEls.get(data.messageId);
 		          const wasNearBottom = isNearBottom();
@@ -394,14 +496,45 @@
 		          }
 		          break;
         case 'processing':
+          if (!data.value) {
+            clearPendingActionTimer('abort');
+            clearPendingActionTimer('approveAll');
+            abortRequestPending = false;
+            approveAllPending = false;
+          }
           setProcessing(data.value);
+          break;
+        case 'sessionActionState':
+          if (!data.pending) {
+            clearPendingActionTimer('sessionAction');
+            sessionActionPending = '';
+          }
+          syncInputState();
+          break;
+        case 'revertActionState':
+          if (!data.pending) {
+            clearPendingActionTimer('revertAction');
+            revertActionPending = '';
+          }
+          syncInputState();
+          break;
+        case 'officeActionState':
+          if (!data.pending) {
+            clearPendingActionTimer('officeAction');
+            officeActionPending = '';
+          }
+          syncInputState();
           break;
         case 'operationStart':
           if (data.operation) {
+            clearPendingActionTimer('sessionAction');
+            sessionActionPending = '';
             startOperation(data.operation);
           }
           break;
         case 'approvalsChanged':
+          clearPendingActionTimer('approveAll');
+          approveAllPending = false;
           pendingApprovalsCount = Number(data.count || 0) || 0;
           manualApprovalsCount = Number(data.manualCount || 0) || 0;
           autoApproveThisRun = !!data.autoApproveThisRun;
@@ -430,6 +563,8 @@
           syncInputState();
           break;
 		        case 'cleared':
+		          sessionActionPending = '';
+		          syncInputState();
 		          messages.innerHTML = '';
 		          messages.appendChild(empty);
 		          empty.style.display = 'flex';
@@ -448,22 +583,23 @@
 		          manualApprovalsCount = 0;
 		          autoApproveThisRun = false;
 		          updateApprovalBanner();
-		          latestContext = null;
+		          updateContextIndicatorState({});
 		          closeContextPopover();
-		          if (contextIndicator) {
-		            contextIndicator.textContent = '';
-		            contextIndicator.classList.add('hidden');
-		            contextIndicator.classList.remove('warn', 'danger');
-		          }
 		          currentRevertState = null;
 		          updateRevertBar(null);
 		          canUndo = false;
 		          canRedo = false;
 		          setPlanPending(false);
-		          try { setQueueState([]); } catch {}
+		          try { setQueueState([], { sync: false }); } catch {}
 		          syncInputState();
 		          break;
         case 'modelChanged':
+          clearPendingActionTimer('reasoningEffort');
+          clearPendingActionTimer('modelSwitch');
+          clearPendingActionTimer('modelFavorite');
+          reasoningEffortPending = false;
+          modelSwitchPending = false;
+          modelFavoritePending = false;
           currentModel = data.model;
           updateModelHeader({
             model: data.model || '',
@@ -471,22 +607,261 @@
             isFavorite: !!data.isFavorite,
             reasoningEffort: data.reasoningEffort || '',
           });
+          syncInputState();
           break;
         case 'modelState':
+          clearPendingActionTimer('reasoningEffort');
+          clearPendingActionTimer('modelSwitch');
+          clearPendingActionTimer('modelFavorite');
+          reasoningEffortPending = false;
+          modelSwitchPending = false;
+          modelFavoritePending = false;
           updateModelHeader({
             model: data.model || currentModel || '',
             label: data.label || data.model || currentModel || 'Pick model',
             isFavorite: !!data.isFavorite,
             reasoningEffort: data.reasoningEffort || '',
           });
+          syncInputState();
+          break;
+        case 'modelPickerState':
+          clearPendingActionTimer('modelFavorite');
+          clearPendingActionTimer('modelPickerRefresh');
+          clearPendingActionTimer('modelPickerOpen');
+          modelFavoritePending = false;
+          modelPickerRefreshPending = false;
+          modelPickerOpenPending = false;
+          updateModelPickerState(data.picker || null, { reveal: data.reveal === true });
+          syncInputState();
+          break;
+        case 'advancedModelSettingsState':
+          clearPendingActionTimer('advancedModelSettings');
+          advancedModelSettingsPending = false;
+          syncInputState();
+          break;
+        case 'logsActionState':
+          clearPendingActionTimer('showLogs');
+          showLogsPending = false;
+          syncInputState();
           break;
         case 'providerState':
+          clearPendingActionTimer('providerAuth');
+          clearPendingActionTimer('providerSwitch');
           providerAuthBusy = false;
+          providerSwitchPending = false;
+          clearModelPickerCache();
+          updateProviderSelection(data.currentProviderId || (data.providerAuth && data.providerAuth.providerId) || '');
           updateProviderAuthHeader(data.providerAuth || null);
           syncInputState();
           break;
+        case 'openAICompatibleSettingsState':
+          clearPendingActionTimer('providerAuth');
+          clearPendingActionTimer('providerSwitch');
+          providerAuthBusy = false;
+          providerSwitchPending = false;
+          setPendingSettingState('openAICompatibleSettingsState', false);
+          updateOpenAICompatibleSettingsState(data.openAICompatibleSettings || {});
+          updateProviderSelection(data.currentProviderId || (data.providerAuth && data.providerAuth.providerId) || currentProviderId || '');
+          if (data.providerAuth) updateProviderAuthHeader(data.providerAuth);
+          syncInputState();
+          break;
+        case 'codexSubscriptionSettingsState':
+          clearPendingActionTimer('providerAuth');
+          clearPendingActionTimer('providerSwitch');
+          providerAuthBusy = false;
+          providerSwitchPending = false;
+          setPendingSettingState('codexSubscriptionSettingsState', false);
+          updateCodexSubscriptionSettingsState(data.codexSubscriptionSettings || {});
+          updateProviderSelection(data.currentProviderId || (data.providerAuth && data.providerAuth.providerId) || currentProviderId || '');
+          if (data.providerAuth) updateProviderAuthHeader(data.providerAuth);
+          syncInputState();
+          break;
+        case 'planFirstState':
+          setPendingSettingState('planFirstState', false);
+          updatePlanFirstState(data.planFirst !== false);
+          syncInputState();
+          break;
+        case 'sessionsPersistState':
+          setPendingSettingState('sessionsPersistState', false);
+          updateSessionsPersistState(data.sessionsPersist !== false);
+          syncInputState();
+          break;
+        case 'sessionRetentionState':
+          setPendingSettingState('sessionRetentionState', false);
+          updateSessionRetentionState(data.sessionsMaxSessions || 20, data.sessionsMaxSessionBytes || 2000000);
+          syncInputState();
+          break;
+        case 'autoApproveState':
+          setPendingSettingState('autoApproveState', false);
+          updateAutoApproveState(!!data.autoApprove);
+          syncInputState();
+          break;
+        case 'allowExternalPathsState':
+          setPendingSettingState('allowExternalPathsState', false);
+          updateAllowExternalPathsState(!!data.allowExternalPaths);
+          syncInputState();
+          break;
+        case 'blockGitPushState':
+          setPendingSettingState('blockGitPushState', false);
+          updateBlockGitPushState(data.blockGitPush !== false);
+          syncInputState();
+          break;
+        case 'debugSettingsState':
+          debugSettingsPending = false;
+          updateDebugSettingsState(data.debugSettings || {});
+          syncInputState();
+          break;
+        case 'toolRuntimeLimitsState':
+          setPendingSettingState('toolRuntimeLimitsState', false);
+          updateToolRuntimeLimitsState(data.toolRuntimeLimits || {});
+          syncInputState();
+          break;
+        case 'pluginSettingsState':
+          pluginSettingsPending = false;
+          updatePluginSettingsState(data.pluginSettings || {});
+          syncInputState();
+          break;
+        case 'toolFilterState':
+          setPendingSettingState('toolFilterState', false);
+          updateToolFilterState(data.toolFilter || []);
+          if (data.toolsCatalog) updateToolsCatalogState(data.toolsCatalog);
+          syncInputState();
+          break;
+        case 'toolsCatalogState':
+          clearPendingActionTimer('toolsCatalog');
+          toolsCatalogRequestPending = false;
+          updateToolsCatalogState(data.toolsCatalog || null, { reveal: data.reveal === true });
+          syncInputState();
+          break;
+        case 'autoApprovedToolsState':
+          autoApprovedToolsPending = false;
+          updateAutoApprovedToolsState(data.autoApprovedTools || []);
+          syncInputState();
+          break;
+        case 'manualToolConfirmationRequired':
+          handleManualToolConfirmationRequired(data);
+          break;
+        case 'manualToolResult':
+          handleManualToolResult(data);
+          break;
+        case 'workspaceEnvState':
+          setPendingSettingState('workspaceEnvState', false);
+          updateWorkspaceEnvState(data.workspaceEnv || {});
+          syncInputState();
+          break;
+        case 'instructionPatternsState':
+          setPendingSettingState('instructionPatternsState', false);
+          updateInstructionPatternsState(data.instructionPatterns || []);
+          syncInputState();
+          break;
+        case 'instructionFileSettingsState':
+          setPendingSettingState('instructionFileSettingsState', false);
+          updateInstructionFileSettingsState(data.instructionFileSettings || {});
+          syncInputState();
+          break;
+        case 'showThinkingState':
+          setPendingSettingState('showThinkingState', false);
+          updateShowThinkingState(data.showThinking !== false);
+          syncInputState();
+          break;
+        case 'memoriesFeatureState':
+          setPendingSettingState('memoriesFeatureState', false);
+          updateMemoriesFeatureState(data.memoriesFeatureEnabled !== false);
+          syncInputState();
+          break;
+        case 'memoryAutoRecallState':
+          setPendingSettingState('memoryAutoRecallState', false);
+          updateMemoryAutoRecallState(data.memoryAutoRecall !== false);
+          syncInputState();
+          break;
+        case 'memoryAutoRecallBudgetState':
+          setPendingSettingState('memoryAutoRecallBudgetState', false);
+          updateMemoryAutoRecallBudgetState(data.memoryAutoRecallMaxResults || 4, data.memoryAutoRecallMaxTokens || 1200);
+          syncInputState();
+          break;
+        case 'memoryAutoRecallFiltersState':
+          setPendingSettingState('memoryAutoRecallFiltersState', false);
+          updateMemoryAutoRecallFiltersState(
+            typeof data.memoryAutoRecallMinScore === 'number' ? data.memoryAutoRecallMinScore : 7,
+            typeof data.memoryAutoRecallMinScoreGap === 'number' ? data.memoryAutoRecallMinScoreGap : 1.25,
+            typeof data.memoryAutoRecallMaxAgeDays === 'number' ? data.memoryAutoRecallMaxAgeDays : 45
+          );
+          syncInputState();
+          break;
+        case 'memoryAdvancedLimitsState':
+          setPendingSettingState('memoryAdvancedLimitsState', false);
+          updateMemoryAdvancedLimitsState(data.memoryAdvancedLimits || {});
+          syncInputState();
+          break;
+        case 'memoryActionStatusState':
+          updateMemoryActionStatusState(data.memoryActionStatus || null);
+          break;
+        case 'explorePrepassState':
+          setPendingSettingState('explorePrepassState', false);
+          updateExplorePrepassState(!!data.explorePrepass, data.explorePrepassMaxChars || 8000);
+          syncInputState();
+          break;
+        case 'subagentModelOverrideState':
+          setPendingSettingState('subagentModelOverrideState', false);
+          updateSubagentModelOverrideState(typeof data.subagentModelOverride === 'string' ? data.subagentModelOverride : '');
+          syncInputState();
+          break;
+        case 'subagentTaskMaxOutputCharsState':
+          setPendingSettingState('subagentTaskMaxOutputCharsState', false);
+          updateSubagentTaskMaxOutputCharsState(data.subagentTaskMaxOutputChars || 8000);
+          syncInputState();
+          break;
+        case 'autoCompactionState':
+          setPendingSettingState('autoCompactionState', false);
+          updateAutoCompactionState(data.autoCompaction !== false);
+          syncInputState();
+          break;
+        case 'compactionPruneState':
+          setPendingSettingState('compactionPruneState', false);
+          updateCompactionPruneState(
+            data.compactionPrune !== false,
+            typeof data.compactionPruneProtectTokens === 'number' ? data.compactionPruneProtectTokens : 40000,
+            typeof data.compactionPruneMinimumTokens === 'number' ? data.compactionPruneMinimumTokens : 20000
+          );
+          syncInputState();
+          break;
+        case 'compactionToolOutputModeState':
+          setPendingSettingState('compactionToolOutputModeState', false);
+          updateCompactionToolOutputModeState(data.compactionToolOutputMode || 'afterToolCall');
+          syncInputState();
+          break;
+        case 'modelLimitsState':
+          setPendingSettingState('modelLimitsState', false);
+          updateModelLimitsState(data.modelLimits || {});
+          syncInputState();
+          break;
+        case 'generationSettingsState':
+          setPendingSettingState('generationSettingsState', false);
+          updateGenerationSettingsState(data.generationSettings || {});
+          syncInputState();
+          break;
+        case 'skillsEnabledState':
+          setPendingSettingState('skillsEnabledState', false);
+          updateSkillsEnabledState(data.skillsEnabled !== false);
+          try { setAvailableSkills(Array.isArray(data.skills) ? data.skills : []); } catch {}
+          syncInputState();
+          break;
+        case 'skillSearchPathsState':
+          setPendingSettingState('skillSearchPathsState', false);
+          updateSkillSearchPathsState(data.skillSearchPaths || []);
+          try { setAvailableSkills(Array.isArray(data.skills) ? data.skills : []); } catch {}
+          syncInputState();
+          break;
+        case 'skillsBudgetState':
+          setPendingSettingState('skillsBudgetState', false);
+          updateSkillsBudgetState(data.skillsBudget || {});
+          syncInputState();
+          break;
         case 'modeChanged':
+          clearPendingActionTimer('modeSwitch');
+          modeSwitchPending = false;
           setMode(data.mode || 'build');
+          syncInputState();
           break;
         case 'turnStatus':
           if (data.turnId && data.status) {
@@ -557,9 +932,20 @@
           break;
         case 'setInput':
           input.value = String(data.value || '');
+          if (typeof data.placeholder === 'string' && data.placeholder) {
+            input.placeholder = data.placeholder;
+          }
           input.style.height = 'auto';
           input.style.height = Math.min(input.scrollHeight, 120) + 'px';
           clearInputBtn.disabled = !input.value.trim();
+          input.focus();
+          break;
+        case 'focusInput':
+          if (typeof data.placeholder === 'string' && data.placeholder && !input.value.trim()) {
+            input.placeholder = data.placeholder;
+          }
+          input.style.height = 'auto';
+          input.style.height = Math.min(input.scrollHeight, 120) + 'px';
           input.focus();
           break;
       }

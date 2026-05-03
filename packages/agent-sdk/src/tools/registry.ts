@@ -5,12 +5,23 @@ export type Disposable = { dispose: () => void };
 
 const TOOL_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
 
+function describeInvalidToolId(toolId: unknown): string {
+  if (typeof toolId === 'string') return `string length ${toolId.length}`;
+  if (toolId === null) return 'null';
+  if (Array.isArray(toolId)) return 'array';
+  return typeof toolId;
+}
+
 function assertValidToolId(toolId: unknown, source: string): asserts toolId is string {
   if (typeof toolId !== 'string' || !TOOL_ID_PATTERN.test(toolId)) {
     throw new Error(
-      `Invalid tool id ${JSON.stringify(toolId)} from ${source}. Tool ids must match ${TOOL_ID_PATTERN.toString()}.`
+      `Invalid tool id (${describeInvalidToolId(toolId)}) from ${source}. Tool ids must match ${TOOL_ID_PATTERN.toString()}.`
     );
   }
+}
+
+function safeProviderLogLabel(providerId: string | undefined): string {
+  return providerId && TOOL_ID_PATTERN.test(providerId) ? providerId : '<provider>';
 }
 
 class SimpleToolProvider implements ToolProvider {
@@ -102,9 +113,10 @@ export class ToolRegistry {
 
     for (const tool of raw) {
       try {
-        assertValidToolId(tool?.id, `provider "${providerId}"`);
+        assertValidToolId(tool?.id, `provider "${safeProviderLogLabel(providerId)}"`);
       } catch (error) {
-        console.error('[ToolRegistry] Skipping tool:', error);
+        const message = error instanceof Error ? error.message : 'Invalid tool id';
+        console.error(`[ToolRegistry] Skipping invalid tool: ${message}`);
         continue;
       }
       next.push(tool);
@@ -122,7 +134,7 @@ export class ToolRegistry {
         if (next.has(tool.id)) {
           const existing = next.get(tool.id);
           console.warn(
-            `[ToolRegistry] Duplicate tool id "${tool.id}" from provider "${providerId}" (already provided by "${existing}"); skipping.`,
+            `[ToolRegistry] Duplicate tool id "${tool.id}" from provider "${safeProviderLogLabel(providerId)}" (already provided by "${safeProviderLogLabel(existing)}"); skipping.`,
           );
           continue;
         }

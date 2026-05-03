@@ -38,6 +38,8 @@ export class ChatController {
   sessions: Map<string, ChatSessionInfo> = new Map();
   activeSessionId: string = crypto.randomUUID();
   officeSync?: OfficeSync;
+  openOfficeView?: () => Promise<void>;
+  resetOfficeLayoutAction?: () => Promise<void>;
   isProcessing = false;
   currentModel = 'gpt-4o';
   mode: ChatMode = 'build';
@@ -102,6 +104,14 @@ export class ChatController {
   loopManager!: ChatLoopManager;
   queueManager!: ChatQueueManager;
   runner!: RunCoordinator;
+
+  abortCurrentRun(reason = 'Canceled by user.'): void {
+    this.approvalsApi.rejectAllPendingApprovals(reason);
+    this.agent.abort();
+    this.abortRequested = true;
+    this.approvalsApi.markActiveStepStatus('canceled');
+    this.sessionApi.persistActiveSession();
+  }
 
   constructor(
     public context: vscode.ExtensionContext,

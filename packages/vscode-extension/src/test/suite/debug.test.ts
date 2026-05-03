@@ -56,6 +56,29 @@ suite('Debug Redaction', () => {
     assert.ok(redacted.includes('sk-<redacted>'));
   });
 
+  test('redactSensitive redacts standalone GitHub token formats', () => {
+    const classicPat = 'ghp_abcdefghijklmnopqrstuvwxyzABCDE12345';
+    const fineGrainedPat = 'github_pat_11ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_1234567890';
+    const redacted = redactSensitive(`clone failed with ${classicPat} and ${fineGrainedPat}`);
+
+    assert.ok(!redacted.includes(classicPat));
+    assert.ok(!redacted.includes(fineGrainedPat));
+    assert.ok(redacted.includes('ghp_<redacted>'));
+    assert.ok(redacted.includes('github_pat_<redacted>'));
+  });
+
+  test('redactSensitive redacts URL credentials while preserving public URLs in secrets-only mode', () => {
+    const input =
+      'https://user:secret-pass@example.com/v1?api_key=sk-url-secret&next=1 https://example.org/search?key=AIza12345678901234567890123456789012345';
+    const redacted = redactSensitive(input, { redactionLevel: 'secrets-only' });
+
+    assert.ok(redacted.includes('https://user:<redacted>@example.com/v1?api_key=<redacted>&next=1'));
+    assert.ok(redacted.includes('https://example.org/search?key=<redacted>'));
+    assert.ok(!redacted.includes('secret-pass'));
+    assert.ok(!redacted.includes('sk-url-secret'));
+    assert.ok(!redacted.includes('AIza12345678901234567890123456789012345'));
+  });
+
   test('redactSensitive redacts home paths and local hosts', () => {
     const home = os.homedir();
     const input = `Failed to connect to localhost:3000 from ${home}/projects/demo using file://${home}/token.txt and printer.local:631`;

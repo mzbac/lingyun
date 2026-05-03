@@ -51,7 +51,7 @@ export function createChatRunnerCallbacksService(controller: ChatRunnerCallbacks
 
   createAgentCallbacks(this: ChatRunnerCallbacksRuntime): AgentCallbacks {
     const showThinking =
-      vscode.workspace.getConfiguration('lingyun').get<boolean>('showThinking', false) ?? false;
+      vscode.workspace.getConfiguration('lingyun').get<boolean>('showThinking', true) ?? true;
     const debugLlm = getDebugSettings().llm;
     const persistSessions = this.isSessionPersistenceEnabled();
 

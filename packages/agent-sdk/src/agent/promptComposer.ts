@@ -21,16 +21,23 @@ export class SkillsPromptProvider {
   getSkillsPromptText(options?: {
     signal?: AbortSignal;
     allowExternalPaths?: boolean;
+    enabled?: boolean;
+    paths?: string[];
+    maxPromptSkills?: number;
   }): Promise<string | undefined> {
-    if (!this.params.getEnabled()) return Promise.resolve(undefined);
+    const enabled = typeof options?.enabled === 'boolean' ? options.enabled : this.params.getEnabled();
+    if (!enabled) return Promise.resolve(undefined);
 
     const workspaceRoot = this.params.getWorkspaceRoot();
     const allowExternalPaths =
       typeof options?.allowExternalPaths === 'boolean'
         ? options.allowExternalPaths
         : this.params.getAllowExternalPaths();
-    const paths = this.params.getPaths();
-    const maxPromptSkills = this.params.getMaxPromptSkills();
+    const paths = Array.isArray(options?.paths) && options.paths.length > 0 ? options.paths : this.params.getPaths();
+    const maxPromptSkills =
+      typeof options?.maxPromptSkills === 'number' && Number.isFinite(options.maxPromptSkills) && options.maxPromptSkills >= 0
+        ? Math.floor(options.maxPromptSkills)
+        : this.params.getMaxPromptSkills();
 
     return getSkillIndex({
       workspaceRoot,
@@ -64,11 +71,19 @@ export class PromptComposer {
     sessionId?: string;
     mode?: 'build' | 'plan';
     allowExternalPaths?: boolean;
+    skills?: {
+      enabled?: boolean;
+      paths?: string[];
+      maxPromptSkills?: number;
+    };
   }): Promise<string[]> {
     const basePrompt = typeof options?.basePrompt === 'string' ? options.basePrompt : '';
     const skillsPromptText = await this.params.skills.getSkillsPromptText({
       signal: options?.signal,
       allowExternalPaths: options?.allowExternalPaths,
+      enabled: options?.skills?.enabled,
+      paths: options?.skills?.paths,
+      maxPromptSkills: options?.skills?.maxPromptSkills,
     });
     let system = [
       [basePrompt, skillsPromptText].filter(Boolean).join('\n'),

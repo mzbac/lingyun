@@ -25,27 +25,44 @@
 	      const modelId = state && (state.model || state.id) ? String(state.model || state.id) : '';
 	      const label = state && state.label ? String(state.label) : (modelId || 'Pick model');
 	      const isFavorite = !!(state && state.isFavorite);
-	      const reasoningEffort = state && state.reasoningEffort ? String(state.reasoningEffort) : '';
-	      const displayLabel = reasoningEffort ? (label + ' · ' + reasoningEffort) : label;
-	      const title = reasoningEffort ? (label + ' • reasoning ' + reasoningEffort) : label;
+	      const allowedReasoningEfforts = ['', 'low', 'medium', 'high', 'xhigh'];
+	      const nextReasoningEffort = state && typeof state.reasoningEffort === 'string' ? String(state.reasoningEffort) : 'high';
+	      const reasoningEffort = allowedReasoningEfforts.indexOf(nextReasoningEffort) >= 0 ? nextReasoningEffort : 'high';
+	      const reasoningLabel = reasoningEffort ? reasoningEffort : 'off';
+	      const title = label + ' • reasoning ' + reasoningLabel;
 
 	      if (modelPickerLabel) {
-	        modelPickerLabel.textContent = displayLabel;
+	        modelPickerLabel.textContent = label;
 	        modelPickerLabel.title = title;
 	      } else if (modelPicker) {
-	        modelPicker.textContent = displayLabel;
+	        modelPicker.textContent = label;
 	      }
 
 	      currentModel = modelId;
+	      currentReasoningEffort = reasoningEffort;
+	      if (typeof updateCustomModelInputState === 'function') {
+	        updateCustomModelInputState(modelId);
+	      }
 
 	      if (modelPicker) {
 	        modelPicker.title = title;
 	      }
 
+      if (reasoningEffortSelect) {
+        reasoningEffortSelect.value = reasoningEffort;
+        reasoningEffortSelect.disabled = !initReceived || isProcessing || reasoningEffortPending || modelSwitchPending;
+        reasoningEffortSelect.title = 'Reasoning effort: ' + reasoningLabel + ' (GPT-5/Codex models)';
+      }
+
 	      if (modelFavoriteToggle) {
-	        modelFavoriteToggle.disabled = !currentModel;
+	        modelFavoriteToggle.disabled = !currentModel || !initReceived || isProcessing || modelFavoritePending || modelSwitchPending || modelPickerRefreshPending;
 	        modelFavoriteToggle.textContent = isFavorite ? '★' : '☆';
 	        modelFavoriteToggle.title = isFavorite ? 'Unfavorite model' : 'Favorite model';
+	        modelFavoriteToggle.setAttribute('aria-label', (isFavorite ? 'Unfavorite model ' : 'Favorite model ') + (label || modelId || 'current model'));
+	      }
+
+	      if (modelSettings) {
+	        modelSettings.disabled = !initReceived || isProcessing || modelSwitchPending || modelFavoritePending || modelPickerRefreshPending;
 	      }
 	    }
 
@@ -90,15 +107,19 @@
 	      if (providerAuthPrimary) {
 	        providerAuthPrimary.textContent = primaryLabel;
 	        providerAuthPrimary.title = title;
+	        const providerSuffix = currentProviderAuth.providerName ? (' ' + currentProviderAuth.providerName) : '';
+	        providerAuthPrimary.setAttribute('aria-label', connected ? ('Provider account: ' + primaryLabel) : ('Sign in to' + providerSuffix));
 	        providerAuthPrimary.classList.toggle('connected', connected);
 	      }
 
 	      if (providerAuthSecondary) {
 	        const secondaryLabel = currentProviderAuth.secondaryActionLabel || 'Disconnect';
-	        providerAuthSecondary.textContent = secondaryLabel;
-	        providerAuthSecondary.title = currentProviderAuth.providerName
+	        const secondaryTitle = currentProviderAuth.providerName
 	          ? (secondaryLabel + ' from ' + currentProviderAuth.providerName)
 	          : secondaryLabel;
+	        providerAuthSecondary.textContent = secondaryLabel;
+	        providerAuthSecondary.title = secondaryTitle;
+	        providerAuthSecondary.setAttribute('aria-label', secondaryTitle);
 	        providerAuthSecondary.classList.toggle('hidden', !connected);
 	      }
 	    }
@@ -263,11 +284,18 @@
 	      outputModalClose.addEventListener('click', () => closeOutputModal());
 	    }
 	    if (outputModalCopy) {
+	      outputModalCopy.setAttribute('aria-label', 'Copy full output');
+	      outputModalCopy.title = 'Copy full output';
 	      outputModalCopy.addEventListener('click', async () => {
 	        const ok = await writeClipboard(outputModalText);
 	        if (!ok) return;
 	        outputModalCopy.textContent = 'Copied';
-	        setTimeout(() => { outputModalCopy.textContent = 'Copy'; }, 900);
+	        outputModalCopy.setAttribute('aria-label', 'Copied full output');
+	        if (typeof announceStatus === 'function') announceStatus('Copied output.');
+	        setTimeout(() => {
+	          outputModalCopy.textContent = 'Copy';
+	          outputModalCopy.setAttribute('aria-label', 'Copy full output');
+	        }, 900);
 	      });
 	    }
 
@@ -700,21 +728,16 @@
 	      const percent = ctx && typeof ctx.percent === 'number' ? ctx.percent : undefined;
 
 	      const hasTokens = !!total && total > 0;
-	      if (!hasTokens) {
-	        contextIndicator.textContent = '';
-	        contextIndicator.classList.add('hidden');
-	        closeContextPopover();
-	        return;
-	      }
-
-	      const shortTotal = hasTokens ? formatCompact(total) : '—';
+	      const shortTotal = hasTokens ? formatCompact(total) : '';
 	      const shortPercent = hasTokens && typeof percent === 'number' ? String(percent) + '%' : '';
-	      const label = shortPercent ? shortTotal + ' tok ' + shortPercent : shortTotal + ' tok';
+	      const label = hasTokens
+	        ? (shortPercent ? shortTotal + ' tok ' + shortPercent : shortTotal + ' tok')
+	        : 'Context';
 
 	      const lines = [];
-	      let title = 'Context: ' + (hasTokens ? formatInt(total) : 'unavailable');
+	      let title = 'Context: ' + (hasTokens ? formatInt(total) : 'token usage unavailable');
 	      if (contextLimit && contextLimit > 0) {
-	        title += ' / ' + formatInt(contextLimit);
+	        title += hasTokens ? ' / ' + formatInt(contextLimit) : ' · limit ' + formatInt(contextLimit);
 	        if (hasTokens && percent !== undefined) {
 	          title += ' (' + String(percent) + '%)';
 	        }
@@ -726,6 +749,8 @@
 	      const output = ctx && typeof ctx.outputTokens === 'number' ? ctx.outputTokens : undefined;
 	      if (hasTokens && (input !== undefined || output !== undefined)) {
 	        lines.push('Input: ' + formatInt(input || 0) + '  Output: ' + formatInt(output || 0));
+	      } else if (!hasTokens) {
+	        lines.push('Open for memory recall and compaction controls.');
 	      }
 
 	      contextIndicator.textContent = label;
@@ -901,9 +926,19 @@
 	    if (contextCompactNowBtn) {
 	      contextCompactNowBtn.addEventListener('click', (e) => {
 	        e.preventDefault();
-	        if (!initReceived || isProcessing) return;
+	        if (!initReceived || isProcessing || sessionActionPending) return;
 	        closeContextPopover();
-	        try { vscode.postMessage({ type: 'compactSession' }); } catch {}
+	        sessionActionPending = 'compactSession';
+	        armPendingActionTimer('sessionAction', () => recoverPendingAction('sessionAction', 'Context compaction is taking longer than expected. Controls were re-enabled.', () => { sessionActionPending = ''; }));
+	        syncInputState();
+	        try {
+	          vscode.postMessage({ type: 'compactSession' });
+	        } catch {
+	          clearPendingActionTimer('sessionAction');
+	          sessionActionPending = '';
+	          showInputNotice('Failed to request context compaction.');
+	          syncInputState();
+	        }
 	      });
 	    }
 

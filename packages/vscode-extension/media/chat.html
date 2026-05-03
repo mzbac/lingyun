@@ -116,7 +116,10 @@
     }
 
     .session-select,
+    .provider-select,
+    .safety-select,
     .model-select,
+    .reasoning-effort-select,
     .provider-auth-btn,
     .provider-auth-secondary {
       min-width: 100px;
@@ -140,6 +143,628 @@
       align-items: center;
       justify-content: space-between;
       gap: 6px;
+    }
+
+    .provider-select {
+      min-width: 126px;
+      max-width: 150px;
+      padding-right: 18px;
+    }
+
+    .safety-select {
+      min-width: 86px;
+      max-width: 104px;
+      padding-right: 18px;
+    }
+
+    .reasoning-effort-select {
+      min-width: 78px;
+      max-width: 92px;
+      padding-right: 18px;
+    }
+
+    .plan-first-label,
+    .thinking-label {
+      height: 28px;
+      padding: 0 8px;
+      border: 1px solid var(--vscode-dropdown-border);
+      border-radius: 4px;
+      background: var(--vscode-dropdown-background);
+      color: var(--vscode-dropdown-foreground);
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 0.75em;
+      cursor: pointer;
+      user-select: none;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .plan-first-label:hover:not(.disabled),
+    .thinking-label:hover:not(.disabled) {
+      background: var(--vscode-toolbar-hoverBackground);
+      border-color: var(--vscode-widget-border);
+    }
+
+    .plan-first-label.disabled,
+    .thinking-label.disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    .plan-first-checkbox,
+    .thinking-checkbox {
+      margin: 0;
+    }
+
+    .model-settings-btn,
+    .provider-settings-btn {
+      width: 28px;
+      height: 28px;
+      padding: 0;
+      box-sizing: border-box;
+      background: var(--vscode-dropdown-background);
+      color: var(--vscode-dropdown-foreground);
+      border: 1px solid var(--vscode-dropdown-border);
+      border-radius: 4px;
+      text-align: center;
+      font-size: 1em;
+      line-height: 1;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+
+    .model-settings-btn:hover:not(:disabled),
+    .provider-settings-btn:hover:not(:disabled) {
+      background: var(--vscode-toolbar-hoverBackground);
+      border-color: var(--vscode-widget-border);
+    }
+
+    .model-settings-btn:disabled,
+    .provider-settings-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .model-settings-btn:focus,
+    .provider-settings-btn:focus {
+      outline: 1px solid var(--vscode-focusBorder);
+      outline-offset: 1px;
+    }
+
+    .model-settings-wrap,
+    .provider-settings-wrap,
+    .session-settings-wrap,
+    .loop-control-wrap,
+    .safety-settings-wrap {
+      position: relative;
+      display: flex;
+      flex-shrink: 0;
+    }
+
+    .session-settings-btn,
+    .safety-settings-btn {
+      width: 28px;
+      height: 28px;
+      padding: 0;
+      box-sizing: border-box;
+      background: var(--vscode-dropdown-background);
+      color: var(--vscode-dropdown-foreground);
+      border: 1px solid var(--vscode-dropdown-border);
+      border-radius: 4px;
+      text-align: center;
+      font-size: 0.95em;
+      line-height: 1;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+
+    .session-settings-btn:hover:not(:disabled),
+    .safety-settings-btn:hover:not(:disabled) {
+      background: var(--vscode-toolbar-hoverBackground);
+      border-color: var(--vscode-widget-border);
+    }
+
+    .session-settings-btn:disabled,
+    .safety-settings-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .session-settings-btn:focus,
+    .safety-settings-btn:focus {
+      outline: 1px solid var(--vscode-focusBorder);
+      outline-offset: 1px;
+    }
+
+    .model-settings-popover,
+    .provider-settings-popover,
+    .session-settings-popover,
+    .safety-settings-popover,
+    .skills-settings-popover {
+      position: absolute;
+      top: calc(100% + 6px);
+      right: 0;
+      width: 280px;
+      max-height: min(70vh, 560px);
+      overflow-y: auto;
+      border-radius: 8px;
+      border: 1px solid var(--vscode-widget-border);
+      background: var(--vscode-editorWidget-background, rgba(28, 28, 28, 0.95));
+      box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
+      padding: 10px;
+      z-index: 60;
+    }
+
+    .model-settings-popover.hidden,
+    .provider-settings-popover.hidden,
+    .session-settings-popover.hidden,
+    .safety-settings-popover.hidden,
+    .skills-settings-popover.hidden {
+      display: none;
+    }
+
+    .model-settings-popover-header,
+    .provider-settings-popover-header,
+    .session-settings-popover-header,
+    .safety-settings-popover-header,
+    .skills-settings-popover-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 8px;
+      font-size: 0.85em;
+      font-weight: 600;
+    }
+
+    .model-settings-popover-close,
+    .provider-settings-popover-close,
+    .session-settings-popover-close,
+    .safety-settings-popover-close,
+    .skills-settings-popover-close {
+      width: 22px;
+      height: 22px;
+      border: none;
+      border-radius: 4px;
+      background: transparent;
+      color: var(--vscode-foreground);
+      cursor: pointer;
+      opacity: 0.75;
+    }
+
+    .model-settings-popover-close:hover,
+    .provider-settings-popover-close:hover,
+    .session-settings-popover-close:hover,
+    .safety-settings-popover-close:hover,
+    .skills-settings-popover-close:hover {
+      background: var(--vscode-toolbar-hoverBackground);
+      opacity: 1;
+    }
+
+    .safety-setting-toggle {
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
+      margin-top: 10px;
+      font-size: 0.8em;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .safety-setting-toggle.disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    .safety-setting-toggle input {
+      margin: 2px 0 0 0;
+      flex-shrink: 0;
+    }
+
+    .safety-setting-copy {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
+    }
+
+    .safety-setting-title {
+      font-weight: 600;
+    }
+
+    .safety-setting-hint {
+      opacity: 0.68;
+      font-size: 0.9em;
+      line-height: 1.25;
+    }
+
+    .safety-section-title {
+      margin-top: 12px;
+      padding-top: 10px;
+      border-top: 1px solid var(--vscode-widget-border);
+      font-size: 0.75em;
+      font-weight: 700;
+      opacity: 0.75;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .safety-warning {
+      margin-top: 10px;
+      padding: 7px 8px;
+      border-radius: 6px;
+      border: 1px solid var(--vscode-inputValidation-warningBorder, var(--vscode-widget-border));
+      color: var(--vscode-inputValidation-warningForeground, var(--vscode-foreground));
+      background: var(--vscode-inputValidation-warningBackground, rgba(204, 167, 0, 0.12));
+      font-size: 0.75em;
+      line-height: 1.3;
+    }
+
+    .tools-catalog {
+      margin-top: 8px;
+      max-height: 220px;
+      overflow-y: auto;
+      border: 1px solid var(--vscode-widget-border);
+      border-radius: 6px;
+      background: var(--vscode-editor-background);
+    }
+
+    .tools-catalog.hidden {
+      display: none;
+    }
+
+    .tools-catalog-search-field.hidden {
+      display: none;
+    }
+
+    .tools-catalog-summary,
+    .tools-catalog-empty {
+      padding: 7px 8px;
+      font-size: 0.75em;
+      color: var(--vscode-descriptionForeground);
+      border-bottom: 1px solid var(--vscode-widget-border);
+    }
+
+    .tools-catalog-empty {
+      border-bottom: none;
+    }
+
+    .tools-catalog-item {
+      padding: 8px;
+      border-top: 1px solid var(--vscode-widget-border);
+      font-size: 0.78em;
+    }
+
+    .tools-catalog-item:first-child {
+      border-top: none;
+    }
+
+    .tools-catalog-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 4px;
+    }
+
+    .tools-catalog-id {
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-weight: 600;
+      overflow-wrap: anywhere;
+    }
+
+    .tools-catalog-badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      justify-content: flex-end;
+      flex-shrink: 0;
+    }
+
+    .tools-catalog-badge {
+      padding: 1px 5px;
+      border: 1px solid var(--vscode-badge-background);
+      border-radius: 999px;
+      color: var(--vscode-badge-foreground);
+      background: var(--vscode-badge-background);
+      font-size: 0.85em;
+      white-space: nowrap;
+    }
+
+    .tools-catalog-desc {
+      opacity: 0.8;
+      line-height: 1.3;
+    }
+
+    .tools-catalog-params {
+      margin-top: 4px;
+      font-family: var(--vscode-editor-font-family, monospace);
+      color: var(--vscode-descriptionForeground);
+      font-size: 0.9em;
+      overflow-wrap: anywhere;
+    }
+
+    .tools-catalog-runner {
+      margin-top: 7px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .tools-catalog-args {
+      width: 100%;
+      min-height: 56px;
+      max-height: 140px;
+      resize: vertical;
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-size: 0.9em;
+      background: var(--vscode-input-background);
+      color: var(--vscode-input-foreground);
+      border: 1px solid var(--vscode-input-border, var(--vscode-dropdown-border));
+      border-radius: 4px;
+      padding: 4px 6px;
+      box-sizing: border-box;
+    }
+
+    .tools-catalog-run-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      justify-content: flex-end;
+    }
+
+    .tools-catalog-status {
+      flex: 1;
+      color: var(--vscode-descriptionForeground);
+      font-size: 0.9em;
+      overflow-wrap: anywhere;
+    }
+
+    .tools-catalog-result {
+      padding: 7px 8px;
+      font-size: 0.75em;
+      color: var(--vscode-descriptionForeground);
+      border-bottom: 1px solid var(--vscode-widget-border);
+      background: var(--vscode-editor-inactiveSelectionBackground, transparent);
+      overflow-wrap: anywhere;
+      white-space: pre-wrap;
+    }
+
+    .tools-catalog-result.error {
+      color: var(--vscode-errorForeground);
+    }
+
+    .tools-catalog-result-output {
+      margin-top: 6px;
+      color: var(--vscode-foreground);
+    }
+
+    .tools-catalog-result-output summary {
+      cursor: pointer;
+      color: var(--vscode-textLink-foreground);
+    }
+
+    .tools-catalog-result-output pre {
+      margin: 6px 0 0;
+      max-height: 140px;
+      overflow: auto;
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-size: 0.95em;
+      white-space: pre-wrap;
+      background: var(--vscode-textCodeBlock-background, var(--vscode-editor-background));
+      border: 1px solid var(--vscode-widget-border);
+      border-radius: 4px;
+      padding: 6px;
+    }
+
+    .tools-catalog-confirmation {
+      padding: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+      font-size: 0.78em;
+      color: var(--vscode-foreground);
+      border-bottom: 1px solid var(--vscode-widget-border);
+      background: var(--vscode-inputValidation-warningBackground, rgba(204, 167, 0, 0.12));
+    }
+
+    .tools-catalog-confirmation-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 6px;
+    }
+
+    .auto-approved-tools {
+      margin-top: 8px;
+      border: 1px solid var(--vscode-widget-border);
+      border-radius: 6px;
+      background: var(--vscode-editor-background);
+    }
+
+    .auto-approved-tools-empty {
+      padding: 7px 8px;
+      font-size: 0.75em;
+      color: var(--vscode-descriptionForeground);
+    }
+
+    .auto-approved-tool-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 7px 8px;
+      border-top: 1px solid var(--vscode-widget-border);
+      font-size: 0.78em;
+    }
+
+    .auto-approved-tool-item:first-child {
+      border-top: none;
+    }
+
+    .auto-approved-tool-id {
+      font-family: var(--vscode-editor-font-family, monospace);
+      overflow-wrap: anywhere;
+      min-width: 0;
+    }
+
+    .model-picker-list {
+      margin-top: 8px;
+      max-height: 220px;
+      overflow-y: auto;
+      border: 1px solid var(--vscode-widget-border);
+      border-radius: 6px;
+      background: var(--vscode-editor-background);
+    }
+
+    .model-picker-list.hidden {
+      display: none;
+    }
+
+    .model-picker-section {
+      padding: 6px 8px 4px;
+      color: var(--vscode-descriptionForeground);
+      font-size: 0.72em;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      border-top: 1px solid var(--vscode-widget-border);
+    }
+
+    .model-picker-section:first-child {
+      border-top: none;
+    }
+
+    .model-picker-row {
+      display: flex;
+      align-items: stretch;
+      gap: 4px;
+      border-top: 1px solid var(--vscode-widget-border);
+    }
+
+    .model-picker-item {
+      min-width: 0;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      gap: 2px;
+      padding: 7px 8px;
+      border: 0;
+      background: transparent;
+      color: var(--vscode-foreground);
+      cursor: pointer;
+      text-align: left;
+      font: inherit;
+    }
+
+    .model-picker-row:hover {
+      background: var(--vscode-list-hoverBackground, var(--vscode-toolbar-hoverBackground));
+    }
+
+    .model-picker-row.current {
+      background: var(--vscode-list-activeSelectionBackground, var(--vscode-editor-selectionBackground));
+      color: var(--vscode-list-activeSelectionForeground, var(--vscode-foreground));
+    }
+
+    .model-picker-favorite {
+      width: 30px;
+      flex-shrink: 0;
+      border: 0;
+      border-left: 1px solid var(--vscode-widget-border);
+      background: transparent;
+      color: var(--vscode-descriptionForeground);
+      cursor: pointer;
+      font: inherit;
+    }
+
+    .model-picker-favorite.active {
+      color: var(--vscode-charts-yellow, #cca700);
+    }
+
+    .model-picker-favorite:hover:not(:disabled) {
+      background: var(--vscode-toolbar-hoverBackground);
+      color: var(--vscode-foreground);
+    }
+
+    .model-picker-name {
+      font-size: 0.8em;
+      overflow-wrap: anywhere;
+    }
+
+    .model-picker-detail {
+      color: var(--vscode-descriptionForeground);
+      font-size: 0.72em;
+      overflow-wrap: anywhere;
+    }
+
+    .model-setting-field {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      margin-top: 8px;
+      font-size: 0.8em;
+    }
+
+    .model-setting-field.disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    .model-setting-field input,
+    .model-setting-field textarea {
+      width: 100%;
+      padding: 3px 6px;
+      background: var(--vscode-input-background);
+      color: var(--vscode-input-foreground);
+      border: 1px solid var(--vscode-input-border, var(--vscode-dropdown-border));
+      border-radius: 4px;
+    }
+
+    .model-setting-field input {
+      height: 26px;
+    }
+
+    .model-setting-field textarea {
+      min-height: 64px;
+      max-height: 140px;
+      resize: vertical;
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-size: 0.9em;
+      line-height: 1.35;
+    }
+
+    .model-setting-toggle {
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
+      margin-top: 10px;
+      font-size: 0.8em;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .model-setting-toggle.disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    .model-setting-toggle input {
+      margin: 2px 0 0 0;
+      flex-shrink: 0;
+    }
+
+    .model-setting-hint {
+      opacity: 0.68;
+      font-size: 0.9em;
+      line-height: 1.25;
+    }
+
+    .model-settings-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      margin-top: 10px;
     }
 
     .provider-auth-btn {
@@ -303,11 +928,128 @@
       margin: 6px 0;
     }
 
+    .context-memory-row {
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid var(--vscode-widget-border);
+    }
+
+    .context-memory-toggle,
+    .context-select-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      font-size: 0.8em;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .context-select-row {
+      align-items: center;
+      cursor: default;
+      margin-top: 8px;
+    }
+
+    .context-memory-toggle.disabled,
+    .context-select-row.disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    .context-memory-checkbox {
+      margin: 2px 0 0;
+      flex-shrink: 0;
+    }
+
+    .context-memory-copy {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
+    }
+
+    .context-memory-title {
+      font-weight: 600;
+    }
+
+    .context-memory-hint {
+      opacity: 0.72;
+      font-size: 0.9em;
+      line-height: 1.25;
+    }
+
+    .context-select {
+      width: 100%;
+      min-width: 0;
+      height: 24px;
+      font-size: 0.9em;
+    }
+
+    textarea.context-select {
+      height: auto;
+      min-height: 64px;
+      max-height: 140px;
+      resize: vertical;
+      font-family: var(--vscode-editor-font-family, monospace);
+      line-height: 1.35;
+    }
+
     .context-actions {
       margin-top: 10px;
       display: flex;
       justify-content: flex-end;
       gap: 8px;
+    }
+
+    .context-status {
+      margin-top: 8px;
+      padding: 7px 9px;
+      border-radius: 8px;
+      border: 1px solid var(--vscode-input-border, transparent);
+      background: color-mix(in srgb, var(--vscode-editor-background) 82%, var(--vscode-button-background) 8%);
+      color: var(--vscode-descriptionForeground);
+      font-size: 0.82em;
+      line-height: 1.35;
+      word-break: break-word;
+    }
+
+    .context-status.hidden {
+      display: none;
+    }
+
+    .context-status.error {
+      border-color: var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground));
+      color: var(--vscode-errorForeground);
+    }
+
+    .context-status.success {
+      border-color: color-mix(in srgb, var(--vscode-testing-iconPassed) 62%, transparent);
+      color: var(--vscode-testing-iconPassed, var(--vscode-descriptionForeground));
+    }
+
+    .memory-drop-confirm,
+    .inline-confirm {
+      margin-top: 8px;
+      padding: 8px;
+      border-radius: 8px;
+      border: 1px solid var(--vscode-inputValidation-warningBorder, var(--vscode-widget-border));
+      background: var(--vscode-inputValidation-warningBackground, rgba(204, 167, 0, 0.12));
+      color: var(--vscode-inputValidation-warningForeground, var(--vscode-foreground));
+      font-size: 0.82em;
+      line-height: 1.35;
+    }
+
+    .memory-drop-confirm.hidden,
+    .inline-confirm.hidden {
+      display: none;
+    }
+
+    .memory-drop-confirm-actions,
+    .inline-confirm-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      margin-top: 8px;
     }
 
     .todo-wrap {
@@ -587,7 +1329,10 @@
       }
 
       .session-select,
+      .provider-select,
+      .safety-select,
       .model-select,
+      .reasoning-effort-select,
       .provider-auth-btn,
       .provider-auth-secondary {
         min-width: 80px;
@@ -599,6 +1344,22 @@
 
       .model-select {
         max-width: 90px;
+      }
+
+      .safety-select {
+        min-width: 74px;
+        max-width: 88px;
+      }
+
+      .reasoning-effort-select {
+        min-width: 72px;
+        max-width: 84px;
+      }
+
+      .model-settings-btn,
+      .safety-settings-btn {
+        width: 26px;
+        height: 26px;
       }
 
       .provider-auth-btn {
@@ -629,6 +1390,13 @@
         height: 24px;
         font-size: 0.7em;
       }
+
+      .plan-first-label,
+      .thinking-label {
+        height: 26px;
+        padding: 0 6px;
+        font-size: 0.7em;
+      }
     }
 
     @media (max-width: 360px) {
@@ -641,7 +1409,10 @@
       }
 
       .session-select,
+      .provider-select,
+      .safety-select,
       .model-select,
+      .reasoning-effort-select,
       .provider-auth-btn,
       .provider-auth-secondary {
         min-width: 70px;
@@ -653,6 +1424,22 @@
 
       .model-select {
         max-width: 75px;
+      }
+
+      .safety-select {
+        min-width: 68px;
+        max-width: 78px;
+      }
+
+      .reasoning-effort-select {
+        min-width: 64px;
+        max-width: 74px;
+      }
+
+      .model-settings-btn,
+      .safety-settings-btn {
+        width: 24px;
+        height: 24px;
       }
 
       .provider-auth-btn {
@@ -682,6 +1469,12 @@
       .mode-btn {
         padding: 0 6px;
         height: 22px;
+        font-size: 0.65em;
+      }
+
+      .plan-first-label {
+        height: 24px;
+        padding: 0 5px;
         font-size: 0.65em;
       }
     }
@@ -1395,6 +2188,27 @@
       font-size: 0.8em;
     }
 
+    .revert-discard-confirm {
+      padding: 8px;
+      border-radius: 8px;
+      border: 1px solid var(--vscode-inputValidation-warningBorder, var(--vscode-widget-border));
+      background: var(--vscode-inputValidation-warningBackground, rgba(204, 167, 0, 0.12));
+      color: var(--vscode-inputValidation-warningForeground, var(--vscode-foreground));
+      font-size: 0.82em;
+      line-height: 1.35;
+    }
+
+    .revert-discard-confirm.hidden {
+      display: none;
+    }
+
+    .revert-discard-confirm-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
     .revert-files {
       border: 1px solid var(--vscode-widget-border);
       border-radius: 6px;
@@ -1742,6 +2556,28 @@
       opacity: 0.5;
       cursor: not-allowed;
       transform: none;
+    }
+
+    .plan-cancel-confirm {
+      margin-top: 8px;
+      padding: 8px;
+      border-radius: 6px;
+      border: 1px solid var(--vscode-inputValidation-warningBorder, var(--vscode-widget-border));
+      background: var(--vscode-inputValidation-warningBackground, rgba(204, 167, 0, 0.12));
+      color: var(--vscode-inputValidation-warningForeground, var(--vscode-foreground));
+      font-size: 0.82em;
+      line-height: 1.35;
+    }
+
+    .plan-cancel-confirm.hidden {
+      display: none;
+    }
+
+    .plan-cancel-confirm-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      margin-top: 8px;
     }
 
     .tool-message {
@@ -2423,11 +3259,105 @@
     .input-status-row {
       display: flex;
       align-items: center;
+      flex-wrap: wrap;
       gap: 8px;
       min-height: 22px;
       grid-column: 1 / span 3;
       grid-row: 2;
       min-width: 0;
+    }
+
+    .skills-settings-wrap {
+      position: relative;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+
+    .skills-toggle-label {
+      height: 22px;
+      padding: 0 7px;
+      border: 1px solid var(--vscode-dropdown-border);
+      border-radius: 999px;
+      background: var(--vscode-dropdown-background);
+      color: var(--vscode-dropdown-foreground);
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 0.72em;
+      cursor: pointer;
+      user-select: none;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .skills-toggle-label:hover:not(.disabled) {
+      background: var(--vscode-toolbar-hoverBackground);
+      border-color: var(--vscode-widget-border);
+    }
+
+    .skills-settings-btn {
+      width: 22px;
+      height: 22px;
+      padding: 0;
+      border: 1px solid var(--vscode-dropdown-border);
+      border-radius: 999px;
+      background: var(--vscode-dropdown-background);
+      color: var(--vscode-dropdown-foreground);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.72em;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+
+    .skills-settings-btn:hover:not(:disabled) {
+      background: var(--vscode-toolbar-hoverBackground);
+      border-color: var(--vscode-widget-border);
+    }
+
+    .skills-settings-btn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    .skills-settings-btn:focus {
+      outline: 1px solid var(--vscode-focusBorder);
+      outline-offset: 1px;
+    }
+
+    .skills-settings-popover {
+      bottom: calc(100% + 6px);
+      top: auto;
+      left: 0;
+      right: auto;
+    }
+
+    .skills-toggle-label.disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    .skills-toggle-checkbox {
+      margin: 0;
+    }
+
+    .input-hint {
+      flex: 1;
+      min-width: 0;
+      color: var(--vscode-descriptionForeground);
+      font-size: 0.75em;
+      line-height: 1.25;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      opacity: 0.85;
+    }
+
+    .input-hint.hidden {
+      display: none;
     }
 
     #stop {
@@ -2441,14 +3371,15 @@
     }
 
     .queue-banner {
-      flex: 1;
+      flex: 1 0 100%;
       min-width: 0;
+      width: 100%;
       display: grid;
-      grid-template-columns: auto minmax(0, 1fr) auto;
+      grid-template-columns: minmax(0, 170px) minmax(0, 1fr) auto;
       align-items: start;
-      gap: 10px;
-      padding: 9px 10px;
-      border-radius: 12px;
+      gap: 8px;
+      padding: 8px;
+      border-radius: 8px;
       border: 1px solid var(--vscode-widget-border);
       background: linear-gradient(
         180deg,
@@ -2465,7 +3396,7 @@
     }
 
     .queue-banner-summary {
-      min-width: 200px;
+      min-width: 0;
       display: flex;
       flex-direction: column;
       gap: 5px;
@@ -2512,7 +3443,7 @@
       display: flex;
       flex-direction: column;
       align-items: stretch;
-      gap: 8px;
+      gap: 6px;
     }
 
     .queue-item {
@@ -2555,9 +3486,9 @@
 
     .queue-item-body {
       min-width: 0;
-      display: flex;
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
       align-items: center;
-      justify-content: flex-start;
       gap: 8px;
       width: 100%;
     }
@@ -2590,6 +3521,20 @@
       text-align: left;
     }
 
+    .queue-item-meta {
+      flex-shrink: 0;
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 6px;
+      border-radius: 999px;
+      border: 1px solid var(--vscode-input-border, transparent);
+      background: color-mix(in srgb, var(--vscode-editor-background) 72%, var(--vscode-button-background) 10%);
+      color: var(--vscode-descriptionForeground);
+      font-size: 0.68em;
+      line-height: 1;
+      white-space: nowrap;
+    }
+
     .queue-banner-btn {
       align-self: start;
       height: 30px;
@@ -2616,6 +3561,39 @@
     .queue-banner-btn:disabled {
       opacity: 0.5;
       cursor: not-allowed;
+    }
+
+    @media (max-width: 520px) {
+      .queue-banner {
+        grid-template-columns: minmax(0, 1fr);
+      }
+
+      .queue-banner-btn {
+        justify-self: start;
+      }
+    }
+
+    @media (max-width: 380px) {
+      .queue-item-body {
+        grid-template-columns: minmax(0, 1fr) auto;
+        grid-template-areas:
+          "label meta"
+          "text text";
+        row-gap: 5px;
+      }
+
+      .queue-item-label {
+        grid-area: label;
+        justify-self: start;
+      }
+
+      .queue-item-text {
+        grid-area: text;
+      }
+
+      .queue-item-meta {
+        grid-area: meta;
+      }
     }
 
     .input-attachments {
@@ -3285,7 +4263,7 @@
 </head>
 
 <body>
-  <div id="liveRegion" class="sr-only" aria-live="polite"></div>
+  <div id="liveRegion" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
   <div class="header">
     <button id="newSession" class="header-btn" title="New session" aria-label="New session">
       ＋
@@ -3302,14 +4280,156 @@
         <path d="M14 6.5H11V5L8 8L11 11V9.5H14V6.5Z"></path>
       </svg>
     </button>
-    <button id="loopControl" class="header-btn" title="Loop steering" aria-label="Loop steering" aria-pressed="false">
-      ⟲
-    </button>
+    <div class="loop-control-wrap">
+      <button id="loopControl" class="header-btn" title="Loop steering" aria-label="Loop steering off" aria-pressed="false">
+        ⟲
+      </button>
+      <div id="loopSettingsPopover" class="session-settings-popover hidden" role="dialog" aria-label="Loop steering settings">
+        <div class="session-settings-popover-header">
+          <span>Loop steering</span>
+          <button id="loopSettingsClose" class="session-settings-popover-close" type="button" aria-label="Close loop settings">✕</button>
+        </div>
+        <label id="loopEnabledLabel" class="safety-setting-toggle" title="Enable loop steering for this session">
+          <input id="loopEnabledToggle" type="checkbox" />
+          <span class="safety-setting-copy">
+            <span class="safety-setting-title">Enable for this session</span>
+            <span id="loopStatusHint" class="safety-setting-hint">Loop is off for this session.</span>
+          </span>
+        </label>
+        <label id="loopIntervalLabel" class="model-setting-field" title="Loop interval for this session">
+          <span>Session interval (minutes)</span>
+          <input id="loopIntervalInput" type="number" min="1" max="1440" step="1" value="5" />
+          <span class="model-setting-hint">How often the loop prompt is injected.</span>
+        </label>
+        <label id="loopPromptLabel" class="model-setting-field" title="Prompt injected on each loop tick">
+          <span>Session prompt</span>
+          <textarea id="loopPromptInput" rows="3"></textarea>
+          <span class="model-setting-hint">Injected into the active run on each loop tick.</span>
+        </label>
+        <div class="model-settings-actions">
+          <button id="loopResetDefaults" class="context-btn" type="button">Reset to defaults</button>
+          <button id="loopSettingsApply" class="context-btn" type="button">Apply</button>
+        </div>
+        <div class="context-divider"></div>
+        <label id="loopDefaultEnabledLabel" class="safety-setting-toggle" title="Enable loop steering by default for new sessions">
+          <input id="loopDefaultEnabledToggle" type="checkbox" />
+          <span class="safety-setting-copy">
+            <span class="safety-setting-title">Default on for new sessions</span>
+            <span class="safety-setting-hint">Workspace default used by new sessions and reset.</span>
+          </span>
+        </label>
+        <label id="loopDefaultIntervalLabel" class="model-setting-field" title="Default loop interval in minutes">
+          <span>Default interval (minutes)</span>
+          <input id="loopDefaultIntervalInput" type="number" min="1" max="1440" step="1" value="5" />
+        </label>
+        <label id="loopDefaultPromptLabel" class="model-setting-field" title="Default loop prompt">
+          <span>Default prompt</span>
+          <textarea id="loopDefaultPromptInput" rows="3"></textarea>
+        </label>
+        <div class="model-settings-actions">
+          <button id="loopDefaultsApply" class="context-btn" type="button">Apply defaults</button>
+        </div>
+        <div class="safety-warning">Loop settings affect automatic prompt injection and are locked while a task is running.</div>
+      </div>
+    </div>
     <div class="header-title">
       <span class="header-label">Session</span>
       <select id="sessionSelect" class="session-select" aria-label="Select session">
         <option value="">Loading…</option>
       </select>
+      <div class="session-settings-wrap">
+        <button id="sessionSettings" class="session-settings-btn" type="button" aria-label="Open session settings" title="Session settings">⋯</button>
+        <div id="sessionSettingsPopover" class="session-settings-popover hidden" role="dialog" aria-label="Session settings">
+          <div class="session-settings-popover-header">
+            <span>Session</span>
+            <button id="sessionSettingsClose" class="session-settings-popover-close" type="button" aria-label="Close session settings">✕</button>
+          </div>
+          <label id="sessionsPersistLabel" class="safety-setting-toggle" title="Restore chat sessions and input history after VS Code restarts">
+            <input id="sessionsPersistToggle" type="checkbox" checked />
+            <span class="safety-setting-copy">
+              <span class="safety-setting-title">Persist sessions</span>
+              <span class="safety-setting-hint">Restore chat sessions and input history after VS Code restarts.</span>
+            </span>
+          </label>
+          <label class="model-setting-field">
+            <span>Saved sessions</span>
+            <input id="sessionsMaxSessionsInput" type="number" min="1" step="1" value="20" />
+            <span class="model-setting-hint">Oldest saved sessions are pruned beyond this count.</span>
+          </label>
+          <label class="model-setting-field">
+            <span>Max session size (bytes)</span>
+            <input id="sessionsMaxSessionBytesInput" type="number" min="1000" step="100000" value="2000000" />
+            <span class="model-setting-hint">Oldest messages may be truncated when a saved session exceeds this size.</span>
+          </label>
+          <div class="model-settings-actions">
+            <button id="sessionSettingsApply" class="context-btn" type="button">Apply</button>
+          </div>
+          <div class="model-settings-actions">
+            <button id="sessionClearCurrent" class="context-btn" type="button" title="Clear messages and runtime state for the current session" aria-controls="sessionClearConfirm" aria-expanded="false">Clear current</button>
+            <button id="sessionClearSaved" class="context-btn" type="button" title="Delete all saved sessions, todos, and input history from workspace storage" aria-controls="sessionClearConfirm" aria-expanded="false">Clear saved</button>
+          </div>
+          <div id="sessionClearConfirm" class="inline-confirm hidden" role="alert" aria-live="polite">
+            <div id="sessionClearConfirmText">Clear session?</div>
+            <div class="inline-confirm-actions">
+              <button id="sessionClearCancel" class="context-btn" type="button">Cancel</button>
+              <button id="sessionClearConfirmRun" class="context-btn" type="button">Clear</button>
+            </div>
+          </div>
+          <div class="safety-section-title">Office</div>
+          <div class="model-settings-actions">
+            <button id="openOffice" class="context-btn" type="button" title="Open the LingYun Office view">Open Office</button>
+            <button id="resetOfficeLayout" class="context-btn" type="button" title="Reset the saved Office layout to the default">Reset layout</button>
+          </div>
+          <div class="safety-warning">Saved sessions use workspace storage and may contain sensitive data. Locked while a task is running.</div>
+        </div>
+      </div>
+    </div>
+    <div class="header-title">
+      <span class="header-label">Provider</span>
+      <select id="providerSelect" class="provider-select" aria-label="Select LLM provider" title="LLM provider">
+        <option value="copilot">Copilot</option>
+        <option value="codexSubscription">Codex</option>
+        <option value="openaiCompatible">OpenAI-compatible</option>
+      </select>
+      <div class="provider-settings-wrap">
+        <button id="providerSettings" class="provider-settings-btn" type="button" aria-label="Open provider settings" title="Provider settings">⚙</button>
+        <div id="providerSettingsPopover" class="provider-settings-popover hidden" role="dialog" aria-label="Provider settings">
+          <div class="provider-settings-popover-header">
+            <span>Provider settings</span>
+            <button id="providerSettingsClose" class="provider-settings-popover-close" type="button" aria-label="Close provider settings">✕</button>
+          </div>
+          <div class="safety-section-title">Codex subscription</div>
+          <label id="codexDefaultModelLabel" class="model-setting-field" title="Fallback model id for the Codex subscription provider">
+            <span>Default model</span>
+            <input id="codexDefaultModelInput" type="text" value="gpt-5.3-codex" placeholder="gpt-5.3-codex" aria-label="Codex subscription default model id" />
+            <span class="model-setting-hint">Used by the Codex subscription provider when no model is selected.</span>
+          </label>
+          <div class="safety-section-title">OpenAI-compatible</div>
+          <label id="openAIBaseURLLabel" class="model-setting-field" title="Base URL for OpenAI-compatible requests">
+            <span>Base URL</span>
+            <input id="openAIBaseURLInput" type="text" value="" placeholder="http://localhost:8080/v1" aria-label="OpenAI-compatible base URL" />
+            <span class="model-setting-hint">Include /v1. Leave blank to configure later.</span>
+          </label>
+          <label id="openAIDefaultModelLabel" class="model-setting-field" title="Fallback model id when no model is selected">
+            <span>Default model</span>
+            <input id="openAIDefaultModelInput" type="text" value="" placeholder="model-id" aria-label="OpenAI-compatible default model id" />
+            <span class="model-setting-hint">Used if the global model setting is empty or model listing is unavailable.</span>
+          </label>
+          <label id="openAIApiKeyEnvLabel" class="model-setting-field" title="Environment variable that contains the API key">
+            <span>API key env var</span>
+            <input id="openAIApiKeyEnvInput" type="text" value="OPENAI_API_KEY" aria-label="OpenAI-compatible API key environment variable" />
+            <span class="model-setting-hint">Only the environment variable name is stored; the API key value is never shown here.</span>
+          </label>
+          <label id="openAIModelDisplayNamesLabel" class="model-setting-field" title="Friendly names for OpenAI-compatible model ids">
+            <span>Model display names</span>
+            <textarea id="openAIModelDisplayNamesInput" rows="3" placeholder="model-id = Friendly name" aria-label="OpenAI-compatible model display names"></textarea>
+            <span class="model-setting-hint">One model-id = display name per line. Optional.</span>
+          </label>
+          <div class="model-settings-actions">
+            <button id="providerSettingsApply" class="context-btn" type="button">Apply</button>
+          </div>
+        </div>
+      </div>
     </div>
     <div class="header-title">
       <span class="header-label">Model</span>
@@ -3317,7 +4437,89 @@
         <span id="modelPickerLabel" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">Loading… {{VERSION_SUFFIX}}</span>
         <span aria-hidden="true" style="opacity:0.7;flex-shrink:0;">▾</span>
       </button>
+      <select id="reasoningEffortSelect" class="reasoning-effort-select" aria-label="Reasoning effort" title="Reasoning effort">
+        <option value="">Off</option>
+        <option value="low">Low</option>
+        <option value="medium">Medium</option>
+        <option value="high">High</option>
+        <option value="xhigh">XHigh</option>
+      </select>
       <button id="modelFavoriteToggle" class="header-btn" type="button" aria-label="Toggle favorite model" title="Favorite model" disabled>☆</button>
+      <div class="model-settings-wrap">
+        <button id="modelSettings" class="model-settings-btn" type="button" aria-label="Open generation settings" title="Generation settings">⚙</button>
+        <div id="modelSettingsPopover" class="model-settings-popover hidden" role="dialog" aria-label="Generation settings">
+          <div class="model-settings-popover-header">
+            <span>Generation</span>
+            <button id="modelSettingsClose" class="model-settings-popover-close" type="button" aria-label="Close generation settings">✕</button>
+          </div>
+          <label id="customModelLabel" class="model-setting-field" title="Set an exact model ID">
+            <span>Custom model ID</span>
+            <input id="customModelInput" type="text" placeholder="model-id" aria-label="Custom model ID" />
+            <span class="model-setting-hint">Use an exact provider model ID, including models not shown in the picker.</span>
+          </label>
+          <div class="model-settings-actions">
+            <button id="modelRefreshList" class="context-btn" type="button">Refresh models</button>
+            <button id="modelClearRecents" class="context-btn" type="button">Clear recents</button>
+            <button id="customModelApply" class="context-btn" type="button">Use model</button>
+          </div>
+          <label id="modelPickerSearchLabel" class="model-setting-field" title="Filter listed provider models by name, ID, vendor, or family">
+            <span>Search models</span>
+            <input id="modelPickerSearchInput" type="search" placeholder="Search listed models…" aria-label="Search listed models" />
+          </label>
+          <div id="modelPickerList" class="model-picker-list hidden" aria-live="polite"></div>
+          <label class="model-setting-field">
+            <span>Temperature</span>
+            <input id="temperatureInput" type="number" min="0" max="2" step="0.1" value="0" />
+            <span class="model-setting-hint">0 is deterministic; higher values are more varied.</span>
+          </label>
+          <label id="topPLabel" class="model-setting-field" title="Nucleus sampling probability">
+            <span>Top-p</span>
+            <input id="topPInput" type="number" min="0" max="1" step="0.05" value="0" />
+            <span class="model-setting-hint">0 uses provider default; lower values make output more focused.</span>
+          </label>
+          <label id="topKLabel" class="model-setting-field" title="Top-k sampling count">
+            <span>Top-k</span>
+            <input id="topKInput" type="number" min="0" step="1" value="0" />
+            <span class="model-setting-hint">0 uses provider default; supported models restrict token choices.</span>
+          </label>
+          <label class="model-setting-field">
+            <span>Fallback max output tokens</span>
+            <input id="maxOutputTokensInput" type="number" min="1" step="1000" value="32000" />
+            <span class="model-setting-hint">Used when the selected model does not publish an output limit.</span>
+          </label>
+          <label id="textVerbosityLabel" class="model-setting-field" title="Text verbosity for GPT-5/Responses API models">
+            <span>Text verbosity</span>
+            <select id="textVerbositySelect" aria-label="Text verbosity">
+              <option value="">Provider default</option>
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+            </select>
+            <span class="model-setting-hint">Controls response detail for GPT-5/Responses API models.</span>
+          </label>
+          <label class="model-setting-field">
+            <span>Max retries</span>
+            <input id="maxRetriesInput" type="number" min="0" step="1" value="2" />
+            <span class="model-setting-hint">Retry transient LLM failures. Set 0 to disable automatic retries.</span>
+          </label>
+          <label class="model-setting-field">
+            <span>Timeout (ms)</span>
+            <input id="llmTimeoutInput" type="number" min="0" step="1000" value="0" />
+            <span class="model-setting-hint">0 disables request timeout. Provider changes may reconnect the model backend.</span>
+          </label>
+          <label id="retryWithPartialOutputLabel" class="model-setting-toggle" title="Retry transient streaming failures after partial output">
+            <input id="retryWithPartialOutputToggle" type="checkbox" />
+            <span class="safety-setting-copy">
+              <span class="safety-setting-title">Retry partial output</span>
+              <span class="safety-setting-hint">Allow retry after streaming has already shown partial assistant output.</span>
+            </span>
+          </label>
+          <div class="model-settings-actions">
+            <button id="modelSettingsOpenSettings" class="context-btn" type="button" title="Open VS Code settings for more model options">Open VS Code settings…</button>
+            <button id="modelSettingsApply" class="context-btn" type="button">Apply</button>
+          </div>
+        </div>
+      </div>
     </div>
     <div id="providerAuthGroup" class="header-title hidden">
       <span class="header-label">Account</span>
@@ -3327,13 +4529,227 @@
     <div class="context-wrap">
       <button id="contextIndicator" class="context-indicator hidden" type="button" title="Context usage"
         aria-label="Context usage"></button>
-      <div id="contextPopover" class="context-popover hidden" role="dialog" aria-label="Context details">
+      <div id="contextPopover" class="context-popover hidden" role="dialog" aria-label="Context and memory settings">
         <div class="context-popover-header">
-          <div class="context-popover-title">Context</div>
+          <div class="context-popover-title">Context & memory</div>
           <button id="contextPopoverClose" class="context-popover-close" type="button"
-            aria-label="Close context details">✕</button>
+            aria-label="Close context and memory settings">✕</button>
         </div>
         <div id="contextPopoverBody" class="context-popover-body"></div>
+        <div class="context-memory-row">
+          <label id="instructionPatternsLabel" class="context-select-row" title="Additional instruction files or glob patterns included in the system prompt">
+            <span class="context-memory-copy">
+              <span class="context-memory-title">Instruction files</span>
+              <textarea id="instructionPatternsInput" class="context-select" rows="3" placeholder="AGENTS.md\ndocs/agent-rules.md\n.instructions/*.md" aria-label="Additional instruction file patterns"></textarea>
+              <span class="context-memory-hint">One path/glob per line or comma-separated. Empty uses default discovery only.</span>
+            </span>
+          </label>
+          <label id="instructionIncludeGlobalLabel" class="context-memory-toggle" title="Include ~/.config/lingyun/AGENTS.md when present">
+            <input id="instructionIncludeGlobalToggle" class="context-memory-checkbox" type="checkbox" checked />
+            <span class="context-memory-copy">
+              <span class="context-memory-title">Global instructions</span>
+              <span class="context-memory-hint">Include your global LingYun AGENTS.md in the system prompt.</span>
+            </span>
+          </label>
+          <label id="instructionMaxCharsPerFileLabel" class="context-select-row" title="Maximum characters loaded from each instruction file">
+            <span class="context-memory-copy">
+              <span class="context-memory-title">Per-file instruction cap</span>
+              <input id="instructionMaxCharsPerFileInput" class="context-select" type="number" min="1000" step="1000" value="60000" aria-label="Instruction file max characters per file" />
+            </span>
+          </label>
+          <label id="instructionMaxTotalCharsLabel" class="context-select-row" title="Maximum total instruction-file characters injected into the prompt">
+            <span class="context-memory-copy">
+              <span class="context-memory-title">Total instruction cap</span>
+              <input id="instructionMaxTotalCharsInput" class="context-select" type="number" min="1000" step="1000" value="180000" aria-label="Instruction files max total characters" />
+            </span>
+          </label>
+          <div class="context-actions">
+            <button id="instructionPatternsApply" class="context-btn" type="button">Apply instructions</button>
+          </div>
+          <label id="memoriesFeatureLabel" class="context-memory-toggle" title="Enable memory pipeline and memory tool">
+            <input id="memoriesFeatureToggle" class="context-memory-checkbox" type="checkbox" checked />
+            <span class="context-memory-copy">
+              <span class="context-memory-title">Memories</span>
+              <span class="context-memory-hint">Enable memory extraction, recall, and the memory tool.</span>
+            </span>
+          </label>
+          <label id="memoryAutoRecallLabel" class="context-memory-toggle" title="Automatically recall saved memories before each new user turn">
+            <input id="memoryAutoRecallToggle" class="context-memory-checkbox" type="checkbox" checked />
+            <span class="context-memory-copy">
+              <span class="context-memory-title">Memory recall</span>
+              <span class="context-memory-hint">Inject relevant saved memories into new turns.</span>
+            </span>
+          </label>
+          <label id="memoryAutoRecallMaxResultsLabel" class="context-select-row" title="Maximum auto-recalled memory matches injected into prompt context">
+            <span class="context-memory-copy">
+              <span class="context-memory-title">Memory results</span>
+              <input id="memoryAutoRecallMaxResultsInput" class="context-select" type="number" min="1" step="1" value="4" aria-label="Memory auto-recall max results" />
+            </span>
+          </label>
+          <label id="memoryAutoRecallMaxTokensLabel" class="context-select-row" title="Maximum estimated memory tokens injected into prompt context">
+            <span class="context-memory-copy">
+              <span class="context-memory-title">Memory token cap</span>
+              <input id="memoryAutoRecallMaxTokensInput" class="context-select" type="number" min="100" step="100" value="1200" aria-label="Memory auto-recall max tokens" />
+            </span>
+          </label>
+          <label id="memoryAutoRecallMinScoreLabel" class="context-select-row" title="Minimum retrieval score required before memory is auto-recalled">
+            <span class="context-memory-copy">
+              <span class="context-memory-title">Memory min score</span>
+              <input id="memoryAutoRecallMinScoreInput" class="context-select" type="number" min="0" max="100" step="0.25" value="7" aria-label="Memory auto-recall minimum score" />
+            </span>
+          </label>
+          <label id="memoryAutoRecallMinScoreGapLabel" class="context-select-row" title="Minimum score gap between top memory recall candidates">
+            <span class="context-memory-copy">
+              <span class="context-memory-title">Memory score gap</span>
+              <input id="memoryAutoRecallMinScoreGapInput" class="context-select" type="number" min="0" max="50" step="0.25" value="1.25" aria-label="Memory auto-recall minimum score gap" />
+            </span>
+          </label>
+          <label id="memoryAutoRecallMaxAgeDaysLabel" class="context-select-row" title="Ignore auto-recall matches older than this many days">
+            <span class="context-memory-copy">
+              <span class="context-memory-title">Memory max age</span>
+              <input id="memoryAutoRecallMaxAgeDaysInput" class="context-select" type="number" min="1" step="1" value="45" aria-label="Memory auto-recall max age in days" />
+            </span>
+          </label>
+          <label id="memoryMaxRawMemoriesForGlobalLabel" class="context-select-row" title="Maximum latest rollout memories retained in generated memory artifacts">
+            <span class="context-memory-copy">
+              <span class="context-memory-title">Memory artifact rollouts</span>
+              <input id="memoryMaxRawMemoriesForGlobalInput" class="context-select" type="number" min="1" max="2000" step="1" value="120" aria-label="Maximum rollout memories retained in artifacts" />
+            </span>
+          </label>
+          <label id="memoryMaxRolloutAgeDaysLabel" class="context-select-row" title="Ignore persisted sessions older than this when extracting memories">
+            <span class="context-memory-copy">
+              <span class="context-memory-title">Extraction age window</span>
+              <input id="memoryMaxRolloutAgeDaysInput" class="context-select" type="number" min="1" max="3650" step="1" value="30" aria-label="Memory extraction max session age in days" />
+            </span>
+          </label>
+          <label id="memoryMaxRolloutsPerStartupLabel" class="context-select-row" title="Maximum persisted sessions scanned during each memory update run">
+            <span class="context-memory-copy">
+              <span class="context-memory-title">Extraction session cap</span>
+              <input id="memoryMaxRolloutsPerStartupInput" class="context-select" type="number" min="1" max="2000" step="1" value="24" aria-label="Maximum sessions scanned per memory update" />
+            </span>
+          </label>
+          <label id="memoryMinRolloutIdleHoursLabel" class="context-select-row" title="Only extract memory from sessions idle for at least this many hours">
+            <span class="context-memory-copy">
+              <span class="context-memory-title">Extraction idle hours</span>
+              <input id="memoryMinRolloutIdleHoursInput" class="context-select" type="number" min="0" max="720" step="0.5" value="2" aria-label="Minimum session idle hours before memory extraction" />
+            </span>
+          </label>
+          <label id="memoryMaxStateOutputsLabel" class="context-select-row" title="Maximum stage-1 memory outputs retained in extension storage">
+            <span class="context-memory-copy">
+              <span class="context-memory-title">Memory output cap</span>
+              <input id="memoryMaxStateOutputsInput" class="context-select" type="number" min="10" max="5000" step="10" value="500" aria-label="Maximum retained memory extraction outputs" />
+            </span>
+          </label>
+          <label id="memoryMaxRecordsLabel" class="context-select-row" title="Maximum transcript-backed memory records retained in extension storage">
+            <span class="context-memory-copy">
+              <span class="context-memory-title">Memory record cap</span>
+              <input id="memoryMaxRecordsInput" class="context-select" type="number" min="100" max="50000" step="100" value="5000" aria-label="Maximum retained transcript-backed memory records" />
+            </span>
+          </label>
+          <label id="memoryMaxSearchResultsLabel" class="context-select-row" title="Default maximum transcript-backed memory matches returned by search">
+            <span class="context-memory-copy">
+              <span class="context-memory-title">Memory search results</span>
+              <input id="memoryMaxSearchResultsInput" class="context-select" type="number" min="1" max="100" step="1" value="8" aria-label="Default memory search result count" />
+            </span>
+          </label>
+          <label id="memoryMaxResultsPerKindLabel" class="context-select-row" title="Maximum top-level memory matches returned per memory kind">
+            <span class="context-memory-copy">
+              <span class="context-memory-title">Memory results per kind</span>
+              <input id="memoryMaxResultsPerKindInput" class="context-select" type="number" min="1" max="20" step="1" value="3" aria-label="Maximum memory search results per kind" />
+            </span>
+          </label>
+          <label id="memorySearchNeighborWindowLabel" class="context-select-row" title="Neighboring transcript chunks included around each memory search hit">
+            <span class="context-memory-copy">
+              <span class="context-memory-title">Memory neighbor window</span>
+              <input id="memorySearchNeighborWindowInput" class="context-select" type="number" min="0" max="5" step="1" value="1" aria-label="Memory search neighbor window" />
+            </span>
+          </label>
+          <div class="context-actions">
+            <button id="memoryAdvancedLimitsApply" class="context-btn" type="button">Apply memory limits</button>
+          </div>
+          <div class="context-actions">
+            <button id="memoryUpdateNow" class="context-btn" type="button" title="Rebuild memory artifacts from saved sessions">Update memories</button>
+            <button id="memoryDrop" class="context-btn" type="button" title="Delete generated memory artifacts and extraction outputs" aria-controls="memoryDropConfirm" aria-expanded="false">Drop memories</button>
+          </div>
+          <div id="memoryDropConfirm" class="memory-drop-confirm hidden" role="alert" aria-live="polite">
+            <div>Delete generated memory artifacts and extraction outputs? This cannot be undone.</div>
+            <div class="memory-drop-confirm-actions">
+              <button id="memoryDropCancel" class="context-btn" type="button">Cancel</button>
+              <button id="memoryDropConfirmRun" class="context-btn" type="button">Drop memories</button>
+            </div>
+          </div>
+          <div id="memoryActionStatus" class="context-status hidden" role="status" aria-live="polite"></div>
+          <label id="explorePrepassLabel" class="context-memory-toggle" title="Automatically run an explore subagent before each user turn">
+            <input id="explorePrepassToggle" class="context-memory-checkbox" type="checkbox" />
+            <span class="context-memory-copy">
+              <span class="context-memory-title">Explore prepass</span>
+              <span class="context-memory-hint">Gather lightweight workspace context before new turns.</span>
+            </span>
+          </label>
+          <label id="explorePrepassMaxCharsLabel" class="context-select-row" title="Maximum explore prepass output injected into prompt context">
+            <span class="context-memory-copy">
+              <span class="context-memory-title">Explore context cap</span>
+              <input id="explorePrepassMaxCharsInput" class="context-select" type="number" min="500" step="500" value="8000" aria-label="Explore prepass max injected characters" />
+            </span>
+          </label>
+          <label id="subagentModelOverrideLabel" class="context-select-row" title="Optional model ID used by explore/task subagents; empty uses the main model">
+            <span class="context-memory-copy">
+              <span class="context-memory-title">Subagent model</span>
+              <input id="subagentModelOverrideInput" class="context-select" type="text" maxlength="200" placeholder="Use main model" aria-label="Subagent model override" />
+            </span>
+          </label>
+          <label id="subagentTaskMaxOutputCharsLabel" class="context-select-row" title="Maximum task-subagent output injected into prompt context">
+            <span class="context-memory-copy">
+              <span class="context-memory-title">Subagent output cap</span>
+              <input id="subagentTaskMaxOutputCharsInput" class="context-select" type="number" min="500" step="500" value="8000" aria-label="Task subagent max injected characters" />
+            </span>
+          </label>
+          <label id="autoCompactionLabel" class="context-memory-toggle" title="Automatically compact context before it overflows">
+            <input id="autoCompactionToggle" class="context-memory-checkbox" type="checkbox" checked />
+            <span class="context-memory-copy">
+              <span class="context-memory-title">Auto-compaction</span>
+              <span class="context-memory-hint">Summarize older context automatically near the limit.</span>
+            </span>
+          </label>
+          <label id="modelLimitsLabel" class="context-select-row" title="Per-model token limits used for context tracking and auto-compaction">
+            <span class="context-memory-copy">
+              <span class="context-memory-title">Model token limits</span>
+              <textarea id="modelLimitsInput" class="context-select" rows="4" placeholder="gpt-4o = 128000 / 32000&#10;codexSubscription:gpt-5.4 = 258400 / 32000" aria-label="Per-model token limits"></textarea>
+              <span class="context-memory-hint">One model or provider:model per line: context / output. Output is optional.</span>
+            </span>
+          </label>
+          <div class="context-actions">
+            <button id="modelLimitsApply" class="context-btn" type="button">Apply model limits</button>
+          </div>
+          <label id="compactionPruneLabel" class="context-memory-toggle" title="Prune old tool outputs before full compaction summaries">
+            <input id="compactionPruneToggle" class="context-memory-checkbox" type="checkbox" checked />
+            <span class="context-memory-copy">
+              <span class="context-memory-title">Prune old tool outputs</span>
+              <span class="context-memory-hint">Clear older tool-output context before full compaction.</span>
+            </span>
+          </label>
+          <label id="compactionPruneProtectTokensLabel" class="context-select-row" title="Keep at least this many recent tool-output tokens before pruning older outputs">
+            <span class="context-memory-copy">
+              <span class="context-memory-title">Protect recent tool tokens</span>
+              <input id="compactionPruneProtectTokensInput" class="context-select" type="number" min="0" step="1000" value="40000" aria-label="Compaction prune protected recent tool-output tokens" />
+            </span>
+          </label>
+          <label id="compactionPruneMinimumTokensLabel" class="context-select-row" title="Only prune tool outputs when at least this many tokens would be cleared">
+            <span class="context-memory-copy">
+              <span class="context-memory-title">Minimum prune savings</span>
+              <input id="compactionPruneMinimumTokensInput" class="context-select" type="number" min="0" step="1000" value="20000" aria-label="Compaction prune minimum saved tokens" />
+            </span>
+          </label>
+          <label id="compactionToolOutputModeLabel" class="context-select-row" title="Choose when large tool outputs are compacted in prompt context">
+            <span class="context-memory-copy">
+              <span class="context-memory-title">Tool output context</span>
+              <select id="compactionToolOutputModeSelect" class="context-select" aria-label="Tool output context behavior">
+                <option value="afterToolCall">Compact after seen once</option>
+                <option value="onCompaction">Only during compaction</option>
+              </select>
+            </span>
+          </label>
+        </div>
         <div class="context-actions">
           <button id="contextCompactNow" class="context-btn" type="button">Compact now</button>
         </div>
@@ -3350,10 +4766,174 @@
         <div id="todoPopoverBody" class="todo-popover-body"></div>
       </div>
     </div>
+    <div class="header-title">
+      <span class="header-label">Safety</span>
+      <select id="safetySelect" class="safety-select" aria-label="Tool safety" title="Tool safety">
+        <option value="ask">Ask before tools</option>
+        <option value="auto">Auto-approve tools</option>
+      </select>
+      <div class="safety-settings-wrap">
+        <button id="safetySettings" class="safety-settings-btn" type="button" aria-label="Open advanced safety settings" title="Advanced safety">⋯</button>
+        <div id="safetySettingsPopover" class="safety-settings-popover hidden" role="dialog" aria-label="Advanced safety settings">
+          <div class="safety-settings-popover-header">
+            <span>Advanced safety</span>
+            <button id="safetySettingsClose" class="safety-settings-popover-close" type="button" aria-label="Close advanced safety settings">✕</button>
+          </div>
+          <label id="allowExternalPathsLabel" class="safety-setting-toggle" title="Allow tools to access paths outside the workspace">
+            <input id="allowExternalPathsToggle" type="checkbox" />
+            <span class="safety-setting-copy">
+              <span class="safety-setting-title">External paths</span>
+              <span class="safety-setting-hint">Allow tools and shell commands to reference files outside this workspace.</span>
+            </span>
+          </label>
+          <label id="blockGitPushLabel" class="safety-setting-toggle" title="Block git push commands in the bash tool">
+            <input id="blockGitPushToggle" type="checkbox" checked />
+            <span class="safety-setting-copy">
+              <span class="safety-setting-title">Block git push</span>
+              <span class="safety-setting-hint">Prevent accidental pushes to remotes from tool commands.</span>
+            </span>
+          </label>
+          <div class="safety-section-title">Diagnostics</div>
+          <label id="debugDetailsLabel" class="safety-setting-toggle" title="Enable detailed LingYun output-channel logs">
+            <input id="debugDetailsToggle" type="checkbox" />
+            <span class="safety-setting-copy">
+              <span class="safety-setting-title">Detailed logs</span>
+              <span class="safety-setting-hint">Turns on LLM, tool, and plugin debug streams; paths/URLs/hosts may appear, but credential-like secrets stay hidden.</span>
+            </span>
+          </label>
+          <label id="debugLlmLabel" class="safety-setting-toggle" title="Log redacted LLM request and response metadata">
+            <input id="debugLlmToggle" type="checkbox" />
+            <span class="safety-setting-copy">
+              <span class="safety-setting-title">LLM debug</span>
+              <span class="safety-setting-hint">Log redacted LLM metadata to help diagnose cutoffs or missing tool calls.</span>
+            </span>
+          </label>
+          <label id="debugToolsLabel" class="safety-setting-toggle" title="Log tool execution and approval metadata">
+            <input id="debugToolsToggle" type="checkbox" />
+            <span class="safety-setting-copy">
+              <span class="safety-setting-title">Tool debug</span>
+              <span class="safety-setting-hint">Log tool execution and approval boundary events without prompts or URLs.</span>
+            </span>
+          </label>
+          <label id="debugPluginsLabel" class="safety-setting-toggle" title="Log plugin discovery and loading events">
+            <input id="debugPluginsToggle" type="checkbox" />
+            <span class="safety-setting-copy">
+              <span class="safety-setting-title">Plugin debug</span>
+              <span class="safety-setting-hint">Log plugin discovery/loading events for workspace and configured plugins.</span>
+            </span>
+          </label>
+          <div class="model-settings-actions">
+            <button id="showLogs" class="context-btn" type="button" title="Open the LingYun output channel">Show logs</button>
+          </div>
+          <div class="safety-section-title">Plugins</div>
+          <label id="pluginsAutoDiscoverLabel" class="safety-setting-toggle" title="Auto-discover workspace plugins">
+            <input id="pluginsAutoDiscoverToggle" type="checkbox" />
+            <span class="safety-setting-copy">
+              <span class="safety-setting-title">Auto-discover plugins</span>
+              <span class="safety-setting-hint">Load trusted workspace plugins from the configured plugin directory.</span>
+            </span>
+          </label>
+          <label id="pluginsWorkspaceDirLabel" class="model-setting-field" title="Workspace directory used for plugin auto-discovery">
+            <span>Workspace plugin dir</span>
+            <input id="pluginsWorkspaceDirInput" type="text" value=".lingyun" aria-label="Plugin workspace directory" />
+            <span class="model-setting-hint">Discovers JS files under &lt;workspace&gt;/&lt;dir&gt;/plugin.</span>
+          </label>
+          <label id="pluginSpecsLabel" class="model-setting-field" title="Additional plugin modules to load">
+            <span>Plugin modules</span>
+            <textarea id="pluginSpecsInput" rows="3" placeholder="./.lingyun/plugin/my-plugin.js" aria-label="Plugin module specs"></textarea>
+            <span class="model-setting-hint">One module spec/path per line or comma-separated. Plugins can alter prompts, tools, permissions, and outputs.</span>
+          </label>
+          <div class="model-settings-actions">
+            <button id="pluginSettingsApply" class="context-btn" type="button">Apply</button>
+          </div>
+          <div class="safety-section-title">Tool availability</div>
+          <label id="toolFilterLabel" class="model-setting-field" title="Only allow tools matching these patterns; empty allows all tools">
+            <span>Allowed tools</span>
+            <textarea id="toolFilterInput" rows="3" placeholder="All tools\nread\nglob\nworkspace_*" aria-label="Allowed tool patterns"></textarea>
+            <span class="model-setting-hint">One pattern per line or comma-separated. Empty allows all tools.</span>
+          </label>
+          <div class="model-settings-actions">
+            <button id="toolFilterApply" class="context-btn" type="button">Apply</button>
+            <button id="listTools" class="context-btn" type="button" title="Browse registered tools and parameter schemas">List tools</button>
+            <button id="runTool" class="context-btn" type="button" title="Open the inline tool runner">Run tool</button>
+            <button id="createToolsConfig" class="context-btn" type="button" title="Create a sample .vscode/agent-tools.json workspace tools config">Create config</button>
+          </div>
+          <label id="toolsCatalogSearchLabel" class="model-setting-field tools-catalog-search-field hidden" title="Filter the visible tools catalog without changing the Allowed tools setting">
+            <span>Find tool</span>
+            <input id="toolsCatalogSearchInput" type="text" placeholder="read, bash, memory…" aria-label="Find tool in catalog" />
+            <span class="model-setting-hint">Filters the inline catalog only. It does not change which tools the agent may use.</span>
+          </label>
+          <div id="toolsCatalog" class="tools-catalog hidden" aria-live="polite"></div>
+          <div class="safety-section-title">Always-allowed tools</div>
+          <div class="model-setting-hint">Tools saved with “Always” skip future approval prompts in Build mode.</div>
+          <div id="autoApprovedToolsList" class="auto-approved-tools" aria-live="polite"></div>
+          <div class="model-settings-actions">
+            <button id="autoApprovedToolsClear" class="context-btn" type="button" title="Clear all saved always-allowed tool approvals" aria-controls="autoApprovedToolsClearConfirm" aria-expanded="false">Clear always allowed</button>
+          </div>
+          <div id="autoApprovedToolsClearConfirm" class="inline-confirm hidden" role="alert" aria-live="polite">
+            <div>Clear all saved always-allowed tool approvals? Future guarded tools will ask again.</div>
+            <div class="inline-confirm-actions">
+              <button id="autoApprovedToolsClearCancel" class="context-btn" type="button">Cancel</button>
+              <button id="autoApprovedToolsClearConfirmRun" class="context-btn" type="button">Clear always allowed</button>
+            </div>
+          </div>
+          <div class="safety-section-title">Workspace env</div>
+          <label id="workspaceEnvLabel" class="model-setting-field" title="Environment variables available to workspace-defined tools via ${env:NAME}">
+            <span>Tool env vars</span>
+            <textarea id="workspaceEnvInput" rows="4" placeholder="API_BASE_URL=https://example.test&#10;DEPLOY_ENV=staging" aria-label="Workspace tool environment variables"></textarea>
+            <span class="model-setting-hint">One NAME=value per line. Values may be sensitive; they are stored in VS Code settings and used for ${env:NAME} in workspace tools.</span>
+          </label>
+          <div class="model-settings-actions">
+            <button id="workspaceEnvApply" class="context-btn" type="button">Apply env</button>
+          </div>
+          <div class="safety-section-title">Tool limits</div>
+          <label id="toolTimeoutMsLabel" class="model-setting-field" title="Timeout in milliseconds for all tools; 0 disables the global timeout">
+            <span>Global timeout (ms)</span>
+            <input id="toolTimeoutMsInput" type="number" min="0" step="1000" value="0" />
+          </label>
+          <label id="readMaxLinesLabel" class="model-setting-field" title="Maximum lines the Read tools can return per call">
+            <span>Read max lines</span>
+            <input id="readMaxLinesInput" type="number" min="1" step="50" value="300" />
+          </label>
+          <label id="bashBackgroundTtlMsLabel" class="model-setting-field" title="TTL for background bash commands; 0 disables auto-stop">
+            <span>Bash background TTL (ms)</span>
+            <input id="bashBackgroundTtlMsInput" type="number" min="0" step="60000" value="600000" />
+          </label>
+          <label id="bashBackgroundCaptureMsLabel" class="model-setting-field" title="Startup capture wait for background bash commands">
+            <span>Bash capture wait (ms)</span>
+            <input id="bashBackgroundCaptureMsInput" type="number" min="0" step="500" value="2000" />
+          </label>
+          <label id="bashBackgroundCaptureLinesLabel" class="model-setting-field" title="Maximum startup lines captured from background bash commands">
+            <span>Bash capture lines</span>
+            <input id="bashBackgroundCaptureLinesInput" type="number" min="0" step="10" value="50" />
+          </label>
+          <label id="workspaceShellTimeoutMsLabel" class="model-setting-field" title="Timeout for workspace-defined shell tools">
+            <span>Workspace shell timeout (ms)</span>
+            <input id="workspaceShellTimeoutMsInput" type="number" min="0" step="1000" value="60000" />
+          </label>
+          <label id="httpTimeoutMsLabel" class="model-setting-field" title="Timeout for workspace-defined HTTP tools">
+            <span>HTTP tool timeout (ms)</span>
+            <input id="httpTimeoutMsInput" type="number" min="0" step="1000" value="30000" />
+          </label>
+          <div class="model-settings-actions">
+            <button id="toolLimitsApply" class="context-btn" type="button">Apply</button>
+          </div>
+          <div class="safety-warning">These settings change tool permissions and runtime behavior globally. They are locked while a task is running.</div>
+        </div>
+      </div>
+    </div>
+    <label id="thinkingLabel" class="thinking-label" title="Show model thinking output as collapsible blocks">
+      <input id="thinkingToggle" class="thinking-checkbox" type="checkbox" checked />
+      <span>Thinking</span>
+    </label>
     <div class="mode-toggle" role="group" aria-label="Agent mode">
       <button id="modePlan" class="mode-btn" type="button" title="Plan mode (read-only)">Plan</button>
       <button id="modeBuild" class="mode-btn" type="button" title="Build mode (can modify workspace)">Build</button>
     </div>
+    <label id="planFirstLabel" class="plan-first-label" title="Generate a plan before the first build-mode change">
+      <input id="planFirstToggle" class="plan-first-checkbox" type="checkbox" checked />
+      <span>Plan first</span>
+    </label>
   </div>
   <div id="revertBar" class="revert-bar hidden" role="status" aria-live="polite">
     <div class="revert-bar-row">
@@ -3366,7 +4946,14 @@
         <button id="revertRedo" class="revert-bar-btn" type="button">Redo</button>
         <button id="revertRedoAll" class="revert-bar-btn" type="button">Redo all</button>
         <button id="revertDiff" class="revert-bar-btn" type="button">View changes</button>
-        <button id="revertDiscard" class="revert-bar-btn danger" type="button">Discard</button>
+        <button id="revertDiscard" class="revert-bar-btn danger" type="button" aria-controls="revertDiscardConfirm" aria-expanded="false">Discard</button>
+      </div>
+    </div>
+    <div id="revertDiscardConfirm" class="revert-discard-confirm hidden" role="alert" aria-live="polite">
+      <div>Discard undone history? This cannot be undone.</div>
+      <div class="revert-discard-confirm-actions">
+        <button id="revertDiscardCancel" class="revert-bar-btn" type="button">Cancel</button>
+        <button id="revertDiscardConfirmRun" class="revert-bar-btn danger" type="button">Discard</button>
       </div>
     </div>
     <details id="revertFiles" class="revert-files" hidden>
@@ -3393,7 +4980,7 @@
       <span id="operationElapsed" class="operation-banner-elapsed"></span>
     </div>
     <div class="operation-banner-actions">
-      <button id="operationStop" class="operation-banner-stop" type="button">Stop</button>
+      <button id="operationStop" class="operation-banner-stop" type="button" title="Stop current task" aria-label="Stop current task">Stop</button>
     </div>
   </div>
   <div id="approvalBanner" class="approval-banner hidden" role="status" aria-live="polite">
@@ -3403,7 +4990,7 @@
     </div>
     <div class="approval-banner-actions">
       <button id="approvalAllowAll" class="approval-banner-btn" type="button">Allow all</button>
-      <button id="approvalStop" class="approval-banner-stop" type="button">Stop</button>
+      <button id="approvalStop" class="approval-banner-stop" type="button" title="Stop current task" aria-label="Stop current task">Stop</button>
     </div>
   </div>
   <div class="input-area">
@@ -3422,6 +5009,40 @@
       <span>Send</span><span>→</span>
     </button>
     <div class="input-status-row" aria-label="Input options">
+      <div class="skills-settings-wrap">
+        <label id="skillsToggleLabel" class="skills-toggle-label" title="Enable skill discovery, $ suggestions, and the skill tool">
+          <input id="skillsToggle" class="skills-toggle-checkbox" type="checkbox" checked />
+          <span>Skills</span>
+        </label>
+        <button id="skillsSettings" class="skills-settings-btn" type="button" title="Skills prompt and injection budgets" aria-label="Skills settings">⋯</button>
+        <div id="skillsSettingsPopover" class="skills-settings-popover hidden" role="dialog" aria-label="Skills settings">
+          <div class="skills-settings-popover-header">
+            <span>Skills settings</span>
+            <button id="skillsSettingsClose" class="skills-settings-popover-close" type="button" aria-label="Close skills settings">✕</button>
+          </div>
+          <label class="model-setting-field" title="Maximum number of skills listed in the system prompt; 0 hides the skills section">
+            <span>Prompt skills</span>
+            <input id="skillsMaxPromptInput" type="number" min="0" step="1" value="50" />
+          </label>
+          <label class="model-setting-field" title="Maximum referenced skills auto-injected per user message">
+            <span>Injected skills</span>
+            <input id="skillsMaxInjectInput" type="number" min="1" step="1" value="5" />
+          </label>
+          <label class="model-setting-field" title="Maximum characters injected from each referenced skill file">
+            <span>Skill char cap</span>
+            <input id="skillsMaxInjectCharsInput" type="number" min="1" step="500" value="20000" />
+          </label>
+          <label id="skillSearchPathsLabel" class="model-setting-field" title="Directories searched for SKILL.md files; workspace-relative paths are resolved from the workspace root">
+            <span>Skill paths</span>
+            <textarea id="skillSearchPathsInput" rows="3" placeholder=".lingyun/skills&#10;~/.codex/skills" aria-label="Skill search paths"></textarea>
+            <span class="model-setting-hint">One directory per line or comma-separated. External paths require “Allow external paths”.</span>
+          </label>
+          <div class="model-settings-actions">
+            <button id="skillsSettingsApply" class="context-btn" type="button">Apply</button>
+          </div>
+        </div>
+      </div>
+      <div id="inputHint" class="input-hint">Enter to send · Shift+Enter for newline · Paste images · $ for skills</div>
       <div id="queueBanner" class="queue-banner hidden" role="status" aria-live="polite">
         <div class="queue-banner-summary">
           <span id="queueBannerCount" class="queue-banner-count"></span>
@@ -3442,8 +5063,8 @@
       <div class="output-modal-header">
         <div id="outputModalTitle" class="output-modal-title"></div>
         <div class="output-modal-actions">
-          <button id="outputModalCopy" class="output-modal-btn" type="button">Copy</button>
-          <button id="outputModalClose" class="output-modal-btn danger" type="button" aria-label="Close">✕</button>
+          <button id="outputModalCopy" class="output-modal-btn" type="button" title="Copy full output" aria-label="Copy full output">Copy</button>
+          <button id="outputModalClose" class="output-modal-btn danger" type="button" title="Close output viewer" aria-label="Close output viewer">✕</button>
         </div>
       </div>
       <pre id="outputModalBody" class="output-modal-body"></pre>

@@ -62,9 +62,12 @@ export async function runOnce(params: {
   registry: Pick<ToolRegistry, 'getTools'>;
   providerBehavior: ProviderBehavior;
   reasoningEffort: string;
+  textVerbosity: string;
   compactionConfig: CompactionConfig;
 
   temperature: number;
+  topP?: number;
+  topK?: number;
   maxRetries: number;
   retryWithPartialOutput: boolean;
   getMaxOutputTokens: () => number;
@@ -176,10 +179,11 @@ export async function runOnce(params: {
       },
       {
         temperature,
-        topP: undefined,
-        topK: undefined,
+        topP: params.topP,
+        topK: params.topK,
         options: providerBehavior.getChatProviderOptions(modelId, {
           reasoningEffort: params.reasoningEffort,
+          textVerbosity: params.textVerbosity,
         }),
       },
     );

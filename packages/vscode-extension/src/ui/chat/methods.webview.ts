@@ -3,9 +3,17 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { readTodos } from '../../core/todo';
-import { appendErrorLog } from '../../core/logger';
+import { toolRegistry } from '../../core/registry';
+import { summarizeToolArgsForDebug } from '../../core/agent/debug';
+import { getDebugRedactionLevel } from '../../core/debugSettings';
+import { appendErrorLog, appendLog } from '../../core/logger';
 import { getConfiguredReasoningEffort } from '../../core/reasoningEffort';
+import { resolveConfiguredModelId } from '../../core/modelSelection';
+import { isToolAllowedByFilter } from '../../core/toolFilter';
+import { WorkspaceMemories } from '../../core/memories';
+import { createSampleToolsConfig } from '../../providers/workspace';
 import type { ModelInfo } from '../../providers/modelCatalog';
+import type { MemoryDropResult, MemoryUpdateResult } from '../../core/memories';
 import type { LLMProviderWithUi, ProviderAuthUiState } from '../../providers/providerUi';
 import { formatErrorForUser, getNonce } from './utils';
 import { getWorkspaceFolderUrisByPriority, resolveExistingFilePath } from './fileLinks';
@@ -14,8 +22,7 @@ import type { PendingApprovalEntry } from './controllerPorts';
 import type { ChatImageAttachment, ChatUserInput } from './types';
 import { bindChatControllerService } from './controllerService';
 import { createLingyunDiffUri } from './diffContentProvider';
-import type { AgentLoop } from '../../core/agent';
-import type { ChatLoopService } from './methods.loop';
+import type { ChatLoopService, LoopSessionSettingsInput, LoopWorkspaceDefaultsInput } from './methods.loop';
 import type { ChatRevertService } from './methods.revert';
 import type { ChatSessionsService } from './methods.sessions';
 import type { ChatSkillsService } from './methods.skills';
@@ -33,6 +40,7 @@ import {
 } from './webviewProtocol';
 import { handleWebviewInitAckMessage, handleWebviewReadyMessage } from './webviewHandshake';
 import { handleWebviewCrashMessage, resetWebviewCrashToastState } from './webviewCrash';
+import { postInputNotice } from './inputNotice';
 
 function stripWrappingQuotes(value: string): string {
   const trimmed = value.trim();
@@ -67,6 +75,715 @@ function normalizeCandidatePath(raw: string): string {
 
 const MAX_WEBVIEW_IMAGE_ATTACHMENTS = 8;
 const MAX_WEBVIEW_IMAGE_DATA_URL_LENGTH = 12_000_000;
+const LLM_PROVIDER_IDS = new Set(['copilot', 'codexSubscription', 'openaiCompatible']);
+
+type LlmProviderId = 'copilot' | 'codexSubscription' | 'openaiCompatible';
+
+function normalizeLlmProviderId(providerId: string): LlmProviderId | undefined {
+  const normalized = String(providerId || '').trim();
+  if (!LLM_PROVIDER_IDS.has(normalized)) return undefined;
+  return normalized as LlmProviderId;
+}
+
+function getConfiguredLlmProviderId(): LlmProviderId {
+  const configured = vscode.workspace.getConfiguration('lingyun').get<string>('llmProvider', 'copilot') ?? 'copilot';
+  return normalizeLlmProviderId(configured) ?? 'copilot';
+}
+
+function getPlanFirstEnabled(): boolean {
+  return vscode.workspace.getConfiguration('lingyun').get<boolean>('planFirst', true) ?? true;
+}
+
+function getAutoApproveEnabled(): boolean {
+  return vscode.workspace.getConfiguration('lingyun').get<boolean>('autoApprove', false) ?? false;
+}
+
+function getShowThinkingEnabled(): boolean {
+  return vscode.workspace.getConfiguration('lingyun').get<boolean>('showThinking', true) ?? true;
+}
+
+function getMemoriesFeatureEnabled(): boolean {
+  return vscode.workspace.getConfiguration('lingyun').get<boolean>('features.memories', true) ?? true;
+}
+
+function getAllowExternalPathsEnabled(): boolean {
+  return vscode.workspace.getConfiguration('lingyun').get<boolean>('security.allowExternalPaths', false) ?? false;
+}
+
+function getBlockGitPushEnabled(): boolean {
+  return vscode.workspace.getConfiguration('lingyun').get<boolean>('security.blockGitPush', true) ?? true;
+}
+
+function getSkillsEnabled(): boolean {
+  return vscode.workspace.getConfiguration('lingyun').get<boolean>('skills.enabled', true) ?? true;
+}
+
+type SkillsBudget = {
+  maxPromptSkills: number;
+  maxInjectSkills: number;
+  maxInjectChars: number;
+};
+
+type SkillSearchPaths = string[];
+
+function normalizeSkillSearchPaths(input: unknown): SkillSearchPaths {
+  const values = Array.isArray(input)
+    ? input
+    : typeof input === 'string'
+      ? input.split(/[\n,]/)
+      : [];
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const value of values) {
+    if (typeof value !== 'string') continue;
+    const pathValue = value.trim();
+    if (!pathValue || seen.has(pathValue)) continue;
+    seen.add(pathValue);
+    normalized.push(pathValue);
+    if (normalized.length >= 100) break;
+  }
+  return normalized;
+}
+
+function getSkillSearchPaths(): SkillSearchPaths {
+  return normalizeSkillSearchPaths(vscode.workspace.getConfiguration('lingyun').get<unknown>('skills.paths', []));
+}
+
+function getSkillsBudget(): SkillsBudget {
+  return {
+    maxPromptSkills: getNumberSetting('skills.maxPromptSkills', 50, 0),
+    maxInjectSkills: getNumberSetting('skills.maxInjectSkills', 5, 1),
+    maxInjectChars: getNumberSetting('skills.maxInjectChars', 20000, 1),
+  };
+}
+
+function getSubagentModelOverride(): string {
+  const raw = vscode.workspace.getConfiguration('lingyun').get<unknown>('subagents.model');
+  return typeof raw === 'string' ? raw.trim() : '';
+}
+
+function normalizeSubagentModelOverride(model: string): string {
+  return model.trim().slice(0, 200);
+}
+
+function getSessionsPersistEnabled(): boolean {
+  return vscode.workspace.getConfiguration('lingyun').get<boolean>('sessions.persist', true) ?? true;
+}
+
+function getSessionsMaxSessions(): number {
+  const raw = vscode.workspace.getConfiguration('lingyun').get<unknown>('sessions.maxSessions');
+  const parsed = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : undefined;
+  return Number.isFinite(parsed) && (parsed as number) >= 1 ? Math.floor(parsed as number) : 20;
+}
+
+function getSessionsMaxSessionBytes(): number {
+  const raw = vscode.workspace.getConfiguration('lingyun').get<unknown>('sessions.maxSessionBytes');
+  const parsed = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : undefined;
+  return Number.isFinite(parsed) && (parsed as number) >= 1000 ? Math.floor(parsed as number) : 2_000_000;
+}
+
+type SessionRetentionLimits = {
+  maxSessions: number;
+  maxSessionBytes: number;
+};
+
+type ToolRuntimeLimits = {
+  toolTimeoutMs: number;
+  readMaxLines: number;
+  bashBackgroundTtlMs: number;
+  bashBackgroundCaptureMs: number;
+  bashBackgroundCaptureLines: number;
+  workspaceShellTimeoutMs: number;
+  httpTimeoutMs: number;
+};
+
+type ToolFilter = string[];
+type ToolCatalogItem = {
+  id: string;
+  name: string;
+  description: string;
+  readOnly: boolean;
+  requiresApproval: boolean;
+  category: string;
+  parameters: unknown;
+  required: string[];
+};
+const MAX_MANUAL_TOOL_RESULT_CHARS = 12_000;
+type InstructionPatterns = string[];
+type InstructionFileSettings = {
+  includeGlobal: boolean;
+  maxCharsPerFile: number;
+  maxTotalChars: number;
+};
+type WorkspaceEnv = Record<string, string>;
+
+type DebugSettingsUi = {
+  details: boolean;
+  llm: boolean;
+  tools: boolean;
+  plugins: boolean;
+  effectiveLlm: boolean;
+  effectiveTools: boolean;
+  effectivePlugins: boolean;
+};
+
+type PluginSettings = {
+  plugins: string[];
+  autoDiscover: boolean;
+  workspaceDir: string;
+};
+
+type OpenAICompatibleSettings = {
+  baseURL: string;
+  defaultModelId: string;
+  apiKeyEnv: string;
+  modelDisplayNames: Record<string, string>;
+};
+
+type CodexSubscriptionSettings = {
+  defaultModelId: string;
+};
+
+type ModelLimitEntry = {
+  context: number;
+  output?: number;
+};
+
+type ModelLimits = Record<string, ModelLimitEntry>;
+
+function normalizeToolFilter(input: unknown): ToolFilter {
+  const values = Array.isArray(input)
+    ? input
+    : typeof input === 'string'
+      ? input.split(/[\n,]/)
+      : [];
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const value of values) {
+    if (typeof value !== 'string') continue;
+    const pattern = value.trim();
+    if (!pattern || seen.has(pattern)) continue;
+    seen.add(pattern);
+    normalized.push(pattern);
+    if (normalized.length >= 100) break;
+  }
+  return normalized;
+}
+
+function getToolFilter(): ToolFilter {
+  return normalizeToolFilter(vscode.workspace.getConfiguration('lingyun').get<unknown>('toolFilter', []));
+}
+
+async function buildToolCatalogForUI(): Promise<{ total: number; shown: number; filter: ToolFilter; tools: ToolCatalogItem[] }> {
+  const filter = getToolFilter();
+  const allTools = await toolRegistry.getTools();
+  const filteredTools = allTools.filter((tool) => isToolAllowedByFilter(tool.id, filter));
+  const tools = filteredTools
+    .map((tool): ToolCatalogItem => ({
+      id: tool.id,
+      name: tool.name || tool.id,
+      description: tool.description || '',
+      readOnly: tool.metadata?.readOnly === true,
+      requiresApproval: tool.metadata?.requiresApproval === true,
+      category: tool.metadata?.category || tool.metadata?.permission || 'tool',
+      parameters: tool.parameters || { type: 'object', properties: {} },
+      required: Array.isArray(tool.parameters?.required) ? tool.parameters.required.filter((value): value is string => typeof value === 'string') : [],
+    }))
+    .sort((a, b) => a.id.localeCompare(b.id));
+  return { total: allTools.length, shown: tools.length, filter, tools };
+}
+
+function formatManualToolResultData(data: unknown): { text: string; truncated: boolean } {
+  let raw: string;
+  if (typeof data === 'string') {
+    raw = data;
+  } else {
+    try {
+      raw = JSON.stringify(data ?? null, null, 2) ?? String(data ?? null);
+    } catch {
+      raw = String(data ?? null);
+    }
+  }
+  if (raw.length <= MAX_MANUAL_TOOL_RESULT_CHARS) return { text: raw, truncated: false };
+  return {
+    text: `${raw.slice(0, MAX_MANUAL_TOOL_RESULT_CHARS)}\n…truncated ${raw.length - MAX_MANUAL_TOOL_RESULT_CHARS} chars. Full output is in the LingYun logs.`,
+    truncated: true,
+  };
+}
+
+function formatMemoryUpdateMessage(result: MemoryUpdateResult): string {
+  return result.enabled
+    ? `Memories updated: scanned ${result.scannedSessions}, processed ${result.processedSessions}, retained ${result.retainedOutputs}.`
+    : 'Memories feature is disabled.';
+}
+
+function formatMemoryDropMessage(result: MemoryDropResult): string {
+  return `Dropped memories: removed ${result.removedStateOutputs} stored outputs.`;
+}
+
+function normalizeInstructionPatterns(input: unknown): InstructionPatterns {
+  const values = Array.isArray(input)
+    ? input
+    : typeof input === 'string'
+      ? input.split(/[\n,]/)
+      : [];
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const value of values) {
+    if (typeof value !== 'string') continue;
+    const pattern = value.trim();
+    if (!pattern || seen.has(pattern)) continue;
+    seen.add(pattern);
+    normalized.push(pattern);
+    if (normalized.length >= 100) break;
+  }
+  return normalized;
+}
+
+function getInstructionPatterns(): InstructionPatterns {
+  return normalizeInstructionPatterns(vscode.workspace.getConfiguration('lingyun').get<unknown>('instructions', []));
+}
+
+function getInstructionFileSettings(): InstructionFileSettings {
+  return {
+    includeGlobal: vscode.workspace.getConfiguration('lingyun').get<boolean>('instructionFiles.includeGlobal', true) ?? true,
+    maxCharsPerFile: getNumberSetting('instructionFiles.maxCharsPerFile', 60000, 1000),
+    maxTotalChars: getNumberSetting('instructionFiles.maxTotalChars', 180000, 1000),
+  };
+}
+
+function normalizeWorkspaceEnv(input: unknown): WorkspaceEnv {
+  const source = input && typeof input === 'object' && !Array.isArray(input) ? input as Record<string, unknown> : {};
+  const normalized: WorkspaceEnv = {};
+  for (const [rawKey, rawValue] of Object.entries(source)) {
+    const key = rawKey.trim().slice(0, 120);
+    if (!key || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+    if (typeof rawValue !== 'string') continue;
+    normalized[key] = rawValue.slice(0, 10000);
+    if (Object.keys(normalized).length >= 100) break;
+  }
+  return normalized;
+}
+
+function getWorkspaceEnvValidationError(input: unknown): string | undefined {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    return 'Workspace environment must be an object.';
+  }
+  const entries = Object.entries(input as Record<string, unknown>);
+  if (entries.length > 100) return 'At most 100 workspace environment variables can be configured.';
+  for (const [rawKey, rawValue] of entries) {
+    const key = rawKey.trim();
+    if (!key) return 'Workspace environment variable names cannot be empty.';
+    if (key.length > 120) return 'Workspace environment variable names must be 120 characters or shorter.';
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+      return `Workspace environment variable "${key}" must use a valid environment variable name.`;
+    }
+    if (typeof rawValue !== 'string') return `Workspace environment variable "${key}" must have a string value.`;
+    if (rawValue.length > 10000) return `Workspace environment variable "${key}" value must be 10000 characters or shorter.`;
+  }
+  return undefined;
+}
+
+function getWorkspaceEnv(): WorkspaceEnv {
+  return normalizeWorkspaceEnv(vscode.workspace.getConfiguration('lingyun').get<unknown>('env', {}));
+}
+
+function getDebugSettingsForUi(): DebugSettingsUi {
+  const config = vscode.workspace.getConfiguration('lingyun');
+  const details = config.get<boolean>('debug.details', false) ?? false;
+  const llm = config.get<boolean>('debug.llm', false) ?? false;
+  const tools = config.get<boolean>('debug.tools', false) ?? false;
+  const plugins = config.get<boolean>('debug.plugins', false) ?? false;
+  return {
+    details,
+    llm,
+    tools,
+    plugins,
+    effectiveLlm: details || llm,
+    effectiveTools: details || tools,
+    effectivePlugins: details || plugins,
+  };
+}
+
+function normalizeDebugSettings(input: Partial<DebugSettingsUi>, current = getDebugSettingsForUi()): DebugSettingsUi {
+  const source = input && typeof input === 'object' ? input as Record<string, unknown> : {};
+  const details = typeof source.details === 'boolean' ? source.details : current.details;
+  const llm = typeof source.llm === 'boolean' ? source.llm : current.llm;
+  const tools = typeof source.tools === 'boolean' ? source.tools : current.tools;
+  const plugins = typeof source.plugins === 'boolean' ? source.plugins : current.plugins;
+  return {
+    details,
+    llm,
+    tools,
+    plugins,
+    effectiveLlm: details || llm,
+    effectiveTools: details || tools,
+    effectivePlugins: details || plugins,
+  };
+}
+
+function normalizePluginSpecs(input: unknown): string[] {
+  const values = Array.isArray(input)
+    ? input
+    : typeof input === 'string'
+      ? input.split(/[\n,]/)
+      : [];
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const value of values) {
+    if (typeof value !== 'string') continue;
+    const spec = value.trim();
+    if (!spec || seen.has(spec)) continue;
+    seen.add(spec);
+    normalized.push(spec);
+    if (normalized.length >= 100) break;
+  }
+  return normalized;
+}
+
+function normalizePluginWorkspaceDir(input: unknown): string {
+  const raw = typeof input === 'string' ? input.trim() : '';
+  return raw || '.lingyun';
+}
+
+function getPluginSettings(): PluginSettings {
+  const config = vscode.workspace.getConfiguration('lingyun');
+  return {
+    plugins: normalizePluginSpecs(config.get<unknown>('plugins', [])),
+    autoDiscover: config.get<boolean>('plugins.autoDiscover', false) ?? false,
+    workspaceDir: normalizePluginWorkspaceDir(config.get<unknown>('plugins.workspaceDir', '.lingyun')),
+  };
+}
+
+function normalizeOpenAICompatibleText(input: unknown, maxLength: number): string {
+  const raw = typeof input === 'string' ? input.trim() : '';
+  return raw.slice(0, maxLength);
+}
+
+function normalizeOpenAICompatibleModelDisplayNames(input: unknown): Record<string, string> {
+  const source = input && typeof input === 'object' && !Array.isArray(input) ? input as Record<string, unknown> : {};
+  const normalized: Record<string, string> = {};
+  for (const [rawKey, rawValue] of Object.entries(source)) {
+    const key = rawKey.trim().slice(0, 200);
+    const value = typeof rawValue === 'string' ? rawValue.trim().slice(0, 200) : '';
+    if (!key || !value) continue;
+    normalized[key] = value;
+    if (Object.keys(normalized).length >= 100) break;
+  }
+  return normalized;
+}
+
+function getOpenAICompatibleModelDisplayNamesValidationError(input: unknown): string | undefined {
+  if (input === undefined) return undefined;
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    return 'OpenAI-compatible model display names must be an object.';
+  }
+  const entries = Object.entries(input as Record<string, unknown>);
+  if (entries.length > 100) {
+    return 'OpenAI-compatible model display names must include 100 aliases or fewer.';
+  }
+  for (const [rawKey, rawValue] of entries) {
+    const key = rawKey.trim();
+    if (!key) return 'OpenAI-compatible model display name aliases must include a model ID.';
+    if (key.length > 200) return 'OpenAI-compatible model IDs must be 200 characters or fewer.';
+    if (typeof rawValue !== 'string') return 'OpenAI-compatible model display names must be strings.';
+    const value = rawValue.trim();
+    if (!value) return 'OpenAI-compatible model display names cannot be empty.';
+    if (value.length > 200) return 'OpenAI-compatible model display names must be 200 characters or fewer.';
+  }
+  return undefined;
+}
+
+function getOpenAICompatibleSettings(): OpenAICompatibleSettings {
+  const config = vscode.workspace.getConfiguration('lingyun');
+  return {
+    baseURL: normalizeOpenAICompatibleText(config.get<unknown>('openaiCompatible.baseURL', ''), 500),
+    defaultModelId: normalizeOpenAICompatibleText(config.get<unknown>('openaiCompatible.defaultModelId', ''), 200),
+    apiKeyEnv: normalizeOpenAICompatibleText(config.get<unknown>('openaiCompatible.apiKeyEnv', 'OPENAI_API_KEY'), 120) || 'OPENAI_API_KEY',
+    modelDisplayNames: normalizeOpenAICompatibleModelDisplayNames(config.get<unknown>('openaiCompatible.modelDisplayNames', {})),
+  };
+}
+
+function getCodexSubscriptionSettings(): CodexSubscriptionSettings {
+  return {
+    defaultModelId: normalizeOpenAICompatibleText(
+      vscode.workspace.getConfiguration('lingyun').get<unknown>('codexSubscription.defaultModelId', 'gpt-5.3-codex'),
+      200
+    ) || 'gpt-5.3-codex',
+  };
+}
+
+function parsePositiveInteger(value: unknown): number | undefined {
+  const parsed = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : undefined;
+  return Number.isFinite(parsed) && (parsed as number) > 0 ? Math.floor(parsed as number) : undefined;
+}
+
+function normalizeModelLimits(input: unknown): ModelLimits {
+  const source = input && typeof input === 'object' && !Array.isArray(input) ? input as Record<string, unknown> : {};
+  const normalized: ModelLimits = {};
+  for (const [rawKey, rawValue] of Object.entries(source)) {
+    const key = rawKey.trim().slice(0, 240);
+    if (!key || !rawValue || typeof rawValue !== 'object' || Array.isArray(rawValue)) continue;
+    const entry = rawValue as Record<string, unknown>;
+    const context = parsePositiveInteger(entry.context);
+    if (!context) continue;
+    const output = parsePositiveInteger(entry.output);
+    normalized[key] = { context, ...(output ? { output } : {}) };
+    if (Object.keys(normalized).length >= 100) break;
+  }
+  return normalized;
+}
+
+function getModelLimitsValidationError(input: unknown): string | undefined {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    return 'Model limits must be an object.';
+  }
+  const entries = Object.entries(input as Record<string, unknown>);
+  if (entries.length > 100) return 'At most 100 model limit entries can be configured.';
+  for (const [rawKey, rawValue] of entries) {
+    const key = rawKey.trim();
+    if (!key) return 'Model limit keys cannot be empty.';
+    if (key.length > 240) return 'Model limit keys must be 240 characters or shorter.';
+    if (!rawValue || typeof rawValue !== 'object' || Array.isArray(rawValue)) {
+      return `Model limit "${key}" must be an object.`;
+    }
+    const entry = rawValue as Record<string, unknown>;
+    const context = parsePositiveInteger(entry.context);
+    if (!context) return `Model limit "${key}" needs a positive context token count.`;
+    if (Object.prototype.hasOwnProperty.call(entry, 'output') && entry.output !== undefined && entry.output !== null && entry.output !== '') {
+      const output = parsePositiveInteger(entry.output);
+      if (!output) return `Model limit "${key}" output token count must be positive when provided.`;
+    }
+  }
+  return undefined;
+}
+
+function getModelLimits(): ModelLimits {
+  return normalizeModelLimits(vscode.workspace.getConfiguration('lingyun').get<unknown>('modelLimits', {}));
+}
+
+function getNumberSetting(path: string, fallback: number, minimum: number): number {
+  const raw = vscode.workspace.getConfiguration('lingyun').get<unknown>(path);
+  const parsed = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : undefined;
+  return Number.isFinite(parsed) && (parsed as number) >= minimum ? Math.floor(parsed as number) : fallback;
+}
+
+function getToolRuntimeLimits(): ToolRuntimeLimits {
+  return {
+    toolTimeoutMs: getNumberSetting('toolTimeoutMs', 0, 0),
+    readMaxLines: getNumberSetting('tools.read.maxLines', 300, 1),
+    bashBackgroundTtlMs: getNumberSetting('tools.bash.backgroundTtlMs', 600000, 0),
+    bashBackgroundCaptureMs: getNumberSetting('tools.bash.backgroundCaptureMs', 2000, 0),
+    bashBackgroundCaptureLines: getNumberSetting('tools.bash.backgroundCaptureLines', 50, 0),
+    workspaceShellTimeoutMs: getNumberSetting('tools.workspaceShell.timeoutMs', 60000, 0),
+    httpTimeoutMs: getNumberSetting('tools.http.timeoutMs', 30000, 0),
+  };
+}
+
+type CompactionToolOutputMode = 'afterToolCall' | 'onCompaction';
+
+type GenerationSettings = {
+  temperature: number;
+  topP: number;
+  topK: number;
+  maxOutputTokens: number;
+  maxRetries: number;
+  retryWithPartialOutput: boolean;
+  timeoutMs: number;
+  textVerbosity: string;
+};
+
+const TEXT_VERBOSITY_VALUES = new Set(['', 'low', 'medium', 'high']);
+
+function normalizeTextVerbosity(input: unknown, fallback = ''): string {
+  const raw = typeof input === 'string' ? input.trim().toLowerCase() : fallback;
+  return TEXT_VERBOSITY_VALUES.has(raw) ? raw : fallback;
+}
+
+function getConfiguredTemperature(): number {
+  const raw = vscode.workspace.getConfiguration('lingyun').get<unknown>('temperature');
+  const parsed = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : undefined;
+  return Number.isFinite(parsed) ? Math.max(0, Math.min(2, parsed as number)) : 0;
+}
+
+function getConfiguredTopP(): number {
+  const raw = vscode.workspace.getConfiguration('lingyun').get<unknown>('topP');
+  const parsed = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : undefined;
+  return Number.isFinite(parsed) ? Math.max(0, Math.min(1, parsed as number)) : 0;
+}
+
+function getConfiguredTopK(): number {
+  const raw = vscode.workspace.getConfiguration('lingyun').get<unknown>('topK');
+  const parsed = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : undefined;
+  return Number.isFinite(parsed) && (parsed as number) > 0 ? Math.floor(parsed as number) : 0;
+}
+
+function getConfiguredMaxOutputTokens(): number {
+  const raw = vscode.workspace.getConfiguration('lingyun').get<unknown>('maxOutputTokens');
+  const parsed = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : undefined;
+  return Number.isFinite(parsed) && (parsed as number) > 0 ? Math.floor(parsed as number) : 32000;
+}
+
+function getConfiguredMaxRetries(): number {
+  const raw = vscode.workspace.getConfiguration('lingyun').get<unknown>('llm.maxRetries');
+  const parsed = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : undefined;
+  return Number.isFinite(parsed) && (parsed as number) >= 0 ? Math.floor(parsed as number) : 2;
+}
+
+function getConfiguredRetryWithPartialOutput(): boolean {
+  const raw = vscode.workspace.getConfiguration('lingyun').get<unknown>('llm.retryWithPartialOutput');
+  if (typeof raw === 'boolean') return raw;
+  if (typeof raw === 'string') return raw.toLowerCase() === 'true';
+  return false;
+}
+
+function getConfiguredLlmTimeoutMs(): number {
+  const raw = vscode.workspace.getConfiguration('lingyun').get<unknown>('llm.timeoutMs');
+  const parsed = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : undefined;
+  return Number.isFinite(parsed) && (parsed as number) >= 0 ? Math.floor(parsed as number) : 0;
+}
+
+function getConfiguredTextVerbosity(): string {
+  return normalizeTextVerbosity(
+    vscode.workspace.getConfiguration('lingyun').get<unknown>('llm.textVerbosity', ''),
+    ''
+  );
+}
+
+function getGenerationSettings(): GenerationSettings {
+  return {
+    temperature: getConfiguredTemperature(),
+    topP: getConfiguredTopP(),
+    topK: getConfiguredTopK(),
+    maxOutputTokens: getConfiguredMaxOutputTokens(),
+    maxRetries: getConfiguredMaxRetries(),
+    retryWithPartialOutput: getConfiguredRetryWithPartialOutput(),
+    timeoutMs: getConfiguredLlmTimeoutMs(),
+    textVerbosity: getConfiguredTextVerbosity(),
+  };
+}
+
+function getMemoryAutoRecallEnabled(): boolean {
+  return vscode.workspace.getConfiguration('lingyun').get<boolean>('memories.autoRecall', true) ?? true;
+}
+
+function getMemoryAutoRecallMaxResults(): number {
+  const raw = vscode.workspace.getConfiguration('lingyun').get<unknown>('memories.maxAutoRecallResults');
+  const parsed = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : undefined;
+  return Number.isFinite(parsed) && (parsed as number) >= 1 ? Math.floor(parsed as number) : 4;
+}
+
+function getMemoryAutoRecallMaxTokens(): number {
+  const raw = vscode.workspace.getConfiguration('lingyun').get<unknown>('memories.maxAutoRecallTokens');
+  const parsed = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : undefined;
+  return Number.isFinite(parsed) && (parsed as number) >= 100 ? Math.floor(parsed as number) : 1200;
+}
+
+function getMemoryAutoRecallMinScore(): number {
+  const raw = vscode.workspace.getConfiguration('lingyun').get<unknown>('memories.autoRecallMinScore');
+  const parsed = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : undefined;
+  return Number.isFinite(parsed) && (parsed as number) >= 0 ? Math.min(100, parsed as number) : 7;
+}
+
+function getMemoryAutoRecallMinScoreGap(): number {
+  const raw = vscode.workspace.getConfiguration('lingyun').get<unknown>('memories.autoRecallMinScoreGap');
+  const parsed = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : undefined;
+  return Number.isFinite(parsed) && (parsed as number) >= 0 ? Math.min(50, parsed as number) : 1.25;
+}
+
+function getMemoryAutoRecallMaxAgeDays(): number {
+  const raw = vscode.workspace.getConfiguration('lingyun').get<unknown>('memories.autoRecallMaxAgeDays');
+  const parsed = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : undefined;
+  return Number.isFinite(parsed) && (parsed as number) >= 1 ? Math.min(3650, Math.floor(parsed as number)) : 45;
+}
+
+type MemoryAutoRecallBudget = {
+  maxResults: number;
+  maxTokens: number;
+};
+
+type MemoryAutoRecallFilters = {
+  minScore: number;
+  minScoreGap: number;
+  maxAgeDays: number;
+};
+
+type MemoryAdvancedLimits = {
+  maxRawMemoriesForGlobal: number;
+  maxRolloutAgeDays: number;
+  maxRolloutsPerStartup: number;
+  minRolloutIdleHours: number;
+  maxStateOutputs: number;
+  maxRecords: number;
+  maxSearchResults: number;
+  maxResultsPerKind: number;
+  searchNeighborWindow: number;
+};
+
+function getMemoryAdvancedLimits(): MemoryAdvancedLimits {
+  return {
+    maxRawMemoriesForGlobal: Math.min(2000, getNumberSetting('memories.maxRawMemoriesForGlobal', 120, 1)),
+    maxRolloutAgeDays: Math.min(3650, getNumberSetting('memories.maxRolloutAgeDays', 30, 1)),
+    maxRolloutsPerStartup: Math.min(2000, getNumberSetting('memories.maxRolloutsPerStartup', 24, 1)),
+    minRolloutIdleHours: Math.min(24 * 30, getNumberSetting('memories.minRolloutIdleHours', 2, 0)),
+    maxStateOutputs: Math.min(5000, getNumberSetting('memories.maxStateOutputs', 500, 10)),
+    maxRecords: Math.min(50000, getNumberSetting('memories.maxRecords', 5000, 100)),
+    maxSearchResults: Math.min(100, getNumberSetting('memories.maxSearchResults', 8, 1)),
+    maxResultsPerKind: Math.min(20, getNumberSetting('memories.maxResultsPerKind', 3, 1)),
+    searchNeighborWindow: Math.min(5, getNumberSetting('memories.searchNeighborWindow', 1, 0)),
+  };
+}
+
+function getExplorePrepassEnabled(): boolean {
+  return vscode.workspace.getConfiguration('lingyun').get<boolean>('subagents.explorePrepass.enabled', false) ?? false;
+}
+
+function getExplorePrepassMaxChars(): number {
+  const raw = vscode.workspace.getConfiguration('lingyun').get<unknown>('subagents.explorePrepass.maxChars');
+  const parsed = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : undefined;
+  return Number.isFinite(parsed) && (parsed as number) >= 500 ? Math.floor(parsed as number) : 8000;
+}
+
+function getSubagentTaskMaxOutputChars(): number {
+  const raw = vscode.workspace.getConfiguration('lingyun').get<unknown>('subagents.task.maxOutputChars');
+  const parsed = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : undefined;
+  return Number.isFinite(parsed) && (parsed as number) >= 500 ? Math.floor(parsed as number) : 8000;
+}
+
+function getAutoCompactionEnabled(): boolean {
+  return vscode.workspace.getConfiguration('lingyun').get<boolean>('compaction.auto', true) ?? true;
+}
+
+function getCompactionPruneEnabled(): boolean {
+  return vscode.workspace.getConfiguration('lingyun').get<boolean>('compaction.prune', true) ?? true;
+}
+
+function getCompactionPruneProtectTokens(): number {
+  const raw = vscode.workspace.getConfiguration('lingyun').get<unknown>('compaction.pruneProtectTokens');
+  const parsed = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : undefined;
+  return Number.isFinite(parsed) && (parsed as number) >= 0 ? Math.floor(parsed as number) : 40000;
+}
+
+function getCompactionPruneMinimumTokens(): number {
+  const raw = vscode.workspace.getConfiguration('lingyun').get<unknown>('compaction.pruneMinimumTokens');
+  const parsed = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : undefined;
+  return Number.isFinite(parsed) && (parsed as number) >= 0 ? Math.floor(parsed as number) : 20000;
+}
+
+type CompactionPruneSettings = {
+  prune: boolean;
+  pruneProtectTokens: number;
+  pruneMinimumTokens: number;
+};
+
+function getCompactionToolOutputMode(): CompactionToolOutputMode {
+  const configured = vscode.workspace.getConfiguration('lingyun').get<unknown>('compaction.toolOutputMode');
+  return configured === 'onCompaction' ? 'onCompaction' : 'afterToolCall';
+}
+
+function normalizeCompactionToolOutputMode(mode: string): CompactionToolOutputMode | undefined {
+  return mode === 'onCompaction' || mode === 'afterToolCall' ? mode : undefined;
+}
 
 function parseWebviewImageAttachments(raw: unknown): ChatImageAttachment[] {
   if (!Array.isArray(raw)) return [];
@@ -109,8 +826,54 @@ export interface ChatWebviewService {
   resolveWebviewView(webviewView: vscode.WebviewView): void;
   startInitPusher(): void;
   sendInit(force?: boolean): Promise<void>;
+  refreshSettingsState(): Promise<void>;
   getProviderAuthStateForUI(): Promise<ProviderAuthUiState>;
   postProviderState(): Promise<void>;
+  switchProvider(providerId: string): Promise<void>;
+  setOpenAICompatibleSettings(settings: Partial<OpenAICompatibleSettings>): Promise<void>;
+  setCodexSubscriptionSettings(settings: Partial<CodexSubscriptionSettings>): Promise<void>;
+  setPlanFirst(enabled: boolean): Promise<void>;
+  setAutoApprove(enabled: boolean): Promise<void>;
+  setAllowExternalPaths(enabled: boolean): Promise<void>;
+  setBlockGitPush(enabled: boolean): Promise<void>;
+  setDebugSettings(settings: Partial<DebugSettingsUi>): Promise<void>;
+  setPluginSettings(settings: Partial<PluginSettings>): Promise<void>;
+  setToolRuntimeLimits(limits: Partial<ToolRuntimeLimits>): Promise<void>;
+  setToolFilter(patterns: ToolFilter): Promise<void>;
+  revokeAlwaysAllowedTool(toolId: string): Promise<void>;
+  clearAlwaysAllowedTools(confirmed?: boolean): Promise<void>;
+  setWorkspaceEnv(env: WorkspaceEnv): Promise<void>;
+  setInstructionPatterns(patterns: InstructionPatterns): Promise<void>;
+  setInstructionFileSettings(settings: Partial<InstructionFileSettings>): Promise<void>;
+  setSkillsEnabled(enabled: boolean): Promise<void>;
+  setSkillSearchPaths(paths: SkillSearchPaths): Promise<void>;
+  setSkillsBudget(budget: Partial<SkillsBudget>): Promise<void>;
+  setSessionsPersist(enabled: boolean): Promise<void>;
+  setSessionRetentionLimits(limits: Partial<SessionRetentionLimits>): Promise<void>;
+  setShowThinking(enabled: boolean): Promise<void>;
+  setMemoriesFeatureEnabled(enabled: boolean): Promise<void>;
+  setMemoryAutoRecall(enabled: boolean): Promise<void>;
+  setMemoryAutoRecallBudget(budget: Partial<MemoryAutoRecallBudget>): Promise<void>;
+  setMemoryAutoRecallFilters(filters: Partial<MemoryAutoRecallFilters>): Promise<void>;
+  setMemoryAdvancedLimits(limits: Partial<MemoryAdvancedLimits>): Promise<void>;
+  updateMemoriesNow(): Promise<void>;
+  dropMemoriesNow(confirmed?: boolean): Promise<void>;
+  showLogs(): void;
+  postToolCatalog(): Promise<void>;
+  listTools(): Promise<void>;
+  runTool(toolId?: string, args?: Record<string, unknown>, confirmed?: boolean): Promise<void>;
+  createToolsConfig(): Promise<void>;
+  openOffice(): Promise<void>;
+  resetOfficeLayout(): Promise<void>;
+  setExplorePrepass(enabled: boolean): Promise<void>;
+  setExplorePrepassMaxChars(maxChars: number): Promise<void>;
+  setSubagentModelOverride(model: string): Promise<void>;
+  setSubagentTaskMaxOutputChars(maxChars: number): Promise<void>;
+  setAutoCompaction(enabled: boolean): Promise<void>;
+  setCompactionPruneSettings(settings: Partial<CompactionPruneSettings>): Promise<void>;
+  setCompactionToolOutputMode(mode: string): Promise<void>;
+  setModelLimits(limits: ModelLimits): Promise<void>;
+  setGenerationSettings(settings: Partial<GenerationSettings>): Promise<void>;
   authenticateProvider(): Promise<void>;
   disconnectProvider(): Promise<void>;
   postMessage(message: unknown): void;
@@ -126,9 +889,9 @@ export interface ChatWebviewDeps {
   currentModel: string;
   activeSessionId: string;
   inputHistoryEntries: string[];
+  skillNamesForUiPromise?: Promise<string[]>;
   mode: 'build' | 'plan';
   isProcessing: boolean;
-  abortRequested: boolean;
   autoApproveThisRun: boolean;
   pendingApprovals: Map<string, PendingApprovalEntry>;
   initAcked: boolean;
@@ -161,27 +924,41 @@ export interface ChatWebviewDeps {
       truncated: boolean;
     }
   >;
-  agent: Pick<AgentLoop, 'abort'>;
-  queueManager: Pick<ChatQueueManager, 'clearActiveSession' | 'flushAutosendForActiveSession' | 'getQueuedInputs'>;
+  abortCurrentRun(reason?: string): void;
+  queueManager: Pick<ChatQueueManager, 'clearActiveSession' | 'flushAutosendForActiveSession' | 'getQueuedInputs' | 'postState'>;
   runner: Pick<RunCoordinator, 'steerQueuedInput'>;
   createNewSession(): Promise<void>;
   compactCurrentSession(): Promise<void>;
   undo(): Promise<void>;
   redo(): Promise<void>;
   redoAll(): Promise<void>;
-  discardUndone(): Promise<void>;
+  discardUndone(confirmed?: boolean): Promise<void>;
   viewRevertDiff(): Promise<void>;
   switchToSession(sessionId: string): Promise<void>;
+  postSessions(): void;
   handleUserMessage(content: string | ChatUserInput): Promise<void>;
-  configureLoopForActiveSession(): Promise<void>;
+  setLoopSettingsForActiveSession(settings: LoopSessionSettingsInput): Promise<void>;
+  resetLoopSettingsForActiveSession(): Promise<void>;
+  setLoopWorkspaceDefaults(settings: LoopWorkspaceDefaultsInput): Promise<void>;
   approveAllPendingApprovals(options?: { includeManual?: boolean }): void;
+  postApprovalState(): void;
   handleAlwaysAllowApproval(approvalId: string): Promise<void>;
-  rejectAllPendingApprovals(reason: string): void;
+  getAutoApprovedToolsForUI(): string[];
+  revokeAutoApprovedTool(toolId: string): Promise<void>;
+  clearAutoApprovedToolsForUI(): Promise<void>;
   clearCurrentSession(): Promise<void>;
+  clearSavedSessions(): Promise<void>;
+  openOfficeView?(): Promise<void>;
+  resetOfficeLayoutAction?(): Promise<void>;
   executePendingPlan(planMessageId?: string): Promise<void>;
   loadModels(): Promise<void>;
-  pickModel(): Promise<void>;
+  postModelState(): Promise<void>;
+  postModelPickerState(reveal?: boolean): Promise<void>;
+  refreshModelsForUI(): Promise<void>;
+  clearRecentModels(): Promise<void>;
   setCurrentModel(modelId: string): Promise<void>;
+  setReasoningEffort(reasoningEffort: string): Promise<void>;
+  openAdvancedModelSettings(): Promise<void>;
   toggleFavoriteModel(modelId: string): Promise<void>;
   getActiveSession(): ReturnType<ChatSessionsService['getActiveSession']>;
   setModeAndPersist(
@@ -192,18 +969,18 @@ export interface ChatWebviewDeps {
   revisePendingPlan(planMessageId: string, instructions: string): Promise<void>;
   handleApprovalResponse(approvalId: string, approved: boolean): void;
   retryToolCall(approvalId: string): Promise<void>;
-  markActiveStepStatus(status: 'running' | 'done' | 'error' | 'canceled'): void;
   ensureSessionsLoaded(): Promise<void>;
+  onSessionPersistenceConfigChanged(): Promise<void>;
   getModelLabel(modelId: string): string;
   getRenderableMessages(): ReturnType<ChatSessionsService['getRenderableMessages']>;
   getRevertBarStateForUI(): ReturnType<ChatRevertService['getRevertBarStateForUI']>;
   getContextForUI(): ReturnType<ChatSessionsService['getContextForUI']>;
   getLoopStateForUI(): ReturnType<ChatLoopService['getLoopStateForUI']>;
+  getLoopDefaultsForUI(): ReturnType<ChatLoopService['getLoopDefaultsForUI']>;
   getSessionsForUI(): ReturnType<ChatSessionsService['getSessionsForUI']>;
   getSkillNamesForUI(): Promise<Awaited<ReturnType<ChatSkillsService['getSkillNamesForUI']>>>;
   getUndoRedoAvailability(): ReturnType<ChatRevertService['getUndoRedoAvailability']>;
   isModelFavorite(modelId: string): Promise<boolean>;
-  persistActiveSession(): void;
   postMessage(message: unknown): void;
 }
 
@@ -215,7 +992,73 @@ type BrowserChatProtocol = {
   webviewError: typeof WEBVIEW_MESSAGE_ERROR;
 };
 
-type ChatWebviewInitMessage = {
+type MemoryActionStatus = {
+  state: 'idle' | 'running' | 'success' | 'error';
+  message: string;
+};
+
+const idleMemoryActionStatus: MemoryActionStatus = { state: 'idle', message: '' };
+
+function postMemoryActionStatus(controller: Pick<ChatWebviewRuntime, 'postMessage'>, status: MemoryActionStatus): void {
+  controller.postMessage({ type: 'memoryActionStatusState', memoryActionStatus: status });
+}
+
+type ChatWebviewSettingsStateMessage = {
+  type: 'settingsState' | 'init';
+  currentModel: string;
+  currentModelLabel: string;
+  currentModelIsFavorite: boolean;
+  currentReasoningEffort: ReturnType<typeof getConfiguredReasoningEffort>;
+  currentProviderId: LlmProviderId;
+  providerAuth: ProviderAuthUiState;
+  openAICompatibleSettings: OpenAICompatibleSettings;
+  codexSubscriptionSettings: CodexSubscriptionSettings;
+  planFirst: boolean;
+  autoApprove: boolean;
+  allowExternalPaths: boolean;
+  blockGitPush: boolean;
+  debugSettings: DebugSettingsUi;
+  toolRuntimeLimits: ToolRuntimeLimits;
+  toolFilter: ToolFilter;
+  autoApprovedTools: string[];
+  toolsCatalog: { total: number; shown: number; filter: ToolFilter; tools: ToolCatalogItem[] };
+  workspaceEnv: WorkspaceEnv;
+  pluginSettings: PluginSettings;
+  instructionPatterns: InstructionPatterns;
+  instructionFileSettings: InstructionFileSettings;
+  showThinking: boolean;
+  memoriesFeatureEnabled: boolean;
+  memoryAutoRecall: boolean;
+  memoryAutoRecallMaxResults: number;
+  memoryAutoRecallMaxTokens: number;
+  memoryAutoRecallMinScore: number;
+  memoryAutoRecallMinScoreGap: number;
+  memoryAutoRecallMaxAgeDays: number;
+  memoryAdvancedLimits: MemoryAdvancedLimits;
+  memoryActionStatus: MemoryActionStatus;
+  explorePrepass: boolean;
+  explorePrepassMaxChars: number;
+  subagentModelOverride: string;
+  subagentTaskMaxOutputChars: number;
+  autoCompaction: boolean;
+  compactionPrune: boolean;
+  compactionPruneProtectTokens: number;
+  compactionPruneMinimumTokens: number;
+  compactionToolOutputMode: CompactionToolOutputMode;
+  modelLimits: ModelLimits;
+  generationSettings: GenerationSettings;
+  mode: 'build' | 'plan';
+  loopDefaults: ReturnType<ChatLoopService['getLoopDefaultsForUI']>;
+  skillsEnabled: boolean;
+  skillSearchPaths: SkillSearchPaths;
+  skillsBudget: SkillsBudget;
+  sessionsPersist: boolean;
+  sessionsMaxSessions: number;
+  sessionsMaxSessionBytes: number;
+  skills: Awaited<ReturnType<ChatSkillsService['getSkillNamesForUI']>>;
+};
+
+type ChatWebviewInitMessage = ChatWebviewSettingsStateMessage & {
   type: 'init';
   sessions: ReturnType<ChatSessionsService['getSessionsForUI']>;
   activeSessionId: string;
@@ -225,12 +1068,6 @@ type ChatWebviewInitMessage = {
   context: ReturnType<ChatSessionsService['getContextForUI']>;
   todos: Awaited<ReturnType<typeof readTodos>>;
   loop: ReturnType<ChatLoopService['getLoopStateForUI']>;
-  currentModel: string;
-  currentModelLabel: string;
-  currentModelIsFavorite: boolean;
-  currentReasoningEffort: ReturnType<typeof getConfiguredReasoningEffort>;
-  providerAuth: ProviderAuthUiState;
-  mode: 'build' | 'plan';
   planPending: boolean;
   activePlanMessageId: string;
   processing: boolean;
@@ -238,7 +1075,6 @@ type ChatWebviewInitMessage = {
   pendingApprovals: number;
   manualApprovals: number;
   autoApproveThisRun: boolean;
-  skills: Awaited<ReturnType<ChatSkillsService['getSkillNamesForUI']>>;
 } & ReturnType<ChatRevertService['getUndoRedoAvailability']>;
 
 function createBrowserChatProtocol(): BrowserChatProtocol {
@@ -254,20 +1090,93 @@ function renderBrowserChatProtocolBootstrapScript(nonce: string): string {
   return `<script nonce="${nonce}">window.LINGYUN_CHAT_PROTOCOL = Object.freeze(${protocolJson});</script>`;
 }
 
+async function buildWebviewSettingsStateMessage(
+  runtime: ChatWebviewRuntime,
+  params?: { type?: 'settingsState' | 'init'; modelLabel?: string; currentModelIsFavorite?: boolean }
+): Promise<ChatWebviewSettingsStateMessage> {
+  const nextModel = resolveConfiguredModelId(runtime.llmProvider?.id) || runtime.currentModel;
+  runtime.currentModel = nextModel;
+  const skills = await runtime.getSkillNamesForUI();
+  const providerAuth = await runtime.getProviderAuthStateForUI();
+  const currentModelIsFavorite = typeof params?.currentModelIsFavorite === 'boolean'
+    ? params.currentModelIsFavorite
+    : await runtime.isModelFavorite(runtime.currentModel);
+  const modelLabel = params?.modelLabel || runtime.getModelLabel(runtime.currentModel) || runtime.currentModel;
+
+  return {
+    type: params?.type ?? 'settingsState',
+    currentModel: runtime.currentModel,
+    currentModelLabel: modelLabel,
+    currentModelIsFavorite,
+    currentReasoningEffort: getConfiguredReasoningEffort(),
+    currentProviderId: getConfiguredLlmProviderId(),
+    providerAuth,
+    openAICompatibleSettings: getOpenAICompatibleSettings(),
+    codexSubscriptionSettings: getCodexSubscriptionSettings(),
+    planFirst: getPlanFirstEnabled(),
+    autoApprove: getAutoApproveEnabled(),
+    allowExternalPaths: getAllowExternalPathsEnabled(),
+    blockGitPush: getBlockGitPushEnabled(),
+    debugSettings: getDebugSettingsForUi(),
+    toolRuntimeLimits: getToolRuntimeLimits(),
+    toolFilter: getToolFilter(),
+    autoApprovedTools: runtime.getAutoApprovedToolsForUI(),
+    toolsCatalog: await buildToolCatalogForUI(),
+    workspaceEnv: getWorkspaceEnv(),
+    pluginSettings: getPluginSettings(),
+    instructionPatterns: getInstructionPatterns(),
+    instructionFileSettings: getInstructionFileSettings(),
+    showThinking: getShowThinkingEnabled(),
+    memoriesFeatureEnabled: getMemoriesFeatureEnabled(),
+    memoryAutoRecall: getMemoryAutoRecallEnabled(),
+    memoryAutoRecallMaxResults: getMemoryAutoRecallMaxResults(),
+    memoryAutoRecallMaxTokens: getMemoryAutoRecallMaxTokens(),
+    memoryAutoRecallMinScore: getMemoryAutoRecallMinScore(),
+    memoryAutoRecallMinScoreGap: getMemoryAutoRecallMinScoreGap(),
+    memoryAutoRecallMaxAgeDays: getMemoryAutoRecallMaxAgeDays(),
+    memoryAdvancedLimits: getMemoryAdvancedLimits(),
+    memoryActionStatus: idleMemoryActionStatus,
+    explorePrepass: getExplorePrepassEnabled(),
+    explorePrepassMaxChars: getExplorePrepassMaxChars(),
+    subagentModelOverride: getSubagentModelOverride(),
+    subagentTaskMaxOutputChars: getSubagentTaskMaxOutputChars(),
+    autoCompaction: getAutoCompactionEnabled(),
+    compactionPrune: getCompactionPruneEnabled(),
+    compactionPruneProtectTokens: getCompactionPruneProtectTokens(),
+    compactionPruneMinimumTokens: getCompactionPruneMinimumTokens(),
+    compactionToolOutputMode: getCompactionToolOutputMode(),
+    modelLimits: getModelLimits(),
+    generationSettings: getGenerationSettings(),
+    mode: runtime.mode,
+    loopDefaults: runtime.getLoopDefaultsForUI(),
+    skillsEnabled: getSkillsEnabled(),
+    skillSearchPaths: getSkillSearchPaths(),
+    skillsBudget: getSkillsBudget(),
+    sessionsPersist: getSessionsPersistEnabled(),
+    sessionsMaxSessions: getSessionsMaxSessions(),
+    sessionsMaxSessionBytes: getSessionsMaxSessionBytes(),
+    skills,
+  };
+}
+
 async function buildWebviewInitMessage(
   runtime: ChatWebviewRuntime,
   params: { modelLabel: string; currentModelIsFavorite: boolean }
 ): Promise<ChatWebviewInitMessage> {
   const todos = await readTodos(runtime.context, runtime.activeSessionId);
-  const skills = await runtime.getSkillNamesForUI();
-  const providerAuth = await runtime.getProviderAuthStateForUI();
   const pendingPlan = runtime.getActiveSession().pendingPlan;
   const approvalState = buildApprovalStateForUI({
     pendingApprovals: runtime.pendingApprovals,
     autoApproveThisRun: runtime.autoApproveThisRun,
   });
+  const settingsState = await buildWebviewSettingsStateMessage(runtime, {
+    type: 'init',
+    modelLabel: params.modelLabel,
+    currentModelIsFavorite: params.currentModelIsFavorite,
+  });
 
   return {
+    ...settingsState,
     type: 'init',
     sessions: runtime.getSessionsForUI(),
     activeSessionId: runtime.activeSessionId,
@@ -277,12 +1186,6 @@ async function buildWebviewInitMessage(
     context: runtime.getContextForUI(),
     todos,
     loop: runtime.getLoopStateForUI(),
-    currentModel: runtime.currentModel,
-    currentModelLabel: params.modelLabel,
-    currentModelIsFavorite: params.currentModelIsFavorite,
-    currentReasoningEffort: getConfiguredReasoningEffort(),
-    providerAuth,
-    mode: runtime.mode,
     planPending: !!pendingPlan,
     activePlanMessageId: pendingPlan?.planMessageId ?? '',
     processing: runtime.isProcessing,
@@ -290,7 +1193,6 @@ async function buildWebviewInitMessage(
     pendingApprovals: approvalState.count,
     manualApprovals: approvalState.manualCount,
     autoApproveThisRun: approvalState.autoApproveThisRun,
-    skills,
     ...runtime.getUndoRedoAvailability(),
   };
 }
@@ -348,9 +1250,15 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
 
     this.viewDisposables.push(
       webviewView.webview.onDidReceiveMessage(async (data) => {
-        switch (getWebviewMessageType(data)) {
+        const messageType = getWebviewMessageType(data);
+        try {
+        switch (messageType) {
           case 'newSession':
-            await this.createNewSession();
+            try {
+              await this.createNewSession();
+            } finally {
+              this.postMessage({ type: 'sessionActionState', action: 'newSession', pending: false });
+            }
             break;
           case 'openLocation': {
             const workspaceFolderUris = getWorkspaceFolderUrisByPriority();
@@ -401,9 +1309,9 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
 
               if (!resolved) {
                 if (blockedExternalMessage) {
-                  void vscode.window.showWarningMessage(`LingYun: ${blockedExternalMessage}`);
+                  postInputNotice(this, blockedExternalMessage);
                 } else {
-                  void vscode.window.showInformationMessage('LingYun: file not found.');
+                  postInputNotice(this, 'File not found.');
                 }
                 break;
               }
@@ -413,8 +1321,9 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
               const pos = new vscode.Position(line - 1, character - 1);
               editor.selection = new vscode.Selection(pos, pos);
               editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
-            } catch {
-              // ignore open failures
+            } catch (error) {
+              appendErrorLog(this.outputChannel, 'Failed to open linked location from webview', error, { tag: 'Webview' });
+              postInputNotice(this, 'Failed to open file location. See logs for details.');
             }
             break;
           }
@@ -492,9 +1401,7 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
 
             const snapshot = this.toolDiffSnapshotsByToolCallId.get(toolCallId);
             if (!snapshot) {
-              void vscode.window.showInformationMessage(
-                'LingYun: diff snapshot is unavailable (try rerunning the tool).'
-              );
+              postInputNotice(this, 'Diff snapshot is unavailable (try rerunning the tool).');
               break;
             }
 
@@ -502,9 +1409,7 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
               vscode.workspace.getConfiguration('lingyun').get<boolean>('security.allowExternalPaths', false) ??
               false;
             if (!allowExternalPaths && snapshot.isExternal) {
-              void vscode.window.showWarningMessage(
-                'LingYun: external paths are disabled. Enable lingyun.security.allowExternalPaths to view this diff.'
-              );
+              postInputNotice(this, 'External paths are disabled. Enable Allow external paths in chat settings to view this diff.');
               break;
             }
 
@@ -516,34 +1421,88 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
             try {
               await vscode.commands.executeCommand('vscode.diff', left, right, title, { preview: true });
             } catch {
-              void vscode.window.showErrorMessage('LingYun: failed to open diff editor.');
+              postInputNotice(this, 'Failed to open diff editor.');
             }
 
             break;
           }
           case 'compactSession':
-            await this.compactCurrentSession();
+            try {
+              await this.compactCurrentSession();
+            } finally {
+              this.postMessage({ type: 'sessionActionState', action: 'compactSession', pending: false });
+            }
             break;
           case 'undo':
-            await this.undo();
+            try {
+              await this.undo();
+            } finally {
+              this.postMessage({ type: 'revertActionState', action: 'undo', pending: false });
+            }
             break;
           case 'redo':
-            await this.redo();
+            try {
+              await this.redo();
+            } finally {
+              this.postMessage({ type: 'revertActionState', action: 'redo', pending: false });
+            }
             break;
           case 'redoAll':
-            await this.redoAll();
+            try {
+              await this.redoAll();
+            } finally {
+              this.postMessage({ type: 'revertActionState', action: 'redoAll', pending: false });
+            }
             break;
           case 'discardUndone':
-            await this.discardUndone();
+            try {
+              await this.discardUndone(data.confirmed === true);
+            } finally {
+              this.postMessage({ type: 'revertActionState', action: 'discardUndone', pending: false });
+            }
             break;
           case 'viewRevertDiff':
-            await this.viewRevertDiff();
+            try {
+              await this.viewRevertDiff();
+            } finally {
+              this.postMessage({ type: 'revertActionState', action: 'viewRevertDiff', pending: false });
+            }
             break;
           case 'switchSession':
             if (typeof data.sessionId === 'string') {
               await this.switchToSession(data.sessionId);
+            } else {
+              this.postSessions();
             }
             break;
+          case 'clearCurrentSession': {
+            try {
+              if (this.isProcessing) {
+                postInputNotice(this, 'Stop the current task before clearing the session.');
+                break;
+              }
+              if (data.confirmed !== true) break;
+              this.toolDiffBeforeByToolCallId.clear();
+              this.toolDiffSnapshotsByToolCallId.clear();
+              await this.clearCurrentSession();
+            } finally {
+              this.postMessage({ type: 'sessionActionState', action: 'clearCurrentSession', pending: false });
+            }
+            break;
+          }
+          case 'clearSavedSessions': {
+            try {
+              if (this.isProcessing) {
+                postInputNotice(this, 'Stop the current task before clearing saved sessions.');
+                break;
+              }
+              if (data.confirmed !== true) break;
+              await this.clearSavedSessions();
+            } finally {
+              this.postMessage({ type: 'sessionActionState', action: 'clearSavedSessions', pending: false });
+            }
+            break;
+          }
           case 'send':
             {
               const payload = data as Record<string, unknown>;
@@ -555,25 +1514,48 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
             }
             break;
           case 'clearQueue': {
-            this.queueManager.clearActiveSession();
+            try {
+              this.queueManager.clearActiveSession();
+              this.queueManager.flushAutosendForActiveSession().catch(() => {});
+            } finally {
+              this.queueManager.postState();
+            }
             break;
           }
           case 'configureLoop':
-            await this.configureLoopForActiveSession();
+            this.postMessage({ type: 'loopState', loop: this.getLoopStateForUI() });
+            this.postMessage({ type: 'loopDefaultsState', loopDefaults: this.getLoopDefaultsForUI() });
+            break;
+          case 'setLoopSettings':
+            if (data.settings && typeof data.settings === 'object') {
+              await this.setLoopSettingsForActiveSession(data.settings as LoopSessionSettingsInput);
+            } else {
+              this.postMessage({ type: 'loopState', loop: this.getLoopStateForUI() });
+            }
+            break;
+          case 'resetLoopSettings':
+            await this.resetLoopSettingsForActiveSession();
+            break;
+          case 'setLoopDefaults':
+            if (data.settings && typeof data.settings === 'object') {
+              await this.setLoopWorkspaceDefaults(data.settings as LoopWorkspaceDefaultsInput);
+            } else {
+              this.postMessage({ type: 'loopDefaultsState', loopDefaults: this.getLoopDefaultsForUI() });
+            }
             break;
           case 'steerQueuedInput': {
             const id = typeof (data as any).id === 'string' ? String((data as any).id) : '';
-            if (!id) break;
-            await this.runner.steerQueuedInput(id);
+            try {
+              if (id) {
+                await this.runner.steerQueuedInput(id);
+              }
+            } finally {
+              this.queueManager.postState();
+            }
             break;
           }
           case 'abort':
-            // If we're blocked waiting for tool approval, resolve those promises so the agent can unwind.
-            this.rejectAllPendingApprovals('Canceled by user.');
-            this.agent.abort();
-            this.abortRequested = true;
-            this.markActiveStepStatus('canceled');
-            this.persistActiveSession();
+            this.abortCurrentRun();
             break;
           case 'approveAll':
             this.approveAllPendingApprovals({ includeManual: false });
@@ -592,8 +1574,17 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
               return;
             }
             break;
-          case 'pickModel':
-            await this.pickModel();
+          case 'refreshSettingsState':
+            await service.refreshSettingsState();
+            break;
+          case 'showModelPicker':
+            await this.postModelPickerState(true);
+            break;
+          case 'refreshModels':
+            await this.refreshModelsForUI();
+            break;
+          case 'clearRecentModels':
+            await this.clearRecentModels();
             break;
           case 'authenticateProvider':
             await service.authenticateProvider();
@@ -601,9 +1592,314 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
           case 'disconnectProvider':
             await service.disconnectProvider();
             break;
+          case 'switchProvider':
+            if (typeof data.providerId === 'string') {
+              await service.switchProvider(data.providerId);
+            } else {
+              await service.postProviderState();
+            }
+            break;
+          case 'setOpenAICompatibleSettings':
+            if (data.settings && typeof data.settings === 'object') {
+              await service.setOpenAICompatibleSettings(data.settings as Partial<OpenAICompatibleSettings>);
+            } else {
+              await service.refreshSettingsState();
+            }
+            break;
+          case 'setCodexSubscriptionSettings':
+            if (data.settings && typeof data.settings === 'object') {
+              await service.setCodexSubscriptionSettings(data.settings as Partial<CodexSubscriptionSettings>);
+            } else {
+              await service.refreshSettingsState();
+            }
+            break;
+          case 'setPlanFirst':
+            if (typeof data.enabled === 'boolean') {
+              await service.setPlanFirst(data.enabled);
+            } else {
+              await service.refreshSettingsState();
+            }
+            break;
+          case 'setAutoApprove':
+            if (typeof data.enabled === 'boolean') {
+              await service.setAutoApprove(data.enabled);
+            } else {
+              await service.refreshSettingsState();
+            }
+            break;
+          case 'setAllowExternalPaths':
+            if (typeof data.enabled === 'boolean') {
+              await service.setAllowExternalPaths(data.enabled);
+            } else {
+              await service.refreshSettingsState();
+            }
+            break;
+          case 'setBlockGitPush':
+            if (typeof data.enabled === 'boolean') {
+              await service.setBlockGitPush(data.enabled);
+            } else {
+              await service.refreshSettingsState();
+            }
+            break;
+          case 'setDebugSettings':
+            if (data.settings && typeof data.settings === 'object') {
+              await service.setDebugSettings(data.settings as Partial<DebugSettingsUi>);
+            } else {
+              await service.refreshSettingsState();
+            }
+            break;
+          case 'setPluginSettings':
+            if (data.settings && typeof data.settings === 'object') {
+              await service.setPluginSettings(data.settings as Partial<PluginSettings>);
+            } else {
+              await service.refreshSettingsState();
+            }
+            break;
+          case 'setToolRuntimeLimits':
+            if (data.limits && typeof data.limits === 'object') {
+              await service.setToolRuntimeLimits(data.limits as Partial<ToolRuntimeLimits>);
+            } else {
+              await service.refreshSettingsState();
+            }
+            break;
+          case 'setToolFilter':
+            if (Array.isArray(data.patterns) || typeof data.patterns === 'string') {
+              await service.setToolFilter(normalizeToolFilter(data.patterns));
+            } else {
+              await service.refreshSettingsState();
+            }
+            break;
+          case 'revokeAutoApprovedTool':
+            if (typeof data.toolId === 'string') {
+              await service.revokeAlwaysAllowedTool(data.toolId);
+            } else {
+              this.postMessage({ type: 'autoApprovedToolsState', autoApprovedTools: this.getAutoApprovedToolsForUI() });
+            }
+            break;
+          case 'clearAutoApprovedTools':
+            await service.clearAlwaysAllowedTools(data.confirmed === true);
+            break;
+          case 'setWorkspaceEnv':
+            if (data.env && typeof data.env === 'object') {
+              await service.setWorkspaceEnv(data.env as WorkspaceEnv);
+            } else {
+              await service.refreshSettingsState();
+            }
+            break;
+          case 'setInstructionPatterns':
+            if (Array.isArray(data.patterns) || typeof data.patterns === 'string') {
+              await service.setInstructionPatterns(normalizeInstructionPatterns(data.patterns));
+            } else {
+              await service.refreshSettingsState();
+            }
+            break;
+          case 'setInstructionFileSettings':
+            if (data.settings && typeof data.settings === 'object') {
+              await service.setInstructionFileSettings(data.settings as Partial<InstructionFileSettings>);
+            } else {
+              await service.refreshSettingsState();
+            }
+            break;
+          case 'setSkillsEnabled':
+            if (typeof data.enabled === 'boolean') {
+              await service.setSkillsEnabled(data.enabled);
+            } else {
+              await service.refreshSettingsState();
+            }
+            break;
+          case 'setSkillSearchPaths':
+            if (Array.isArray(data.paths) || typeof data.paths === 'string') {
+              await service.setSkillSearchPaths(normalizeSkillSearchPaths(data.paths));
+            } else {
+              await service.refreshSettingsState();
+            }
+            break;
+          case 'setSkillsBudget':
+            if (data.budget && typeof data.budget === 'object') {
+              await service.setSkillsBudget(data.budget as Partial<SkillsBudget>);
+            } else {
+              await service.refreshSettingsState();
+            }
+            break;
+          case 'setSessionsPersist':
+            if (typeof data.enabled === 'boolean') {
+              await service.setSessionsPersist(data.enabled);
+            } else {
+              await service.refreshSettingsState();
+            }
+            break;
+          case 'setSessionRetentionLimits':
+            if (data.limits && typeof data.limits === 'object') {
+              await service.setSessionRetentionLimits(data.limits as Partial<SessionRetentionLimits>);
+            } else {
+              await service.refreshSettingsState();
+            }
+            break;
+          case 'setShowThinking':
+            if (typeof data.enabled === 'boolean') {
+              await service.setShowThinking(data.enabled);
+            } else {
+              await service.refreshSettingsState();
+            }
+            break;
+          case 'setMemoriesFeatureEnabled':
+            if (typeof data.enabled === 'boolean') {
+              await service.setMemoriesFeatureEnabled(data.enabled);
+            } else {
+              await service.refreshSettingsState();
+            }
+            break;
+          case 'setMemoryAutoRecall':
+            if (typeof data.enabled === 'boolean') {
+              await service.setMemoryAutoRecall(data.enabled);
+            } else {
+              await service.refreshSettingsState();
+            }
+            break;
+          case 'setMemoryAutoRecallBudget':
+            if (data.budget && typeof data.budget === 'object') {
+              await service.setMemoryAutoRecallBudget(data.budget as Partial<MemoryAutoRecallBudget>);
+            } else {
+              await service.refreshSettingsState();
+            }
+            break;
+          case 'setMemoryAutoRecallFilters':
+            if (data.filters && typeof data.filters === 'object') {
+              await service.setMemoryAutoRecallFilters(data.filters as Partial<MemoryAutoRecallFilters>);
+            } else {
+              await service.refreshSettingsState();
+            }
+            break;
+          case 'setMemoryAdvancedLimits':
+            if (data.limits && typeof data.limits === 'object') {
+              await service.setMemoryAdvancedLimits(data.limits as Partial<MemoryAdvancedLimits>);
+            } else {
+              await service.refreshSettingsState();
+            }
+            break;
+          case 'updateMemories':
+            await service.updateMemoriesNow();
+            break;
+          case 'dropMemories':
+            await service.dropMemoriesNow(data.confirmed === true);
+            break;
+          case 'showLogs':
+            try {
+              service.showLogs();
+            } finally {
+              this.postMessage({ type: 'logsActionState', pending: false });
+            }
+            break;
+          case 'listTools':
+            await service.listTools();
+            break;
+          case 'runTool':
+            await service.runTool(
+              typeof data.toolId === 'string' ? data.toolId : undefined,
+              data.args && typeof data.args === 'object' ? data.args as Record<string, unknown> : undefined,
+              data.confirmed === true
+            );
+            break;
+          case 'createToolsConfig':
+            await service.createToolsConfig();
+            break;
+          case 'openOffice':
+            try {
+              await service.openOffice();
+            } finally {
+              this.postMessage({ type: 'officeActionState', action: 'openOffice', pending: false });
+            }
+            break;
+          case 'resetOfficeLayout':
+            try {
+              await service.resetOfficeLayout();
+            } finally {
+              this.postMessage({ type: 'officeActionState', action: 'resetOfficeLayout', pending: false });
+            }
+            break;
+          case 'setExplorePrepass':
+            if (typeof data.enabled === 'boolean') {
+              await service.setExplorePrepass(data.enabled);
+            } else {
+              await service.refreshSettingsState();
+            }
+            break;
+          case 'setExplorePrepassMaxChars':
+            if (typeof data.maxChars === 'number') {
+              await service.setExplorePrepassMaxChars(data.maxChars);
+            } else {
+              await service.refreshSettingsState();
+            }
+            break;
+          case 'setSubagentModelOverride':
+            if (typeof data.model === 'string') {
+              await service.setSubagentModelOverride(data.model);
+            } else {
+              await service.refreshSettingsState();
+            }
+            break;
+          case 'setSubagentTaskMaxOutputChars':
+            if (typeof data.maxChars === 'number') {
+              await service.setSubagentTaskMaxOutputChars(data.maxChars);
+            } else {
+              await service.refreshSettingsState();
+            }
+            break;
+          case 'setAutoCompaction':
+            if (typeof data.enabled === 'boolean') {
+              await service.setAutoCompaction(data.enabled);
+            } else {
+              await service.refreshSettingsState();
+            }
+            break;
+          case 'setCompactionPruneSettings':
+            if (data.settings && typeof data.settings === 'object') {
+              await service.setCompactionPruneSettings(data.settings as Partial<CompactionPruneSettings>);
+            } else {
+              await service.refreshSettingsState();
+            }
+            break;
+          case 'setCompactionToolOutputMode':
+            if (typeof data.mode === 'string') {
+              await service.setCompactionToolOutputMode(data.mode);
+            } else {
+              await service.refreshSettingsState();
+            }
+            break;
+          case 'setModelLimits':
+            if (data.limits && typeof data.limits === 'object') {
+              await service.setModelLimits(data.limits as ModelLimits);
+            } else {
+              await service.refreshSettingsState();
+            }
+            break;
+          case 'setGenerationSettings':
+            if (data.settings && typeof data.settings === 'object') {
+              await service.setGenerationSettings(data.settings as Partial<GenerationSettings>);
+            } else {
+              await service.refreshSettingsState();
+            }
+            break;
           case 'changeModel':
             if (typeof data.model === 'string') {
               await this.setCurrentModel(data.model);
+            } else {
+              await this.postModelState();
+              await this.postModelPickerState(false);
+            }
+            break;
+          case 'setReasoningEffort':
+            if (typeof data.reasoningEffort === 'string') {
+              await this.setReasoningEffort(data.reasoningEffort);
+            } else {
+              await this.postModelState();
+            }
+            break;
+          case 'openAdvancedModelSettings':
+            try {
+              await this.openAdvancedModelSettings();
+            } finally {
+              this.postMessage({ type: 'advancedModelSettingsState', pending: false });
             }
             break;
           case 'toggleFavoriteModel': {
@@ -613,47 +1909,63 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
                 : this.currentModel;
             if (modelId) {
               await this.toggleFavoriteModel(modelId);
+            } else {
+              await this.postModelState();
+              await this.postModelPickerState(false);
             }
             break;
           }
-          case 'changeMode':
+          case 'changeMode': {
+            const postCurrentMode = () => this.postMessage({ type: 'modeChanged', mode: this.mode });
             if (this.isProcessing) {
-              vscode.window.showInformationMessage(
-                'LingYun: Stop the current task before switching modes.'
-              );
+              postInputNotice(this, 'Stop the current task before switching modes.');
+              postCurrentMode();
               break;
             }
-            if (data.mode !== 'plan' && data.mode !== 'build') break;
+            if (data.mode !== 'plan' && data.mode !== 'build') {
+              postCurrentMode();
+              break;
+            }
             if (data.mode === 'build') {
               const pendingPlan = this.getActiveSession().pendingPlan;
               if (pendingPlan) {
+                postCurrentMode();
                 await this.executePendingPlan(pendingPlan.planMessageId);
                 break;
               }
             }
+            if (data.mode === this.mode) {
+              postCurrentMode();
+              break;
+            }
             await this.setModeAndPersist(data.mode);
             break;
+          }
           case 'executePlan':
             await this.executePendingPlan(
               typeof data.planMessageId === 'string' ? data.planMessageId : undefined
             );
             break;
-          case 'cancelPlan':
-            if (this.getActiveSession().pendingPlan?.planMessageId === data.planMessageId) {
-              const choice = await vscode.window.showWarningMessage(
-                'Cancel this plan?',
-                { modal: true },
-                'Cancel Plan'
-              );
-              if (choice !== 'Cancel Plan') return;
+          case 'cancelPlan': {
+            const pendingPlan = this.getActiveSession().pendingPlan;
+            if (pendingPlan?.planMessageId === data.planMessageId && data.confirmed !== true) {
+              this.postMessage({ type: 'planPending', value: true, planMessageId: pendingPlan?.planMessageId ?? '' });
+              break;
             }
-            await this.cancelPendingPlan(data.planMessageId);
+            await this.cancelPendingPlan(typeof data.planMessageId === 'string' ? data.planMessageId : '');
             break;
+          }
           case 'revisePlan':
             {
               const pendingPlan = this.getActiveSession().pendingPlan;
-              if (!pendingPlan) return;
-              if (pendingPlan.planMessageId !== data.planMessageId) return;
+              if (!pendingPlan || pendingPlan.planMessageId !== data.planMessageId) {
+                this.postMessage({
+                  type: 'planPending',
+                  value: !!pendingPlan,
+                  planMessageId: pendingPlan?.planMessageId ?? '',
+                });
+                break;
+              }
             }
 
             if (typeof data.instructions === 'string' && data.instructions.trim()) {
@@ -661,18 +1973,12 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
               return;
             }
 
-            {
-              const instructions = await vscode.window.showInputBox({
-                title: 'Revise plan',
-                prompt: 'Answer the plan questions or add constraints',
-                placeHolder: 'e.g. Use TypeScript, keep changes minimal, focus on UI streaming, …',
-                ignoreFocusOut: true,
-              });
-
-              if (instructions && instructions.trim()) {
-                await this.revisePendingPlan(data.planMessageId, instructions.trim());
-              }
-            }
+            postInputNotice(this, 'Type plan revisions in the chat input, then press Enter or click Revise again.');
+            this.postMessage({
+              type: 'setInput',
+              value: '',
+              placeholder: 'Type plan revisions or answer questions, then press Enter or click Revise again…',
+            });
             break;
           case 'approveToolCall':
             this.handleApprovalResponse(data.approvalId, true);
@@ -683,11 +1989,15 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
           case 'retryTool':
             if (typeof data.approvalId === 'string' && data.approvalId.trim()) {
               await this.retryToolCall(data.approvalId.trim());
+            } else {
+              this.postMessage({ type: 'processing', value: this.isProcessing });
             }
             break;
           case 'alwaysAllowTool': {
             if (typeof data.approvalId === 'string' && data.approvalId.trim()) {
               await this.handleAlwaysAllowApproval(data.approvalId.trim());
+            } else {
+              this.postApprovalState();
             }
             break;
           }
@@ -696,6 +2006,12 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
             handleWebviewCrashMessage(this, message?.error);
             break;
           }
+        }
+        } catch (error) {
+          appendErrorLog(this.outputChannel, `Failed to handle webview message: ${messageType}`, error, { tag: 'Webview' });
+          postInputNotice(this, 'That chat UI action failed. See logs for details.');
+          await service.refreshSettingsState().catch(() => {});
+          this.postMessage({ type: 'processing', value: this.isProcessing });
         }
       })
     );
@@ -768,6 +2084,17 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
     }
   },
 
+  async refreshSettingsState(this: ChatWebviewRuntime): Promise<void> {
+    if (!this.view) return;
+
+    try {
+      this.skillNamesForUiPromise = undefined;
+      this.postMessage(await buildWebviewSettingsStateMessage(this));
+    } catch (error) {
+      appendErrorLog(this.outputChannel, 'Failed to refresh chat settings state', error, { tag: 'Webview' });
+    }
+  },
+
   async getProviderAuthStateForUI(this: ChatWebviewRuntime): Promise<ProviderAuthUiState> {
     const provider = this.llmProvider;
     const providerId = typeof provider?.id === 'string' ? provider.id : '';
@@ -812,38 +2139,1488 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
 
   async postProviderState(this: ChatWebviewRuntime): Promise<void> {
     const providerAuth = await service.getProviderAuthStateForUI();
-    this.postMessage({ type: 'providerState', providerAuth });
+    this.postMessage({ type: 'providerState', currentProviderId: getConfiguredLlmProviderId(), providerAuth });
+  },
+
+  async switchProvider(this: ChatWebviewRuntime, providerId: string): Promise<void> {
+    if (this.isProcessing) {
+      postInputNotice(this, 'Stop the current task before switching providers.');
+      await service.postProviderState();
+      return;
+    }
+
+    const normalized = normalizeLlmProviderId(providerId);
+    if (!normalized) {
+      postInputNotice(this, 'Unsupported provider.');
+      await service.postProviderState();
+      return;
+    }
+
+    if (normalized === getConfiguredLlmProviderId()) {
+      await service.postProviderState();
+      return;
+    }
+
+    try {
+      await vscode.workspace.getConfiguration('lingyun').update('llmProvider', normalized, true);
+      this.postMessage({ type: 'providerState', currentProviderId: normalized, providerAuth: await service.getProviderAuthStateForUI() });
+    } catch (error) {
+      appendErrorLog(this.outputChannel, 'Failed to persist provider setting', error, { tag: 'Webview' });
+      postInputNotice(this, 'Failed to switch provider. See logs for details.');
+      await service.postProviderState();
+    }
+  },
+
+  async setOpenAICompatibleSettings(this: ChatWebviewRuntime, settings: Partial<OpenAICompatibleSettings>): Promise<void> {
+    const postCurrentState = async () => {
+      this.postMessage({
+        type: 'openAICompatibleSettingsState',
+        openAICompatibleSettings: getOpenAICompatibleSettings(),
+        currentProviderId: getConfiguredLlmProviderId(),
+        providerAuth: await service.getProviderAuthStateForUI(),
+      });
+    };
+
+    if (this.isProcessing) {
+      postInputNotice(this, 'Stop the current task before changing OpenAI-compatible provider settings.');
+      await postCurrentState();
+      return;
+    }
+
+    const current = getOpenAICompatibleSettings();
+    const raw = settings && typeof settings === 'object' ? settings as Record<string, unknown> : {};
+    const displayNamesValidationError = Object.prototype.hasOwnProperty.call(raw, 'modelDisplayNames')
+      ? getOpenAICompatibleModelDisplayNamesValidationError(raw.modelDisplayNames)
+      : undefined;
+    if (displayNamesValidationError) {
+      postInputNotice(this, displayNamesValidationError);
+      await postCurrentState();
+      return;
+    }
+
+    const next: OpenAICompatibleSettings = {
+      baseURL: Object.prototype.hasOwnProperty.call(raw, 'baseURL')
+        ? normalizeOpenAICompatibleText(raw.baseURL, 500)
+        : current.baseURL,
+      defaultModelId: Object.prototype.hasOwnProperty.call(raw, 'defaultModelId')
+        ? normalizeOpenAICompatibleText(raw.defaultModelId, 200)
+        : current.defaultModelId,
+      apiKeyEnv: Object.prototype.hasOwnProperty.call(raw, 'apiKeyEnv')
+        ? (normalizeOpenAICompatibleText(raw.apiKeyEnv, 120) || 'OPENAI_API_KEY')
+        : current.apiKeyEnv,
+      modelDisplayNames: Object.prototype.hasOwnProperty.call(raw, 'modelDisplayNames')
+        ? normalizeOpenAICompatibleModelDisplayNames(raw.modelDisplayNames)
+        : current.modelDisplayNames,
+    };
+
+    if (next.baseURL && !/^https?:\/\//i.test(next.baseURL)) {
+      postInputNotice(this, 'OpenAI-compatible base URL must start with http:// or https://.');
+      await postCurrentState();
+      return;
+    }
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(next.apiKeyEnv)) {
+      postInputNotice(this, 'API key environment variable must be a valid environment variable name.');
+      await postCurrentState();
+      return;
+    }
+
+    try {
+      const config = vscode.workspace.getConfiguration('lingyun');
+      await config.update('openaiCompatible.baseURL', next.baseURL, true);
+      await config.update('openaiCompatible.defaultModelId', next.defaultModelId, true);
+      await config.update('openaiCompatible.apiKeyEnv', next.apiKeyEnv, true);
+      await config.update('openaiCompatible.modelDisplayNames', next.modelDisplayNames, true);
+      this.postMessage({
+        type: 'openAICompatibleSettingsState',
+        openAICompatibleSettings: next,
+        currentProviderId: getConfiguredLlmProviderId(),
+        providerAuth: await service.getProviderAuthStateForUI(),
+      });
+    } catch (error) {
+      appendErrorLog(this.outputChannel, 'Failed to persist OpenAI-compatible provider settings', error, { tag: 'Webview' });
+      postInputNotice(this, 'Failed to update OpenAI-compatible provider settings. See logs for details.');
+      await postCurrentState();
+    }
+  },
+
+  async setCodexSubscriptionSettings(this: ChatWebviewRuntime, settings: Partial<CodexSubscriptionSettings>): Promise<void> {
+    const postCurrentState = async () => {
+      this.postMessage({
+        type: 'codexSubscriptionSettingsState',
+        codexSubscriptionSettings: getCodexSubscriptionSettings(),
+        currentProviderId: getConfiguredLlmProviderId(),
+        providerAuth: await service.getProviderAuthStateForUI(),
+      });
+    };
+
+    if (this.isProcessing) {
+      postInputNotice(this, 'Stop the current task before changing Codex subscription provider settings.');
+      await postCurrentState();
+      return;
+    }
+
+    const current = getCodexSubscriptionSettings();
+    const raw = settings && typeof settings === 'object' ? settings as Record<string, unknown> : {};
+    if (Object.prototype.hasOwnProperty.call(raw, 'defaultModelId') && typeof raw.defaultModelId !== 'string') {
+      postInputNotice(this, 'Codex subscription default model must be a string.');
+      await postCurrentState();
+      return;
+    }
+
+    const next: CodexSubscriptionSettings = {
+      defaultModelId: Object.prototype.hasOwnProperty.call(raw, 'defaultModelId')
+        ? (normalizeOpenAICompatibleText(raw.defaultModelId, 200) || 'gpt-5.3-codex')
+        : current.defaultModelId,
+    };
+
+    try {
+      await vscode.workspace.getConfiguration('lingyun').update('codexSubscription.defaultModelId', next.defaultModelId, true);
+      this.postMessage({
+        type: 'codexSubscriptionSettingsState',
+        codexSubscriptionSettings: next,
+        currentProviderId: getConfiguredLlmProviderId(),
+        providerAuth: await service.getProviderAuthStateForUI(),
+      });
+    } catch (error) {
+      appendErrorLog(this.outputChannel, 'Failed to persist Codex subscription provider settings', error, { tag: 'Webview' });
+      postInputNotice(this, 'Failed to update Codex subscription provider settings. See logs for details.');
+      await postCurrentState();
+    }
+  },
+
+  async setPlanFirst(this: ChatWebviewRuntime, enabled: boolean): Promise<void> {
+    if (this.isProcessing) {
+      postInputNotice(this, 'Stop the current task before changing plan-first behavior.');
+      this.postMessage({ type: 'planFirstState', planFirst: getPlanFirstEnabled() });
+      return;
+    }
+
+    try {
+      await vscode.workspace.getConfiguration('lingyun').update('planFirst', !!enabled, true);
+      this.postMessage({ type: 'planFirstState', planFirst: !!enabled });
+    } catch (error) {
+      appendErrorLog(this.outputChannel, 'Failed to persist plan-first setting', error, { tag: 'Webview' });
+      postInputNotice(this, 'Failed to update plan-first behavior. See logs for details.');
+      this.postMessage({ type: 'planFirstState', planFirst: getPlanFirstEnabled() });
+    }
+  },
+
+  async setAutoApprove(this: ChatWebviewRuntime, enabled: boolean): Promise<void> {
+    if (this.isProcessing) {
+      postInputNotice(this, 'Stop the current task before changing tool safety behavior.');
+      this.postMessage({ type: 'autoApproveState', autoApprove: getAutoApproveEnabled() });
+      return;
+    }
+
+    try {
+      await vscode.workspace.getConfiguration('lingyun').update('autoApprove', !!enabled, true);
+      this.postMessage({ type: 'autoApproveState', autoApprove: !!enabled });
+    } catch (error) {
+      appendErrorLog(this.outputChannel, 'Failed to persist auto-approve setting', error, { tag: 'Webview' });
+      postInputNotice(this, 'Failed to update tool safety behavior. See logs for details.');
+      this.postMessage({ type: 'autoApproveState', autoApprove: getAutoApproveEnabled() });
+    }
+  },
+
+  async setAllowExternalPaths(this: ChatWebviewRuntime, enabled: boolean): Promise<void> {
+    if (this.isProcessing) {
+      postInputNotice(this, 'Stop the current task before changing external path access.');
+      this.postMessage({ type: 'allowExternalPathsState', allowExternalPaths: getAllowExternalPathsEnabled() });
+      return;
+    }
+
+    try {
+      await vscode.workspace.getConfiguration('lingyun').update('security.allowExternalPaths', !!enabled, true);
+      this.postMessage({ type: 'allowExternalPathsState', allowExternalPaths: !!enabled });
+    } catch (error) {
+      appendErrorLog(this.outputChannel, 'Failed to persist external path access setting', error, { tag: 'Webview' });
+      postInputNotice(this, 'Failed to update external path access. See logs for details.');
+      this.postMessage({ type: 'allowExternalPathsState', allowExternalPaths: getAllowExternalPathsEnabled() });
+    }
+  },
+
+  async setBlockGitPush(this: ChatWebviewRuntime, enabled: boolean): Promise<void> {
+    if (this.isProcessing) {
+      postInputNotice(this, 'Stop the current task before changing git push protection.');
+      this.postMessage({ type: 'blockGitPushState', blockGitPush: getBlockGitPushEnabled() });
+      return;
+    }
+
+    try {
+      await vscode.workspace.getConfiguration('lingyun').update('security.blockGitPush', !!enabled, true);
+      this.postMessage({ type: 'blockGitPushState', blockGitPush: !!enabled });
+    } catch (error) {
+      appendErrorLog(this.outputChannel, 'Failed to persist git push protection setting', error, { tag: 'Webview' });
+      postInputNotice(this, 'Failed to update git push protection. See logs for details.');
+      this.postMessage({ type: 'blockGitPushState', blockGitPush: getBlockGitPushEnabled() });
+    }
+  },
+
+  async setDebugSettings(this: ChatWebviewRuntime, settings: Partial<DebugSettingsUi>): Promise<void> {
+    const postCurrentState = () => this.postMessage({ type: 'debugSettingsState', debugSettings: getDebugSettingsForUi() });
+
+    if (this.isProcessing) {
+      postInputNotice(this, 'Stop the current task before changing diagnostics logging.');
+      postCurrentState();
+      return;
+    }
+
+    const normalized = normalizeDebugSettings(settings);
+    try {
+      const config = vscode.workspace.getConfiguration('lingyun');
+      await config.update('debug.details', normalized.details, true);
+      await config.update('debug.llm', normalized.llm, true);
+      await config.update('debug.tools', normalized.tools, true);
+      await config.update('debug.plugins', normalized.plugins, true);
+      this.postMessage({ type: 'debugSettingsState', debugSettings: normalized });
+    } catch (error) {
+      appendErrorLog(this.outputChannel, 'Failed to persist diagnostics logging settings', error, { tag: 'Webview' });
+      postInputNotice(this, 'Failed to update diagnostics logging. See logs for details.');
+      postCurrentState();
+    }
+  },
+
+  async setPluginSettings(this: ChatWebviewRuntime, settings: Partial<PluginSettings>): Promise<void> {
+    const postCurrentState = () => this.postMessage({ type: 'pluginSettingsState', pluginSettings: getPluginSettings() });
+
+    if (this.isProcessing) {
+      postInputNotice(this, 'Stop the current task before changing plugin loading behavior.');
+      postCurrentState();
+      return;
+    }
+
+    const current = getPluginSettings();
+    const raw = settings && typeof settings === 'object' ? (settings as Record<string, unknown>) : {};
+    const next: PluginSettings = {
+      plugins: Object.prototype.hasOwnProperty.call(raw, 'plugins')
+        ? normalizePluginSpecs(raw.plugins)
+        : current.plugins,
+      autoDiscover: typeof raw.autoDiscover === 'boolean' ? raw.autoDiscover : current.autoDiscover,
+      workspaceDir: Object.prototype.hasOwnProperty.call(raw, 'workspaceDir')
+        ? normalizePluginWorkspaceDir(raw.workspaceDir)
+        : current.workspaceDir,
+    };
+
+    if (next.plugins.some(spec => spec.length > 240)) {
+      postInputNotice(this, 'Plugin module specs must be 240 characters or shorter.');
+      postCurrentState();
+      return;
+    }
+    if (next.workspaceDir.length > 120) {
+      postInputNotice(this, 'Plugin workspace directory must be 120 characters or shorter.');
+      postCurrentState();
+      return;
+    }
+
+    try {
+      const config = vscode.workspace.getConfiguration('lingyun');
+      await config.update('plugins', next.plugins, true);
+      await config.update('plugins.autoDiscover', next.autoDiscover, true);
+      await config.update('plugins.workspaceDir', next.workspaceDir, true);
+      this.postMessage({ type: 'pluginSettingsState', pluginSettings: next });
+    } catch (error) {
+      appendErrorLog(this.outputChannel, 'Failed to persist plugin settings', error, { tag: 'Webview' });
+      postInputNotice(this, 'Failed to update plugin settings. See logs for details.');
+      postCurrentState();
+    }
+  },
+
+  async setToolRuntimeLimits(this: ChatWebviewRuntime, limits: Partial<ToolRuntimeLimits>): Promise<void> {
+    const postCurrentState = () => this.postMessage({ type: 'toolRuntimeLimitsState', toolRuntimeLimits: getToolRuntimeLimits() });
+    if (this.isProcessing) {
+      postInputNotice(this, 'Stop the current task before changing tool runtime limits.');
+      postCurrentState();
+      return;
+    }
+
+    const current = getToolRuntimeLimits();
+    const next: ToolRuntimeLimits = {
+      toolTimeoutMs: Number(limits.toolTimeoutMs ?? current.toolTimeoutMs),
+      readMaxLines: Number(limits.readMaxLines ?? current.readMaxLines),
+      bashBackgroundTtlMs: Number(limits.bashBackgroundTtlMs ?? current.bashBackgroundTtlMs),
+      bashBackgroundCaptureMs: Number(limits.bashBackgroundCaptureMs ?? current.bashBackgroundCaptureMs),
+      bashBackgroundCaptureLines: Number(limits.bashBackgroundCaptureLines ?? current.bashBackgroundCaptureLines),
+      workspaceShellTimeoutMs: Number(limits.workspaceShellTimeoutMs ?? current.workspaceShellTimeoutMs),
+      httpTimeoutMs: Number(limits.httpTimeoutMs ?? current.httpTimeoutMs),
+    };
+
+    if (
+      !Number.isFinite(next.toolTimeoutMs) || next.toolTimeoutMs < 0 ||
+      !Number.isFinite(next.readMaxLines) || next.readMaxLines < 1 ||
+      !Number.isFinite(next.bashBackgroundTtlMs) || next.bashBackgroundTtlMs < 0 ||
+      !Number.isFinite(next.bashBackgroundCaptureMs) || next.bashBackgroundCaptureMs < 0 ||
+      !Number.isFinite(next.bashBackgroundCaptureLines) || next.bashBackgroundCaptureLines < 0 ||
+      !Number.isFinite(next.workspaceShellTimeoutMs) || next.workspaceShellTimeoutMs < 0 ||
+      !Number.isFinite(next.httpTimeoutMs) || next.httpTimeoutMs < 0
+    ) {
+      postInputNotice(this, 'Tool runtime limits must be non-negative, and Read max lines must be at least 1.');
+      postCurrentState();
+      return;
+    }
+
+    const normalized: ToolRuntimeLimits = {
+      toolTimeoutMs: Math.floor(next.toolTimeoutMs),
+      readMaxLines: Math.floor(next.readMaxLines),
+      bashBackgroundTtlMs: Math.floor(next.bashBackgroundTtlMs),
+      bashBackgroundCaptureMs: Math.floor(next.bashBackgroundCaptureMs),
+      bashBackgroundCaptureLines: Math.floor(next.bashBackgroundCaptureLines),
+      workspaceShellTimeoutMs: Math.floor(next.workspaceShellTimeoutMs),
+      httpTimeoutMs: Math.floor(next.httpTimeoutMs),
+    };
+
+    try {
+      const config = vscode.workspace.getConfiguration('lingyun');
+      await config.update('toolTimeoutMs', normalized.toolTimeoutMs, true);
+      await config.update('tools.read.maxLines', normalized.readMaxLines, true);
+      await config.update('tools.bash.backgroundTtlMs', normalized.bashBackgroundTtlMs, true);
+      await config.update('tools.bash.backgroundCaptureMs', normalized.bashBackgroundCaptureMs, true);
+      await config.update('tools.bash.backgroundCaptureLines', normalized.bashBackgroundCaptureLines, true);
+      await config.update('tools.workspaceShell.timeoutMs', normalized.workspaceShellTimeoutMs, true);
+      await config.update('tools.http.timeoutMs', normalized.httpTimeoutMs, true);
+      this.postMessage({ type: 'toolRuntimeLimitsState', toolRuntimeLimits: normalized });
+    } catch (error) {
+      appendErrorLog(this.outputChannel, 'Failed to persist tool runtime limits', error, { tag: 'Webview' });
+      postInputNotice(this, 'Failed to update tool runtime limits. See logs for details.');
+      postCurrentState();
+    }
+  },
+
+  async setToolFilter(this: ChatWebviewRuntime, patterns: ToolFilter): Promise<void> {
+    const postCurrentState = () => this.postMessage({ type: 'toolFilterState', toolFilter: getToolFilter() });
+
+    if (this.isProcessing) {
+      postInputNotice(this, 'Stop the current task before changing tool availability.');
+      postCurrentState();
+      return;
+    }
+
+    const normalized = normalizeToolFilter(patterns);
+    if (normalized.some(pattern => pattern.length > 120)) {
+      postInputNotice(this, 'Tool filter patterns must be 120 characters or shorter.');
+      postCurrentState();
+      return;
+    }
+
+    try {
+      await vscode.workspace.getConfiguration('lingyun').update('toolFilter', normalized, true);
+      this.postMessage({ type: 'toolFilterState', toolFilter: normalized, toolsCatalog: await buildToolCatalogForUI() });
+    } catch (error) {
+      appendErrorLog(this.outputChannel, 'Failed to persist tool filter setting', error, { tag: 'Webview' });
+      postInputNotice(this, 'Failed to update tool availability. See logs for details.');
+      postCurrentState();
+    }
+  },
+
+  async revokeAlwaysAllowedTool(this: ChatWebviewRuntime, toolId: string): Promise<void> {
+    const postCurrentState = () => this.postMessage({ type: 'autoApprovedToolsState', autoApprovedTools: this.getAutoApprovedToolsForUI() });
+
+    if (this.isProcessing) {
+      postInputNotice(this, 'Stop the current task before changing always-allowed tools.');
+      postCurrentState();
+      return;
+    }
+
+    const normalizedToolId = typeof toolId === 'string' ? toolId.trim() : '';
+    if (!normalizedToolId) {
+      postInputNotice(this, 'Choose an always-allowed tool to revoke.');
+      postCurrentState();
+      return;
+    }
+
+    try {
+      await this.revokeAutoApprovedTool(normalizedToolId);
+      postCurrentState();
+    } catch (error) {
+      appendErrorLog(this.outputChannel, 'Failed to revoke always-allowed tool', error, { tag: 'Webview' });
+      postInputNotice(this, 'Failed to revoke always-allowed tool. See logs for details.');
+      postCurrentState();
+    }
+  },
+
+  async clearAlwaysAllowedTools(this: ChatWebviewRuntime, confirmed?: boolean): Promise<void> {
+    const postCurrentState = () => this.postMessage({ type: 'autoApprovedToolsState', autoApprovedTools: this.getAutoApprovedToolsForUI() });
+
+    if (this.isProcessing) {
+      postInputNotice(this, 'Stop the current task before clearing always-allowed tools.');
+      postCurrentState();
+      return;
+    }
+
+    if (this.getAutoApprovedToolsForUI().length === 0 || confirmed !== true) {
+      postCurrentState();
+      return;
+    }
+
+    try {
+      await this.clearAutoApprovedToolsForUI();
+      postCurrentState();
+    } catch (error) {
+      appendErrorLog(this.outputChannel, 'Failed to clear always-allowed tools', error, { tag: 'Webview' });
+      postInputNotice(this, 'Failed to clear always-allowed tools. See logs for details.');
+      postCurrentState();
+    }
+  },
+
+  async setWorkspaceEnv(this: ChatWebviewRuntime, env: WorkspaceEnv): Promise<void> {
+    const postCurrentState = () => this.postMessage({ type: 'workspaceEnvState', workspaceEnv: getWorkspaceEnv() });
+
+    if (this.isProcessing) {
+      postInputNotice(this, 'Stop the current task before changing workspace tool environment variables.');
+      postCurrentState();
+      return;
+    }
+
+    const validationError = getWorkspaceEnvValidationError(env);
+    if (validationError) {
+      postInputNotice(this, validationError);
+      postCurrentState();
+      return;
+    }
+
+    const normalized = normalizeWorkspaceEnv(env);
+    try {
+      await vscode.workspace.getConfiguration('lingyun').update('env', normalized, true);
+      this.postMessage({ type: 'workspaceEnvState', workspaceEnv: normalized });
+    } catch (error) {
+      appendErrorLog(this.outputChannel, 'Failed to persist workspace tool environment variables', error, { tag: 'Webview' });
+      postInputNotice(this, 'Failed to update workspace tool environment variables. See logs for details.');
+      postCurrentState();
+    }
+  },
+
+  async setInstructionPatterns(this: ChatWebviewRuntime, patterns: InstructionPatterns): Promise<void> {
+    const postCurrentState = () => this.postMessage({ type: 'instructionPatternsState', instructionPatterns: getInstructionPatterns() });
+
+    if (this.isProcessing) {
+      postInputNotice(this, 'Stop the current task before changing instruction files.');
+      postCurrentState();
+      return;
+    }
+
+    const normalized = normalizeInstructionPatterns(patterns);
+    if (normalized.some(pattern => pattern.length > 240)) {
+      postInputNotice(this, 'Instruction paths and glob patterns must be 240 characters or shorter.');
+      postCurrentState();
+      return;
+    }
+
+    try {
+      await vscode.workspace.getConfiguration('lingyun').update('instructions', normalized, true);
+      this.postMessage({ type: 'instructionPatternsState', instructionPatterns: normalized });
+    } catch (error) {
+      appendErrorLog(this.outputChannel, 'Failed to persist instruction pattern setting', error, { tag: 'Webview' });
+      postInputNotice(this, 'Failed to update instruction files. See logs for details.');
+      postCurrentState();
+    }
+  },
+
+  async setInstructionFileSettings(this: ChatWebviewRuntime, settings: Partial<InstructionFileSettings>): Promise<void> {
+    const postCurrentState = () => this.postMessage({ type: 'instructionFileSettingsState', instructionFileSettings: getInstructionFileSettings() });
+
+    if (this.isProcessing) {
+      postInputNotice(this, 'Stop the current task before changing instruction file loading.');
+      postCurrentState();
+      return;
+    }
+
+    const current = getInstructionFileSettings();
+    const includeGlobal = typeof settings.includeGlobal === 'boolean' ? settings.includeGlobal : current.includeGlobal;
+    const maxCharsPerFile = Number(settings.maxCharsPerFile ?? current.maxCharsPerFile);
+    const maxTotalChars = Number(settings.maxTotalChars ?? current.maxTotalChars);
+
+    if (
+      !Number.isFinite(maxCharsPerFile) || maxCharsPerFile < 1000 ||
+      !Number.isFinite(maxTotalChars) || maxTotalChars < 1000
+    ) {
+      postInputNotice(this, 'Instruction file character limits must be at least 1000.');
+      postCurrentState();
+      return;
+    }
+
+    const normalized: InstructionFileSettings = {
+      includeGlobal,
+      maxCharsPerFile: Math.floor(maxCharsPerFile),
+      maxTotalChars: Math.floor(maxTotalChars),
+    };
+
+    try {
+      const config = vscode.workspace.getConfiguration('lingyun');
+      await config.update('instructionFiles.includeGlobal', normalized.includeGlobal, true);
+      await config.update('instructionFiles.maxCharsPerFile', normalized.maxCharsPerFile, true);
+      await config.update('instructionFiles.maxTotalChars', normalized.maxTotalChars, true);
+      this.postMessage({ type: 'instructionFileSettingsState', instructionFileSettings: normalized });
+    } catch (error) {
+      appendErrorLog(this.outputChannel, 'Failed to persist instruction file loading settings', error, { tag: 'Webview' });
+      postInputNotice(this, 'Failed to update instruction file loading. See logs for details.');
+      postCurrentState();
+    }
+  },
+
+  async setSkillsEnabled(this: ChatWebviewRuntime, enabled: boolean): Promise<void> {
+    if (this.isProcessing) {
+      postInputNotice(this, 'Stop the current task before changing skills behavior.');
+      this.postMessage({
+        type: 'skillsEnabledState',
+        skillsEnabled: getSkillsEnabled(),
+        skills: await this.getSkillNamesForUI(),
+      });
+      return;
+    }
+
+    try {
+      await vscode.workspace.getConfiguration('lingyun').update('skills.enabled', !!enabled, true);
+      this.skillNamesForUiPromise = undefined;
+      this.postMessage({
+        type: 'skillsEnabledState',
+        skillsEnabled: !!enabled,
+        skills: await this.getSkillNamesForUI(),
+      });
+    } catch (error) {
+      appendErrorLog(this.outputChannel, 'Failed to persist skills enabled setting', error, { tag: 'Webview' });
+      postInputNotice(this, 'Failed to update skills behavior. See logs for details.');
+      this.skillNamesForUiPromise = undefined;
+      this.postMessage({
+        type: 'skillsEnabledState',
+        skillsEnabled: getSkillsEnabled(),
+        skills: await this.getSkillNamesForUI(),
+      });
+    }
+  },
+
+  async setSkillSearchPaths(this: ChatWebviewRuntime, paths: SkillSearchPaths): Promise<void> {
+    const postCurrentState = async () => this.postMessage({
+      type: 'skillSearchPathsState',
+      skillSearchPaths: getSkillSearchPaths(),
+      skills: await this.getSkillNamesForUI(),
+    });
+
+    if (this.isProcessing) {
+      postInputNotice(this, 'Stop the current task before changing skill search paths.');
+      await postCurrentState();
+      return;
+    }
+
+    const normalized = normalizeSkillSearchPaths(paths);
+    if (normalized.some(pathValue => pathValue.length > 240)) {
+      postInputNotice(this, 'Skill search paths must be 240 characters or shorter.');
+      await postCurrentState();
+      return;
+    }
+
+    try {
+      await vscode.workspace.getConfiguration('lingyun').update('skills.paths', normalized, true);
+      this.skillNamesForUiPromise = undefined;
+      this.postMessage({
+        type: 'skillSearchPathsState',
+        skillSearchPaths: normalized,
+        skills: await this.getSkillNamesForUI(),
+      });
+    } catch (error) {
+      appendErrorLog(this.outputChannel, 'Failed to persist skill search paths setting', error, { tag: 'Webview' });
+      postInputNotice(this, 'Failed to update skill search paths. See logs for details.');
+      this.skillNamesForUiPromise = undefined;
+      await postCurrentState();
+    }
+  },
+
+  async setSkillsBudget(this: ChatWebviewRuntime, budget: Partial<SkillsBudget>): Promise<void> {
+    const postCurrentState = () => this.postMessage({ type: 'skillsBudgetState', skillsBudget: getSkillsBudget() });
+    if (this.isProcessing) {
+      postInputNotice(this, 'Stop the current task before changing skills prompt budgets.');
+      postCurrentState();
+      return;
+    }
+
+    const current = getSkillsBudget();
+    const next = { ...current, ...(budget || {}) };
+    if (
+      !Number.isFinite(next.maxPromptSkills) || next.maxPromptSkills < 0 ||
+      !Number.isFinite(next.maxInjectSkills) || next.maxInjectSkills < 1 ||
+      !Number.isFinite(next.maxInjectChars) || next.maxInjectChars < 1
+    ) {
+      postInputNotice(this, 'Skills budgets must be valid non-negative prompt cap and positive injection caps.');
+      postCurrentState();
+      return;
+    }
+
+    const normalized: SkillsBudget = {
+      maxPromptSkills: Math.floor(next.maxPromptSkills),
+      maxInjectSkills: Math.floor(next.maxInjectSkills),
+      maxInjectChars: Math.floor(next.maxInjectChars),
+    };
+
+    try {
+      const config = vscode.workspace.getConfiguration('lingyun');
+      await config.update('skills.maxPromptSkills', normalized.maxPromptSkills, true);
+      await config.update('skills.maxInjectSkills', normalized.maxInjectSkills, true);
+      await config.update('skills.maxInjectChars', normalized.maxInjectChars, true);
+      this.skillNamesForUiPromise = undefined;
+      this.postMessage({ type: 'skillsBudgetState', skillsBudget: normalized });
+    } catch (error) {
+      appendErrorLog(this.outputChannel, 'Failed to persist skills budget settings', error, { tag: 'Webview' });
+      postInputNotice(this, 'Failed to update skills budgets. See logs for details.');
+      postCurrentState();
+    }
+  },
+
+  async setSessionsPersist(this: ChatWebviewRuntime, enabled: boolean): Promise<void> {
+    if (this.isProcessing) {
+      postInputNotice(this, 'Stop the current task before changing session persistence.');
+      this.postMessage({ type: 'sessionsPersistState', sessionsPersist: getSessionsPersistEnabled() });
+      return;
+    }
+
+    try {
+      await vscode.workspace.getConfiguration('lingyun').update('sessions.persist', !!enabled, true);
+      await this.onSessionPersistenceConfigChanged();
+      this.postMessage({ type: 'sessionsPersistState', sessionsPersist: getSessionsPersistEnabled() });
+    } catch (error) {
+      appendErrorLog(this.outputChannel, 'Failed to persist session persistence setting', error, { tag: 'Webview' });
+      postInputNotice(this, 'Failed to update session persistence. See logs for details.');
+      this.postMessage({ type: 'sessionsPersistState', sessionsPersist: getSessionsPersistEnabled() });
+    }
+  },
+
+  async setSessionRetentionLimits(this: ChatWebviewRuntime, limits: Partial<SessionRetentionLimits>): Promise<void> {
+    const postCurrentState = () => this.postMessage({
+      type: 'sessionRetentionState',
+      sessionsMaxSessions: getSessionsMaxSessions(),
+      sessionsMaxSessionBytes: getSessionsMaxSessionBytes(),
+    });
+
+    if (this.isProcessing) {
+      postInputNotice(this, 'Stop the current task before changing session retention.');
+      postCurrentState();
+      return;
+    }
+
+    const nextMaxSessions = Number(limits.maxSessions ?? getSessionsMaxSessions());
+    const nextMaxSessionBytes = Number(limits.maxSessionBytes ?? getSessionsMaxSessionBytes());
+    if (!Number.isFinite(nextMaxSessions) || nextMaxSessions < 1 || !Number.isFinite(nextMaxSessionBytes) || nextMaxSessionBytes < 1000) {
+      postInputNotice(this, 'Session retention must keep at least 1 session and 1000 bytes per session.');
+      postCurrentState();
+      return;
+    }
+
+    const normalizedMaxSessions = Math.floor(nextMaxSessions);
+    const normalizedMaxSessionBytes = Math.floor(nextMaxSessionBytes);
+    try {
+      const config = vscode.workspace.getConfiguration('lingyun');
+      await config.update('sessions.maxSessions', normalizedMaxSessions, true);
+      await config.update('sessions.maxSessionBytes', normalizedMaxSessionBytes, true);
+      await this.onSessionPersistenceConfigChanged();
+      this.postMessage({
+        type: 'sessionRetentionState',
+        sessionsMaxSessions: normalizedMaxSessions,
+        sessionsMaxSessionBytes: normalizedMaxSessionBytes,
+      });
+    } catch (error) {
+      appendErrorLog(this.outputChannel, 'Failed to persist session retention settings', error, { tag: 'Webview' });
+      postInputNotice(this, 'Failed to update session retention. See logs for details.');
+      postCurrentState();
+    }
+  },
+
+  async setShowThinking(this: ChatWebviewRuntime, enabled: boolean): Promise<void> {
+    if (this.isProcessing) {
+      postInputNotice(this, 'Stop the current task before changing thinking display.');
+      this.postMessage({ type: 'showThinkingState', showThinking: getShowThinkingEnabled() });
+      return;
+    }
+
+    try {
+      await vscode.workspace.getConfiguration('lingyun').update('showThinking', !!enabled, true);
+      this.postMessage({ type: 'showThinkingState', showThinking: !!enabled });
+    } catch (error) {
+      appendErrorLog(this.outputChannel, 'Failed to persist show-thinking setting', error, { tag: 'Webview' });
+      postInputNotice(this, 'Failed to update thinking display. See logs for details.');
+      this.postMessage({ type: 'showThinkingState', showThinking: getShowThinkingEnabled() });
+    }
+  },
+
+  async setMemoriesFeatureEnabled(this: ChatWebviewRuntime, enabled: boolean): Promise<void> {
+    const postCurrentState = () => this.postMessage({
+      type: 'memoriesFeatureState',
+      memoriesFeatureEnabled: getMemoriesFeatureEnabled(),
+    });
+
+    if (this.isProcessing) {
+      postInputNotice(this, 'Stop the current task before changing memory features.');
+      postCurrentState();
+      return;
+    }
+
+    try {
+      await vscode.workspace.getConfiguration('lingyun').update('features.memories', !!enabled, true);
+      this.postMessage({ type: 'memoriesFeatureState', memoriesFeatureEnabled: !!enabled });
+    } catch (error) {
+      appendErrorLog(this.outputChannel, 'Failed to persist memories feature setting', error, { tag: 'Webview' });
+      postInputNotice(this, 'Failed to update memory features. See logs for details.');
+      postCurrentState();
+    }
+  },
+
+  async setMemoryAutoRecall(this: ChatWebviewRuntime, enabled: boolean): Promise<void> {
+    if (this.isProcessing) {
+      postInputNotice(this, 'Stop the current task before changing memory recall behavior.');
+      this.postMessage({ type: 'memoryAutoRecallState', memoryAutoRecall: getMemoryAutoRecallEnabled() });
+      return;
+    }
+
+    try {
+      await vscode.workspace.getConfiguration('lingyun').update('memories.autoRecall', !!enabled, true);
+      this.postMessage({ type: 'memoryAutoRecallState', memoryAutoRecall: !!enabled });
+    } catch (error) {
+      appendErrorLog(this.outputChannel, 'Failed to persist memory auto-recall setting', error, { tag: 'Webview' });
+      postInputNotice(this, 'Failed to update memory recall behavior. See logs for details.');
+      this.postMessage({ type: 'memoryAutoRecallState', memoryAutoRecall: getMemoryAutoRecallEnabled() });
+    }
+  },
+
+  async setMemoryAutoRecallBudget(this: ChatWebviewRuntime, budget: Partial<MemoryAutoRecallBudget>): Promise<void> {
+    const postCurrentState = () => this.postMessage({
+      type: 'memoryAutoRecallBudgetState',
+      memoryAutoRecallMaxResults: getMemoryAutoRecallMaxResults(),
+      memoryAutoRecallMaxTokens: getMemoryAutoRecallMaxTokens(),
+    });
+    if (this.isProcessing) {
+      postInputNotice(this, 'Stop the current task before changing memory recall budget.');
+      postCurrentState();
+      return;
+    }
+
+    const nextMaxResults = Number(budget.maxResults ?? getMemoryAutoRecallMaxResults());
+    const nextMaxTokens = Number(budget.maxTokens ?? getMemoryAutoRecallMaxTokens());
+    if (!Number.isFinite(nextMaxResults) || nextMaxResults < 1 || !Number.isFinite(nextMaxTokens) || nextMaxTokens < 100) {
+      postInputNotice(this, 'Memory recall budget must allow at least 1 result and 100 tokens.');
+      postCurrentState();
+      return;
+    }
+
+    const normalizedMaxResults = Math.floor(nextMaxResults);
+    const normalizedMaxTokens = Math.floor(nextMaxTokens);
+    try {
+      const config = vscode.workspace.getConfiguration('lingyun');
+      await config.update('memories.maxAutoRecallResults', normalizedMaxResults, true);
+      await config.update('memories.maxAutoRecallTokens', normalizedMaxTokens, true);
+      this.postMessage({
+        type: 'memoryAutoRecallBudgetState',
+        memoryAutoRecallMaxResults: normalizedMaxResults,
+        memoryAutoRecallMaxTokens: normalizedMaxTokens,
+      });
+    } catch (error) {
+      appendErrorLog(this.outputChannel, 'Failed to persist memory auto-recall budget', error, { tag: 'Webview' });
+      postInputNotice(this, 'Failed to update memory recall budget. See logs for details.');
+      postCurrentState();
+    }
+  },
+
+  async setMemoryAutoRecallFilters(this: ChatWebviewRuntime, filters: Partial<MemoryAutoRecallFilters>): Promise<void> {
+    const postCurrentState = () => this.postMessage({
+      type: 'memoryAutoRecallFiltersState',
+      memoryAutoRecallMinScore: getMemoryAutoRecallMinScore(),
+      memoryAutoRecallMinScoreGap: getMemoryAutoRecallMinScoreGap(),
+      memoryAutoRecallMaxAgeDays: getMemoryAutoRecallMaxAgeDays(),
+    });
+    if (this.isProcessing) {
+      postInputNotice(this, 'Stop the current task before changing memory recall filters.');
+      postCurrentState();
+      return;
+    }
+
+    const nextMinScore = Number(filters.minScore ?? getMemoryAutoRecallMinScore());
+    const nextMinScoreGap = Number(filters.minScoreGap ?? getMemoryAutoRecallMinScoreGap());
+    const nextMaxAgeDays = Number(filters.maxAgeDays ?? getMemoryAutoRecallMaxAgeDays());
+    if (!Number.isFinite(nextMinScore) || nextMinScore < 0 || !Number.isFinite(nextMinScoreGap) || nextMinScoreGap < 0 || !Number.isFinite(nextMaxAgeDays) || nextMaxAgeDays < 1) {
+      postInputNotice(this, 'Memory recall filters must use non-negative scores and at least 1 max-age day.');
+      postCurrentState();
+      return;
+    }
+
+    const normalizedMinScore = Math.min(100, nextMinScore);
+    const normalizedMinScoreGap = Math.min(50, nextMinScoreGap);
+    const normalizedMaxAgeDays = Math.min(3650, Math.floor(nextMaxAgeDays));
+    try {
+      const config = vscode.workspace.getConfiguration('lingyun');
+      await config.update('memories.autoRecallMinScore', normalizedMinScore, true);
+      await config.update('memories.autoRecallMinScoreGap', normalizedMinScoreGap, true);
+      await config.update('memories.autoRecallMaxAgeDays', normalizedMaxAgeDays, true);
+      this.postMessage({
+        type: 'memoryAutoRecallFiltersState',
+        memoryAutoRecallMinScore: normalizedMinScore,
+        memoryAutoRecallMinScoreGap: normalizedMinScoreGap,
+        memoryAutoRecallMaxAgeDays: normalizedMaxAgeDays,
+      });
+    } catch (error) {
+      appendErrorLog(this.outputChannel, 'Failed to persist memory auto-recall filters', error, { tag: 'Webview' });
+      postInputNotice(this, 'Failed to update memory recall filters. See logs for details.');
+      postCurrentState();
+    }
+  },
+
+  async updateMemoriesNow(this: ChatWebviewRuntime): Promise<void> {
+    if (this.isProcessing) {
+      postInputNotice(this, 'Stop the current task before updating memories.');
+      postMemoryActionStatus(this, idleMemoryActionStatus);
+      return;
+    }
+
+    postMemoryActionStatus(this, { state: 'running', message: 'Updating memories…' });
+    try {
+      const memories = new WorkspaceMemories(this.context);
+      const result = await memories.updateFromSessions(getWorkspaceFolderUrisByPriority()[0]);
+      const message = formatMemoryUpdateMessage(result);
+      appendLog(this.outputChannel, message, { tag: 'Memory' });
+      postMemoryActionStatus(this, { state: 'success', message });
+    } catch (error) {
+      appendErrorLog(this.outputChannel, 'Failed to update memories from webview', error, { tag: 'Webview' });
+      postMemoryActionStatus(this, { state: 'error', message: 'Failed to update memories. See logs for details.' });
+      postInputNotice(this, 'Failed to update memories. See logs for details.');
+    }
+  },
+
+  async dropMemoriesNow(this: ChatWebviewRuntime, confirmed?: boolean): Promise<void> {
+    if (this.isProcessing) {
+      postInputNotice(this, 'Stop the current task before dropping memories.');
+      postMemoryActionStatus(this, idleMemoryActionStatus);
+      return;
+    }
+
+    if (confirmed !== true) {
+      postMemoryActionStatus(this, idleMemoryActionStatus);
+      return;
+    }
+
+    postMemoryActionStatus(this, { state: 'running', message: 'Dropping generated memories…' });
+    try {
+      const memories = new WorkspaceMemories(this.context);
+      const result = await memories.dropMemories(getWorkspaceFolderUrisByPriority()[0]);
+      const message = formatMemoryDropMessage(result);
+      appendLog(this.outputChannel, message, { tag: 'Memory' });
+      postMemoryActionStatus(this, { state: 'success', message });
+    } catch (error) {
+      appendErrorLog(this.outputChannel, 'Failed to drop memories from webview', error, { tag: 'Webview' });
+      postMemoryActionStatus(this, { state: 'error', message: 'Failed to drop memories. See logs for details.' });
+      postInputNotice(this, 'Failed to drop memories. See logs for details.');
+    }
+  },
+
+  showLogs(this: ChatWebviewRuntime): void {
+    try {
+      this.outputChannel?.show();
+    } catch {
+      // Ignore output-channel failures.
+    }
+  },
+
+  async postToolCatalog(this: ChatWebviewRuntime): Promise<void> {
+    try {
+      this.postMessage({ type: 'toolsCatalogState', toolsCatalog: await buildToolCatalogForUI(), reveal: true });
+    } catch (error) {
+      appendErrorLog(this.outputChannel, 'Failed to build tool catalog for webview', error, { tag: 'Webview' });
+      postInputNotice(this, 'Failed to list tools. See logs for details.');
+      this.postMessage({ type: 'toolsCatalogState', toolsCatalog: { total: 0, shown: 0, filter: getToolFilter(), tools: [] }, reveal: true });
+    }
+  },
+
+  async listTools(this: ChatWebviewRuntime): Promise<void> {
+    if (this.isProcessing) {
+      postInputNotice(this, 'Stop the current task before listing tools.');
+      await this.postToolCatalog();
+      return;
+    }
+
+    await this.postToolCatalog();
+  },
+
+  async runTool(this: ChatWebviewRuntime, toolId?: string, args?: Record<string, unknown>, confirmed?: boolean): Promise<void> {
+    const id = typeof toolId === 'string' ? toolId.trim() : '';
+    if (this.isProcessing) {
+      postInputNotice(this, 'Stop the current task before running a tool manually.');
+      if (id) {
+        this.postMessage({
+          type: 'manualToolResult',
+          toolId: id,
+          success: false,
+          error: 'Stop the current task before running a tool manually.',
+        });
+      } else {
+        await this.postToolCatalog();
+      }
+      return;
+    }
+
+    if (!id) {
+      await this.postToolCatalog();
+      postInputNotice(this, 'Choose a tool from the inline tool list, edit JSON arguments, then click Run.');
+      return;
+    }
+
+    const filter = getToolFilter();
+    if (!isToolAllowedByFilter(id, filter)) {
+      postInputNotice(this, 'That tool is blocked by the current Allowed tools filter.');
+      this.postMessage({
+        type: 'manualToolResult',
+        toolId: id,
+        success: false,
+        error: 'Tool is blocked by the current Allowed tools filter.',
+      });
+      await this.postToolCatalog();
+      return;
+    }
+
+    const allTools = await toolRegistry.getTools();
+    const tool = allTools.find((candidate) => candidate.id === id);
+    if (!tool) {
+      postInputNotice(this, `Tool "${id}" is not registered.`);
+      this.postMessage({
+        type: 'manualToolResult',
+        toolId: id,
+        success: false,
+        error: `Tool "${id}" is not registered.`,
+      });
+      await this.postToolCatalog();
+      return;
+    }
+
+    if (this.mode === 'plan' && tool.metadata?.readOnly !== true) {
+      postInputNotice(this, 'Plan mode blocks manual non-read-only tool runs. Switch to Build mode first.');
+      this.postMessage({
+        type: 'manualToolResult',
+        toolId: id,
+        success: false,
+        error: 'Plan mode blocks manual non-read-only tool runs. Switch to Build mode first.',
+      });
+      return;
+    }
+
+    const nextArgs = args && typeof args === 'object' && !Array.isArray(args) ? args : {};
+    const requiresManualConfirmation = tool.metadata?.readOnly !== true || tool.metadata?.requiresApproval === true;
+    if (requiresManualConfirmation && confirmed !== true) {
+      this.postMessage({
+        type: 'manualToolConfirmationRequired',
+        toolId: tool.id,
+        toolName: tool.name || tool.id,
+        reasons: [
+          tool.metadata?.readOnly !== true ? 'it may change workspace/editor state' : '',
+          tool.metadata?.requiresApproval === true ? 'it normally requires approval during agent runs' : '',
+        ].filter(Boolean),
+      });
+      return;
+    }
+
+    try {
+      this.outputChannel?.show();
+    } catch {
+      // Ignore output-channel failures.
+    }
+    appendLog(this.outputChannel, `\nRunning ${tool.name || tool.id}...`, { tag: 'ManualTool' });
+    appendLog(this.outputChannel, `Args: ${summarizeToolArgsForDebug(nextArgs, { redactionLevel: getDebugRedactionLevel() })}`, { tag: 'ManualTool' });
+
+    const tokenSource = new vscode.CancellationTokenSource();
+    try {
+      const context = {
+        workspaceFolder: getWorkspaceFolderUrisByPriority()[0],
+        activeEditor: vscode.window.activeTextEditor,
+        extensionContext: this.context,
+        cancellationToken: tokenSource.token,
+        progress: { report: () => {} },
+        log: (msg: string) => appendLog(this.outputChannel, msg, { tag: 'ManualTool' }),
+      };
+
+      const result = await toolRegistry.executeTool(tool.id, nextArgs, context);
+      const formatted = formatManualToolResultData(result.data);
+      appendLog(this.outputChannel, `\nResult: ${result.success ? '✅' : '❌'}`, { tag: 'ManualTool' });
+      appendLog(this.outputChannel, formatted.text, { tag: 'ManualTool' });
+      if (result.error) appendLog(this.outputChannel, `Error: ${result.error}`, { tag: 'ManualTool' });
+
+      this.postMessage({
+        type: 'manualToolResult',
+        toolId: tool.id,
+        success: result.success,
+        error: result.error,
+        data: formatted.text,
+        truncated: formatted.truncated,
+      });
+    } catch (error) {
+      appendErrorLog(this.outputChannel, `Failed to run manual tool "${id}" from webview`, error, { tag: 'ManualTool' });
+      this.postMessage({
+        type: 'manualToolResult',
+        toolId: id,
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      postInputNotice(this, 'Failed to run tool manually. See logs for details.');
+    } finally {
+      tokenSource.dispose();
+    }
+  },
+
+  async createToolsConfig(this: ChatWebviewRuntime): Promise<void> {
+    if (this.isProcessing) {
+      postInputNotice(this, 'Stop the current task before creating a workspace tools config.');
+      await this.postToolCatalog();
+      return;
+    }
+
+    try {
+      await createSampleToolsConfig();
+      await this.postToolCatalog();
+    } catch (error) {
+      appendErrorLog(this.outputChannel, 'Failed to create workspace tools config from webview', error, { tag: 'Webview' });
+      postInputNotice(this, 'Failed to create workspace tools config. See logs for details.');
+      await this.postToolCatalog();
+    }
+  },
+
+  async openOffice(this: ChatWebviewRuntime): Promise<void> {
+    if (this.isProcessing) {
+      postInputNotice(this, 'Stop the current task before opening Office from chat.');
+      return;
+    }
+
+    if (!this.openOfficeView) {
+      postInputNotice(this, 'Office view is not ready.');
+      return;
+    }
+
+    try {
+      await this.openOfficeView();
+    } catch (error) {
+      appendErrorLog(this.outputChannel, 'Failed to open Office from webview', error, { tag: 'Webview' });
+      postInputNotice(this, 'Failed to open Office. See logs for details.');
+    }
+  },
+
+  async resetOfficeLayout(this: ChatWebviewRuntime): Promise<void> {
+    if (this.isProcessing) {
+      postInputNotice(this, 'Stop the current task before resetting the Office layout.');
+      return;
+    }
+
+    if (!this.resetOfficeLayoutAction) {
+      postInputNotice(this, 'Office state is not ready.');
+      return;
+    }
+
+    try {
+      await this.resetOfficeLayoutAction();
+    } catch (error) {
+      appendErrorLog(this.outputChannel, 'Failed to reset Office layout from webview', error, { tag: 'Webview' });
+      postInputNotice(this, 'Failed to reset Office layout. See logs for details.');
+    }
+  },
+
+  async setMemoryAdvancedLimits(this: ChatWebviewRuntime, limits: Partial<MemoryAdvancedLimits>): Promise<void> {
+    const postCurrentState = () => this.postMessage({
+      type: 'memoryAdvancedLimitsState',
+      memoryAdvancedLimits: getMemoryAdvancedLimits(),
+    });
+    if (this.isProcessing) {
+      postInputNotice(this, 'Stop the current task before changing memory limits.');
+      postCurrentState();
+      return;
+    }
+
+    const current = getMemoryAdvancedLimits();
+    const next = { ...current, ...(limits || {}) };
+    const numeric = {
+      maxRawMemoriesForGlobal: Number(next.maxRawMemoriesForGlobal),
+      maxRolloutAgeDays: Number(next.maxRolloutAgeDays),
+      maxRolloutsPerStartup: Number(next.maxRolloutsPerStartup),
+      minRolloutIdleHours: Number(next.minRolloutIdleHours),
+      maxStateOutputs: Number(next.maxStateOutputs),
+      maxRecords: Number(next.maxRecords),
+      maxSearchResults: Number(next.maxSearchResults),
+      maxResultsPerKind: Number(next.maxResultsPerKind),
+      searchNeighborWindow: Number(next.searchNeighborWindow),
+    };
+
+    if (
+      !Number.isFinite(numeric.maxRawMemoriesForGlobal) || numeric.maxRawMemoriesForGlobal < 1 ||
+      !Number.isFinite(numeric.maxRolloutAgeDays) || numeric.maxRolloutAgeDays < 1 ||
+      !Number.isFinite(numeric.maxRolloutsPerStartup) || numeric.maxRolloutsPerStartup < 1 ||
+      !Number.isFinite(numeric.minRolloutIdleHours) || numeric.minRolloutIdleHours < 0 ||
+      !Number.isFinite(numeric.maxStateOutputs) || numeric.maxStateOutputs < 10 ||
+      !Number.isFinite(numeric.maxRecords) || numeric.maxRecords < 100 ||
+      !Number.isFinite(numeric.maxSearchResults) || numeric.maxSearchResults < 1 ||
+      !Number.isFinite(numeric.maxResultsPerKind) || numeric.maxResultsPerKind < 1 ||
+      !Number.isFinite(numeric.searchNeighborWindow) || numeric.searchNeighborWindow < 0
+    ) {
+      postInputNotice(this, 'Memory limits must satisfy the minimum values shown in the UI.');
+      postCurrentState();
+      return;
+    }
+
+    const normalized: MemoryAdvancedLimits = {
+      maxRawMemoriesForGlobal: Math.min(2000, Math.floor(numeric.maxRawMemoriesForGlobal)),
+      maxRolloutAgeDays: Math.min(3650, Math.floor(numeric.maxRolloutAgeDays)),
+      maxRolloutsPerStartup: Math.min(2000, Math.floor(numeric.maxRolloutsPerStartup)),
+      minRolloutIdleHours: Math.min(24 * 30, numeric.minRolloutIdleHours),
+      maxStateOutputs: Math.min(5000, Math.floor(numeric.maxStateOutputs)),
+      maxRecords: Math.min(50000, Math.floor(numeric.maxRecords)),
+      maxSearchResults: Math.min(100, Math.floor(numeric.maxSearchResults)),
+      maxResultsPerKind: Math.min(20, Math.floor(numeric.maxResultsPerKind)),
+      searchNeighborWindow: Math.min(5, Math.floor(numeric.searchNeighborWindow)),
+    };
+
+    try {
+      const config = vscode.workspace.getConfiguration('lingyun');
+      await config.update('memories.maxRawMemoriesForGlobal', normalized.maxRawMemoriesForGlobal, true);
+      await config.update('memories.maxRolloutAgeDays', normalized.maxRolloutAgeDays, true);
+      await config.update('memories.maxRolloutsPerStartup', normalized.maxRolloutsPerStartup, true);
+      await config.update('memories.minRolloutIdleHours', normalized.minRolloutIdleHours, true);
+      await config.update('memories.maxStateOutputs', normalized.maxStateOutputs, true);
+      await config.update('memories.maxRecords', normalized.maxRecords, true);
+      await config.update('memories.maxSearchResults', normalized.maxSearchResults, true);
+      await config.update('memories.maxResultsPerKind', normalized.maxResultsPerKind, true);
+      await config.update('memories.searchNeighborWindow', normalized.searchNeighborWindow, true);
+      this.postMessage({ type: 'memoryAdvancedLimitsState', memoryAdvancedLimits: normalized });
+    } catch (error) {
+      appendErrorLog(this.outputChannel, 'Failed to persist memory limits', error, { tag: 'Webview' });
+      postInputNotice(this, 'Failed to update memory limits. See logs for details.');
+      postCurrentState();
+    }
+  },
+
+  async setExplorePrepass(this: ChatWebviewRuntime, enabled: boolean): Promise<void> {
+    if (this.isProcessing) {
+      postInputNotice(this, 'Stop the current task before changing explore prepass behavior.');
+      this.postMessage({ type: 'explorePrepassState', explorePrepass: getExplorePrepassEnabled(), explorePrepassMaxChars: getExplorePrepassMaxChars() });
+      return;
+    }
+
+    try {
+      await vscode.workspace.getConfiguration('lingyun').update('subagents.explorePrepass.enabled', !!enabled, true);
+      this.postMessage({ type: 'explorePrepassState', explorePrepass: !!enabled, explorePrepassMaxChars: getExplorePrepassMaxChars() });
+    } catch (error) {
+      appendErrorLog(this.outputChannel, 'Failed to persist explore prepass setting', error, { tag: 'Webview' });
+      postInputNotice(this, 'Failed to update explore prepass behavior. See logs for details.');
+      this.postMessage({ type: 'explorePrepassState', explorePrepass: getExplorePrepassEnabled(), explorePrepassMaxChars: getExplorePrepassMaxChars() });
+    }
+  },
+
+  async setExplorePrepassMaxChars(this: ChatWebviewRuntime, maxChars: number): Promise<void> {
+    if (this.isProcessing) {
+      postInputNotice(this, 'Stop the current task before changing explore prepass limits.');
+      this.postMessage({ type: 'explorePrepassState', explorePrepass: getExplorePrepassEnabled(), explorePrepassMaxChars: getExplorePrepassMaxChars() });
+      return;
+    }
+
+    if (!Number.isFinite(maxChars) || maxChars < 500) {
+      postInputNotice(this, 'Explore prepass max chars must be at least 500.');
+      this.postMessage({ type: 'explorePrepassState', explorePrepass: getExplorePrepassEnabled(), explorePrepassMaxChars: getExplorePrepassMaxChars() });
+      return;
+    }
+
+    const normalized = Math.floor(maxChars);
+    try {
+      await vscode.workspace.getConfiguration('lingyun').update('subagents.explorePrepass.maxChars', normalized, true);
+      this.postMessage({ type: 'explorePrepassState', explorePrepass: getExplorePrepassEnabled(), explorePrepassMaxChars: normalized });
+    } catch (error) {
+      appendErrorLog(this.outputChannel, 'Failed to persist explore prepass max chars', error, { tag: 'Webview' });
+      postInputNotice(this, 'Failed to update explore prepass limit. See logs for details.');
+      this.postMessage({ type: 'explorePrepassState', explorePrepass: getExplorePrepassEnabled(), explorePrepassMaxChars: getExplorePrepassMaxChars() });
+    }
+  },
+
+  async setSubagentModelOverride(this: ChatWebviewRuntime, model: string): Promise<void> {
+    const postCurrentState = () => this.postMessage({
+      type: 'subagentModelOverrideState',
+      subagentModelOverride: getSubagentModelOverride(),
+    });
+    if (this.isProcessing) {
+      postInputNotice(this, 'Stop the current task before changing the subagent model.');
+      postCurrentState();
+      return;
+    }
+
+    const normalized = normalizeSubagentModelOverride(model);
+    try {
+      await vscode.workspace.getConfiguration('lingyun').update('subagents.model', normalized, true);
+      this.postMessage({ type: 'subagentModelOverrideState', subagentModelOverride: normalized });
+    } catch (error) {
+      appendErrorLog(this.outputChannel, 'Failed to persist subagent model override', error, { tag: 'Webview' });
+      postInputNotice(this, 'Failed to update subagent model. See logs for details.');
+      postCurrentState();
+    }
+  },
+
+  async setSubagentTaskMaxOutputChars(this: ChatWebviewRuntime, maxChars: number): Promise<void> {
+    const postCurrentState = () => this.postMessage({ type: 'subagentTaskMaxOutputCharsState', subagentTaskMaxOutputChars: getSubagentTaskMaxOutputChars() });
+    if (this.isProcessing) {
+      postInputNotice(this, 'Stop the current task before changing subagent output limits.');
+      postCurrentState();
+      return;
+    }
+
+    if (!Number.isFinite(maxChars) || maxChars < 500) {
+      postInputNotice(this, 'Subagent task output cap must be at least 500 characters.');
+      postCurrentState();
+      return;
+    }
+
+    const normalized = Math.floor(maxChars);
+    try {
+      await vscode.workspace.getConfiguration('lingyun').update('subagents.task.maxOutputChars', normalized, true);
+      this.postMessage({ type: 'subagentTaskMaxOutputCharsState', subagentTaskMaxOutputChars: normalized });
+    } catch (error) {
+      appendErrorLog(this.outputChannel, 'Failed to persist subagent task output cap', error, { tag: 'Webview' });
+      postInputNotice(this, 'Failed to update subagent output limit. See logs for details.');
+      postCurrentState();
+    }
+  },
+
+  async setAutoCompaction(this: ChatWebviewRuntime, enabled: boolean): Promise<void> {
+    if (this.isProcessing) {
+      postInputNotice(this, 'Stop the current task before changing auto-compaction behavior.');
+      this.postMessage({ type: 'autoCompactionState', autoCompaction: getAutoCompactionEnabled() });
+      return;
+    }
+
+    try {
+      await vscode.workspace.getConfiguration('lingyun').update('compaction.auto', !!enabled, true);
+      this.postMessage({ type: 'autoCompactionState', autoCompaction: !!enabled });
+    } catch (error) {
+      appendErrorLog(this.outputChannel, 'Failed to persist auto-compaction setting', error, { tag: 'Webview' });
+      postInputNotice(this, 'Failed to update auto-compaction behavior. See logs for details.');
+      this.postMessage({ type: 'autoCompactionState', autoCompaction: getAutoCompactionEnabled() });
+    }
+  },
+
+  async setCompactionPruneSettings(this: ChatWebviewRuntime, settings: Partial<CompactionPruneSettings>): Promise<void> {
+    const postCurrentState = () => this.postMessage({
+      type: 'compactionPruneState',
+      compactionPrune: getCompactionPruneEnabled(),
+      compactionPruneProtectTokens: getCompactionPruneProtectTokens(),
+      compactionPruneMinimumTokens: getCompactionPruneMinimumTokens(),
+    });
+
+    if (this.isProcessing) {
+      postInputNotice(this, 'Stop the current task before changing compaction prune behavior.');
+      postCurrentState();
+      return;
+    }
+
+    const nextPrune = settings.prune ?? getCompactionPruneEnabled();
+    const nextProtectTokens = Number(settings.pruneProtectTokens ?? getCompactionPruneProtectTokens());
+    const nextMinimumTokens = Number(settings.pruneMinimumTokens ?? getCompactionPruneMinimumTokens());
+    if (typeof nextPrune !== 'boolean' || !Number.isFinite(nextProtectTokens) || nextProtectTokens < 0 || !Number.isFinite(nextMinimumTokens) || nextMinimumTokens < 0) {
+      postInputNotice(this, 'Compaction prune token limits must be zero or greater.');
+      postCurrentState();
+      return;
+    }
+
+    const normalizedProtectTokens = Math.floor(nextProtectTokens);
+    const normalizedMinimumTokens = Math.floor(nextMinimumTokens);
+    try {
+      const config = vscode.workspace.getConfiguration('lingyun');
+      await config.update('compaction.prune', nextPrune, true);
+      await config.update('compaction.pruneProtectTokens', normalizedProtectTokens, true);
+      await config.update('compaction.pruneMinimumTokens', normalizedMinimumTokens, true);
+      this.postMessage({
+        type: 'compactionPruneState',
+        compactionPrune: nextPrune,
+        compactionPruneProtectTokens: normalizedProtectTokens,
+        compactionPruneMinimumTokens: normalizedMinimumTokens,
+      });
+    } catch (error) {
+      appendErrorLog(this.outputChannel, 'Failed to persist compaction prune settings', error, { tag: 'Webview' });
+      postInputNotice(this, 'Failed to update compaction prune behavior. See logs for details.');
+      postCurrentState();
+    }
+  },
+
+  async setCompactionToolOutputMode(this: ChatWebviewRuntime, mode: string): Promise<void> {
+    const normalized = normalizeCompactionToolOutputMode(mode);
+    if (!normalized) {
+      this.postMessage({ type: 'compactionToolOutputModeState', compactionToolOutputMode: getCompactionToolOutputMode() });
+      return;
+    }
+
+    if (this.isProcessing) {
+      postInputNotice(this, 'Stop the current task before changing tool-output compaction behavior.');
+      this.postMessage({ type: 'compactionToolOutputModeState', compactionToolOutputMode: getCompactionToolOutputMode() });
+      return;
+    }
+
+    try {
+      await vscode.workspace.getConfiguration('lingyun').update('compaction.toolOutputMode', normalized, true);
+      this.postMessage({ type: 'compactionToolOutputModeState', compactionToolOutputMode: normalized });
+    } catch (error) {
+      appendErrorLog(this.outputChannel, 'Failed to persist tool-output compaction setting', error, { tag: 'Webview' });
+      postInputNotice(this, 'Failed to update tool-output compaction behavior. See logs for details.');
+      this.postMessage({ type: 'compactionToolOutputModeState', compactionToolOutputMode: getCompactionToolOutputMode() });
+    }
+  },
+
+  async setModelLimits(this: ChatWebviewRuntime, limits: ModelLimits): Promise<void> {
+    const postCurrentState = () => this.postMessage({ type: 'modelLimitsState', modelLimits: getModelLimits() });
+
+    if (this.isProcessing) {
+      postInputNotice(this, 'Stop the current task before changing model token limits.');
+      postCurrentState();
+      return;
+    }
+
+    const validationError = getModelLimitsValidationError(limits);
+    if (validationError) {
+      postInputNotice(this, validationError);
+      postCurrentState();
+      return;
+    }
+
+    const next = normalizeModelLimits(limits);
+    try {
+      await vscode.workspace.getConfiguration('lingyun').update('modelLimits', next, true);
+      this.postMessage({ type: 'modelLimitsState', modelLimits: next });
+    } catch (error) {
+      appendErrorLog(this.outputChannel, 'Failed to persist model token limits', error, { tag: 'Webview' });
+      postInputNotice(this, 'Failed to update model token limits. See logs for details.');
+      postCurrentState();
+    }
+  },
+
+  async setGenerationSettings(this: ChatWebviewRuntime, settings: Partial<GenerationSettings>): Promise<void> {
+    if (this.isProcessing) {
+      postInputNotice(this, 'Stop the current task before changing generation settings.');
+      this.postMessage({ type: 'generationSettingsState', generationSettings: getGenerationSettings() });
+      return;
+    }
+
+    const currentSettings = getGenerationSettings();
+    const nextTemperature = Number(settings.temperature ?? currentSettings.temperature);
+    const nextTopP = Number(settings.topP ?? currentSettings.topP);
+    const nextTopK = Number(settings.topK ?? currentSettings.topK);
+    const nextMaxOutputTokens = Number(settings.maxOutputTokens ?? currentSettings.maxOutputTokens);
+    const nextMaxRetries = Number(settings.maxRetries ?? currentSettings.maxRetries);
+    const nextRetryWithPartialOutput = typeof settings.retryWithPartialOutput === 'boolean'
+      ? settings.retryWithPartialOutput
+      : currentSettings.retryWithPartialOutput;
+    const nextTimeoutMs = Number(settings.timeoutMs ?? currentSettings.timeoutMs);
+    const nextTextVerbosity = Object.prototype.hasOwnProperty.call(settings, 'textVerbosity')
+      ? normalizeTextVerbosity(settings.textVerbosity, '__invalid__')
+      : currentSettings.textVerbosity;
+    if (nextTextVerbosity === '__invalid__') {
+      postInputNotice(this, 'Text verbosity must be provider default, low, medium, or high.');
+      this.postMessage({ type: 'generationSettingsState', generationSettings: getGenerationSettings() });
+      return;
+    }
+    if (!Number.isFinite(nextTemperature) || nextTemperature < 0 || nextTemperature > 2) {
+      postInputNotice(this, 'Temperature must be between 0 and 2.');
+      this.postMessage({ type: 'generationSettingsState', generationSettings: getGenerationSettings() });
+      return;
+    }
+    if (!Number.isFinite(nextTopP) || nextTopP < 0 || nextTopP > 1) {
+      postInputNotice(this, 'Top-p must be between 0 and 1, where 0 uses the provider default.');
+      this.postMessage({ type: 'generationSettingsState', generationSettings: getGenerationSettings() });
+      return;
+    }
+    if (!Number.isFinite(nextTopK) || nextTopK < 0) {
+      postInputNotice(this, 'Top-k must be zero or greater, where 0 uses the provider default.');
+      this.postMessage({ type: 'generationSettingsState', generationSettings: getGenerationSettings() });
+      return;
+    }
+    if (!Number.isFinite(nextMaxOutputTokens) || nextMaxOutputTokens <= 0) {
+      postInputNotice(this, 'Max output tokens must be a positive number.');
+      this.postMessage({ type: 'generationSettingsState', generationSettings: getGenerationSettings() });
+      return;
+    }
+    if (!Number.isFinite(nextMaxRetries) || nextMaxRetries < 0) {
+      postInputNotice(this, 'Max retries must be zero or greater.');
+      this.postMessage({ type: 'generationSettingsState', generationSettings: getGenerationSettings() });
+      return;
+    }
+    if (!Number.isFinite(nextTimeoutMs) || nextTimeoutMs < 0) {
+      postInputNotice(this, 'LLM timeout must be zero or greater.');
+      this.postMessage({ type: 'generationSettingsState', generationSettings: getGenerationSettings() });
+      return;
+    }
+
+    const normalizedTemperature = Math.round(nextTemperature * 100) / 100;
+    const normalizedTopP = Math.round(nextTopP * 1000) / 1000;
+    const normalizedTopK = Math.floor(nextTopK);
+    const normalizedMaxOutputTokens = Math.floor(nextMaxOutputTokens);
+    const normalizedMaxRetries = Math.floor(nextMaxRetries);
+    const normalizedTimeoutMs = Math.floor(nextTimeoutMs);
+
+    try {
+      const config = vscode.workspace.getConfiguration('lingyun');
+      await config.update('temperature', normalizedTemperature, true);
+      await config.update('topP', normalizedTopP, true);
+      await config.update('topK', normalizedTopK, true);
+      await config.update('maxOutputTokens', normalizedMaxOutputTokens, true);
+      await config.update('llm.maxRetries', normalizedMaxRetries, true);
+      await config.update('llm.retryWithPartialOutput', nextRetryWithPartialOutput, true);
+      await config.update('llm.timeoutMs', normalizedTimeoutMs, true);
+      await config.update('llm.textVerbosity', nextTextVerbosity, true);
+      this.postMessage({
+        type: 'generationSettingsState',
+        generationSettings: {
+          temperature: normalizedTemperature,
+          topP: normalizedTopP,
+          topK: normalizedTopK,
+          maxOutputTokens: normalizedMaxOutputTokens,
+          maxRetries: normalizedMaxRetries,
+          retryWithPartialOutput: nextRetryWithPartialOutput,
+          timeoutMs: normalizedTimeoutMs,
+          textVerbosity: nextTextVerbosity,
+        },
+      });
+    } catch (error) {
+      appendErrorLog(this.outputChannel, 'Failed to persist generation settings', error, { tag: 'Webview' });
+      postInputNotice(this, 'Failed to update generation settings. See logs for details.');
+      this.postMessage({ type: 'generationSettingsState', generationSettings: getGenerationSettings() });
+    }
   },
 
   async authenticateProvider(this: ChatWebviewRuntime): Promise<void> {
     const provider = this.llmProvider;
-    if (!provider?.authenticate) return;
+    if (!provider?.authenticate) {
+      await service.postProviderState().catch(() => {});
+      return;
+    }
+
+    if (this.isProcessing) {
+      postInputNotice(this, 'Stop the current task before signing in to a provider.');
+      await service.postProviderState().catch(() => {});
+      return;
+    }
 
     try {
       await provider.authenticate();
       provider.clearModelCache?.();
       await this.loadModels();
       await service.postProviderState();
-      void vscode.window.showInformationMessage(`LingYun: Connected to ${provider.name}.`);
+      postInputNotice(this, `Connected to ${provider.name}.`);
     } catch (error) {
       await service.postProviderState().catch(() => {});
-      void vscode.window.showErrorMessage(`LingYun: ${getToastErrorMessage(error, this.llmProvider?.id)}`);
+      postInputNotice(this, getToastErrorMessage(error, this.llmProvider?.id));
     }
   },
 
   async disconnectProvider(this: ChatWebviewRuntime): Promise<void> {
     const provider = this.llmProvider;
-    if (!provider?.disconnect) return;
+    if (!provider?.disconnect) {
+      await service.postProviderState().catch(() => {});
+      return;
+    }
+
+    if (this.isProcessing) {
+      postInputNotice(this, 'Stop the current task before signing out of a provider.');
+      await service.postProviderState().catch(() => {});
+      return;
+    }
 
     try {
       await provider.disconnect();
       provider.clearModelCache?.();
       await this.loadModels();
       await service.postProviderState();
-      void vscode.window.showInformationMessage(`LingYun: Disconnected ${provider.name}.`);
+      postInputNotice(this, `Disconnected ${provider.name}.`);
     } catch (error) {
       await service.postProviderState().catch(() => {});
-      void vscode.window.showErrorMessage(`LingYun: ${getToastErrorMessage(error, this.llmProvider?.id)}`);
+      postInputNotice(this, getToastErrorMessage(error, this.llmProvider?.id));
     }
   },
 
@@ -927,17 +3704,17 @@ function createChatWebviewDepsForController(controller: ChatController): ChatWeb
     get inputHistoryEntries() {
       return controller.inputHistoryEntries;
     },
+    get skillNamesForUiPromise() {
+      return controller.skillNamesForUiPromise;
+    },
+    set skillNamesForUiPromise(value) {
+      controller.skillNamesForUiPromise = value;
+    },
     get mode() {
       return controller.mode;
     },
     get isProcessing() {
       return controller.isProcessing;
-    },
-    get abortRequested() {
-      return controller.abortRequested;
-    },
-    set abortRequested(value) {
-      controller.abortRequested = value;
     },
     get autoApproveThisRun() {
       return controller.autoApproveThisRun;
@@ -987,9 +3764,7 @@ function createChatWebviewDepsForController(controller: ChatController): ChatWeb
     get toolDiffSnapshotsByToolCallId() {
       return controller.toolDiffSnapshotsByToolCallId;
     },
-    get agent() {
-      return controller.agent;
-    },
+    abortCurrentRun: (reason?: string) => controller.abortCurrentRun(reason),
     get queueManager() {
       return controller.queueManager;
     },
@@ -1001,20 +3776,40 @@ function createChatWebviewDepsForController(controller: ChatController): ChatWeb
     undo: () => controller.revertApi.undo(),
     redo: () => controller.revertApi.redo(),
     redoAll: () => controller.revertApi.redoAll(),
-    discardUndone: () => controller.revertApi.discardUndone(),
+    discardUndone: (confirmed?: boolean) => controller.revertApi.discardUndone(confirmed),
     viewRevertDiff: () => controller.revertApi.viewRevertDiff(),
     switchToSession: (sessionId: string) => controller.sessionApi.switchToSession(sessionId),
+    postSessions: () => controller.sessionApi.postSessions(),
     handleUserMessage: (content: string | ChatUserInput) => controller.runnerInputApi.handleUserMessage(content),
-    configureLoopForActiveSession: () => controller.loopApi.configureLoopForActiveSession(),
+    setLoopSettingsForActiveSession: (settings: LoopSessionSettingsInput) =>
+      controller.loopApi.setLoopSettingsForActiveSession(settings),
+    resetLoopSettingsForActiveSession: () => controller.loopApi.resetLoopSettingsForActiveSession(),
+    setLoopWorkspaceDefaults: (settings: LoopWorkspaceDefaultsInput) =>
+      controller.loopApi.setLoopWorkspaceDefaults(settings),
     approveAllPendingApprovals: (options?: { includeManual?: boolean }) =>
       controller.approvalsApi.approveAllPendingApprovals(options),
+    postApprovalState: () => controller.approvalsApi.postApprovalState(),
     handleAlwaysAllowApproval: (approvalId: string) => controller.approvalsApi.handleAlwaysAllowApproval(approvalId),
-    rejectAllPendingApprovals: (reason: string) => controller.approvalsApi.rejectAllPendingApprovals(reason),
+    getAutoApprovedToolsForUI: () => controller.approvalsApi.getAutoApprovedToolsForUI(),
+    revokeAutoApprovedTool: (toolId: string) => controller.approvalsApi.revokeAutoApprovedTool(toolId),
+    clearAutoApprovedToolsForUI: () => controller.approvalsApi.clearAutoApprovedToolsForUI(),
     clearCurrentSession: () => controller.sessionApi.clearCurrentSession(),
+    clearSavedSessions: () => controller.sessionApi.clearSavedSessions(),
+    get openOfficeView() {
+      return controller.openOfficeView;
+    },
+    get resetOfficeLayoutAction() {
+      return controller.resetOfficeLayoutAction;
+    },
     executePendingPlan: (planMessageId?: string) => controller.runnerPlanApi.executePendingPlan(planMessageId),
     loadModels: () => controller.modelApi.loadModels(),
-    pickModel: () => controller.modelApi.pickModel(),
+    postModelState: () => controller.modelApi.postModelState(),
+    postModelPickerState: (reveal?: boolean) => controller.modelApi.postModelPickerState(reveal),
+    refreshModelsForUI: () => controller.modelApi.refreshModelsForUI(),
+    clearRecentModels: () => controller.modelApi.clearRecentModels(),
     setCurrentModel: (modelId: string) => controller.modelApi.setCurrentModel(modelId),
+    setReasoningEffort: (reasoningEffort: string) => controller.modelApi.setReasoningEffort(reasoningEffort),
+    openAdvancedModelSettings: () => controller.modelApi.openAdvancedModelSettings(),
     toggleFavoriteModel: (modelId: string) => controller.modelApi.toggleFavoriteModel(modelId),
     getActiveSession: () => controller.sessionApi.getActiveSession(),
     setModeAndPersist: (
@@ -1027,19 +3822,18 @@ function createChatWebviewDepsForController(controller: ChatController): ChatWeb
     handleApprovalResponse: (approvalId: string, approved: boolean) =>
       controller.approvalsApi.handleApprovalResponse(approvalId, approved),
     retryToolCall: (approvalId: string) => controller.runnerInputApi.retryToolCall(approvalId),
-    markActiveStepStatus: (status: 'running' | 'done' | 'error' | 'canceled') =>
-      controller.approvalsApi.markActiveStepStatus(status),
     ensureSessionsLoaded: () => controller.sessionApi.ensureSessionsLoaded(),
+    onSessionPersistenceConfigChanged: () => controller.sessionApi.onSessionPersistenceConfigChanged(),
     getModelLabel: (modelId: string) => controller.modelApi.getModelLabel(modelId),
     getRenderableMessages: () => controller.sessionApi.getRenderableMessages(),
     getRevertBarStateForUI: () => controller.revertApi.getRevertBarStateForUI(),
     getContextForUI: () => controller.sessionApi.getContextForUI(),
     getLoopStateForUI: () => controller.loopApi.getLoopStateForUI(),
+    getLoopDefaultsForUI: () => controller.loopApi.getLoopDefaultsForUI(),
     getSessionsForUI: () => controller.sessionApi.getSessionsForUI(),
     getSkillNamesForUI: () => controller.skillsApi.getSkillNamesForUI(),
     getUndoRedoAvailability: () => controller.revertApi.getUndoRedoAvailability(),
     isModelFavorite: (modelId: string) => controller.modelApi.isModelFavorite(modelId),
-    persistActiveSession: () => controller.sessionApi.persistActiveSession(),
     postMessage: (message: unknown) => controller.webviewApi.postMessage(message),
   };
 }

@@ -1,103 +1,48 @@
 import * as vscode from 'vscode';
 
-import { formatLoopIntervalLabel, type ChatLoopManager } from './loopManager';
+import { appendErrorLog } from '../../core/logger';
+
+import {
+  formatLoopIntervalLabel,
+  normalizeLoopIntervalMinutes,
+  type ChatLoopDefaults,
+  type ChatLoopManager,
+} from './loopManager';
 import { bindChatControllerService } from './controllerService';
+import { postWebviewInputNotice as postInputNotice } from './inputNotice';
 import type { RunCoordinator } from './runner/runCoordinator';
 import type { ChatSessionsService } from './methods.sessions';
 import type { ChatWebviewService } from './methods.webview';
 import type { ChatSessionInfo } from './types';
 
-type LoopAction = 'enable' | 'disable' | 'interval' | 'prompt' | 'reset';
-
-type LoopActionItem = vscode.QuickPickItem & {
-  action: LoopAction;
+export type LoopSessionSettingsInput = {
+  enabled?: boolean;
+  intervalMinutes?: number;
+  prompt?: string;
 };
 
-function truncatePrompt(prompt: string, maxChars = 90): string {
-  const text = (prompt || '').trim();
-  if (!text) return '';
-  return text.length > maxChars ? `${text.slice(0, maxChars - 1)}…` : text;
-}
-
-function formatNextFire(nextFireAt: number | undefined): string | undefined {
-  if (typeof nextFireAt !== 'number' || !Number.isFinite(nextFireAt) || nextFireAt <= 0) {
-    return undefined;
-  }
-  return new Date(nextFireAt).toLocaleTimeString([], {
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
-
-async function pickLoopInterval(currentMinutes: number): Promise<number | undefined> {
-  const presets = [5, 10, 15, 30, 60, 120];
-  const items: Array<vscode.QuickPickItem & { minutes?: number; custom?: true }> = presets.map((minutes) => ({
-    label: `${minutes} minutes`,
-    description: minutes === currentMinutes ? 'Current' : undefined,
-    minutes,
-  }));
-
-  items.push({
-    label: 'Custom…',
-    description: 'Enter a custom interval in minutes',
-    custom: true,
-  });
-
-  const selected = await vscode.window.showQuickPick(items, {
-    title: 'Loop interval',
-    placeHolder: 'Choose how often the steering loop should run',
-    ignoreFocusOut: true,
-  });
-
-  if (!selected) return undefined;
-  if (selected.custom) {
-    const input = await vscode.window.showInputBox({
-      title: 'Custom loop interval',
-      prompt: 'Enter the loop interval in minutes',
-      value: String(currentMinutes || 5),
-      ignoreFocusOut: true,
-      validateInput: (value) => {
-        const parsed = Number(value.trim());
-        if (!Number.isFinite(parsed) || parsed < 1) {
-          return 'Enter a whole number of minutes greater than or equal to 1.';
-        }
-        if (parsed > 24 * 60) {
-          return 'Enter a value less than or equal to 1440 minutes.';
-        }
-        return undefined;
-      },
-    });
-
-    if (!input) return undefined;
-    return Math.max(1, Math.min(24 * 60, Math.floor(Number(input.trim()))));
-  }
-
-  return selected.minutes;
-}
-
-async function pickLoopPrompt(currentPrompt: string): Promise<string | undefined> {
-  const input = await vscode.window.showInputBox({
-    title: 'Loop prompt',
-    prompt: 'Prompt injected into the active run on each loop tick',
-    value: currentPrompt,
-    ignoreFocusOut: true,
-    validateInput: (value) => (!value.trim() ? 'Prompt cannot be empty.' : undefined),
-  });
-
-  if (!input) return undefined;
-  return input.trim();
-}
+export type LoopWorkspaceDefaultsInput = {
+  enabled?: boolean;
+  intervalMinutes?: number;
+  prompt?: string;
+};
 
 export interface ChatLoopService {
   getLoopStateForUI(session?: ChatSessionInfo): ReturnType<ChatLoopManager['getSessionStatus']>;
+  getLoopDefaultsForUI(): ChatLoopDefaults;
   postLoopState(session?: ChatSessionInfo): void;
+  postLoopDefaults(): void;
   injectLoopPrompt(prompt?: string): Promise<boolean>;
-  configureLoopForActiveSession(): Promise<void>;
+  setLoopSettingsForActiveSession(settings: LoopSessionSettingsInput): Promise<void>;
+  resetLoopSettingsForActiveSession(): Promise<void>;
+  setLoopWorkspaceDefaults(settings: LoopWorkspaceDefaultsInput): Promise<void>;
 }
 
 export interface ChatLoopDeps {
   view?: vscode.WebviewView;
   activeSessionId: string;
+  isProcessing: boolean;
+  outputChannel?: vscode.OutputChannel;
   loopManager: ChatLoopManager;
   runner: Pick<RunCoordinator, 'triggerLoopPrompt'>;
   sessionApi: Pick<ChatSessionsService, 'getActiveSession' | 'persistActiveSession'>;
@@ -110,11 +55,22 @@ export function createChatLoopService(controller: ChatLoopDeps): ChatLoopService
       return this.loopManager.getSessionStatus(session);
     },
 
+    getLoopDefaultsForUI(this: ChatLoopDeps): ChatLoopDefaults {
+      return this.loopManager.getDefaults();
+    },
+
     postLoopState(this: ChatLoopDeps, session: ChatSessionInfo = this.sessionApi.getActiveSession()): void {
       if (session.id !== this.activeSessionId) return;
       this.webviewApi.postMessage({
         type: 'loopState',
         loop: service.getLoopStateForUI(session),
+      });
+    },
+
+    postLoopDefaults(this: ChatLoopDeps): void {
+      this.webviewApi.postMessage({
+        type: 'loopDefaultsState',
+        loopDefaults: service.getLoopDefaultsForUI(),
       });
     },
 
@@ -129,88 +85,141 @@ export function createChatLoopService(controller: ChatLoopDeps): ChatLoopService
       return await this.runner.triggerLoopPrompt(raw);
     },
 
-    async configureLoopForActiveSession(this: ChatLoopDeps): Promise<void> {
+    async setLoopSettingsForActiveSession(this: ChatLoopDeps, settings: LoopSessionSettingsInput): Promise<void> {
       const session = this.sessionApi.getActiveSession();
-      const loopState = this.loopManager.getSessionStatus(session);
+      const postCurrentState = () => service.postLoopState(session);
 
       if (session.parentSessionId || session.subagentType) {
-        void vscode.window.showInformationMessage(
-          'LingYun: Loop steering is only available for top-level sessions.'
-        );
+        postInputNotice(this, 'Loop steering is only available for top-level sessions.');
+        postCurrentState();
+        service.postLoopDefaults();
         return;
       }
 
-      const nextFireText = formatNextFire(loopState.nextFireAt);
-      const items: LoopActionItem[] = [
-        {
-          label: loopState.enabled ? 'Disable loop' : 'Enable loop',
-          detail: `${formatLoopIntervalLabel(loopState.intervalMinutes)}${nextFireText ? ` · next ${nextFireText}` : ''}`,
-          action: loopState.enabled ? 'disable' : 'enable',
-        },
-        {
-          label: 'Change interval',
-          detail: `Current: ${formatLoopIntervalLabel(loopState.intervalMinutes)}`,
-          action: 'interval',
-        },
-        {
-          label: 'Change prompt',
-          detail: truncatePrompt(loopState.prompt) || 'Current prompt',
-          action: 'prompt',
-        },
-        {
-          label: 'Reset to workspace defaults',
-          detail: 'Restore enabled state, interval, and prompt from settings',
-          action: 'reset',
-        },
-      ];
-
-      const picked = await vscode.window.showQuickPick(items, {
-        title: 'Loop steering',
-        placeHolder: 'Enable, disable, or configure this session loop',
-        ignoreFocusOut: true,
-      });
-
-      if (!picked) return;
-
-      let changed = false;
-
-      if (picked.action === 'enable') {
-        this.loopManager.updateSessionState(session.id, (current) => ({ ...current, enabled: true }));
-        changed = true;
-      } else if (picked.action === 'disable') {
-        this.loopManager.updateSessionState(session.id, (current) => ({ ...current, enabled: false }));
-        changed = true;
-      } else if (picked.action === 'interval') {
-        const minutes = await pickLoopInterval(loopState.intervalMinutes);
-        if (!minutes) return;
-        this.loopManager.updateSessionState(session.id, (current) => ({ ...current, intervalMinutes: minutes }));
-        changed = true;
-      } else if (picked.action === 'prompt') {
-        const prompt = await pickLoopPrompt(loopState.prompt);
-        if (!prompt) return;
-        this.loopManager.updateSessionState(session.id, (current) => ({ ...current, prompt }));
-        changed = true;
-      } else if (picked.action === 'reset') {
-        const defaults = this.loopManager.getDefaults();
-        this.loopManager.updateSessionState(session.id, () => ({
-          enabled: defaults.enabled,
-          intervalMinutes: defaults.intervalMinutes,
-          prompt: defaults.prompt,
-        }));
-        changed = true;
+      if (this.isProcessing) {
+        postInputNotice(this, 'Stop the current task before changing loop steering.');
+        postCurrentState();
+        service.postLoopDefaults();
+        return;
       }
 
-      if (!changed) return;
+      const current = this.loopManager.getSessionStatus(session);
+      const raw = settings && typeof settings === 'object' ? settings : {};
+      const enabled = typeof raw.enabled === 'boolean' ? raw.enabled : current.enabled;
+      const intervalSource = Object.prototype.hasOwnProperty.call(raw, 'intervalMinutes')
+        ? raw.intervalMinutes
+        : current.intervalMinutes;
+      const intervalNumber = Number(intervalSource);
+      const prompt = Object.prototype.hasOwnProperty.call(raw, 'prompt')
+        ? String(raw.prompt ?? '').trim()
+        : current.prompt;
 
-      const nextLoop = this.loopManager.getSessionStatus(session);
+      if (!Number.isFinite(intervalNumber) || intervalNumber < 1 || intervalNumber > 24 * 60) {
+        postInputNotice(this, 'Loop interval must be between 1 and 1440 minutes.');
+        postCurrentState();
+        return;
+      }
+      if (!prompt) {
+        postInputNotice(this, 'Loop prompt cannot be empty.');
+        postCurrentState();
+        return;
+      }
+
+      this.loopManager.updateSessionState(session.id, (currentState) => ({
+        ...currentState,
+        enabled,
+        intervalMinutes: normalizeLoopIntervalMinutes(intervalNumber),
+        prompt,
+      }));
       service.postLoopState(session);
+      service.postLoopDefaults();
       this.sessionApi.persistActiveSession();
+    },
 
-      const stateLabel = nextLoop.enabled ? 'enabled' : 'disabled';
-      const pausedSuffix = nextLoop.enabled && !nextLoop.canRunNow ? ` ${nextLoop.statusText}` : '';
-      void vscode.window.showInformationMessage(
-        `LingYun: Loop ${stateLabel} for this session (${formatLoopIntervalLabel(nextLoop.intervalMinutes)}).${pausedSuffix}`
-      );
+    async resetLoopSettingsForActiveSession(this: ChatLoopDeps): Promise<void> {
+      const session = this.sessionApi.getActiveSession();
+      const postCurrentState = () => service.postLoopState(session);
+
+      if (session.parentSessionId || session.subagentType) {
+        postInputNotice(this, 'Loop steering is only available for top-level sessions.');
+        postCurrentState();
+        service.postLoopDefaults();
+        return;
+      }
+
+      if (this.isProcessing) {
+        postInputNotice(this, 'Stop the current task before changing loop steering.');
+        postCurrentState();
+        service.postLoopDefaults();
+        return;
+      }
+
+      const defaults = this.loopManager.getDefaults();
+      this.loopManager.updateSessionState(session.id, () => ({
+        enabled: defaults.enabled,
+        intervalMinutes: defaults.intervalMinutes,
+        prompt: defaults.prompt,
+      }));
+      service.postLoopState(session);
+      service.postLoopDefaults();
+      this.sessionApi.persistActiveSession();
+    },
+
+    async setLoopWorkspaceDefaults(this: ChatLoopDeps, settings: LoopWorkspaceDefaultsInput): Promise<void> {
+      const session = this.sessionApi.getActiveSession();
+      const postCurrentState = () => {
+        service.postLoopDefaults();
+        service.postLoopState(session);
+      };
+
+      if (this.isProcessing) {
+        postInputNotice(this, 'Stop the current task before changing loop workspace defaults.');
+        postCurrentState();
+        return;
+      }
+
+      const current = this.loopManager.getDefaults();
+      const raw = settings && typeof settings === 'object' ? settings : {};
+      const enabled = typeof raw.enabled === 'boolean' ? raw.enabled : current.enabled;
+      const intervalSource = Object.prototype.hasOwnProperty.call(raw, 'intervalMinutes')
+        ? raw.intervalMinutes
+        : current.intervalMinutes;
+      const intervalNumber = Number(intervalSource);
+      const prompt = Object.prototype.hasOwnProperty.call(raw, 'prompt')
+        ? String(raw.prompt ?? '').trim()
+        : current.prompt;
+
+      if (!Number.isFinite(intervalNumber) || intervalNumber < 1 || intervalNumber > 24 * 60) {
+        postInputNotice(this, 'Default loop interval must be between 1 and 1440 minutes.');
+        postCurrentState();
+        return;
+      }
+      if (!prompt) {
+        postInputNotice(this, 'Default loop prompt cannot be empty.');
+        postCurrentState();
+        return;
+      }
+
+      const normalized: ChatLoopDefaults = {
+        enabled,
+        intervalMinutes: normalizeLoopIntervalMinutes(intervalNumber),
+        prompt,
+      };
+
+      try {
+        const config = vscode.workspace.getConfiguration('lingyun');
+        await config.update('loop.enabled', normalized.enabled, true);
+        await config.update('loop.intervalMinutes', normalized.intervalMinutes, true);
+        await config.update('loop.prompt', normalized.prompt, true);
+        service.postLoopDefaults();
+        service.postLoopState(session);
+      } catch (error) {
+        appendErrorLog(this.outputChannel, 'Failed to persist loop workspace defaults', error, {
+          tag: 'Loop',
+        });
+        postInputNotice(this, 'Failed to update loop workspace defaults. See logs for details.');
+        postCurrentState();
+      }
     },
   });
 

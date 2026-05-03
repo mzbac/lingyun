@@ -622,13 +622,23 @@
 	        questionsHtml += '</div>';
 	      }
 
+	      const cancelConfirmHtml = isActivePlan
+	        ? '<div class="plan-cancel-confirm hidden" data-plan-cancel-confirm="' + escapeHtml(msg.id) + '" role="alert" aria-live="polite">' +
+	          '<div>Cancel this plan?</div>' +
+	          '<div class="plan-cancel-confirm-actions">' +
+	          '<button class="plan-btn secondary" data-action="cancelPlanDismiss" data-plan="' + escapeHtml(msg.id) + '">Keep plan</button>' +
+	          '<button class="plan-btn danger" data-action="cancelPlanConfirm" data-plan="' + escapeHtml(msg.id) + '">Cancel plan</button>' +
+	          '</div>' +
+	          '</div>'
+	        : '';
+
 	      let actions = '';
 	      if (status === 'draft' && isActivePlan) {
 	        actions = '<div class="plan-actions">' +
 	          '<button class="plan-btn primary" data-action="executePlan" data-plan="' + escapeHtml(msg.id) + '">Execute</button>' +
 	          '<button class="plan-btn secondary" data-action="revisePlan" data-plan="' + escapeHtml(msg.id) + '">Revise</button>' +
 	          '<button class="plan-btn danger" data-action="cancelPlan" data-plan="' + escapeHtml(msg.id) + '">Cancel</button>' +
-	        '</div>';
+	        '</div>' + cancelConfirmHtml;
 	      } else if (status === 'needs_input' && isActivePlan) {
 	        const hasQuestions = questionGroups.length > 0;
 	        const hintText =
@@ -641,6 +651,7 @@
 	          '<button class="plan-btn secondary" data-action="revisePlan" data-plan="' + escapeHtml(msg.id) + '">Revise</button>' +
 	          '<button class="plan-btn danger" data-action="cancelPlan" data-plan="' + escapeHtml(msg.id) + '">Cancel</button>' +
 	        '</div>' +
+	        cancelConfirmHtml +
 	        '<div class="plan-hint">' + escapeHtml(hintText) + '</div>';
 	      } else if (status === 'generating' && isActivePlan) {
 	        actions = '<div class="plan-actions"><button class="plan-btn secondary" disabled>Planning…</button></div>';
@@ -911,34 +922,55 @@
       return paragraphs.join('');
     }
 
-    function renderInlineMarkdown(text) {
-      if (!text) return '';
+      function renderInlineMarkdown(text) {
+        if (!text) return '';
 
-      // Escape first, then layer a minimal markdown subset on top.
-      let escaped = escapeHtml(text);
+        // Escape first, then layer a minimal markdown subset on top.
+        let escaped = escapeHtml(text);
 
-      // Inline code: `code`
-      escaped = escaped.replace(/`([^`]+)`/g, (_m, code) => '<code>' + code + '</code>');
+        // Inline code: `code`
+        escaped = escaped.replace(/`([^`]+)`/g, (_m, code) => '<code>' + code + '</code>');
 
-      // Bold: **text**
-      escaped = escaped.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+        // Bold: **text**
+        escaped = escaped.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
 
-      // Preserve newlines inside list items/paragraphs
-      escaped = escaped.replace(/\n/g, '<br>');
+        // Preserve newlines inside list items/paragraphs
+        escaped = escaped.replace(/\n/g, '<br>');
 
-      return escaped;
-    }
+        return escaped;
+      }
+
+      function postRenderedAction(message, failureMessage) {
+        try {
+          vscode.postMessage(message);
+          return true;
+        } catch {
+          if (typeof showInputNotice === 'function') {
+            showInputNotice(failureMessage || 'Failed to request action.');
+          }
+          try { syncInputState(); } catch {}
+          return false;
+        }
+      }
+
+      function showRenderedActionNotice(message) {
+        if (typeof showInputNotice === 'function') {
+          showInputNotice(message || 'Action failed.');
+        }
+      }
 
 	    document.addEventListener('click', (e) => {
+
 	      const locationBtn = e.target.closest('[data-action="openLocation"]');
 	      if (locationBtn) {
 	        const filePath = locationBtn.dataset.path || '';
 	        const line = Number(locationBtn.dataset.line || 0) || 0;
 	        const character = Number(locationBtn.dataset.character || 1) || 1;
 	        if (filePath && line > 0) {
-	          try {
-	            vscode.postMessage({ type: 'openLocation', filePath, line, character });
-	          } catch {}
+	          postRenderedAction(
+	            { type: 'openLocation', filePath, line, character },
+	            'Failed to request location open.'
+	          );
 	        }
 	        return;
 	      }
@@ -979,9 +1011,10 @@
         const msg = msgId ? messageDataById.get(msgId) : null;
         const toolCallId = msg && msg.toolCall && msg.toolCall.approvalId ? msg.toolCall.approvalId : '';
         if (toolCallId) {
-          try {
-            vscode.postMessage({ type: 'openNativeDiff', toolCallId });
-          } catch {}
+          postRenderedAction(
+            { type: 'openNativeDiff', toolCallId },
+            'Failed to request diff editor.'
+          );
         }
         return;
       }
@@ -1006,7 +1039,10 @@
 		        const text = msg && msg.toolCall && msg.toolCall.result ? msg.toolCall.result : '';
 		        if (text) {
 		          writeClipboard(text).then((ok) => {
-		            if (!ok) return;
+		            if (!ok) {
+		              showRenderedActionNotice('Failed to copy tool output.');
+		              return;
+		            }
 		            copyBtn.textContent = 'Copied';
 		            copyBtn.classList.add('copied');
 		            setTimeout(() => {
@@ -1014,6 +1050,8 @@
 		              copyBtn.classList.remove('copied');
 		            }, 900);
 		          });
+		        } else {
+		          showRenderedActionNotice('No tool output to copy.');
 		        }
 		        return;
 		      }
@@ -1040,7 +1078,11 @@
 
 		        const original = assistantCopyBtn.textContent;
 		        const finishCopy = (ok) => {
-		          if (!ok) return;
+		          if (!ok) {
+		            const format = action === 'copyAssistantHtml' ? 'HTML' : 'Markdown';
+		            showRenderedActionNotice('Failed to copy assistant ' + format + '.');
+		            return;
+		          }
 		          assistantCopyBtn.textContent = '✓';
 		          assistantCopyBtn.classList.add('copied');
 		          setTimeout(() => {
@@ -1064,15 +1106,39 @@
         if (!action || !planMessageId) return;
 
 	        if (action === 'executePlan') {
-	          // Optimistically switch to Build mode; the extension will confirm via modeChanged.
-	          setMode('build');
-	          setPlanPending(false);
-	          vscode.postMessage({ type: 'executePlan', planMessageId });
+	          postRenderedAction(
+	            { type: 'executePlan', planMessageId },
+	            'Failed to request plan execution.'
+	          );
 	        } else if (action === 'cancelPlan') {
-	          setPlanPending(false);
-	          vscode.postMessage({ type: 'cancelPlan', planMessageId });
+	          const confirmEl = planBtn.closest('.message.plan')?.querySelector('[data-plan-cancel-confirm="' + planMessageId + '"]');
+	          if (confirmEl) confirmEl.classList.remove('hidden');
+	        } else if (action === 'cancelPlanDismiss') {
+	          const confirmEl = planBtn.closest('.plan-cancel-confirm');
+	          if (confirmEl) confirmEl.classList.add('hidden');
+	        } else if (action === 'cancelPlanConfirm') {
+	          postRenderedAction(
+	            { type: 'cancelPlan', planMessageId, confirmed: true },
+	            'Failed to request plan cancellation.'
+	          );
 	        } else if (action === 'revisePlan') {
-	          vscode.postMessage({ type: 'revisePlan', planMessageId });
+	          const instructions = input && typeof input.value === 'string' ? input.value.trim() : '';
+	          if (instructions) {
+	            const posted = postRenderedAction(
+	              { type: 'revisePlan', planMessageId, instructions },
+	              'Failed to request plan revision.'
+	            );
+	            if (posted) {
+	              try { addToInputHistory(instructions); } catch {}
+	              if (input) input.value = '';
+	            }
+	          } else if (input) {
+	            input.placeholder = 'Type plan revisions or answer questions, then press Enter or click Revise again…';
+	            try { input.focus(); } catch {}
+	          }
+	          try { updateInputLayout(); } catch {}
+	          try { syncInputState(); } catch {}
+	          try { closeSkillDropdown(); } catch {}
 	        }
 		        return;
 		      }
@@ -1084,12 +1150,24 @@
       const approvalId = btn.dataset.approval;
 
 	      if (action === 'approve') {
-	        vscode.postMessage({ type: 'approveToolCall', approvalId });
+	        postRenderedAction(
+	          { type: 'approveToolCall', approvalId },
+	          'Failed to request tool approval.'
+	        );
 	      } else if (action === 'always') {
-	        vscode.postMessage({ type: 'alwaysAllowTool', approvalId });
+	        postRenderedAction(
+	          { type: 'alwaysAllowTool', approvalId },
+	          'Failed to request always-allow approval.'
+	        );
 	      } else if (action === 'reject') {
-	        vscode.postMessage({ type: 'rejectToolCall', approvalId });
+	        postRenderedAction(
+	          { type: 'rejectToolCall', approvalId },
+	          'Failed to request tool rejection.'
+	        );
 	      } else if (action === 'retryTool') {
-	        vscode.postMessage({ type: 'retryTool', approvalId });
+	        postRenderedAction(
+	          { type: 'retryTool', approvalId },
+	          'Failed to request tool retry.'
+	        );
       }
     });

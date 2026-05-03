@@ -76,6 +76,76 @@ suite('Chat models service', () => {
     }
   });
 
+  test('setReasoningEffort updates setting and posts model state', async () => {
+    const config = vscode.workspace.getConfiguration('lingyun');
+    const previousEffort = config.get('copilot.reasoningEffort');
+
+    try {
+      const controller = createStandaloneChatController();
+      const posted: unknown[] = [];
+
+      controller.currentModel = 'gpt-5.4';
+      controller.availableModels = [{ id: 'gpt-5.4', name: 'GPT-5.4' } as any];
+      controller.webviewApi.postMessage = (message: unknown) => {
+        posted.push(message);
+      };
+
+      await controller.modelApi.setReasoningEffort('low');
+
+      assert.strictEqual(config.get('copilot.reasoningEffort'), 'low');
+      assert.deepStrictEqual(posted, [
+        {
+          type: 'modelState',
+          model: 'gpt-5.4',
+          label: 'GPT-5.4',
+          isFavorite: false,
+          reasoningEffort: 'low',
+        },
+      ]);
+    } finally {
+      if (previousEffort === undefined) {
+        await config.update('copilot.reasoningEffort', undefined, vscode.ConfigurationTarget.Global);
+      } else {
+        await config.update('copilot.reasoningEffort', previousEffort, vscode.ConfigurationTarget.Global);
+      }
+    }
+  });
+
+  test('setReasoningEffort preserves empty value as disabled', async () => {
+    const config = vscode.workspace.getConfiguration('lingyun');
+    const previousEffort = config.get('copilot.reasoningEffort');
+
+    try {
+      const controller = createStandaloneChatController();
+      const posted: unknown[] = [];
+
+      controller.currentModel = 'gpt-5.4';
+      controller.availableModels = [{ id: 'gpt-5.4', name: 'GPT-5.4' } as any];
+      controller.webviewApi.postMessage = (message: unknown) => {
+        posted.push(message);
+      };
+
+      await controller.modelApi.setReasoningEffort('');
+
+      assert.strictEqual(config.get('copilot.reasoningEffort'), '');
+      assert.deepStrictEqual(posted, [
+        {
+          type: 'modelState',
+          model: 'gpt-5.4',
+          label: 'GPT-5.4',
+          isFavorite: false,
+          reasoningEffort: '',
+        },
+      ]);
+    } finally {
+      if (previousEffort === undefined) {
+        await config.update('copilot.reasoningEffort', undefined, vscode.ConfigurationTarget.Global);
+      } else {
+        await config.update('copilot.reasoningEffort', previousEffort, vscode.ConfigurationTarget.Global);
+      }
+    }
+  });
+
   test('setCurrentModel posts modelChanged with the configured reasoning effort', async () => {
     const config = vscode.workspace.getConfiguration('lingyun');
     const previousEffort = config.get('copilot.reasoningEffort');

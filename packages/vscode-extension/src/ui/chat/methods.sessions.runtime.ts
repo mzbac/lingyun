@@ -10,6 +10,7 @@ import type { LLMProvider } from '../../core/types';
 import type { ModelInfo } from '../../providers/modelCatalog';
 import type { OfficeSync } from '../office/sync';
 import { bindChatControllerService } from './controllerService';
+import { postInputNotice } from './inputNotice';
 import { createDefaultSessionTitle, getSessionDisplayTitle } from './sessionTitle';
 import { formatErrorForUser, isCancellationMessage } from './utils';
 import type { ChatMessage, ChatSessionInfo } from './types';
@@ -249,9 +250,7 @@ export function createChatSessionRuntimeService(
 
     async createNewSession(this: ChatSessionRuntimeRuntime): Promise<void> {
       if (this.isProcessing) {
-        vscode.window.showInformationMessage(
-          'LingYun: Stop the current task before starting a new session.'
-        );
+        postInputNotice(this, 'Stop the current task before starting a new session.');
         return;
       }
 
@@ -284,13 +283,16 @@ export function createChatSessionRuntimeService(
 
     async switchToSession(this: ChatSessionRuntimeRuntime, sessionId: string): Promise<void> {
       if (this.isProcessing) {
-        vscode.window.showInformationMessage(
-          'LingYun: Stop the current task before switching sessions.'
-        );
+        postInputNotice(this, 'Stop the current task before switching sessions.');
+        this.postSessions();
         return;
       }
       await this.persistence.ensureSessionsLoaded();
-      if (!this.sessions.has(sessionId)) return;
+      if (!this.sessions.has(sessionId)) {
+        postInputNotice(this, 'That saved session is no longer available.');
+        this.postSessions();
+        return;
+      }
 
       this.persistActiveSession();
       this.switchToSessionSync(sessionId);
@@ -377,7 +379,7 @@ export function createChatSessionRuntimeService(
 
     async clearCurrentSession(this: ChatSessionRuntimeRuntime): Promise<void> {
       if (this.isProcessing) {
-        vscode.window.showInformationMessage('LingYun: Stop the current task before clearing the session.');
+        postInputNotice(this, 'Stop the current task before clearing the session.');
         return;
       }
 
@@ -406,19 +408,19 @@ export function createChatSessionRuntimeService(
 
     async compactCurrentSession(this: ChatSessionRuntimeRuntime): Promise<void> {
       if (this.isProcessing) {
-        vscode.window.showInformationMessage('LingYun: Stop the current task before compacting.');
+        postInputNotice(this, 'Stop the current task before compacting.');
         return;
       }
 
       if (!this.view) {
-        void vscode.window.showInformationMessage('LINGYUN: AGENT view is not ready.');
+        postInputNotice(this, 'Agent view is not ready.');
         return;
       }
 
       await this.persistence.ensureSessionsLoaded();
 
       if (this.agent.getHistory().length === 0) {
-        void vscode.window.showInformationMessage('LingYun: Nothing to compact yet.');
+        postInputNotice(this, 'Nothing to compact yet.');
         return;
       }
 

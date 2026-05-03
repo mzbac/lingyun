@@ -80,6 +80,51 @@ function getLastAssistantTokens(
   return undefined;
 }
 
+export type LingyunAgentSkillsRuntimeOptions = {
+  enabled?: boolean;
+  paths?: string[];
+  maxPromptSkills?: number;
+  maxInjectSkills?: number;
+  maxInjectChars?: number;
+};
+
+type NormalizedSkillsRuntimeConfig = {
+  enabled: boolean;
+  paths: string[];
+  maxPromptSkills: number;
+  maxInjectSkills: number;
+  maxInjectChars: number;
+};
+
+function normalizeSkillsRuntimeConfig(
+  skills?: LingyunAgentSkillsRuntimeOptions,
+  fallback?: NormalizedSkillsRuntimeConfig,
+): NormalizedSkillsRuntimeConfig {
+  const paths = Array.isArray(skills?.paths) && skills.paths.length > 0
+    ? skills.paths
+    : fallback?.paths ?? DEFAULT_SKILL_PATHS;
+  const maxPromptSkills =
+    Number.isFinite(skills?.maxPromptSkills as number) && (skills?.maxPromptSkills as number) >= 0
+      ? Math.floor(skills?.maxPromptSkills as number)
+      : fallback?.maxPromptSkills ?? 50;
+  const maxInjectSkills =
+    Number.isFinite(skills?.maxInjectSkills as number) && (skills?.maxInjectSkills as number) > 0
+      ? Math.floor(skills?.maxInjectSkills as number)
+      : fallback?.maxInjectSkills ?? 5;
+  const maxInjectChars =
+    Number.isFinite(skills?.maxInjectChars as number) && (skills?.maxInjectChars as number) > 0
+      ? Math.floor(skills?.maxInjectChars as number)
+      : fallback?.maxInjectChars ?? 20_000;
+
+  return {
+    enabled: typeof skills?.enabled === 'boolean' ? skills.enabled : fallback?.enabled ?? true,
+    paths,
+    maxPromptSkills,
+    maxInjectSkills,
+    maxInjectChars,
+  };
+}
+
 export type LingyunAgentRuntimeOptions = {
   plugins?: LingyunPluginManager;
   workspaceRoot?: string;
@@ -87,17 +132,14 @@ export type LingyunAgentRuntimeOptions = {
   reasoning?: {
     effort?: string;
   };
+  text?: {
+    verbosity?: string;
+  };
   prompts?: {
     planPrompt?: string;
     buildSwitchPrompt?: string;
   };
-  skills?: {
-    enabled?: boolean;
-    paths?: string[];
-    maxPromptSkills?: number;
-    maxInjectSkills?: number;
-    maxInjectChars?: number;
-  };
+  skills?: LingyunAgentSkillsRuntimeOptions;
   subagents?: {
     taskMaxOutputChars?: number;
   };
@@ -115,7 +157,9 @@ export type LingyunAgentRuntimeSnapshot = {
   systemPrompt?: string;
   allowExternalPaths?: boolean;
   reasoningEffort?: string;
+  textVerbosity?: string;
   taskMaxOutputChars?: number;
+  skills?: LingyunAgentSkillsRuntimeOptions;
   modelLimits?: Record<string, ModelLimit>;
   compaction?: Partial<CompactionConfig>;
 };
@@ -129,7 +173,9 @@ type LingyunAgentExecutionRuntime = {
   systemPrompt: string;
   allowExternalPaths: boolean;
   reasoningEffort: string;
+  textVerbosity: string;
   taskMaxOutputChars: number;
+  skillsConfig: NormalizedSkillsRuntimeConfig;
   modelLimits?: Record<string, ModelLimit>;
   compactionConfig: CompactionConfig;
 };
@@ -191,17 +237,12 @@ export class LingyunAgent {
   private readonly runtimePolicy?: LingyunAgentRuntimePolicy;
   private readonly allowExternalPaths: boolean;
   private readonly reasoningEffort: string;
+  private readonly textVerbosity: string;
   private readonly reminderPrompts?: {
     planPrompt?: string;
     buildSwitchPrompt?: string;
   };
-  private readonly skillsConfig: {
-    enabled: boolean;
-    paths: string[];
-    maxPromptSkills: number;
-    maxInjectSkills: number;
-    maxInjectChars: number;
-  };
+  private readonly skillsConfig: NormalizedSkillsRuntimeConfig;
   private readonly skillsPromptProvider: SkillsPromptProvider;
   private readonly promptComposer: PromptComposer;
   private readonly taskMaxOutputChars: number;
@@ -227,30 +268,10 @@ export class LingyunAgent {
     this.runtimePolicy = runtime?.runtimePolicy;
     this.allowExternalPaths = !!runtime?.allowExternalPaths;
     this.reasoningEffort = typeof runtime?.reasoning?.effort === 'string' ? runtime.reasoning.effort.trim() : '';
+    this.textVerbosity = typeof runtime?.text?.verbosity === 'string' ? runtime.text.verbosity.trim() : '';
     this.reminderPrompts = runtime?.prompts;
 
-    const skills = runtime?.skills ?? {};
-    const paths = Array.isArray(skills.paths) && skills.paths.length > 0 ? skills.paths : DEFAULT_SKILL_PATHS;
-    const maxPromptSkills =
-      Number.isFinite(skills.maxPromptSkills as number) && (skills.maxPromptSkills as number) >= 0
-        ? Math.floor(skills.maxPromptSkills as number)
-        : 50;
-    const maxInjectSkills =
-      Number.isFinite(skills.maxInjectSkills as number) && (skills.maxInjectSkills as number) > 0
-        ? Math.floor(skills.maxInjectSkills as number)
-        : 5;
-    const maxInjectChars =
-      Number.isFinite(skills.maxInjectChars as number) && (skills.maxInjectChars as number) > 0
-        ? Math.floor(skills.maxInjectChars as number)
-        : 20_000;
-
-    this.skillsConfig = {
-      enabled: skills.enabled !== false,
-      paths,
-      maxPromptSkills,
-      maxInjectSkills,
-      maxInjectChars,
-    };
+    this.skillsConfig = normalizeSkillsRuntimeConfig(runtime?.skills);
 
     const taskMaxOutputCharsRaw = runtime?.subagents?.taskMaxOutputChars;
     this.taskMaxOutputChars =
@@ -348,12 +369,17 @@ export class LingyunAgent {
           typeof snapshot?.reasoningEffort === 'string'
             ? snapshot.reasoningEffort.trim()
             : this.reasoningEffort,
+        textVerbosity:
+          typeof snapshot?.textVerbosity === 'string'
+            ? snapshot.textVerbosity.trim()
+            : this.textVerbosity,
         taskMaxOutputChars:
           typeof snapshot?.taskMaxOutputChars === 'number' &&
           Number.isFinite(snapshot.taskMaxOutputChars) &&
           snapshot.taskMaxOutputChars > 0
             ? Math.floor(snapshot.taskMaxOutputChars)
             : this.taskMaxOutputChars,
+        skillsConfig: normalizeSkillsRuntimeConfig(snapshot?.skills, this.skillsConfig),
         modelLimits: snapshot?.modelLimits ?? this.modelLimits,
         compactionConfig: this.mergeCompactionConfig(this.compactionConfig, snapshot?.compaction),
       },
@@ -369,8 +395,9 @@ export class LingyunAgent {
       workspaceRoot: this.workspaceRoot,
       allowExternalPaths: runtime.allowExternalPaths,
       reasoning: { effort: runtime.reasoningEffort },
+      text: { verbosity: runtime.textVerbosity },
       prompts: this.reminderPrompts,
-      skills: this.skillsConfig,
+      skills: runtime.skillsConfig,
       subagents: { taskMaxOutputChars: runtime.taskMaxOutputChars },
       modelLimits: runtime.modelLimits,
       compaction: runtime.compactionConfig,
@@ -407,6 +434,8 @@ export class LingyunAgent {
       model: seed.modelId,
       mode,
       temperature: parentExecution.config.temperature,
+      topP: parentExecution.config.topP,
+      topK: parentExecution.config.topK,
       maxRetries: parentExecution.config.maxRetries,
       retryWithPartialOutput: parentExecution.config.retryWithPartialOutput,
       maxOutputTokens: parentExecution.config.maxOutputTokens,
@@ -1003,6 +1032,11 @@ export class LingyunAgent {
       sessionId: execution.config.sessionId,
       mode: this.getModeForConfig(execution.config),
       allowExternalPaths: execution.runtime.allowExternalPaths,
+      skills: {
+        enabled: execution.runtime.skillsConfig.enabled,
+        paths: execution.runtime.skillsConfig.paths,
+        maxPromptSkills: execution.runtime.skillsConfig.maxPromptSkills,
+      },
     });
   }
 
@@ -1074,8 +1108,11 @@ export class LingyunAgent {
       registry: this.registry,
       providerBehavior: this.providerBehavior,
       reasoningEffort: execution.runtime.reasoningEffort,
+      textVerbosity: execution.runtime.textVerbosity,
       compactionConfig: execution.runtime.compactionConfig,
       temperature: execution.config.temperature ?? 0.0,
+      topP: execution.config.topP,
+      topK: execution.config.topK,
       maxRetries: execution.config.maxRetries ?? 0,
       retryWithPartialOutput: execution.config.retryWithPartialOutput === true,
       getMaxOutputTokens: () => this.getMaxOutputTokens(execution.config, execution.runtime, modelId),
@@ -1108,14 +1145,15 @@ export class LingyunAgent {
     callbacks?: AgentCallbacks,
     signal?: AbortSignal,
   ): Promise<void> {
-    if (!this.skillsConfig.enabled) return;
+    const skillsConfig = execution.runtime.skillsConfig;
+    if (!skillsConfig.enabled) return;
 
     const mentions = extractSkillMentions(text);
     if (mentions.length === 0) return;
 
     const index = await getSkillIndex({
       workspaceRoot: this.workspaceRoot,
-      searchPaths: this.skillsConfig.paths,
+      searchPaths: skillsConfig.paths,
       allowExternalPaths: execution.runtime.allowExternalPaths,
       signal,
     });
@@ -1124,8 +1162,8 @@ export class LingyunAgent {
 
     if (selected.length === 0) return;
 
-    const maxSkills = this.skillsConfig.maxInjectSkills;
-    const maxChars = this.skillsConfig.maxInjectChars;
+    const maxSkills = skillsConfig.maxInjectSkills;
+    const maxChars = skillsConfig.maxInjectChars;
     const selectedForInject = selected.slice(0, maxSkills);
     const blocks: string[] = [];
 

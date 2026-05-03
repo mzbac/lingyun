@@ -202,10 +202,34 @@
           "default": 0,
           "description": "Sampling temperature for the model (0.0 = deterministic). Increase for more creative responses."
         },
+        "lingyun.topP": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Nucleus sampling probability to request from the model (0 = provider default). Lower values make output more focused."
+        },
+        "lingyun.topK": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "Top-k sampling count to request from supported models (0 = provider default). Lower values restrict token choices."
+        },
         "lingyun.maxOutputTokens": {
           "type": "number",
           "default": 32000,
           "description": "Fallback maximum generated output tokens to request when the selected model does not publish an output-token limit and lingyun.modelLimits does not override it."
+        },
+        "lingyun.llm.textVerbosity": {
+          "type": "string",
+          "default": "",
+          "enum": [
+            "",
+            "low",
+            "medium",
+            "high"
+          ],
+          "description": "Text verbosity hint for GPT-5/Responses API models. Empty uses the provider default."
         },
         "lingyun.llm.maxRetries": {
           "type": "number",
@@ -504,6 +528,23 @@
           },
           "default": [],
           "description": "Additional instruction files or glob patterns to include in the system prompt. Relative patterns are matched from the active file's directory and each parent directory up to the workspace git root."
+        },
+        "lingyun.instructionFiles.includeGlobal": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include the global instruction file (~/.config/lingyun/AGENTS.md) in the system prompt when present."
+        },
+        "lingyun.instructionFiles.maxCharsPerFile": {
+          "type": "number",
+          "default": 60000,
+          "minimum": 1000,
+          "description": "Maximum characters loaded from each instruction file before truncation."
+        },
+        "lingyun.instructionFiles.maxTotalChars": {
+          "type": "number",
+          "default": 180000,
+          "minimum": 1000,
+          "description": "Maximum total instruction-file characters injected into the system prompt before truncation."
         },
         "lingyun.skills.enabled": {
           "type": "boolean",

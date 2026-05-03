@@ -51,8 +51,9 @@ suite('Chat webview loop integration', () => {
     }
   });
 
-  test('configureLoop webview message routes to the active-session loop configurator', async () => {
+  test('configureLoop webview message reposts inline loop state', async () => {
     const controller = createStandaloneChatController();
+    const posted: unknown[] = [];
 
     controller.viewDisposables = [];
     controller.activeSessionId = 'session-1';
@@ -88,10 +89,6 @@ suite('Chat webview loop integration', () => {
       ],
     ]);
 
-    let configureCalls = 0;
-    controller.loopApi.configureLoopForActiveSession = async () => {
-      configureCalls++;
-    };
     controller.webviewApi.getHtml = () => '';
     controller.webviewApi.startInitPusher = () => {};
 
@@ -101,7 +98,10 @@ suite('Chat webview loop integration', () => {
       options: {},
       html: '',
       cspSource: 'test-csp',
-      postMessage: () => true,
+      postMessage: (message: unknown) => {
+        posted.push(message);
+        return true;
+      },
       asWebviewUri: (uri: unknown) => uri,
       onDidReceiveMessage: (listener: (data: unknown) => void | Promise<void>) => {
         onMessage = listener;
@@ -120,7 +120,8 @@ suite('Chat webview loop integration', () => {
 
     await onMessage?.({ type: 'configureLoop' });
 
-    assert.strictEqual(configureCalls, 1);
+    assert.ok(posted.some(message => (message as any)?.type === 'loopState'));
+    assert.ok(posted.some(message => (message as any)?.type === 'loopDefaultsState'));
   });
 
   test('getHtml injects the shared chat protocol bootstrap before browser scripts', () => {
