@@ -50,7 +50,6 @@ import { TaskSubagentRunner } from './taskSubagentRunner.js';
 import {
   appendSyntheticContextMessage,
   snapshotSyntheticContextsForCompaction,
-  stripTransientSyntheticMessages,
   type LingyunAgentSyntheticContext,
 } from './transientSyntheticContext.js';
 
@@ -695,7 +694,6 @@ export class LingyunAgent {
     execution: LingyunAgentExecutionContext;
     syntheticContexts: LingyunAgentSyntheticContext[];
   }> {
-    session.history = stripTransientSyntheticMessages(session.history);
     const config = { ...this.config, ...(configOverride ?? {}) };
     const prepared = await this.runtimePolicy?.prepareRun?.({
       session,
@@ -1351,10 +1349,13 @@ export class LingyunAgent {
           params.signal
         );
         params.session.history.push(createUserHistoryMessage(params.input));
+        for (const context of syntheticContexts) {
+          appendSyntheticContextMessage(params.session.history, context);
+        }
         const text = await this.runOnce(
           params.session,
           execution,
-          syntheticContexts,
+          [],
           undefined,
           proxy,
           params.signal

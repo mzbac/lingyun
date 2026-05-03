@@ -1066,6 +1066,211 @@ suite('LingYun Agent SDK', () => {
     assertSecondTurnCacheReuse(llm, session, 'allowExternalPaths toggle');
   });
 
+  test('prompt cache - prepared synthetic contexts persist so follow-up turns extend the cached prefix', async () => {
+    const llm = new CacheAwareMockLLMProvider();
+    const registry = new ToolRegistry();
+    const session = new LingyunSession();
+    let preparedRuns = 0;
+
+    llm.queueResponse({ kind: 'text', content: 'first' });
+    llm.queueResponse({ kind: 'text', content: 'second' });
+
+    const agent = new LingyunAgent(llm, { model: 'mock-model' }, registry, {
+      allowExternalPaths: false,
+      skills: { enabled: false },
+      runtimePolicy: {
+        async prepareRun(ctx) {
+          if (!ctx.input || preparedRuns++ > 0) return undefined;
+          return {
+            syntheticContexts: [
+              {
+                transientContext: 'memoryRecall',
+                text: '<memory_recall_context>\nremember this for the first turn\n</memory_recall_context>',
+                persistAfterCompaction: true,
+              },
+            ],
+          };
+        },
+      },
+    });
+
+    for await (const _event of agent.run({ session, input: 'hi' }).events) {
+      // drain
+    }
+    for await (const _event of agent.run({ session, input: 'follow up' }).events) {
+      // drain
+    }
+
+    const synthetic = session
+      .getHistory()
+      .find(
+        (message) =>
+          message.role === 'assistant' &&
+          message.metadata?.synthetic === true &&
+          message.metadata.transientContext === 'memoryRecall',
+      );
+    assert.ok(synthetic, 'prepared synthetic context should be recorded in session history');
+    assert.ok(
+      getMessageText(synthetic).includes('remember this for the first turn'),
+      'recorded synthetic context should preserve its prompt text',
+    );
+    assertSecondTurnCacheReuse(llm, session, 'persisted prepared synthetic context');
+  });
+
+  test('prompt cache - restored sessions preserve prepared synthetic contexts and cacheable prefixes', async () => {
+    const llm = new CacheAwareMockLLMProvider();
+    const registry = new ToolRegistry();
+    const originalSession = new LingyunSession({ sessionId: 'synthetic-cache-restore-session' });
+    let preparedRuns = 0;
+
+    const agent = new LingyunAgent(llm, { model: 'mock-model', sessionId: 'synthetic-cache-restore-session' }, registry, {
+      allowExternalPaths: false,
+      skills: { enabled: false },
+      runtimePolicy: {
+        async prepareRun(ctx) {
+          if (!ctx.input || preparedRuns++ > 0) return undefined;
+          return {
+            syntheticContexts: [
+              {
+                transientContext: 'explore',
+                text: '<subagent_explore_context>\nindexed src/cache.ts\n</subagent_explore_context>',
+                persistAfterCompaction: true,
+              },
+            ],
+          };
+        },
+      },
+    });
+
+    llm.queueResponse({ kind: 'text', content: 'first' });
+    for await (const _event of agent.run({ session: originalSession, input: 'map the cache flow' }).events) {
+      // drain
+    }
+
+    const restoredSession = restoreSession(snapshotSession(originalSession, { sessionId: 'synthetic-cache-restore-session' }));
+
+    llm.queueResponse({ kind: 'text', content: 'second' });
+    const restoredAgent = new LingyunAgent(llm, { model: 'mock-model', sessionId: 'synthetic-cache-restore-session' }, registry, {
+      allowExternalPaths: false,
+      skills: { enabled: false },
+      runtimePolicy: {
+        async prepareRun() {
+          return undefined;
+        },
+      },
+    });
+    for await (const _event of restoredAgent.run({ session: restoredSession, input: 'continue from the cache map' }).events) {
+      // drain
+    }
+
+    const restoredSynthetic = restoredSession
+      .getHistory()
+      .find(
+        (message) =>
+          message.role === 'assistant' &&
+          message.metadata?.synthetic === true &&
+          message.metadata.transientContext === 'explore',
+      );
+    assert.ok(restoredSynthetic, 'restored session should keep the prepared synthetic context in history');
+    assert.ok(
+      getMessageText(restoredSynthetic).includes('indexed src/cache.ts'),
+      'restored synthetic context should preserve its prompt text',
+    );
+    assertSecondTurnCacheReuse(llm, restoredSession, 'restored prepared synthetic context');
+  });
+
+  test('prompt cache - compaction restores prepared synthetic context and rebuilds a cacheable baseline', async () => {
+    const llm = new CacheAwareMockLLMProvider();
+    const registry = new ToolRegistry();
+    const session = new LingyunSession();
+    let preparedRuns = 0;
+
+    const agent = new LingyunAgent(llm, { model: 'mock-model' }, registry, {
+      allowExternalPaths: false,
+      skills: { enabled: false },
+      runtimePolicy: {
+        async prepareRun(ctx) {
+          if (!ctx.input || preparedRuns++ > 0) return undefined;
+          return {
+            syntheticContexts: [
+              {
+                transientContext: 'memoryRecall',
+                text: '<memory_recall_context>\ncache policy: replay synthetic context after compaction\n</memory_recall_context>',
+                persistAfterCompaction: true,
+              },
+            ],
+          };
+        },
+      },
+    });
+
+    llm.queueResponse({ kind: 'text', content: 'first' });
+    for await (const _event of agent.run({ session, input: 'start with recalled context' }).events) {
+      // drain
+    }
+
+    llm.queueResponse({ kind: 'text', content: 'summary after compaction' });
+    await agent.compactSession(session);
+
+    const restored = session
+      .getHistory()
+      .find((message) => message.role === 'assistant' && message.metadata?.compactionRestore?.source === 'memoryRecall');
+    assert.ok(restored, 'compaction should restore the prepared synthetic context');
+    assert.ok(
+      getMessageText(restored).includes('replay synthetic context after compaction'),
+      'restored compaction context should preserve the synthetic prompt text',
+    );
+
+    llm.queueResponse({ kind: 'text', content: 'post-compaction one' });
+    for await (const _event of agent.run({ session, input: 'continue after compaction' }).events) {
+      // drain
+    }
+
+    llm.queueResponse({ kind: 'text', content: 'post-compaction two' });
+    for await (const _event of agent.run({ session, input: 'continue after compaction again' }).events) {
+      // drain
+    }
+
+    const firstPostCompactionPrompt = JSON.stringify(llm.promptHistory[2] ?? '');
+    assert.ok(
+      firstPostCompactionPrompt.includes('replay synthetic context after compaction'),
+      'first post-compaction prompt should include restored synthetic context',
+    );
+
+    const tokenHistory = getAssistantTokenHistoryFromSession(session);
+    const previousPrompt = llm.promptHistory[2];
+    const currentPrompt = llm.promptHistory[3];
+    const previousTools = llm.toolNameHistory[2] ?? [];
+    const currentTools = llm.toolNameHistory[3] ?? [];
+    const currentTokens = tokenHistory[2]!;
+    const previousFootprint = estimatePromptCacheFootprint(previousPrompt, previousTools);
+
+    assert.ok(
+      hasPromptCachePrefix(previousPrompt, currentPrompt),
+      'second post-compaction turn should extend the restored synthetic-context baseline',
+    );
+    assert.deepStrictEqual(
+      currentTools,
+      previousTools,
+      'tool ordering should stay stable after synthetic-context compaction restore',
+    );
+    assert.strictEqual(
+      llm.cacheReadSourceIndexHistory[3],
+      2,
+      'second post-compaction turn should reuse the first post-compaction prompt, not the compaction prompt',
+    );
+    assert.strictEqual(
+      llm.cacheReadHistory[3],
+      previousFootprint,
+      'second post-compaction turn should read the restored synthetic-context baseline from cache',
+    );
+    assert.strictEqual(
+      currentTokens.cacheRead,
+      previousFootprint,
+      'assistant token accounting should record the restored synthetic-context cache read',
+    );
+  });
+
   test('prompt cache - switching to plan mode appends a synthetic system reminder without invalidating the prefix', async () => {
     const llm = new CacheAwareMockLLMProvider();
     const registry = new ToolRegistry();

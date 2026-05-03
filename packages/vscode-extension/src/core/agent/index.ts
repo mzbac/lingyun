@@ -8,7 +8,6 @@ import {
   LingyunAgent,
   LingyunSession,
   normalizeFileHandlesState,
-  stripTransientSyntheticMessages,
   type LingyunCompactionSyntheticContext,
 } from '@kooka/agent-sdk';
 import type { AgentConfig as SdkAgentConfig } from '@kooka/agent-sdk';
@@ -139,7 +138,7 @@ export class AgentLoop {
   }
 
   exportState(): AgentSessionState {
-    const history = cloneAgentHistoryMessages(stripTransientSyntheticMessages(this.session.history));
+    const history = cloneAgentHistoryMessages(this.session.history);
     const fileHandles = cloneFileHandlesState(this.session.fileHandles);
 
     return {

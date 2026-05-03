@@ -64,6 +64,35 @@ function extractRecallBlockFromPrompt(prompt: string): string {
   return recallStart >= 0 && recallEnd > recallStart ? prompt.slice(recallStart, recallEnd) : '';
 }
 
+function getPromptEntryText(message: unknown): string {
+  if (!message || typeof message !== 'object') return '';
+  const content = (message as any).content;
+  const text = getPromptMessageText(content);
+  if (text) return text;
+  return typeof content === 'string' ? content : '';
+}
+
+function extractRecallBlockAfterLastUserMessage(prompt: unknown): string {
+  const messages = Array.isArray(prompt) ? prompt : [];
+  let lastUserIndex = -1;
+  for (let index = 0; index < messages.length; index++) {
+    if ((messages[index] as any)?.role === 'user') {
+      lastUserIndex = index;
+    }
+  }
+
+  for (let index = lastUserIndex + 1; index < messages.length; index++) {
+    const text = getPromptEntryText(messages[index]);
+    const recallStart = text.indexOf('<memory_recall_context>');
+    const recallEnd = text.indexOf('</memory_recall_context>');
+    if (recallStart >= 0 && recallEnd > recallStart) {
+      return text.slice(recallStart, recallEnd);
+    }
+  }
+
+  return '';
+}
+
 function usage(override?: UsageOverride): LanguageModelV3Usage {
   return {
     inputTokens: { total: 0, noCache: 0, cacheRead: 0, cacheWrite: 0 },
@@ -2759,7 +2788,11 @@ suite('AgentLoop', () => {
           msg.metadata?.synthetic &&
           String((msg.metadata as any).transientContext) === 'explore',
       );
-      assert.strictEqual(injected, undefined, 'transient explore context should be injected into the prompt without persisting in history');
+      assert.ok(injected, 'auto-explore context should be recorded in history so later prompts can replay it');
+      assert.ok(
+        getMessageText(injected as any).includes('Found relevant files'),
+        'recorded auto-explore context should preserve the subagent output',
+      );
     } finally {
       await cfg.update('subagents.explorePrepass.enabled', prevEnabled as any, true);
       await cfg.update('subagents.explorePrepass.maxChars', prevMaxChars as any, true);
@@ -4892,8 +4925,7 @@ suite('AgentLoop', () => {
 
       mockLLM.setNextResponse({ kind: 'text', content: 'Ok again' });
       await agent.continue('What testing policy should I follow for integration tests?');
-      const secondPrompt = JSON.stringify(mockLLM.lastPrompt ?? '');
-      const secondRecallBlock = extractRecallBlockFromPrompt(secondPrompt);
+      const secondRecallBlock = extractRecallBlockAfterLastUserMessage(mockLLM.lastPrompt);
       assert.strictEqual(
         secondRecallBlock,
         '',
@@ -4987,8 +5019,7 @@ suite('AgentLoop', () => {
 
       mockLLM.setNextResponse({ kind: 'text', content: 'Still ok' });
       await agent.continue('Where should I check the latest pipeline bugs right now?');
-      const secondPrompt = JSON.stringify(mockLLM.lastPrompt ?? '');
-      const secondRecallBlock = extractRecallBlockFromPrompt(secondPrompt);
+      const secondRecallBlock = extractRecallBlockAfterLastUserMessage(mockLLM.lastPrompt);
       assert.ok(
         secondRecallBlock.includes('pointer: Pipeline bugs are tracked in Linear project INGEST.'),
         'current-state follow-up should still re-surface pointer-to-current-truth recall',
@@ -5083,8 +5114,7 @@ suite('AgentLoop', () => {
 
       mockLLM.setNextResponse({ kind: 'text', content: 'Ok again' });
       await agent.continue('Why do we prefer that testing policy for integration tests?');
-      const secondPrompt = JSON.stringify(mockLLM.lastPrompt ?? '');
-      const secondRecallBlock = extractRecallBlockFromPrompt(secondPrompt);
+      const secondRecallBlock = extractRecallBlockAfterLastUserMessage(mockLLM.lastPrompt);
       assert.ok(
         secondRecallBlock.includes('Prefer integration tests against a seeded ephemeral database instance.'),
         'angle-aware follow-up should allow the same durable guidance to re-surface',
@@ -5227,8 +5257,7 @@ suite('AgentLoop', () => {
 
       mockLLM.setNextResponse({ kind: 'text', content: 'Still ok' });
       await agent.continue('What testing policy should I follow for migration-sensitive integration tests?');
-      const secondPrompt = JSON.stringify(mockLLM.lastPrompt ?? '');
-      const secondRecallBlock = extractRecallBlockFromPrompt(secondPrompt);
+      const secondRecallBlock = extractRecallBlockAfterLastUserMessage(mockLLM.lastPrompt);
       assert.ok(
         secondRecallBlock.includes('Run migration-sensitive integration tests serially'),
         'follow-up recall should spend limited budget on fresh supporting memory when available',
@@ -5330,8 +5359,7 @@ suite('AgentLoop', () => {
 
       mockLLM.setNextResponse({ kind: 'text', content: 'Ok again' });
       await agent.continue('Why do we prefer that testing policy for integration tests?');
-      const secondPrompt = JSON.stringify(mockLLM.lastPrompt ?? '');
-      const secondRecallBlock = extractRecallBlockFromPrompt(secondPrompt);
+      const secondRecallBlock = extractRecallBlockAfterLastUserMessage(mockLLM.lastPrompt);
       assert.strictEqual(
         secondRecallBlock,
         '',
