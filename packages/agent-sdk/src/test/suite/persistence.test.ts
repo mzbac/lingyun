@@ -77,6 +77,7 @@ suite('persistence', () => {
       parentSessionId: 'parent-1',
       subagentType: 'explore',
       modelId: 'mock-model',
+      systemPromptSnapshot: ['Base system prompt', 'Plugin context'],
       pendingPlan: 'do the thing',
       compactionSyntheticContexts: [
         {
@@ -97,8 +98,24 @@ suite('persistence', () => {
     assert.equal(snapshot.parentSessionId, 'parent-1');
     assert.equal(snapshot.subagentType, 'explore');
     assert.equal(snapshot.modelId, 'mock-model');
+    assert.deepEqual(snapshot.systemPromptSnapshot, ['Base system prompt', 'Plugin context']);
     assert.equal(snapshot.pendingPlan, 'do the thing');
     assert.equal(snapshot.savedAt, '2020-01-01T00:00:00.000Z');
+    assert.deepEqual(snapshot.stats, {
+      totalMessages: 2,
+      userMessages: 1,
+      assistantMessages: 1,
+      systemMessages: 0,
+      syntheticMessages: 0,
+      toolCallCount: 0,
+      completedToolCallCount: 0,
+      failedToolCallCount: 0,
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+      totalCacheReadTokens: 0,
+      totalCacheWriteTokens: 0,
+      totalTokens: 0,
+    });
     assert.deepEqual(snapshot.compactionSyntheticContexts, [
       {
         transientContext: 'memoryRecall',
@@ -113,6 +130,7 @@ suite('persistence', () => {
     assert.equal(restored.parentSessionId, 'parent-1');
     assert.equal(restored.subagentType, 'explore');
     assert.equal(restored.modelId, 'mock-model');
+    assert.deepEqual(restored.getSystemPromptSnapshot(), ['Base system prompt', 'Plugin context']);
     assert.equal(restored.pendingPlan, 'do the thing');
     assert.deepEqual(restored.compactionSyntheticContexts, [
       {
@@ -161,7 +179,9 @@ suite('persistence', () => {
       parentSessionId: 'parent-1',
       subagentType: 'general',
       modelId: 'mock-model',
+      systemPromptSnapshot: ['  Base system prompt  ', '', 42],
       history: [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hello' }] }],
+      stats: { stale: true },
       mentionedSkills: ['skill-1', 42, '', '  skill-2  ', 'skill-1', '   ', null],
       compactionSyntheticContexts: [
         { transientContext: 'memoryRecall', text: 'remember me' },
@@ -240,6 +260,22 @@ suite('persistence', () => {
 
     assert.ok(parsed);
     assert.equal(parsed?.sessionId, 'child-1');
+    assert.deepEqual(parsed?.systemPromptSnapshot, ['Base system prompt']);
+    assert.deepEqual(parsed?.stats, {
+      totalMessages: 1,
+      userMessages: 1,
+      assistantMessages: 0,
+      systemMessages: 0,
+      syntheticMessages: 0,
+      toolCallCount: 0,
+      completedToolCallCount: 0,
+      failedToolCallCount: 0,
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+      totalCacheReadTokens: 0,
+      totalCacheWriteTokens: 0,
+      totalTokens: 0,
+    });
     assert.deepEqual(parsed?.mentionedSkills, ['skill-1', 'skill-2']);
     assert.deepEqual(parsed?.compactionSyntheticContexts, [
       { transientContext: 'memoryRecall', text: 'remember me' },
@@ -322,12 +358,28 @@ suite('persistence', () => {
       sessionId: 's1',
       mentionedSkills: ['skill-1', 'skill-2'],
       history: [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hello' }] }],
+      stats: {
+        totalMessages: 1,
+        userMessages: 1,
+        assistantMessages: 0,
+        systemMessages: 0,
+        syntheticMessages: 0,
+        toolCallCount: 0,
+        completedToolCallCount: 0,
+        failedToolCallCount: 0,
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        totalCacheReadTokens: 0,
+        totalCacheWriteTokens: 0,
+        totalTokens: 0,
+      },
     });
 
     const loaded = await store.load('s1');
     assert.equal(loaded?.sessionId, 's1');
     assert.equal(loaded?.parentSessionId, undefined);
     assert.deepEqual(loaded?.mentionedSkills, ['skill-1', 'skill-2']);
+    assert.equal(loaded?.stats?.totalMessages, 1);
     assert.equal(loaded?.savedAt, '2020-01-01T00:00:00.000Z');
 
     const list = await store.list({ limit: 10 });

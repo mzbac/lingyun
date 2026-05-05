@@ -163,6 +163,7 @@ export async function runOnce(params: {
     let model: any = await loadModelWithAuthRetry();
 
     const systemParts = await params.composeSystemPrompt(modelId, { signal });
+    session.setSystemPromptSnapshot(systemParts);
     const tools = params.filterTools(await registry.getTools());
     const toolNameToDefinition = new Map<string, ToolDefinition>();
 

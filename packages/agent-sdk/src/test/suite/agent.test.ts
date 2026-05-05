@@ -898,6 +898,71 @@ suite('LingYun Agent SDK', () => {
     });
   });
 
+  test('session captures system prompt snapshot and derived run stats', async () => {
+    const llm = new MockLLMProvider();
+    const registry = new ToolRegistry();
+    registry.registerTool(
+      {
+        id: 'echo',
+        name: 'Echo',
+        description: 'Echo test tool',
+        parameters: {
+          type: 'object',
+          properties: { text: { type: 'string' } as any },
+          required: ['text'],
+        },
+        execution: { type: 'function', handler: 'test.echo' },
+      },
+      async (args) => ({ success: true, data: String((args as any).text || '') }),
+    );
+
+    llm.queueResponse({
+      kind: 'tool-call',
+      toolCallId: 'call_echo',
+      toolName: 'echo',
+      input: { text: 'ok' },
+      usage: { inputNoCache: 4, outputTotal: 2 },
+    });
+    llm.queueResponse({
+      kind: 'text',
+      content: 'Done',
+      usage: { inputNoCache: 6, cacheRead: 3, outputTotal: 5 },
+    });
+
+    const session = new LingyunSession({ sessionId: 'stats-session' });
+    const agent = new LingyunAgent(
+      llm,
+      { model: 'mock-model', systemPrompt: 'Base system prompt' },
+      registry,
+      { allowExternalPaths: false, skills: { enabled: false } },
+    );
+
+    const run = agent.run({ session, input: 'Use echo' });
+    for await (const _event of run.events) {
+      // drain
+    }
+    await run.done;
+
+    const systemPromptSnapshot = session.getSystemPromptSnapshot();
+    assert.ok(systemPromptSnapshot?.some((part) => part.includes('Base system prompt')));
+
+    assert.deepStrictEqual(session.getStats(), {
+      totalMessages: 3,
+      userMessages: 1,
+      assistantMessages: 2,
+      systemMessages: 0,
+      syntheticMessages: 0,
+      toolCallCount: 1,
+      completedToolCallCount: 1,
+      failedToolCallCount: 0,
+      totalInputTokens: 10,
+      totalOutputTokens: 7,
+      totalCacheReadTokens: 3,
+      totalCacheWriteTokens: 0,
+      totalTokens: 20,
+    });
+  });
+
   test('drains steered input after assistant completion and continues with a follow-up iteration', async () => {
     const llm = new MockLLMProvider();
     const registry = new ToolRegistry();

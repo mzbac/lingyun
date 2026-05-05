@@ -115,6 +115,7 @@ export {
 export type {
   AgentHistoryMessage,
   AgentHistoryMetadata,
+  AgentHistoryStats,
   UserHistoryFilePart,
   UserHistoryInput,
   UserHistoryInputPart,
@@ -130,6 +131,7 @@ export {
   createSystemHistoryMessage,
   createUserHistoryMessage,
   finalizeStreamingParts,
+  getAgentHistoryStats,
   getUserHistoryInputText,
   getMessageText,
   isSkillInjectedMessage,

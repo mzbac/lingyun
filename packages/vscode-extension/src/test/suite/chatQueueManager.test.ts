@@ -196,6 +196,39 @@ suite('Chat queue manager', () => {
     assert.deepStrictEqual(state.mentionedSkills, ['memory.skill', 'follow-up.skill']);
   });
 
+  test('normalizeLoadedAgentState normalizes prompt snapshot and derives stats', () => {
+    const { provider } = createProvider();
+
+    const state = provider.sessionApi.normalizeLoadedAgentState({
+      history: [
+        { id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hello' }] },
+        {
+          id: 'm2',
+          role: 'assistant',
+          metadata: { tokens: { input: 3, output: 4, cacheRead: 5, total: 12 } },
+          parts: [
+            {
+              type: 'dynamic-tool',
+              toolName: 'read',
+              toolCallId: 'call_read',
+              state: 'output-available',
+              input: {},
+              output: { success: true, data: 'ok' },
+            },
+          ],
+        },
+      ],
+      systemPromptSnapshot: ['  Base prompt  ', '', 42],
+      stats: { stale: true },
+    } as any);
+
+    assert.deepStrictEqual(state.systemPromptSnapshot, ['Base prompt']);
+    assert.strictEqual(state.stats?.totalMessages, 2);
+    assert.strictEqual(state.stats?.toolCallCount, 1);
+    assert.strictEqual(state.stats?.completedToolCallCount, 1);
+    assert.strictEqual(state.stats?.totalTokens, 12);
+  });
+
   test('normalizeLoadedAgentState uses shared file handle normalization', () => {
     const { provider } = createProvider();
 

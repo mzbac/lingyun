@@ -1,5 +1,10 @@
-import type { AgentHistoryMessage } from '@kooka/core';
-import { cloneAgentHistoryMessages, cloneUserHistoryInput, parseUserHistoryInput } from '@kooka/core';
+import type { AgentHistoryMessage, AgentHistoryStats } from '@kooka/core';
+import {
+  cloneAgentHistoryMessages,
+  cloneUserHistoryInput,
+  getAgentHistoryStats,
+  parseUserHistoryInput,
+} from '@kooka/core';
 import type { UserHistoryInput } from '@kooka/core';
 import { normalizeSemanticHandlesState, type SemanticHandlesState } from './semanticHandles.js';
 import type { LingyunCompactionSyntheticContext } from './transientSyntheticContext.js';
@@ -103,6 +108,17 @@ export function normalizeMentionedSkills(value: unknown): string[] {
   return normalized;
 }
 
+export function normalizeSystemPromptSnapshot(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+
+  const parts = value
+    .map((part) => (typeof part === 'string' ? part : ''))
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  return parts.length > 0 ? parts : undefined;
+}
+
 export function normalizeOptionalMentionedSkills(value: unknown): string[] | undefined {
   const mentionedSkills = normalizeMentionedSkills(value);
   return mentionedSkills.length > 0 ? mentionedSkills : undefined;
@@ -117,6 +133,7 @@ export class LingyunSession {
   parentSessionId?: string;
   subagentType?: string;
   modelId?: string;
+  systemPromptSnapshot?: string[];
   mentionedSkills: string[] = [];
   fileHandles?: LingyunFileHandlesState;
   semanticHandles?: SemanticHandlesState;
@@ -133,6 +150,7 @@ export class LingyunSession {
         | 'parentSessionId'
         | 'subagentType'
         | 'modelId'
+        | 'systemPromptSnapshot'
         | 'mentionedSkills'
         | 'fileHandles'
         | 'semanticHandles'
@@ -149,6 +167,7 @@ export class LingyunSession {
     if (init?.parentSessionId) this.parentSessionId = init.parentSessionId;
     if (init?.subagentType) this.subagentType = init.subagentType;
     if (init?.modelId) this.modelId = init.modelId;
+    this.setSystemPromptSnapshot(init?.systemPromptSnapshot);
     this.setMentionedSkills(init?.mentionedSkills);
     this.fileHandles = cloneFileHandlesState(init?.fileHandles);
     this.semanticHandles = normalizeSemanticHandlesState(init?.semanticHandles);
@@ -168,6 +187,19 @@ export class LingyunSession {
 
   clearMentionedSkills(): void {
     this.mentionedSkills = [];
+  }
+
+  setSystemPromptSnapshot(parts: unknown): void {
+    const snapshot = normalizeSystemPromptSnapshot(parts);
+    this.systemPromptSnapshot = snapshot ? [...snapshot] : undefined;
+  }
+
+  getSystemPromptSnapshot(): string[] | undefined {
+    return this.systemPromptSnapshot ? [...this.systemPromptSnapshot] : undefined;
+  }
+
+  getStats(): AgentHistoryStats {
+    return getAgentHistoryStats(this.history);
   }
 
   getHistory(): AgentHistoryMessage[] {
@@ -212,6 +244,7 @@ export class LingyunSession {
     this.fileHandles = createBlankFileHandlesState();
     this.semanticHandles = createBlankSemanticHandlesState();
     this.clearMentionedSkills();
+    this.systemPromptSnapshot = undefined;
     this.compactionSyntheticContexts = [];
   }
 }

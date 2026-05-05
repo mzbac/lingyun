@@ -1,12 +1,14 @@
 import { z } from 'zod';
 
-import type { AgentHistoryMessage } from '@kooka/core';
+import type { AgentHistoryMessage, AgentHistoryStats } from '@kooka/core';
+import { getAgentHistoryStats } from '@kooka/core';
 import {
   cloneFileHandlesState,
   cloneSemanticHandlesState,
   LingyunSession,
   normalizeFileHandlesState,
   normalizeOptionalMentionedSkills,
+  normalizeSystemPromptSnapshot,
   type LingyunSession as LingyunSessionType,
 } from '../agent/session.js';
 import { normalizeSemanticHandlesState, type SemanticHandlesState } from '../agent/semanticHandles.js';
@@ -19,8 +21,10 @@ export type LingyunSessionSnapshotV1 = {
   parentSessionId?: string;
   subagentType?: string;
   modelId?: string;
+  systemPromptSnapshot?: string[];
   pendingPlan?: string;
   history: AgentHistoryMessage[];
+  stats?: AgentHistoryStats;
   mentionedSkills?: string[];
   compactionSyntheticContexts?: LingyunCompactionSyntheticContext[];
   fileHandles?: LingyunSession['fileHandles'];
@@ -97,6 +101,7 @@ function coerceSessionSnapshot(value: RecordLike): LingyunSessionSnapshot | unde
   const parentSessionId = readTrimmedOptionalString(value.parentSessionId);
   const subagentType = readTrimmedOptionalString(value.subagentType);
   const modelId = readTrimmedOptionalString(value.modelId);
+  const systemPromptSnapshot = normalizeSystemPromptSnapshot(value.systemPromptSnapshot);
   const pendingPlan = readTrimmedOptionalString(value.pendingPlan);
   const history = Array.isArray(value.history) ? (value.history as AgentHistoryMessage[]) : [];
   const mentionedSkills = normalizeOptionalMentionedSkills(value.mentionedSkills);
@@ -111,8 +116,10 @@ function coerceSessionSnapshot(value: RecordLike): LingyunSessionSnapshot | unde
     ...(parentSessionId ? { parentSessionId } : {}),
     ...(subagentType ? { subagentType } : {}),
     ...(modelId ? { modelId } : {}),
+    ...(systemPromptSnapshot ? { systemPromptSnapshot } : {}),
     ...(pendingPlan ? { pendingPlan } : {}),
     history,
+    stats: getAgentHistoryStats(history),
     ...(mentionedSkills ? { mentionedSkills } : {}),
     ...(compactionSyntheticContexts ? { compactionSyntheticContexts } : {}),
     ...(fileHandles ? { fileHandles } : {}),
@@ -128,8 +135,10 @@ export const LingyunSessionSnapshotSchema = z
     parentSessionId: z.string().optional(),
     subagentType: z.string().optional(),
     modelId: z.string().optional(),
+    systemPromptSnapshot: z.array(z.string()).optional(),
     pendingPlan: z.string().optional(),
     history: z.array(z.unknown()),
+    stats: z.unknown().optional(),
     mentionedSkills: z.array(z.string()).optional(),
     compactionSyntheticContexts: z
       .array(
@@ -152,6 +161,7 @@ export function snapshotSession(
   const savedAt = (options?.savedAt ?? new Date()).toISOString();
   const sessionId = requireSnapshotSessionId(options?.sessionId ?? session.sessionId, 'snapshotSession');
   const mentionedSkills = normalizeOptionalMentionedSkills(session.mentionedSkills);
+  const systemPromptSnapshot = session.getSystemPromptSnapshot();
 
   return {
     version: 1,
@@ -160,8 +170,10 @@ export function snapshotSession(
     ...(session.parentSessionId ? { parentSessionId: session.parentSessionId } : {}),
     ...(session.subagentType ? { subagentType: session.subagentType } : {}),
     ...(session.modelId ? { modelId: session.modelId } : {}),
+    ...(systemPromptSnapshot ? { systemPromptSnapshot } : {}),
     ...(session.pendingPlan ? { pendingPlan: session.pendingPlan } : {}),
     history: session.getHistory(),
+    stats: session.getStats(),
     ...(mentionedSkills ? { mentionedSkills } : {}),
     ...(session.compactionSyntheticContexts.length > 0
       ? {
@@ -181,6 +193,7 @@ export function restoreSession(snapshot: LingyunSessionSnapshot): LingyunSession
     parentSessionId: snapshot.parentSessionId,
     subagentType: snapshot.subagentType,
     modelId: snapshot.modelId,
+    systemPromptSnapshot: snapshot.systemPromptSnapshot,
     mentionedSkills: snapshot.mentionedSkills,
     compactionSyntheticContexts: snapshot.compactionSyntheticContexts,
     fileHandles: snapshot.fileHandles,

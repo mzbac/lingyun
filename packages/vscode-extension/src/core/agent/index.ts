@@ -8,10 +8,11 @@ import {
   LingyunAgent,
   LingyunSession,
   normalizeFileHandlesState,
+  normalizeSystemPromptSnapshot,
   type LingyunCompactionSyntheticContext,
 } from '@kooka/agent-sdk';
 import type { AgentConfig as SdkAgentConfig } from '@kooka/agent-sdk';
-import type { AgentHistoryMessage, UserHistoryInput } from '@kooka/core';
+import type { AgentHistoryMessage, AgentHistoryStats, UserHistoryInput } from '@kooka/core';
 import {
   cloneAgentHistoryMessages,
   cloneUserHistoryInput,
@@ -42,6 +43,8 @@ export type AgentSessionState = {
   fileHandles?: LingyunSession['fileHandles'];
   semanticHandles?: SemanticHandlesState;
   mentionedSkills?: string[];
+  systemPromptSnapshot?: string[];
+  stats?: AgentHistoryStats;
   pendingInputs?: UserHistoryInput[];
   compactionSyntheticContexts?: LingyunCompactionSyntheticContext[];
 };
@@ -140,12 +143,15 @@ export class AgentLoop {
   exportState(): AgentSessionState {
     const history = cloneAgentHistoryMessages(this.session.history);
     const fileHandles = cloneFileHandlesState(this.session.fileHandles);
+    const systemPromptSnapshot = this.session.getSystemPromptSnapshot();
 
     return {
       history,
       fileHandles,
       semanticHandles: cloneSemanticHandlesState(this.session.semanticHandles),
       mentionedSkills: [...(this.session.mentionedSkills || [])],
+      ...(systemPromptSnapshot ? { systemPromptSnapshot } : {}),
+      stats: this.session.getStats(),
       pendingInputs: this.session.getPendingInputs().map((input) => cloneUserHistoryInput(input)),
       compactionSyntheticContexts: this.session.compactionSyntheticContexts.map((context) => ({ ...context })),
     };
@@ -168,6 +174,7 @@ export class AgentLoop {
     const history = Array.isArray(state.history) ? [...state.history] : [];
     this.session.history = history;
     this.session.setMentionedSkills(state.mentionedSkills);
+    this.session.setSystemPromptSnapshot(normalizeSystemPromptSnapshot(state.systemPromptSnapshot));
     this.session.setPendingInputs(
       Array.isArray(state.pendingInputs)
         ? state.pendingInputs

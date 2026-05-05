@@ -18,7 +18,7 @@ export type {
   LLMModelInfo,
 } from './types.js';
 
-export type { AgentHistoryMessage, CompactionConfig, ModelLimit } from '@kooka/core';
+export type { AgentHistoryMessage, AgentHistoryStats, CompactionConfig, ModelLimit } from '@kooka/core';
 
 export { OpenAICompatibleProvider, type OpenAICompatibleProviderOptions } from './llm/openaiCompatible.js';
 export { streamTextWithLingyunDefaults } from './llm/streamText.js';
@@ -58,6 +58,7 @@ export {
   normalizeFileHandlesState,
   normalizeMentionedSkills,
   normalizeOptionalMentionedSkills,
+  normalizeSystemPromptSnapshot,
 } from './agent/session.js';
 export { FileHandleRegistry } from './agent/fileHandles.js';
 export { normalizeSemanticHandlesState } from './agent/semanticHandles.js';

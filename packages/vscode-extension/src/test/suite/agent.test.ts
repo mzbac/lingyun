@@ -1322,6 +1322,7 @@ suite('AgentLoop', () => {
         history: [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hello' }] } as any],
         pendingInputs: ['queued follow-up'],
         mentionedSkills: ['skill-1'],
+        systemPromptSnapshot: ['  Base system prompt  ', '', 'Tool context'],
         compactionSyntheticContexts: [{ transientContext: 'memoryRecall', text: 'remember me' }],
         fileHandles: {
           nextId: 2.9,
@@ -1345,6 +1346,22 @@ suite('AgentLoop', () => {
     const state = agent.exportState();
     assert.deepStrictEqual(state.pendingInputs, ['queued follow-up']);
     assert.deepStrictEqual(state.mentionedSkills, ['skill-1']);
+    assert.deepStrictEqual(state.systemPromptSnapshot, ['Base system prompt', 'Tool context']);
+    assert.deepStrictEqual(state.stats, {
+      totalMessages: 1,
+      userMessages: 1,
+      assistantMessages: 0,
+      systemMessages: 0,
+      syntheticMessages: 0,
+      toolCallCount: 0,
+      completedToolCallCount: 0,
+      failedToolCallCount: 0,
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+      totalCacheReadTokens: 0,
+      totalCacheWriteTokens: 0,
+      totalTokens: 0,
+    });
     assert.deepStrictEqual(state.compactionSyntheticContexts, [{ transientContext: 'memoryRecall', text: 'remember me' }]);
     assert.deepStrictEqual(state.fileHandles, { nextId: 2, byId: { F1: 'src/foo.ts' } });
 
@@ -1358,6 +1375,8 @@ suite('AgentLoop', () => {
     assert.deepStrictEqual(cleared.history, []);
     assert.deepStrictEqual(cleared.pendingInputs, []);
     assert.deepStrictEqual(cleared.mentionedSkills, []);
+    assert.strictEqual(cleared.systemPromptSnapshot, undefined);
+    assert.strictEqual(cleared.stats?.totalMessages, 0);
     assert.deepStrictEqual(cleared.compactionSyntheticContexts, []);
     assert.deepStrictEqual(cleared.fileHandles, { nextId: 1, byId: {} });
     assert.deepStrictEqual(cleared.semanticHandles, {

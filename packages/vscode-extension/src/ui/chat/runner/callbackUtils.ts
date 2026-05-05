@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 
-import { tryParseSessionSnapshot } from '@kooka/agent-sdk';
-import { TOOL_ERROR_CODES, containsBinaryData } from '@kooka/core';
+import { normalizeSystemPromptSnapshot, tryParseSessionSnapshot } from '@kooka/agent-sdk';
+import { TOOL_ERROR_CODES, containsBinaryData, getAgentHistoryStats } from '@kooka/core';
 import type { AgentCallbacks, ToolCall, ToolDefinition, ToolResult } from '../../../core/types';
 import type { AgentSessionState } from '../../../core/agent';
 import { getDebugSettings } from '../../../core/debugSettings';
@@ -70,8 +70,13 @@ function toAgentSessionStateFromSnapshot(snapshot: ReturnType<typeof tryParseSes
     return { history: [] };
   }
 
+  const history = Array.isArray(snapshot.history) ? (snapshot.history as AgentSessionState['history']) : [];
+  const systemPromptSnapshot = normalizeSystemPromptSnapshot(snapshot.systemPromptSnapshot);
+
   return {
-    history: Array.isArray(snapshot.history) ? (snapshot.history as AgentSessionState['history']) : [],
+    history,
+    ...(systemPromptSnapshot ? { systemPromptSnapshot } : {}),
+    stats: getAgentHistoryStats(history),
     ...(snapshot.fileHandles ? { fileHandles: snapshot.fileHandles } : {}),
     ...(snapshot.semanticHandles ? { semanticHandles: snapshot.semanticHandles as AgentSessionState['semanticHandles'] } : {}),
     ...(snapshot.mentionedSkills && snapshot.mentionedSkills.length > 0 ? { mentionedSkills: snapshot.mentionedSkills } : {}),

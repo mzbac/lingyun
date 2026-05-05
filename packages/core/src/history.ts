@@ -35,6 +35,22 @@ export type AgentHistoryMetadata = {
 
 export type AgentHistoryMessage = UIMessage<AgentHistoryMetadata>;
 
+export type AgentHistoryStats = {
+  totalMessages: number;
+  userMessages: number;
+  assistantMessages: number;
+  systemMessages: number;
+  syntheticMessages: number;
+  toolCallCount: number;
+  completedToolCallCount: number;
+  failedToolCallCount: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalCacheReadTokens: number;
+  totalCacheWriteTokens: number;
+  totalTokens: number;
+};
+
 export type UserHistoryTextPart = {
   type: 'text';
   text: string;
@@ -55,6 +71,22 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : undefined;
+}
+
+function nonNegativeFinite(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+function isDynamicToolPart(part: unknown): part is Record<string, unknown> {
+  const record = asRecord(part);
+  return !!record && record.type === 'dynamic-tool';
+}
+
+function isFailedToolOutput(output: unknown): boolean {
+  const record = asRecord(output);
+  if (!record) return false;
+  if (record.success === false) return true;
+  return typeof record.error === 'string' || typeof record.errorText === 'string';
 }
 
 function isUserTextPart(part: unknown): part is UserHistoryTextPart {
@@ -128,6 +160,58 @@ export function getUserHistoryInputText(input: UserHistoryInput): string {
     .filter((part): part is UserHistoryTextPart => part.type === 'text')
     .map((part) => part.text)
     .join('');
+}
+
+export function getAgentHistoryStats(history: readonly AgentHistoryMessage[]): AgentHistoryStats {
+  const stats: AgentHistoryStats = {
+    totalMessages: 0,
+    userMessages: 0,
+    assistantMessages: 0,
+    systemMessages: 0,
+    syntheticMessages: 0,
+    toolCallCount: 0,
+    completedToolCallCount: 0,
+    failedToolCallCount: 0,
+    totalInputTokens: 0,
+    totalOutputTokens: 0,
+    totalCacheReadTokens: 0,
+    totalCacheWriteTokens: 0,
+    totalTokens: 0,
+  };
+
+  if (!Array.isArray(history)) return stats;
+
+  for (const message of history) {
+    if (!message || typeof message !== 'object') continue;
+    stats.totalMessages += 1;
+
+    if (message.role === 'user') stats.userMessages += 1;
+    if (message.role === 'assistant') stats.assistantMessages += 1;
+    if (message.role === 'system') stats.systemMessages += 1;
+    if (message.metadata?.synthetic) stats.syntheticMessages += 1;
+
+    const tokens = message.metadata?.tokens;
+    stats.totalInputTokens += nonNegativeFinite(tokens?.input);
+    stats.totalOutputTokens += nonNegativeFinite(tokens?.output);
+    stats.totalCacheReadTokens += nonNegativeFinite(tokens?.cacheRead);
+    stats.totalCacheWriteTokens += nonNegativeFinite(tokens?.cacheWrite);
+    stats.totalTokens += nonNegativeFinite(tokens?.total);
+
+    if (message.role !== 'assistant' || !Array.isArray(message.parts)) continue;
+    for (const part of message.parts) {
+      if (!isDynamicToolPart(part)) continue;
+      stats.toolCallCount += 1;
+      if (part.state === 'output-available') {
+        if (isFailedToolOutput(part.output)) {
+          stats.failedToolCallCount += 1;
+        } else {
+          stats.completedToolCallCount += 1;
+        }
+      }
+    }
+  }
+
+  return stats;
 }
 
 export function createUserHistoryMessage(

@@ -1,7 +1,12 @@
 import * as vscode from 'vscode';
 
-import { normalizeFileHandlesState, normalizeOptionalMentionedSkills, normalizeSemanticHandlesState } from '@kooka/agent-sdk';
-import { parseUserHistoryInput } from '@kooka/core';
+import {
+  normalizeFileHandlesState,
+  normalizeOptionalMentionedSkills,
+  normalizeSemanticHandlesState,
+  normalizeSystemPromptSnapshot,
+} from '@kooka/agent-sdk';
+import { getAgentHistoryStats, parseUserHistoryInput } from '@kooka/core';
 
 import type { AgentSessionState } from '../../core/agent';
 import { WorkspaceMemories } from '../../core/memories';
@@ -332,6 +337,7 @@ export function createChatSessionPersistenceService(
 
       const mentionedSkillsRaw = (state as any).mentionedSkills;
       const mentionedSkills = normalizeOptionalMentionedSkills(mentionedSkillsRaw);
+      const systemPromptSnapshot = normalizeSystemPromptSnapshot((state as any).systemPromptSnapshot);
 
       const compactionSyntheticContextsRaw = (state as any).compactionSyntheticContexts;
       const compactionSyntheticContexts =
@@ -355,6 +361,8 @@ export function createChatSessionPersistenceService(
         history,
         fileHandles,
         semanticHandles,
+        ...(systemPromptSnapshot ? { systemPromptSnapshot } : {}),
+        stats: getAgentHistoryStats(history),
         ...(pendingInputs ? { pendingInputs } : {}),
         ...(mentionedSkills && mentionedSkills.length > 0 ? { mentionedSkills } : {}),
         ...(compactionSyntheticContexts ? { compactionSyntheticContexts } : {}),
