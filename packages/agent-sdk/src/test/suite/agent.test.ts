@@ -12,7 +12,7 @@ import type {
   LanguageModelV3Usage,
 } from '@ai-sdk/provider';
 
-import { TOOL_ERROR_CODES } from '@kooka/core';
+import { createHistoryForModel, MISSING_TOOL_RESULT_PLACEHOLDER, TOOL_ERROR_CODES } from '@kooka/core';
 import {
   FileHandleRegistry,
   getBuiltinTools,
@@ -961,6 +961,59 @@ suite('LingYun Agent SDK', () => {
       totalCacheWriteTokens: 0,
       totalTokens: 20,
     });
+  });
+
+  test('createHistoryForModel repairs tool-call/result pair integrity for model replay', () => {
+    const original: AgentHistoryMessage = {
+      id: 'm-tool',
+      role: 'assistant',
+      parts: [
+        { type: 'text', text: 'working', state: 'done' },
+        {
+          type: 'dynamic-tool',
+          toolName: 'read',
+          toolCallId: 'call_missing_result',
+          state: 'input-available',
+          input: { filePath: 'src/index.ts' },
+        } as any,
+        {
+          type: 'dynamic-tool',
+          toolName: '',
+          toolCallId: 'call_malformed',
+          state: 'output-available',
+          input: {},
+          output: { success: true, data: 'bad' },
+        } as any,
+        {
+          type: 'dynamic-tool',
+          toolName: 'grep',
+          toolCallId: 'call_complete',
+          state: 'output-available',
+          input: { pattern: 'foo' },
+          output: { success: true, data: 'ok' },
+        } as any,
+      ],
+    } as any;
+
+    const prepared = createHistoryForModel([original]);
+    const parts = prepared[0]!.parts as any[];
+
+    assert.strictEqual(parts.some((part) => part.toolCallId === 'call_malformed'), false);
+
+    const repaired = parts.find((part) => part.toolCallId === 'call_missing_result');
+    assert.ok(repaired, 'expected missing tool result to be repaired');
+    assert.strictEqual(repaired.state, 'output-available');
+    assert.deepStrictEqual(repaired.output, {
+      success: true,
+      data: MISSING_TOOL_RESULT_PLACEHOLDER,
+      metadata: { syntheticToolResult: true },
+    });
+
+    const complete = parts.find((part) => part.toolCallId === 'call_complete');
+    assert.deepStrictEqual(complete?.output, { success: true, data: 'ok' });
+
+    const originalMissing = (original.parts as any[]).find((part) => part.toolCallId === 'call_missing_result');
+    assert.strictEqual(originalMissing.output, undefined, 'model preparation must not mutate session history');
   });
 
   test('drains steered input after assistant completion and continues with a follow-up iteration', async () => {

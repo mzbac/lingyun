@@ -150,6 +150,7 @@ export {
   COMPACTION_MARKER_TEXT,
   COMPACTION_PROMPT_TEXT,
   COMPACTION_SYSTEM_PROMPT,
+  MISSING_TOOL_RESULT_PLACEHOLDER,
   createHistoryForCompactionPrompt,
   createHistoryForModel,
   extractUsageTokens,

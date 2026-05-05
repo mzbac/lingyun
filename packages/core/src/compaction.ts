@@ -20,6 +20,7 @@ export const COMPACTION_PROMPT_TEXT =
 export const COMPACTION_AUTO_CONTINUE_TEXT = 'Continue if you have next steps.';
 
 export const COMPACTED_TOOL_PLACEHOLDER = '[Old tool result content cleared]';
+export const MISSING_TOOL_RESULT_PLACEHOLDER = '[Result from earlier conversation — see context summary above]';
 
 export const COMPACTION_SYSTEM_PROMPT =
   'You are a helpful AI assistant tasked with summarizing conversations.\n\n' +
@@ -134,15 +135,53 @@ type DynamicToolPart = {
   type: 'dynamic-tool';
   toolName: string;
   toolCallId: string;
+  input?: unknown;
   output?: unknown;
   state?: string;
+  compactedAt?: unknown;
 };
 
-function isCompletedToolPart(part: unknown): part is DynamicToolPart {
+function isDynamicToolPart(part: unknown): part is DynamicToolPart {
   if (!part || typeof part !== 'object') return false;
-  if ((part as any).type !== 'dynamic-tool') return false;
+  return (part as any).type === 'dynamic-tool';
+}
+
+function isCompletedToolPart(part: unknown): part is DynamicToolPart {
+  if (!isDynamicToolPart(part)) return false;
   const state = String((part as any).state || '');
   return state === 'output-available';
+}
+
+function readNonEmptyString(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed || undefined;
+}
+
+function repairDynamicToolPartForModel(part: unknown): DynamicToolPart | undefined {
+  if (!isDynamicToolPart(part)) return undefined;
+
+  const toolName = readNonEmptyString((part as any).toolName);
+  const toolCallId = readNonEmptyString((part as any).toolCallId);
+  if (!toolName || !toolCallId) return undefined;
+
+  const repaired: DynamicToolPart = {
+    ...(part as any),
+    toolName,
+    toolCallId,
+  };
+
+  if ((repaired as any).output === undefined) {
+    repaired.state = 'output-available';
+    repaired.output = {
+      success: true,
+      data: MISSING_TOOL_RESULT_PLACEHOLDER,
+      metadata: { syntheticToolResult: true },
+    };
+    delete (repaired as any).compactedAt;
+  }
+
+  return repaired;
 }
 
 function getToolOutputTokens(part: DynamicToolPart): number {
@@ -233,13 +272,15 @@ export function createHistoryForModel(history: AgentHistoryMessage[]): AgentHist
     const copied: AgentHistoryMessage = {
       ...msg,
       metadata: msg.metadata ? { ...msg.metadata } : undefined,
-      parts: msg.parts.map((part) => {
-        if ((part as any).type !== 'dynamic-tool') return part;
+      parts: msg.parts.flatMap((part) => {
+        if (!isDynamicToolPart(part)) return [part];
 
-        const anyPart = part as any;
-        if (!anyPart.compactedAt) return part;
+        const anyPart = repairDynamicToolPartForModel(part);
+        if (!anyPart) return [];
 
-        if (anyPart.output === undefined) return part;
+        if (!anyPart.compactedAt) return [anyPart as any];
+
+        if (anyPart.output === undefined) return [anyPart as any];
 
         const output = anyPart.output;
         const replacement =
@@ -251,7 +292,7 @@ export function createHistoryForModel(history: AgentHistoryMessage[]): AgentHist
               }
             : COMPACTED_TOOL_PLACEHOLDER;
 
-        return { ...anyPart, output: replacement };
+        return [{ ...anyPart, output: replacement }];
       }),
     };
 
