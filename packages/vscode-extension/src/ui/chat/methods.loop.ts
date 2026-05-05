@@ -3,7 +3,6 @@ import * as vscode from 'vscode';
 import { appendErrorLog } from '../../core/logger';
 
 import {
-  formatLoopIntervalLabel,
   normalizeLoopIntervalMinutes,
   type ChatLoopDefaults,
   type ChatLoopManager,

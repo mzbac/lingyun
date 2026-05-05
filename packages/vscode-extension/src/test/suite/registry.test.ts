@@ -3,9 +3,11 @@
  */
 
 import * as assert from 'assert';
+import * as os from 'os';
+import * as path from 'path';
+import * as vscode from 'vscode';
 import { ToolRegistry } from '../../core/registry';
 import type { ToolProvider, ToolDefinition, ToolContext } from '../../core/types';
-import type * as vscode from 'vscode';
 
 suite('ToolRegistry', () => {
   let registry: ToolRegistry;
@@ -182,6 +184,32 @@ suite('ToolRegistry', () => {
     assert.strictEqual(result.success, true);
     assert.strictEqual(result.data, 42);
     assert.deepStrictEqual(receivedArgs, { value: 42 });
+  });
+
+  test('executeTool - preserves caller workspace root', async () => {
+    const expectedRoot = path.join(os.tmpdir(), 'lingyun-registry-root');
+    let receivedWorkspaceRoot: string | undefined;
+
+    const definition: ToolDefinition = {
+      id: 'test_workspace_root',
+      name: 'Workspace Root Test',
+      description: 'Tests workspace root propagation',
+      parameters: { type: 'object', properties: {} },
+      execution: { type: 'function', handler: 'test_workspace_root' },
+    };
+
+    registry.registerTool(definition, async (_args, context) => {
+      receivedWorkspaceRoot = context.workspaceFolder?.fsPath;
+      return { success: true };
+    });
+
+    const context = createMockContext();
+    context.workspaceFolder = vscode.Uri.file(expectedRoot);
+
+    const result = await registry.executeTool('test_workspace_root', {}, context);
+
+    assert.strictEqual(result.success, true);
+    assert.strictEqual(receivedWorkspaceRoot, expectedRoot);
   });
 
   test('executeTool - returns error for unknown tool', async () => {

@@ -544,12 +544,17 @@ function createAPI(): LingyunAPI {
     },
 
     async executeTool(toolId: string, args: Record<string, unknown>): Promise<ToolResult> {
+      const state = extensionState;
+      if (!state?.context) {
+        throw new Error('Extension not activated');
+      }
+
       const tokenSource = new vscode.CancellationTokenSource();
       try {
         const context = {
           workspaceFolder: getPrimaryWorkspaceFolderUri(),
           activeEditor: vscode.window.activeTextEditor,
-          extensionContext: {} as vscode.ExtensionContext,
+          extensionContext: state.context,
           cancellationToken: tokenSource.token,
           progress: { report: () => {} },
           log: (msg: string) => log(msg),

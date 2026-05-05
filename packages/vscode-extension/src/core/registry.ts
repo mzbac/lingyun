@@ -1,3 +1,4 @@
+import * as path from 'path';
 import * as vscode from 'vscode';
 
 import {
@@ -48,6 +49,12 @@ function toAgentToolContext(context: ToolContext): { agentContext: AgentToolCont
   };
 }
 
+function resolveWorkspaceFolderFromAgentContext(agentContext: AgentToolContext): vscode.Uri | undefined {
+  const workspaceRoot = typeof agentContext.workspaceRoot === 'string' ? agentContext.workspaceRoot.trim() : '';
+  if (workspaceRoot.length === 0) return getPrimaryWorkspaceFolderUri();
+  return vscode.Uri.file(path.resolve(workspaceRoot));
+}
+
 type ProviderEntry = {
   id: string;
   name: string;
@@ -78,7 +85,7 @@ export class ToolRegistry {
   }
 
   private buildVscodeToolContext(agentContext: AgentToolContext): { context: ToolContext; dispose: () => void } {
-    const workspaceFolder = getPrimaryWorkspaceFolderUri();
+    const workspaceFolder = resolveWorkspaceFolderFromAgentContext(agentContext);
     const activeEditor = vscode.window.activeTextEditor;
     const extensionContext = this.extensionContext ?? ({} as vscode.ExtensionContext);
 
@@ -140,15 +147,20 @@ export class ToolRegistry {
       name: provider.name,
       getTools: async () => {
         const tools = await Promise.resolve(provider.getTools());
+        const validTools: ToolDefinition[] = [];
         for (const tool of tools) {
           try {
             assertValidToolId(tool?.id, `provider "${provider.id}"`);
           } catch {
             continue;
           }
-          entry.toolIds.add(tool.id);
+          if (!entry.toolIds.has(tool.id)) {
+            entry.toolIds.add(tool.id);
+            this._onDidRegisterTool.fire(tool);
+          }
+          validTools.push(tool);
         }
-        return tools as unknown as AgentToolDefinition[];
+        return validTools as unknown as AgentToolDefinition[];
       },
       executeTool: async (toolId, args, agentContext) => {
         const { context, dispose } = this.buildVscodeToolContext(agentContext);
@@ -161,25 +173,14 @@ export class ToolRegistry {
       dispose: () => provider.dispose?.(),
     };
 
-    const agentDisposable = this.registry.registerProvider(agentProvider);
-    entry.dispose = () => agentDisposable.dispose();
     this.providers.set(provider.id, entry);
-
-    Promise.resolve(provider.getTools())
-      .then((tools) => {
-        for (const tool of tools) {
-          try {
-            assertValidToolId(tool?.id, `provider "${provider.id}"`);
-          } catch {
-            continue;
-          }
-          entry.toolIds.add(tool.id);
-          this._onDidRegisterTool.fire(tool);
-        }
-      })
-      .catch(() => {
-        // ignore
-      });
+    try {
+      const agentDisposable = this.registry.registerProvider(agentProvider);
+      entry.dispose = () => agentDisposable.dispose();
+    } catch (error) {
+      this.providers.delete(provider.id);
+      throw error;
+    }
 
     provider.onDidRegister?.();
 
