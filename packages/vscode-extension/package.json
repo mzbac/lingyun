@@ -659,8 +659,8 @@
     "@kooka/agent-sdk": "workspace:*",
     "@kooka/core": "workspace:*",
     "ai": "^6.0.86",
-    "diff": "^7.0.0",
-    "undici": "^7.18.2",
+    "diff": "^8.0.4",
+    "undici": "^7.25.0",
     "zod": "^4.1.8"
   },
   "devDependencies": {
@@ -676,7 +676,7 @@
     "@vscode/test-electron": "^2.5.2",
     "esbuild": "^0.25.0",
     "eslint": "^9.39.2",
-    "glob": "^13.0.0",
+    "glob": "^13.0.6",
     "mocha": "^11.7.5",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.59.2"

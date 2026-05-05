@@ -39,11 +39,11 @@
     "test:e2e": "pnpm run build:test && mocha --ui tdd --timeout 300000 \"./dist-test/test/e2e/*.test.js\""
   },
   "dependencies": {
-    "@kooka/core": "^0.2.0",
     "@ai-sdk/openai-compatible": "^2.0.2",
+    "@kooka/core": "^0.2.0",
     "ai": "^6.0.6",
-    "glob": "^13.0.0",
-    "undici": "^7.18.2",
+    "glob": "^13.0.6",
+    "undici": "^7.25.0",
     "zod": "^4.1.8"
   },
   "devDependencies": {
