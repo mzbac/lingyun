@@ -102,18 +102,32 @@ function sortModelsForPicker(models: ModelInfo[]): ModelInfo[] {
     .sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id, undefined, { sensitivity: 'base' }));
 }
 
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export function createChatModelsService(controller: ChatModelsDeps): ChatModelsService {
   const service = bindChatControllerService(controller, {
     async loadModels(this: ChatModelsDeps): Promise<void> {
       const timeoutMs = 5000;
       try {
         if (this.llmProvider?.getModels) {
-          this.availableModels = await Promise.race([
+          this.availableModels = await withTimeout(
             this.llmProvider.getModels(),
-            new Promise<ModelInfo[]>((_, reject) => {
-              setTimeout(() => reject(new Error(`Timed out loading models after ${timeoutMs}ms`)), timeoutMs);
-            }),
-          ]);
+            timeoutMs,
+            `Timed out loading models after ${timeoutMs}ms`
+          );
         } else {
           const fallback = this.currentModel || 'gpt-4o';
           this.availableModels = [createFallbackModelInfo(fallback)];

@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 
 import { toolRegistry } from '../../core/registry';
+import { backgroundTerminalManager } from '../../core/terminal/backgroundTerminal';
 import { bashHandler, bashTool } from './bash';
 import { editHandler, editTool } from './edit';
 import { globHandler, globTool } from './glob';
@@ -20,6 +21,8 @@ import { todowriteHandler, todowriteTool } from './todowrite';
 import { writeHandler, writeTool } from './write';
 
 export function registerBuiltinTools(): vscode.Disposable[] {
+  backgroundTerminalManager.activate();
+
   return [
     toolRegistry.registerTool(listTool, listHandler),
     toolRegistry.registerTool(globTool, globHandler),
@@ -39,5 +42,6 @@ export function registerBuiltinTools(): vscode.Disposable[] {
     toolRegistry.registerTool(getMemoryTool, getMemoryHandler),
     toolRegistry.registerTool(maintainMemoryTool, maintainMemoryHandler),
     toolRegistry.registerTool(updateMemoryTool, updateMemoryHandler),
+    backgroundTerminalManager,
   ];
 }

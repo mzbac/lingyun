@@ -186,18 +186,28 @@ function makeRecordId(scope: string, key: string): string {
 
 class BackgroundTerminalManager {
   private records = new Map<string, BackgroundTerminalRecord>();
+  private readonly disposables: vscode.Disposable[] = [];
+  private sweepTimer?: NodeJS.Timeout;
 
   constructor() {
-    vscode.window.onDidCloseTerminal((terminal) => {
-      for (const [id, record] of this.records) {
-        if (record.terminal === terminal) {
-          this.closeRecord(id, record, { removeJob: true });
-        }
-      }
-    });
+    this.activate();
+  }
 
-    const sweepTimer = setInterval(() => this.sweep(), BACKGROUND_TERMINAL_SWEEP_MS);
-    sweepTimer.unref?.();
+  activate(): void {
+    if (this.sweepTimer || this.disposables.length > 0) return;
+
+    this.disposables.push(
+      vscode.window.onDidCloseTerminal((terminal) => {
+        for (const [id, record] of this.records) {
+          if (record.terminal === terminal) {
+            this.closeRecord(id, record, { removeJob: true });
+          }
+        }
+      })
+    );
+
+    this.sweepTimer = setInterval(() => this.sweep(), BACKGROUND_TERMINAL_SWEEP_MS);
+    this.sweepTimer.unref?.();
   }
 
   private disposeRecord(id: string, record: BackgroundTerminalRecord): void {
@@ -232,6 +242,25 @@ class BackgroundTerminalManager {
       record.terminal.dispose();
     } catch {
       // ignore
+    }
+  }
+
+  dispose(): void {
+    if (this.sweepTimer) {
+      clearInterval(this.sweepTimer);
+      this.sweepTimer = undefined;
+    }
+
+    for (const disposable of this.disposables.splice(0)) {
+      try {
+        disposable.dispose();
+      } catch {
+        // ignore
+      }
+    }
+
+    for (const [id, record] of [...this.records]) {
+      this.closeRecord(id, record, { disposeTerminal: true, removeJob: true });
     }
   }
 
