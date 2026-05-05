@@ -72,6 +72,14 @@ suite('Debug Redaction', () => {
     assert.ok(redacted.includes('github_pat_<redacted>'));
   });
 
+  test('redactSensitive redacts standalone Google API key format', () => {
+    const googleApiKey = joinSecretLiteral('AIza', 'A'.repeat(35));
+    const redacted = redactSensitive(`google request failed with key ${googleApiKey}`);
+
+    assert.ok(!redacted.includes(googleApiKey));
+    assert.ok(redacted.includes('AIza<redacted>'));
+  });
+
   test('redactSensitive redacts URL credentials while preserving public URLs in secrets-only mode', () => {
     const queryApiKey = 'query-secret-value';
     const queryKey = 'second-query-secret-value';

@@ -1,4 +1,5 @@
 import * as assert from 'assert';
+import * as vscode from 'vscode';
 
 import { ChatController } from '../../ui/chat';
 import { createBlankSessionSignals } from '../../core/sessionSignals';
@@ -94,6 +95,42 @@ suite('Chat queue manager', () => {
     assert.ok(posted.some((message) => message && (message as any).type === 'queueState' && Array.isArray((message as any).queuedInputs) && (message as any).queuedInputs.length === 0));
     assert.ok(posted.some((message) => message && (message as any).type === 'cleared'));
     assert.ok(getPersisted() >= 1);
+  });
+
+  test('enqueueActiveInput prunes older image entries when attachment budget is exceeded', async () => {
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const previousLimit = cfg.get('chat.queue.maxAttachmentBytes');
+
+    try {
+      await cfg.update('chat.queue.maxAttachmentBytes', 100, true);
+      const { provider } = createProvider();
+
+      provider.queueManager.enqueueActiveInput({
+        message: 'first',
+        displayContent: 'first',
+        attachmentCount: 1,
+        attachments: [{ mediaType: 'image/png', dataUrl: 'a'.repeat(80), filename: 'a.png' }],
+      });
+      provider.queueManager.enqueueActiveInput({
+        message: 'second',
+        displayContent: 'second',
+        attachmentCount: 1,
+        attachments: [{ mediaType: 'image/png', dataUrl: 'b'.repeat(80), filename: 'b.png' }],
+      });
+
+      const session = provider.sessionApi.getActiveSession();
+      assert.strictEqual(session.queuedInputs?.length, 1);
+      assert.strictEqual(session.queuedInputs?.[0]?.message, 'second');
+      assert.strictEqual(provider.queueManager.getRuntimeAttachmentCount(), 1);
+      assert.ok(provider.queueManager.getRuntimeAttachmentBytes() <= 100);
+      assert.ok(
+        provider.messages.some(message =>
+          message.role === 'warning' && message.content.includes('runtime attachment memory bounded')
+        ),
+      );
+    } finally {
+      await cfg.update('chat.queue.maxAttachmentBytes', previousLimit as any, true);
+    }
   });
 
   test('takeNextRunnableFromActiveSession drops broken image-only items and continues FIFO', () => {
@@ -199,7 +236,7 @@ suite('Chat queue manager', () => {
   test('normalizeLoadedAgentState normalizes prompt snapshot and derives stats', () => {
     const { provider } = createProvider();
 
-    const state = provider.sessionApi.normalizeLoadedAgentState({
+    const raw = {
       history: [
         { id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hello' }] },
         {
@@ -220,13 +257,18 @@ suite('Chat queue manager', () => {
       ],
       systemPromptSnapshot: ['  Base prompt  ', '', 42],
       stats: { stale: true },
-    } as any);
+    } as any;
+
+    const state = provider.sessionApi.normalizeLoadedAgentState(raw);
 
     assert.deepStrictEqual(state.systemPromptSnapshot, ['Base prompt']);
     assert.strictEqual(state.stats?.totalMessages, 2);
     assert.strictEqual(state.stats?.toolCallCount, 1);
     assert.strictEqual(state.stats?.completedToolCallCount, 1);
     assert.strictEqual(state.stats?.totalTokens, 12);
+
+    raw.history[0].parts[0] = { type: 'text', text: 'mutated', state: 'done' };
+    assert.deepStrictEqual(state.history[0]?.parts, [{ type: 'text', text: 'hello' }]);
   });
 
   test('normalizeLoadedAgentState uses shared file handle normalization', () => {

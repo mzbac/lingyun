@@ -350,6 +350,7 @@ export { deriveWorkspaceMemoryId };
 export class WorkspaceMemories {
   private static readonly updateInFlightByKey = new Map<string, Promise<MemoryUpdateResult>>();
   private static readonly scheduledUpdatesByKey = new Map<string, ScheduledMemoryUpdate>();
+  private static readonly dropInFlightByKey = new Map<string, Promise<void>>();
   private readonly storageRootUri: vscode.Uri | undefined;
   private readonly memoriesRootUri: vscode.Uri | undefined;
   private readonly stateUri: vscode.Uri | undefined;
@@ -370,17 +371,42 @@ export class WorkspaceMemories {
     );
   }
 
-  private static clearScheduledUpdate(key: string): void {
+  private createNoopUpdateResult(workspaceFolder?: vscode.Uri): MemoryUpdateResult {
+    const config = getMemoriesConfig();
+    const artifacts = getMemoryArtifacts(this.memoriesRootUri);
+    return {
+      enabled: config.enabled,
+      workspaceRoot: artifacts?.memoryRoot.fsPath ?? workspaceFolder?.fsPath,
+      scannedSessions: 0,
+      processedSessions: 0,
+      insertedOutputs: 0,
+      updatedOutputs: 0,
+      retainedOutputs: 0,
+      skippedRecentSessions: 0,
+      skippedPlanOrSubagentSessions: 0,
+      skippedNoSignalSessions: 0,
+    };
+  }
+
+  private static clearScheduledUpdate(key: string, result?: MemoryUpdateResult): void {
     const scheduled = this.scheduledUpdatesByKey.get(key);
     if (!scheduled) return;
     clearTimeout(scheduled.timer);
     this.scheduledUpdatesByKey.delete(key);
+    if (result) {
+      scheduled.resolve(result);
+    }
   }
 
   async updateFromSessions(workspaceFolder?: vscode.Uri): Promise<MemoryUpdateResult> {
     const key = this.getCoordinationKey();
     if (!key) {
       return this.updateFromSessionsInternal(workspaceFolder);
+    }
+
+    const dropInFlight = WorkspaceMemories.dropInFlightByKey.get(key);
+    if (dropInFlight) {
+      await dropInFlight.catch(() => undefined);
     }
 
     WorkspaceMemories.clearScheduledUpdate(key);
@@ -414,6 +440,11 @@ export class WorkspaceMemories {
     const key = this.getCoordinationKey();
     if (!key) {
       return this.updateFromSessions(workspaceFolder);
+    }
+
+    const dropInFlight = WorkspaceMemories.dropInFlightByKey.get(key);
+    if (dropInFlight) {
+      return dropInFlight.then(() => this.createNoopUpdateResult(workspaceFolder));
     }
 
     const inFlight = WorkspaceMemories.updateInFlightByKey.get(key);
@@ -669,15 +700,49 @@ export class WorkspaceMemories {
   }
 
   async dropMemories(_workspaceFolder?: vscode.Uri): Promise<MemoryDropResult> {
+    const key = this.getCoordinationKey();
+    const noopResult = this.createNoopUpdateResult(_workspaceFolder);
+    if (key) {
+      WorkspaceMemories.clearScheduledUpdate(key, noopResult);
+    }
+
     const state = await readMemoriesState(this.stateUri);
-    let removedArtifacts = false;
-    if (this.memoriesRootUri) {
-      try {
-        await vscode.workspace.fs.delete(this.memoriesRootUri, { recursive: true, useTrash: false });
-        removedArtifacts = true;
-      } catch {
-        // Ignore missing memories directory.
+
+    const runDrop = async (): Promise<boolean> => {
+      if (key) {
+        const inFlight = WorkspaceMemories.updateInFlightByKey.get(key);
+        if (inFlight) {
+          await inFlight.catch(() => undefined);
+        }
       }
+
+      let removedArtifacts = false;
+      if (this.memoriesRootUri) {
+        try {
+          await vscode.workspace.fs.delete(this.memoriesRootUri, { recursive: true, useTrash: false });
+          removedArtifacts = true;
+        } catch {
+          // Ignore missing memories directory.
+        }
+      }
+      return removedArtifacts;
+    };
+
+    let removedArtifacts = false;
+    if (key) {
+      const dropPromise = (async () => {
+        removedArtifacts = await runDrop();
+      })();
+      WorkspaceMemories.dropInFlightByKey.set(key, dropPromise);
+      try {
+        await dropPromise;
+      } finally {
+        if (WorkspaceMemories.dropInFlightByKey.get(key) === dropPromise) {
+          WorkspaceMemories.dropInFlightByKey.delete(key);
+        }
+      }
+    } else {
+      removedArtifacts = await runDrop();
     }
 
     return {

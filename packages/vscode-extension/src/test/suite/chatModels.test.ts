@@ -40,6 +40,10 @@ function createModelTrackingAgent(blankState: () => AgentSessionState, history: 
   return { agent, configUpdates };
 }
 
+function getLingyunConfigValue<T>(key: string): T | undefined {
+  return vscode.workspace.getConfiguration('lingyun').get<T>(key);
+}
+
 suite('Chat models service', () => {
   test('postModelState includes the configured reasoning effort', async () => {
     const config = vscode.workspace.getConfiguration('lingyun');
@@ -92,7 +96,7 @@ suite('Chat models service', () => {
 
       await controller.modelApi.setReasoningEffort('low');
 
-      assert.strictEqual(config.get('copilot.reasoningEffort'), 'low');
+      assert.strictEqual(getLingyunConfigValue('copilot.reasoningEffort'), 'low');
       assert.deepStrictEqual(posted, [
         {
           type: 'modelState',
@@ -127,7 +131,7 @@ suite('Chat models service', () => {
 
       await controller.modelApi.setReasoningEffort('');
 
-      assert.strictEqual(config.get('copilot.reasoningEffort'), '');
+      assert.strictEqual(getLingyunConfigValue('copilot.reasoningEffort'), '');
       assert.deepStrictEqual(posted, [
         {
           type: 'modelState',
@@ -171,15 +175,24 @@ suite('Chat models service', () => {
       assert.strictEqual(controller.currentModel, 'gpt-5.4');
       assert.deepStrictEqual(configUpdates, [{ model: 'gpt-5.4' }]);
       assert.strictEqual(persisted, 1);
-      assert.deepStrictEqual(posted, [
-        {
-          type: 'modelChanged',
-          model: 'gpt-5.4',
-          label: 'GPT-5.4',
-          isFavorite: false,
-          reasoningEffort: 'medium',
+      assert.deepStrictEqual(posted[0], {
+        type: 'modelChanged',
+        model: 'gpt-5.4',
+        label: 'GPT-5.4',
+        isFavorite: false,
+        reasoningEffort: 'medium',
+      });
+      assert.deepStrictEqual(posted[1], {
+        type: 'modelPickerState',
+        picker: {
+          currentModel: 'gpt-5.4',
+          favorites: [],
+          recent: [{ id: 'gpt-5.4', name: 'GPT-5.4' }],
+          all: [],
         },
-      ]);
+        reveal: false,
+      });
+      assert.strictEqual(posted.length, 2);
     } finally {
       if (previousModel === undefined) {
         await config.update('model', undefined, vscode.ConfigurationTarget.Global);

@@ -1317,31 +1317,35 @@ suite('AgentLoop', () => {
   });
 
   test('state round-trips pending steers and clear resets runtime state', async () => {
-    agent.syncSession({
-      state: {
-        history: [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hello' }] } as any],
-        pendingInputs: ['queued follow-up'],
-        mentionedSkills: ['skill-1'],
-        systemPromptSnapshot: ['  Base system prompt  ', '', 'Tool context'],
-        compactionSyntheticContexts: [{ transientContext: 'memoryRecall', text: 'remember me' }],
-        fileHandles: {
-          nextId: 2.9,
-          byId: {
-            F1: ' src/foo.ts ',
-            bad: 'drop-me.ts',
-            F2: '   ',
-          },
-        },
-        semanticHandles: {
-          nextMatchId: 2,
-          nextSymbolId: 2,
-          nextLocId: 2,
-          matches: { M1: { fileId: 'F1', range: { start: { line: 1, character: 1 }, end: { line: 1, character: 2 } }, preview: 'x' } },
-          symbols: {},
-          locations: {},
+    const importedState = {
+      history: [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hello' }] } as any],
+      pendingInputs: ['queued follow-up'],
+      mentionedSkills: ['skill-1'],
+      systemPromptSnapshot: ['  Base system prompt  ', '', 'Tool context'],
+      compactionSyntheticContexts: [{ transientContext: 'memoryRecall' as const, text: 'remember me' }],
+      fileHandles: {
+        nextId: 2.9,
+        byId: {
+          F1: ' src/foo.ts ',
+          bad: 'drop-me.ts',
+          F2: '   ',
         },
       },
+      semanticHandles: {
+        nextMatchId: 2,
+        nextSymbolId: 2,
+        nextLocId: 2,
+        matches: { M1: { fileId: 'F1', range: { start: { line: 1, character: 1 }, end: { line: 1, character: 2 } }, preview: 'x' } },
+        symbols: {},
+        locations: {},
+      },
+    };
+
+    agent.syncSession({
+      state: importedState,
     });
+
+    importedState.history[0]!.parts[0] = { type: 'text', text: 'mutated import', state: 'done' } as any;
 
     const state = agent.exportState();
     assert.deepStrictEqual(state.pendingInputs, ['queued follow-up']);
@@ -1365,9 +1369,15 @@ suite('AgentLoop', () => {
     assert.deepStrictEqual(state.compactionSyntheticContexts, [{ transientContext: 'memoryRecall', text: 'remember me' }]);
     assert.deepStrictEqual(state.fileHandles, { nextId: 2, byId: { F1: 'src/foo.ts' } });
 
-    state.history[0]!.parts[0] = { type: 'text', text: 'mutated', state: 'done' } as any;
+    assert.deepStrictEqual(state.history, [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hello' }] }]);
+
+    state.history[0]!.parts[0] = { type: 'text', text: 'mutated export', state: 'done' } as any;
     const unaffected = agent.exportState();
     assert.deepStrictEqual(unaffected.history, [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hello' }] }]);
+
+    const returnedHistory = agent.getHistory();
+    returnedHistory[0]!.parts[0] = { type: 'text', text: 'mutated getter', state: 'done' } as any;
+    assert.deepStrictEqual(agent.getHistory(), [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hello' }] }]);
 
     await agent.clear();
 

@@ -491,6 +491,12 @@
           "default": 2000000,
           "description": "Maximum size per persisted session in bytes (oldest messages truncated first)"
         },
+        "lingyun.chat.queue.maxAttachmentBytes": {
+          "type": "number",
+          "default": 96000000,
+          "minimum": 1,
+          "description": "Maximum total runtime bytes retained for queued image attachments. Older queued image messages are removed when this budget is exceeded."
+        },
         "lingyun.toolFilter": {
           "type": "array",
           "items": {

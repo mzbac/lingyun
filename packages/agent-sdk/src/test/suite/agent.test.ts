@@ -963,6 +963,36 @@ suite('LingYun Agent SDK', () => {
     });
   });
 
+  test('prompt cache - prompt artifacts stay out of model input and do not affect reuse', async () => {
+    const staleArtifact = 'STALE_PROMPT_ARTIFACT_SHOULD_NOT_REACH_MODEL';
+    const llm = new CacheAwareMockLLMProvider();
+    const registry = new ToolRegistry();
+    const session = new LingyunSession({ systemPromptSnapshot: [staleArtifact] });
+    const agent = new LingyunAgent(
+      llm,
+      { model: 'mock-model', systemPrompt: 'Live cacheable system prompt.' },
+      registry,
+      { allowExternalPaths: false, skills: { enabled: false } },
+    );
+
+    llm.queueResponse({ kind: 'text', content: 'first' });
+    for await (const _event of agent.run({ session, input: 'hello' }).events) {
+      // drain
+    }
+
+    session.setSystemPromptSnapshot([staleArtifact]);
+
+    llm.queueResponse({ kind: 'text', content: 'second' });
+    for await (const _event of agent.run({ session, input: 'follow up' }).events) {
+      // drain
+    }
+
+    const prompts = JSON.stringify(llm.promptHistory);
+    assert.ok(prompts.includes('Live cacheable system prompt.'), 'live system prompt should be sent to the model');
+    assert.ok(!prompts.includes(staleArtifact), 'persisted prompt artifacts should not be sent to the model');
+    assertSecondTurnCacheReuse(llm, session, 'prompt artifacts');
+  });
+
   test('createHistoryForModel repairs tool-call/result pair integrity for model replay', () => {
     const original: AgentHistoryMessage = {
       id: 'm-tool',

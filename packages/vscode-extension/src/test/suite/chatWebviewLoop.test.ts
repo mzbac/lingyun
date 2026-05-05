@@ -14,6 +14,8 @@ suite('Chat webview loop integration', () => {
   test('sendInit includes the configured reasoning effort in the header payload', async () => {
     const config = vscode.workspace.getConfiguration('lingyun');
     const previousEffort = config.get('copilot.reasoningEffort');
+    const previousModel = config.get('model');
+    await config.update('model', 'gpt-5.4', vscode.ConfigurationTarget.Global);
     await config.update('copilot.reasoningEffort', 'low', vscode.ConfigurationTarget.Global);
 
     try {
@@ -47,6 +49,11 @@ suite('Chat webview loop integration', () => {
         await config.update('copilot.reasoningEffort', undefined, vscode.ConfigurationTarget.Global);
       } else {
         await config.update('copilot.reasoningEffort', previousEffort, vscode.ConfigurationTarget.Global);
+      }
+      if (previousModel === undefined) {
+        await config.update('model', undefined, vscode.ConfigurationTarget.Global);
+      } else {
+        await config.update('model', previousModel, vscode.ConfigurationTarget.Global);
       }
     }
   });

@@ -171,7 +171,7 @@ export class AgentLoop {
       throw new Error('Agent is already running');
     }
 
-    const history = Array.isArray(state.history) ? [...state.history] : [];
+    const history = Array.isArray(state.history) ? cloneAgentHistoryMessages(state.history) : [];
     this.session.history = history;
     this.session.setMentionedSkills(state.mentionedSkills);
     this.session.setSystemPromptSnapshot(normalizeSystemPromptSnapshot(state.systemPromptSnapshot));
@@ -207,7 +207,7 @@ export class AgentLoop {
   }
 
   getHistory(): AgentHistoryMessage[] {
-    return [...this.session.history];
+    return cloneAgentHistoryMessages(this.session.history);
   }
 
   setMode(mode: 'build' | 'plan'): void {

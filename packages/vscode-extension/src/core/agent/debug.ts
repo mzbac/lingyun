@@ -21,6 +21,7 @@ const PRIVATE_DOMAIN_REGEX = /\b(?:[a-z0-9-]+\.)+(?:internal|lan|corp|home)\b(?:
 const BEARER_REGEX = /Bearer\s+[A-Za-z0-9._-]+/gi;
 const BASIC_AUTH_REGEX = /Basic\s+[A-Za-z0-9+/=]+/gi;
 const OPENAI_API_KEY_REGEX = /\bsk-[A-Za-z0-9_-]{6,}\b/g;
+const GOOGLE_API_KEY_REGEX = /\bAIza[A-Za-z0-9_-]{35}\b/g;
 const GITHUB_TOKEN_REGEX = /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{20,}\b/g;
 const GITHUB_FINE_GRAINED_PAT_REGEX = /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g;
 const URL_SECRET_QUERY_REGEX =
@@ -29,7 +30,7 @@ const URL_USERINFO_PASSWORD_REGEX = /(https?:\/\/[^\s/@:]+:)([^\s/@]+)(@)/gi;
 const JSON_SECRET_KV_REGEX =
   /("(?:authorization|proxy-authorization|proxyauthorization|apikey|api_key|x-api-key|token|access_token|accesstoken|refresh_token|refreshtoken|secret|client_secret|clientsecret|password|passwd|cookie|set-cookie|private_key|privatekey)"\s*:\s*)"[^"]*"/gi;
 const INLINE_SECRET_KV_REGEX =
-  /\b(authorization|proxy-authorization|proxyauthorization|x-api-key|api[-_]?key|access[-_]?token|refresh[-_]?token|token|secret|password|passwd|cookie|set-cookie|private[-_]?key)\b(\s*[:=]\s*)([^\s,;]+)/gi;
+  /\b(authorization|proxy-authorization|proxyauthorization|x-api-key|api[-_]?key|access[-_]?token|refresh[-_]?token|token|secret|password|passwd|cookie|set-cookie|private[-_]?key)\b(\s*[:=]\s*)([^\s,;&]+)/gi;
 
 const SENSITIVE_TOOL_ARG_KEYS = new Set([
   'content',
@@ -66,6 +67,7 @@ function redactSecrets(text: string): string {
   out = out.replace(BEARER_REGEX, 'Bearer <redacted>');
   out = out.replace(BASIC_AUTH_REGEX, 'Basic <redacted>');
   out = out.replace(OPENAI_API_KEY_REGEX, 'sk-<redacted>');
+  out = out.replace(GOOGLE_API_KEY_REGEX, 'AIza<redacted>');
   out = out.replace(GITHUB_FINE_GRAINED_PAT_REGEX, 'github_pat_<redacted>');
   out = out.replace(GITHUB_TOKEN_REGEX, match => `${match.slice(0, 4)}<redacted>`);
   out = out.replace(URL_SECRET_QUERY_REGEX, '$1<redacted>');

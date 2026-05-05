@@ -15,6 +15,13 @@ type ExecutionStateParams = {
 
 type AgentStatusEvent = Parameters<NonNullable<AgentCallbacks['onStatusChange']>>[0];
 
+const TOKEN_FLUSH_INTERVAL_MS = 25;
+
+type TokenBuffer = {
+  token: string;
+  timer?: NodeJS.Timeout;
+};
+
 export interface ChatExecutionState {
   ensureStepMsg(): ChatMessage;
   postStepMsgIfNeeded(): ChatMessage;
@@ -44,6 +51,7 @@ export function createChatExecutionState(params: ExecutionStateParams): ChatExec
   let loggedFirstThought = false;
   let assistantMsg: ChatMessage | undefined;
   let assistantStarted = false;
+  const tokenBuffersByMessageId = new Map<string, TokenBuffer>();
 
   debug(
     `[Thinking] callbacks created showThinking=${String(showThinking)} mode=${view.mode} turn=${view.currentTurnId ?? ''}`,
@@ -98,6 +106,43 @@ export function createChatExecutionState(params: ExecutionStateParams): ChatExec
     return assistantMsg;
   }
 
+  function flushTokenBuffer(messageId: string): void {
+    const buffer = tokenBuffersByMessageId.get(messageId);
+    if (!buffer) return;
+    if (buffer.timer) clearTimeout(buffer.timer);
+    tokenBuffersByMessageId.delete(messageId);
+    if (buffer.token) {
+      view.postMessage({ type: 'token', messageId, token: buffer.token });
+    }
+  }
+
+  function flushAllTokenBuffers(): void {
+    for (const messageId of [...tokenBuffersByMessageId.keys()]) {
+      flushTokenBuffer(messageId);
+    }
+  }
+
+  function discardTokenBuffer(messageId: string): void {
+    const buffer = tokenBuffersByMessageId.get(messageId);
+    if (!buffer) return;
+    if (buffer.timer) clearTimeout(buffer.timer);
+    tokenBuffersByMessageId.delete(messageId);
+  }
+
+  function queueToken(messageId: string, token: string): void {
+    const existing = tokenBuffersByMessageId.get(messageId);
+    if (existing) {
+      existing.token += token;
+      return;
+    }
+
+    const buffer: TokenBuffer = { token };
+    buffer.timer = setTimeout(() => {
+      flushTokenBuffer(messageId);
+    }, TOKEN_FLUSH_INTERVAL_MS);
+    tokenBuffersByMessageId.set(messageId, buffer);
+  }
+
   function pushThought(text: string): void {
     if (!text) return;
 
@@ -139,7 +184,7 @@ export function createChatExecutionState(params: ExecutionStateParams): ChatExec
     const safe = text.replace(/\[REDACTED\]/g, '');
     if (!safe) return;
     thoughtMsg.content += safe;
-    view.postMessage({ type: 'token', messageId: thoughtMsg.id, token: safe });
+    queueToken(thoughtMsg.id, safe);
   }
 
   function pushAssistant(text: string): void {
@@ -152,7 +197,7 @@ export function createChatExecutionState(params: ExecutionStateParams): ChatExec
     }
     const msg = ensureAssistantMsg();
     msg.content += chunk;
-    view.postMessage({ type: 'token', messageId: msg.id, token: chunk });
+    queueToken(msg.id, chunk);
   }
 
   function reconcileAssistantForToolCall(): void {
@@ -161,7 +206,10 @@ export function createChatExecutionState(params: ExecutionStateParams): ChatExec
     const trimmed = cleanAssistantPreamble(original);
     if (trimmed !== original) {
       assistantMsg.content = trimmed;
+      discardTokenBuffer(assistantMsg.id);
       view.postMessage({ type: 'updateMessage', message: assistantMsg });
+    } else {
+      flushTokenBuffer(assistantMsg.id);
     }
   }
 
@@ -171,7 +219,10 @@ export function createChatExecutionState(params: ExecutionStateParams): ChatExec
     const cleaned = cleanAssistantPreamble(original);
     if (cleaned !== original) {
       assistantMsg.content = cleaned;
+      discardTokenBuffer(assistantMsg.id);
       view.postMessage({ type: 'updateMessage', message: assistantMsg });
+    } else {
+      flushTokenBuffer(assistantMsg.id);
     }
   }
 
@@ -199,11 +250,13 @@ export function createChatExecutionState(params: ExecutionStateParams): ChatExec
 
     if (assistantMsg.turnId === view.currentTurnId && assistantMsg.content !== finalContent) {
       assistantMsg.content = finalContent;
+      discardTokenBuffer(assistantMsg.id);
       view.postMessage({ type: 'updateMessage', message: assistantMsg });
     }
   }
 
   function startNewTurn(): void {
+    flushAllTokenBuffers();
     stepMsg = undefined;
     view.activeStepId = undefined;
     stepPosted = false;
@@ -218,10 +271,12 @@ export function createChatExecutionState(params: ExecutionStateParams): ChatExec
 
     thoughtBuffer = '';
     if (thoughtMsg && thoughtMsg.turnId === view.currentTurnId) {
+      discardTokenBuffer(thoughtMsg.id);
       thoughtMsg.content = '';
       view.postMessage({ type: 'updateMessage', message: thoughtMsg });
     }
     if (assistantMsg && assistantMsg.turnId === view.currentTurnId) {
+      discardTokenBuffer(assistantMsg.id);
       assistantMsg.content = '';
       view.postMessage({ type: 'updateMessage', message: assistantMsg });
     }
@@ -229,6 +284,7 @@ export function createChatExecutionState(params: ExecutionStateParams): ChatExec
   }
 
   function markStepDoneIfPosted(): void {
+    flushAllTokenBuffers();
     if (stepPosted && stepMsg?.step) {
       if (stepMsg.step.status !== 'canceled') {
         stepMsg.step.status = 'done';
@@ -243,6 +299,7 @@ export function createChatExecutionState(params: ExecutionStateParams): ChatExec
   }
 
   function markStepError(aborted: boolean): void {
+    flushAllTokenBuffers();
     if (!stepMsg?.step) return;
     stepMsg.step.status = aborted ? 'canceled' : 'error';
     if (stepPosted) {
@@ -251,6 +308,7 @@ export function createChatExecutionState(params: ExecutionStateParams): ChatExec
   }
 
   function resetCompletionState(): void {
+    flushAllTokenBuffers();
     view.activeStepId = undefined;
     stepMsg = undefined;
     stepPosted = false;

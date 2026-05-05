@@ -3832,6 +3832,72 @@ suite('Memory Tool', () => {
     }
   });
 
+  test('dropMemories cancels scheduled refreshes instead of recreating artifacts', async () => {
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri;
+    assert.ok(root, 'Workspace folder must be available for memory tests');
+
+    const prevMemoryRoot = process.env.LINGYUN_MEMORIES_DIR;
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const prevEnabled = cfg.get('features.memories');
+    const prevIdleHours = cfg.get('memories.minRolloutIdleHours');
+
+    const storageRoot = vscode.Uri.joinPath(root, '.lingyun-test-storage-drop-scheduled-refresh');
+    const memoriesDir = vscode.Uri.joinPath(storageRoot, 'memories');
+    await vscode.workspace.fs.createDirectory(storageRoot);
+
+    try {
+      process.env.LINGYUN_MEMORIES_DIR = memoriesDir.fsPath;
+      await cfg.update('features.memories', true, true);
+      await cfg.update('memories.minRolloutIdleHours', 0, true);
+
+      const now = Date.now();
+      await seedPersistedSessions(storageRoot, [buildPersistedSession(now)]);
+
+      const manager = new WorkspaceMemories({
+        storageUri: storageRoot,
+        globalStorageUri: storageRoot,
+      } as unknown as vscode.ExtensionContext);
+
+      const scheduled = manager.scheduleUpdateFromSessions(root, { delayMs: 50 });
+      const drop = await manager.dropMemories(root);
+      const scheduledResult = await scheduled;
+
+      assert.strictEqual(drop.removedStateOutputs, 0);
+      assert.strictEqual(scheduledResult.processedSessions, 0);
+
+      await new Promise(resolve => setTimeout(resolve, 75));
+      assert.strictEqual(await manager.readMemoryFile('memory', undefined, root), undefined);
+
+      const search = await manager.searchMemory({
+        query: 'AgentLoop.withRun',
+        workspaceFolder: root,
+        limit: 3,
+      });
+      assert.strictEqual(search.hits.length, 0);
+    } finally {
+      if (prevMemoryRoot === undefined) {
+        delete process.env.LINGYUN_MEMORIES_DIR;
+      } else {
+        process.env.LINGYUN_MEMORIES_DIR = prevMemoryRoot;
+      }
+      try {
+        await cfg.update('features.memories', prevEnabled, true);
+      } catch {
+        // ignore
+      }
+      try {
+        await cfg.update('memories.minRolloutIdleHours', prevIdleHours, true);
+      } catch {
+        // ignore
+      }
+      try {
+        await vscode.workspace.fs.delete(storageRoot, { recursive: true, useTrash: false });
+      } catch {
+        // ignore
+      }
+    }
+  });
+
   test('get_memory search returns transcript-backed matches', async () => {
     const root = vscode.workspace.workspaceFolders?.[0]?.uri;
     assert.ok(root, 'Workspace folder must be available for memory tests');

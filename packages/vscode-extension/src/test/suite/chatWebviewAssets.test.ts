@@ -5,6 +5,7 @@ import * as vm from 'vm';
 import { fileURLToPath } from 'url';
 import * as vscode from 'vscode';
 
+import { WEBVIEW_MESSAGE_ERROR, WEBVIEW_MESSAGE_READY } from '../../ui/chat/webviewProtocol';
 import { createStandaloneChatController } from './chatControllerHarness';
 
 type ExtractedScript = {
@@ -130,9 +131,9 @@ function createMockBrowserContext(): {
   const browserWindow: any = {
     document,
     LINGYUN_CHAT_PROTOCOL: {
-      ready: 'webviewReady',
+      ready: WEBVIEW_MESSAGE_READY,
       initAck: 'webviewInitAck',
-      webviewError: 'webviewError',
+      webviewError: WEBVIEW_MESSAGE_ERROR,
     },
     addEventListener: () => {},
     removeEventListener: () => {},
@@ -249,8 +250,8 @@ suite('Chat Webview Assets', () => {
     assert.doesNotThrow(() => {
       runScriptsInMockBrowser(scripts, context);
     }, 'expected webview startup scripts to run without ReferenceError');
-    assert.ok(posted.some(message => message && message.type === 'webviewReady'));
-    assert.ok(!posted.some(message => message && message.type === 'webviewError'));
+    assert.ok(posted.some(message => message && message.type === WEBVIEW_MESSAGE_READY));
+    assert.ok(!posted.some(message => message && message.type === WEBVIEW_MESSAGE_ERROR));
   });
 
   test('queue renderer skips duplicate DOM rebuilds for identical queue state', () => {
@@ -277,7 +278,7 @@ suite('Chat Webview Assets', () => {
     assert.strictEqual(queueItems?.children.length, 1);
     assert.ok(afterFirst > before, 'expected first queue render to create DOM nodes');
     assert.strictEqual(afterSecond, afterFirst, 'expected duplicate queue state to skip DOM creation');
-    assert.ok(!posted.some(message => message && message.type === 'webviewError'));
+    assert.ok(!posted.some(message => message && message.type === WEBVIEW_MESSAGE_ERROR));
   });
 
   test('send button presentation skips duplicate DOM rebuilds for identical input state', () => {
@@ -303,6 +304,6 @@ suite('Chat Webview Assets', () => {
 
     assert.strictEqual(afterFirst, before, 'expected unchanged send button state to reuse existing nodes');
     assert.strictEqual(afterSecond, before, 'expected duplicate send button state to skip DOM creation');
-    assert.ok(!posted.some(message => message && message.type === 'webviewError'));
+    assert.ok(!posted.some(message => message && message.type === WEBVIEW_MESSAGE_ERROR));
   });
 });

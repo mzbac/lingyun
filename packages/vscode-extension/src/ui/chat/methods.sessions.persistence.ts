@@ -6,7 +6,7 @@ import {
   normalizeSemanticHandlesState,
   normalizeSystemPromptSnapshot,
 } from '@kooka/agent-sdk';
-import { getAgentHistoryStats, parseUserHistoryInput } from '@kooka/core';
+import { cloneAgentHistoryMessages, getAgentHistoryStats, parseUserHistoryInput } from '@kooka/core';
 
 import type { AgentSessionState } from '../../core/agent';
 import { WorkspaceMemories } from '../../core/memories';
@@ -310,9 +310,9 @@ export function createChatSessionPersistenceService(
       if (!raw || typeof raw !== 'object') return this.runtime.getBlankAgentState();
 
       const state = raw as any;
-      const history = Array.isArray(state.history) ? state.history : [];
+      const rawHistory = Array.isArray(state.history) ? state.history : [];
 
-      const isValid = history.every((msg: any) => {
+      const isValid = rawHistory.every((msg: any) => {
         if (!msg || typeof msg !== 'object') return false;
         if (typeof msg.id !== 'string' || !msg.id) return false;
         if (msg.role !== 'user' && msg.role !== 'assistant' && msg.role !== 'system') return false;
@@ -320,6 +320,7 @@ export function createChatSessionPersistenceService(
       });
 
       if (!isValid) return this.runtime.getBlankAgentState();
+      const history = cloneAgentHistoryMessages(rawHistory);
 
       const fileHandlesRaw = state.fileHandles;
       const fileHandles = normalizeFileHandlesState(fileHandlesRaw);

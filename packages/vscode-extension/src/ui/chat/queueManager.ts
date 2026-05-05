@@ -1,6 +1,11 @@
+import * as vscode from 'vscode';
+
 import type { ChatQueueHost } from './controllerPorts';
 import type { ChatController } from './controller';
 import type { ChatImageAttachment, ChatMessage, ChatQueuedInput, ChatSessionInfo, ChatUserInput } from './types';
+
+const MAX_QUEUED_INPUTS = 50;
+const DEFAULT_MAX_RUNTIME_ATTACHMENT_BYTES = 96_000_000;
 
 type QueuedPayload = {
   message: string;
@@ -14,10 +19,28 @@ type CommitOptions = {
   persist?: boolean;
 };
 
+function getMaxRuntimeAttachmentBytes(): number {
+  const raw = vscode.workspace.getConfiguration('lingyun').get<number>('chat.queue.maxAttachmentBytes');
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return DEFAULT_MAX_RUNTIME_ATTACHMENT_BYTES;
+  return Math.max(0, Math.floor(raw));
+}
+
+function estimateAttachmentBytes(attachments: ChatImageAttachment[]): number {
+  return attachments.reduce((total, attachment) => {
+    if (!attachment) return total;
+    const dataUrl = typeof attachment.dataUrl === 'string' ? attachment.dataUrl.length : 0;
+    const mediaType = typeof attachment.mediaType === 'string' ? attachment.mediaType.length : 0;
+    const filename = typeof attachment.filename === 'string' ? attachment.filename.length : 0;
+    return total + dataUrl + mediaType + filename;
+  }, 0);
+}
+
 export class ChatQueueManager {
   private readonly attachmentsById = new Map<string, ChatImageAttachment[]>();
+  private readonly attachmentBytesById = new Map<string, number>();
   private readonly autosendTimers = new Map<string, NodeJS.Timeout>();
   private readonly pendingAutosendSessionIds = new Set<string>();
+  private runtimeAttachmentBytes = 0;
 
   constructor(private readonly controller: ChatQueueHost) {}
 
@@ -49,17 +72,19 @@ export class ChatQueueManager {
 
     queue.push(queued);
 
-    while (queue.length > 50) {
+    if (payload.attachments.length > 0) {
+      this.setAttachments(queued.id, payload.attachments);
+    }
+
+    while (queue.length > MAX_QUEUED_INPUTS) {
       const removed = queue.shift();
       if (removed?.id) {
-        this.attachmentsById.delete(removed.id);
+        this.deleteAttachments(removed.id);
       }
     }
 
     session.queuedInputs = queue;
-    if (payload.attachments.length > 0) {
-      this.attachmentsById.set(queued.id, payload.attachments);
-    }
+    this.enforceAttachmentBudget(session);
 
     this.commitActiveSession(session);
     return queued;
@@ -74,7 +99,7 @@ export class ChatQueueManager {
     const queue = this.getQueuedInputs(session);
     for (const item of queue) {
       if (item?.id) {
-        this.attachmentsById.delete(item.id);
+        this.deleteAttachments(item.id);
       }
     }
     session.queuedInputs = [];
@@ -87,13 +112,15 @@ export class ChatQueueManager {
     const queue = this.getQueuedInputs(session);
     for (const item of queue) {
       if (item?.id) {
-        this.attachmentsById.delete(item.id);
+        this.deleteAttachments(item.id);
       }
     }
   }
 
   clearAllRuntimeData(): void {
     this.attachmentsById.clear();
+    this.attachmentBytesById.clear();
+    this.runtimeAttachmentBytes = 0;
     for (const timer of this.autosendTimers.values()) {
       clearTimeout(timer);
     }
@@ -138,6 +165,49 @@ export class ChatQueueManager {
 
   getRuntimeAttachmentCount(): number {
     return this.attachmentsById.size;
+  }
+
+  getRuntimeAttachmentBytes(): number {
+    return this.runtimeAttachmentBytes;
+  }
+
+  private setAttachments(id: string, attachments: ChatImageAttachment[]): void {
+    this.deleteAttachments(id);
+    const bytes = estimateAttachmentBytes(attachments);
+    this.attachmentsById.set(id, attachments);
+    this.attachmentBytesById.set(id, bytes);
+    this.runtimeAttachmentBytes += bytes;
+  }
+
+  private deleteAttachments(id: string): void {
+    const bytes = this.attachmentBytesById.get(id) ?? 0;
+    if (bytes > 0) {
+      this.runtimeAttachmentBytes = Math.max(0, this.runtimeAttachmentBytes - bytes);
+    }
+    this.attachmentBytesById.delete(id);
+    this.attachmentsById.delete(id);
+  }
+
+  private enforceAttachmentBudget(session: ChatSessionInfo): void {
+    const maxBytes = getMaxRuntimeAttachmentBytes();
+    if (this.runtimeAttachmentBytes <= maxBytes) return;
+
+    const queue = this.getQueuedInputs(session);
+    let removed = 0;
+    while (this.runtimeAttachmentBytes > maxBytes) {
+      const index = queue.findIndex(item => !!item?.id && this.attachmentsById.has(item.id));
+      if (index < 0) break;
+      const [item] = queue.splice(index, 1);
+      if (item?.id) {
+        this.deleteAttachments(item.id);
+        removed++;
+      }
+    }
+
+    session.queuedInputs = queue;
+    if (removed > 0) {
+      this.postAttachmentBudgetWarning(removed);
+    }
   }
 
   private armAutosendTimer(sessionId: string): void {
@@ -205,7 +275,7 @@ export class ChatQueueManager {
     queue.splice(index, 1);
     session.queuedInputs = queue;
     if (item.id) {
-      this.attachmentsById.delete(item.id);
+      this.deleteAttachments(item.id);
     }
     this.commitActiveSession(session);
 
@@ -219,6 +289,20 @@ export class ChatQueueManager {
       message: item.message,
       ...(attachments.length > 0 ? { attachments } : {}),
     };
+  }
+
+  private postAttachmentBudgetWarning(removedCount: number): void {
+    const label = removedCount === 1 ? 'message' : 'messages';
+    const warningMsg: ChatMessage = {
+      id: crypto.randomUUID(),
+      role: 'warning',
+      content:
+        `LingYun: Removed ${removedCount} older queued image ${label} to keep runtime attachment memory bounded.`,
+      timestamp: Date.now(),
+    };
+    this.controller.messages.push(warningMsg);
+    this.controller.postMessage({ type: 'message', message: warningMsg });
+    this.controller.persistActiveSession();
   }
 
   private postUnavailableAttachmentWarning(): void {
