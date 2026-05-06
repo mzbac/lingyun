@@ -55,6 +55,9 @@
 		    const undoBtn = document.getElementById('undo');
 		    const redoBtn = document.getElementById('redo');
 	    const clearInputBtn = document.getElementById('clearInput');
+	    const attachImageButton = document.getElementById('attachImageButton');
+	    const imageFileInput = document.getElementById('imageFileInput');
+	    const inputComposer = document.getElementById('inputComposer');
 	    const inputAttachments = document.getElementById('inputAttachments');
 		    const sessionSelect = document.getElementById('sessionSelect');
 	    const sessionSettings = document.getElementById('sessionSettings');
@@ -451,14 +454,15 @@
 	    let inputHistoryEntries = [];
 	    let inputHistoryIndex = -1;
 	    let inputHistorySavedDraft = null;
-	    const MAX_CLIPBOARD_IMAGES = 8;
-	    const MAX_CLIPBOARD_IMAGE_DATA_URL_CHARS = 12000000;
+	    const MAX_IMAGE_ATTACHMENTS = 8;
+	    const MAX_IMAGE_DATA_URL_CHARS = 12000000;
 	    const INPUT_NOTICE_DURATION_MS = 4000;
 	    const PENDING_ACTION_TIMEOUT_MS = 10000;
 	    const SETTINGS_PENDING_TIMEOUT_MS = 10000;
 	    let pendingImageAttachments = [];
 	    let inputNoticeMessage = '';
 	    let inputNoticeTimer = null;
+	    let inputImageDragDepth = 0;
 	    const pendingSettingTimers = new Map();
 	    const pendingActionTimers = new Map();
 
@@ -5172,6 +5176,32 @@
       return ext ? ('image.' + ext) : 'image.png';
     }
 
+    function formatImageAttachmentSize(size) {
+      const value = Number(size);
+      if (!Number.isFinite(value) || value <= 0) return '';
+      if (value < 1024) return String(Math.round(value)) + ' B';
+      if (value < 1024 * 1024) return String(Math.round(value / 1024)) + ' KB';
+      const mb = value / (1024 * 1024);
+      return mb.toFixed(mb >= 10 ? 0 : 1).replace(/\.0$/, '') + ' MB';
+    }
+
+    function formatImageAttachmentMeta(attachment) {
+      const parts = [];
+      const mediaType = typeof attachment.mediaType === 'string' ? attachment.mediaType.trim() : '';
+      if (mediaType) parts.push(mediaType);
+      const size = formatImageAttachmentSize(attachment.size);
+      if (size) parts.push(size);
+      return parts.join(' · ');
+    }
+
+    function getImageFileMediaType(file) {
+      return file && typeof file.type === 'string' ? file.type.trim() : '';
+    }
+
+    function isImageFile(file) {
+      return getImageFileMediaType(file).toLowerCase().startsWith('image/');
+    }
+
     function showInputNotice(message) {
       inputNoticeMessage = typeof message === 'string' ? message.trim() : '';
       if (inputNoticeTimer) {
@@ -5192,25 +5222,53 @@
 
     function renderInputAttachments() {
       if (!inputAttachments) return;
-      inputAttachments.innerHTML = '';
 
       if (!pendingImageAttachments.length) {
         inputAttachments.classList.add('hidden');
+        if (typeof inputAttachments.replaceChildren === 'function') {
+          inputAttachments.replaceChildren();
+        } else {
+          inputAttachments.innerHTML = '';
+        }
         return;
       }
 
+      const fragment = document.createDocumentFragment();
       inputAttachments.classList.remove('hidden');
       for (let i = 0; i < pendingImageAttachments.length; i++) {
         const attachment = pendingImageAttachments[i];
+        const filename = inferImageFileName(attachment.mediaType, attachment.filename);
+        const meta = formatImageAttachmentMeta(attachment);
+
         const chip = document.createElement('div');
         chip.className = 'input-attachment-chip';
         chip.dataset.attachmentId = attachment.id;
+        chip.setAttribute('role', 'listitem');
+        chip.title = filename + (meta ? ' · ' + meta : '');
+
+        const thumb = document.createElement('img');
+        thumb.className = 'input-attachment-thumb';
+        thumb.src = attachment.dataUrl;
+        thumb.alt = '';
+        thumb.loading = 'lazy';
+        chip.appendChild(thumb);
+
+        const detail = document.createElement('span');
+        detail.className = 'input-attachment-detail';
 
         const label = document.createElement('span');
         label.className = 'input-attachment-label';
-        label.textContent = inferImageFileName(attachment.mediaType, attachment.filename);
-        label.title = attachment.mediaType || 'image';
-        chip.appendChild(label);
+        label.textContent = filename;
+        detail.appendChild(label);
+
+        if (meta) {
+          const metaEl = document.createElement('span');
+          metaEl.className = 'input-attachment-meta';
+          metaEl.textContent = meta;
+          detail.appendChild(metaEl);
+        }
+
+        chip.appendChild(detail);
 
         const removeBtn = document.createElement('button');
         removeBtn.type = 'button';
@@ -5221,7 +5279,14 @@
         removeBtn.textContent = '✕';
         chip.appendChild(removeBtn);
 
-        inputAttachments.appendChild(chip);
+        fragment.appendChild(chip);
+      }
+
+      if (typeof inputAttachments.replaceChildren === 'function') {
+        inputAttachments.replaceChildren(fragment);
+      } else {
+        inputAttachments.innerHTML = '';
+        inputAttachments.appendChild(fragment);
       }
     }
 
@@ -5247,10 +5312,10 @@
             if (typeof reader.result === 'string') {
               resolve(reader.result);
             } else {
-              reject(new Error('Clipboard image read failed'));
+              reject(new Error('Image read failed'));
             }
           };
-          reader.onerror = () => reject(reader.error || new Error('Clipboard image read failed'));
+          reader.onerror = () => reject(reader.error || new Error('Image read failed'));
           reader.readAsDataURL(file);
         } catch (err) {
           reject(err);
@@ -5258,36 +5323,38 @@
       });
     }
 
-    async function handleClipboardPaste(e) {
+    function setInputImageDragActive(active) {
+      if (inputComposer) inputComposer.classList.toggle('drag-over', !!active);
+    }
+
+    function clearInputImageDragState() {
+      inputImageDragDepth = 0;
+      setInputImageDragActive(false);
+    }
+
+    function hasImageTransfer(dataTransfer) {
+      if (!dataTransfer) return false;
+      const items = dataTransfer.items ? Array.from(dataTransfer.items) : [];
+      if (items.some((item) => {
+        const type = item && typeof item.type === 'string' ? item.type.toLowerCase() : '';
+        return item && item.kind === 'file' && (!type || type.startsWith('image/'));
+      })) {
+        return true;
+      }
+      const files = dataTransfer.files ? Array.from(dataTransfer.files) : [];
+      return files.some((file) => isImageFile(file));
+    }
+
+    async function attachImageFiles(files, options) {
       if (!initReceived) return;
 
-      const items = e && e.clipboardData && e.clipboardData.items ? Array.from(e.clipboardData.items) : [];
-      if (!items.length) return;
-
-      const imageItems = [];
-      for (const item of items) {
-        if (!item || item.kind !== 'file') continue;
-        const mediaType = typeof item.type === 'string' ? item.type.toLowerCase() : '';
-        if (mediaType.startsWith('image/')) imageItems.push(item);
-      }
-      if (!imageItems.length) return;
-
-      const slotsLeft = MAX_CLIPBOARD_IMAGES - pendingImageAttachments.length;
-      if (slotsLeft <= 0) {
-        showInputNotice('Image limit reached (' + MAX_CLIPBOARD_IMAGES + '). Remove an image before pasting more.');
-        return;
-      }
-
+      const opts = options || {};
+      const source = opts.source === 'pasted' ? 'pasted' : opts.source === 'dropped' ? 'dropped' : 'selected';
       const imageFiles = [];
-      let skippedForLimit = 0;
-      let skippedUnreadable = 0;
-      for (const item of imageItems) {
-        if (imageFiles.length >= slotsLeft) {
-          skippedForLimit += 1;
-          continue;
-        }
-        const file = item.getAsFile ? item.getAsFile() : null;
-        if (!file) {
+      let skippedUnreadable = Number.isFinite(opts.skippedUnreadable) ? opts.skippedUnreadable : 0;
+      const inputFiles = files ? Array.from(files) : [];
+      for (const file of inputFiles) {
+        if (!file || !isImageFile(file)) {
           skippedUnreadable += 1;
           continue;
         }
@@ -5295,18 +5362,22 @@
       }
 
       if (!imageFiles.length) {
-        if (skippedUnreadable > 0) showInputNotice('Could not read pasted image from the clipboard.');
+        if (skippedUnreadable > 0) showInputNotice(opts.noImagesMessage || 'Only image files can be attached.');
         return;
       }
 
+      const slotsLeft = MAX_IMAGE_ATTACHMENTS - pendingImageAttachments.length;
+      if (slotsLeft <= 0) {
+        showInputNotice('Image limit reached (' + MAX_IMAGE_ATTACHMENTS + '). Remove an image before attaching more.');
+        return;
+      }
+
+      const filesToRead = imageFiles.slice(0, slotsLeft);
+      let skippedForLimit = Math.max(0, imageFiles.length - filesToRead.length);
       const next = [];
       let skippedTooLarge = 0;
-      for (const file of imageFiles) {
-        const mediaType = typeof file.type === 'string' ? file.type.trim() : '';
-        if (!mediaType.toLowerCase().startsWith('image/')) {
-          skippedUnreadable += 1;
-          continue;
-        }
+      for (const file of filesToRead) {
+        const mediaType = getImageFileMediaType(file);
 
         let dataUrl = '';
         try {
@@ -5317,11 +5388,11 @@
         }
 
         const trimmedData = dataUrl.trim();
-        if (!trimmedData.startsWith('data:image/')) {
+        if (!/^data:image\//i.test(trimmedData)) {
           skippedUnreadable += 1;
           continue;
         }
-        if (trimmedData.length > MAX_CLIPBOARD_IMAGE_DATA_URL_CHARS) {
+        if (trimmedData.length > MAX_IMAGE_DATA_URL_CHARS) {
           skippedTooLarge += 1;
           continue;
         }
@@ -5330,28 +5401,60 @@
           id: String(Date.now()) + '_' + Math.random().toString(16).slice(2),
           mediaType,
           filename: typeof file.name === 'string' ? file.name : '',
+          size: Number.isFinite(file.size) ? file.size : 0,
           dataUrl: trimmedData,
         });
       }
 
       if (!next.length) {
         if (skippedTooLarge > 0) {
-          showInputNotice('Pasted image is too large. Use an image under about ' + Math.floor(MAX_CLIPBOARD_IMAGE_DATA_URL_CHARS / 1000000) + ' MB.');
-        } else if (skippedUnreadable > 0) {
+          showInputNotice('Image is too large. Use an image under about ' + Math.floor(MAX_IMAGE_DATA_URL_CHARS / 1000000) + ' MB.');
+        } else if (source === 'pasted') {
           showInputNotice('Could not read pasted image from the clipboard.');
+        } else {
+          showInputNotice('Could not read image file.');
         }
         return;
       }
 
-      pendingImageAttachments = pendingImageAttachments.concat(next).slice(0, MAX_CLIPBOARD_IMAGES);
+      pendingImageAttachments = pendingImageAttachments.concat(next).slice(0, MAX_IMAGE_ATTACHMENTS);
       renderInputAttachments();
+
       if (skippedForLimit > 0 || skippedTooLarge > 0 || skippedUnreadable > 0) {
         const skipped = skippedForLimit + skippedTooLarge + skippedUnreadable;
         showInputNotice('Attached ' + next.length + ' image' + (next.length === 1 ? '' : 's') + '; skipped ' + skipped + '.');
       } else {
-        showInputNotice('');
+        showInputNotice('Attached ' + next.length + ' image' + (next.length === 1 ? '' : 's') + '.');
       }
       syncInputState();
+    }
+
+    async function handleClipboardPaste(e) {
+      if (!initReceived) return;
+
+      const items = e && e.clipboardData && e.clipboardData.items ? Array.from(e.clipboardData.items) : [];
+      if (!items.length) return;
+
+      const imageFiles = [];
+      let skippedUnreadable = 0;
+      for (const item of items) {
+        if (!item || item.kind !== 'file') continue;
+        const mediaType = typeof item.type === 'string' ? item.type.toLowerCase() : '';
+        if (!mediaType.startsWith('image/')) continue;
+        const file = item.getAsFile ? item.getAsFile() : null;
+        if (!file) {
+          skippedUnreadable += 1;
+          continue;
+        }
+        imageFiles.push(file);
+      }
+      if (!imageFiles.length && skippedUnreadable <= 0) return;
+      if (e && typeof e.preventDefault === 'function') e.preventDefault();
+      await attachImageFiles(imageFiles, {
+        source: 'pasted',
+        skippedUnreadable,
+        noImagesMessage: 'Could not read pasted image from the clipboard.',
+      });
     }
 
     function updateInputLayout() {
@@ -5423,6 +5526,56 @@
     input.addEventListener('paste', (e) => {
       void handleClipboardPaste(e);
     });
+
+    if (attachImageButton && imageFileInput) {
+      attachImageButton.addEventListener('click', () => {
+        if (!initReceived) return;
+        if (typeof imageFileInput.click === 'function') imageFileInput.click();
+      });
+    }
+
+    if (imageFileInput) {
+      imageFileInput.addEventListener('change', () => {
+        const files = imageFileInput.files ? Array.from(imageFileInput.files) : [];
+        imageFileInput.value = '';
+        void attachImageFiles(files, { source: 'selected' });
+      });
+    }
+
+    if (inputComposer) {
+      inputComposer.addEventListener('dragenter', (e) => {
+        if (!initReceived || !hasImageTransfer(e.dataTransfer)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        inputImageDragDepth += 1;
+        setInputImageDragActive(true);
+      });
+
+      inputComposer.addEventListener('dragover', (e) => {
+        if (!initReceived || !hasImageTransfer(e.dataTransfer)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+        setInputImageDragActive(true);
+      });
+
+      inputComposer.addEventListener('dragleave', (e) => {
+        if (!inputImageDragDepth) return;
+        e.preventDefault();
+        e.stopPropagation();
+        inputImageDragDepth -= 1;
+        if (inputImageDragDepth <= 0) clearInputImageDragState();
+      });
+
+      inputComposer.addEventListener('drop', (e) => {
+        if (!initReceived || !hasImageTransfer(e.dataTransfer)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        clearInputImageDragState();
+        const files = e.dataTransfer && e.dataTransfer.files ? Array.from(e.dataTransfer.files) : [];
+        void attachImageFiles(files, { source: 'dropped' });
+      });
+    }
 
     if (inputAttachments) {
       inputAttachments.addEventListener('click', (e) => {
@@ -5979,6 +6132,9 @@
 	        ? (showPlanUpdate ? 'Answer plan questions / add constraints…' : defaultPlaceholder)
 	        : 'Connecting…';
 		      clearInputBtn.disabled = !connected || (!input.value.trim() && pendingImageAttachments.length === 0);
+		      if (attachImageButton) attachImageButton.disabled = !connected;
+		      if (imageFileInput) imageFileInput.disabled = !connected;
+		      if (!connected) clearInputImageDragState();
 		      const sessionActionBusy = !!sessionActionPending;
 		      if ((!connected || isProcessing || sessionActionBusy) && sessionClearConfirmAction) {
 		        setSessionClearConfirmAction('', { sync: false });
@@ -6257,13 +6413,13 @@
 		          inputHint.textContent = showNotice
 		            ? inputNoticeMessage
 		            : showPlanUpdate
-		              ? 'Answer plan questions · Enter to update plan · Shift+Enter for newline'
+	              ? 'Answer plan questions · Enter to update plan · Shift+Enter for newline'
 	              : isProcessing
-	                ? 'Enter to queue another message · ' + queuedCount + ' queued · Paste images · Stop button or Ctrl/Cmd+. to stop'
+	                ? 'Enter to queue another message · ' + queuedCount + ' queued · Attach images · Stop button or Ctrl/Cmd+. to stop'
 
 		                : skillsEnabled
-		                  ? 'Enter to send · Shift+Enter for newline · Paste images · $ for skills'
-		                  : 'Enter to send · Shift+Enter for newline · Paste images';
+		                  ? 'Enter to send · Shift+Enter for newline · Paste or attach images · $ for skills'
+		                  : 'Enter to send · Shift+Enter for newline · Paste or attach images';
 		        }
 		      }
 

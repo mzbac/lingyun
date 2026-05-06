@@ -3254,6 +3254,13 @@
       gap: 6px;
       grid-column: 1;
       grid-row: 1;
+      position: relative;
+    }
+
+    .input-composer.drag-over .input-wrapper textarea {
+      border-color: var(--vscode-focusBorder);
+      box-shadow: 0 0 0 1px var(--vscode-focusBorder);
+      background: color-mix(in srgb, var(--vscode-input-background) 88%, var(--vscode-focusBorder) 12%);
     }
 
     .input-status-row {
@@ -3600,7 +3607,10 @@
       display: flex;
       flex-wrap: wrap;
       gap: 6px;
-      align-items: center;
+      align-items: stretch;
+      max-height: 108px;
+      overflow-y: auto;
+      padding-right: 2px;
     }
 
     .input-attachments.hidden {
@@ -3611,22 +3621,52 @@
       display: inline-flex;
       align-items: center;
       gap: 6px;
-      max-width: 100%;
+      flex: 1 1 176px;
+      min-width: 0;
+      max-width: 280px;
+      min-height: 46px;
       border: 1px solid var(--vscode-widget-border);
       background: var(--vscode-editor-background);
       color: var(--vscode-foreground);
-      border-radius: 999px;
-      padding: 2px 8px;
+      border-radius: 8px;
+      padding: 4px 6px 4px 4px;
       font-size: 0.75em;
       line-height: 1.2;
     }
 
+    .input-attachment-thumb {
+      width: 36px;
+      height: 36px;
+      flex: 0 0 36px;
+      border-radius: 5px;
+      object-fit: cover;
+      background: var(--vscode-input-background);
+      border: 1px solid var(--vscode-widget-border);
+    }
+
+    .input-attachment-detail {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      flex: 1;
+    }
+
     .input-attachment-label {
       min-width: 0;
-      max-width: 240px;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+      font-weight: 500;
+    }
+
+    .input-attachment-meta {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--vscode-descriptionForeground);
+      font-size: 0.86em;
     }
 
     .input-attachment-remove {
@@ -3635,8 +3675,9 @@
       color: var(--vscode-descriptionForeground);
       cursor: pointer;
       border-radius: 4px;
-      width: 16px;
-      height: 16px;
+      width: 22px;
+      height: 22px;
+      flex: 0 0 22px;
       padding: 0;
       line-height: 1;
       display: inline-flex;
@@ -3926,7 +3967,7 @@
 
     textarea {
       flex: 1;
-      padding: 8px 36px 8px 10px;
+      padding: 8px 64px 8px 10px;
       border: 1px solid var(--vscode-input-border);
       background: var(--vscode-input-background);
       color: var(--vscode-input-foreground);
@@ -4028,9 +4069,18 @@
       background: var(--vscode-toolbar-hoverBackground);
     }
 
+    .input-btn:focus {
+      outline: 1px solid var(--vscode-focusBorder);
+      outline-offset: 1px;
+    }
+
     .input-btn:disabled {
       opacity: 0.3;
       cursor: not-allowed;
+    }
+
+    .image-file-input {
+      display: none;
     }
 
     .send-btn {
@@ -4989,13 +5039,15 @@
     </div>
   </div>
   <div class="input-area">
-    <div class="input-composer">
+    <div id="inputComposer" class="input-composer">
       <div id="inputAttachments" class="input-attachments hidden" role="list" aria-label="Attached images"></div>
+      <input id="imageFileInput" class="image-file-input" type="file" accept="image/*" multiple aria-hidden="true" tabindex="-1" />
       <div class="input-wrapper">
         <textarea id="input" placeholder="Describe a task..." rows="1" aria-label="Chat input"></textarea>
         <div id="skillDropdown" class="skill-dropdown hidden" role="listbox" aria-label="Skill suggestions"></div>
         <div class="input-actions">
-          <button id="clearInput" class="input-btn" title="Clear input" aria-label="Clear input" disabled>✕</button>
+          <button id="attachImageButton" class="input-btn attach-image-btn" type="button" title="Attach images" aria-label="Attach images">＋</button>
+          <button id="clearInput" class="input-btn" type="button" title="Clear input" aria-label="Clear input" disabled>✕</button>
         </div>
       </div>
     </div>
@@ -5037,7 +5089,7 @@
           </div>
         </div>
       </div>
-      <div id="inputHint" class="input-hint">Enter to send · Shift+Enter for newline · Paste images · $ for skills</div>
+      <div id="inputHint" class="input-hint">Enter to send · Shift+Enter for newline · Paste or attach images · $ for skills</div>
       <div id="queueBanner" class="queue-banner hidden" role="status" aria-live="polite">
         <div class="queue-banner-summary">
           <span id="queueBannerCount" class="queue-banner-count"></span>

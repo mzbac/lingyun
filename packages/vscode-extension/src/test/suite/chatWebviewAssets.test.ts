@@ -254,6 +254,24 @@ suite('Chat Webview Assets', () => {
     assert.ok(!posted.some(message => message && message.type === WEBVIEW_MESSAGE_ERROR));
   });
 
+  test('composer exposes image attachment controls', () => {
+    const controller = createStandaloneChatController();
+    const webview = {
+      cspSource: 'test-csp',
+      asWebviewUri: (uri: unknown) => uri,
+    } as unknown as vscode.Webview;
+
+    const html = controller.webviewApi.getHtml(webview);
+    const scripts = extractOrderedScriptSources(html);
+    const bootstrap = scripts.find(script => script.label === 'bootstrap.js')?.source || '';
+
+    assert.match(html, /id="attachImageButton"/);
+    assert.match(html, /\bid="imageFileInput"[^>]*\baccept="image\/\*"/);
+    assert.match(html, /\.input-attachment-thumb\b/);
+    assert.match(bootstrap, /function attachImageFiles\(/);
+    assert.match(bootstrap, /inputComposer\.addEventListener\('drop'/);
+  });
+
   test('queue renderer skips duplicate DOM rebuilds for identical queue state', () => {
     const controller = createStandaloneChatController();
     const webview = {
