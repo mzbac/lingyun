@@ -130,11 +130,12 @@ import { LingyunAgent, type LingyunAgentRuntimeOptions } from './agent/agent.js'
 
 export type CreateLingyunAgentOptions = {
   llm:
-    | ({ provider: 'openaiCompatible' } & OpenAICompatibleProviderOptions & { model: string })
+    | ({ provider: 'openaiCompatible'; thinking?: string } & OpenAICompatibleProviderOptions & { model: string })
     | { provider: 'custom'; instance: LLMProvider; model: string };
   agent?: Omit<AgentConfig, 'model'>;
   workspaceRoot?: string;
   allowExternalPaths?: boolean;
+  reasoning?: { effort?: string };
   toolTimeoutMs?: number;
   tools?: { builtin?: boolean; builtinOptions?: BuiltinToolsOptions };
   plugins?: { modules?: string[]; autoDiscover?: boolean; workspaceDirName?: string; logger?: (message: string) => void };
@@ -162,6 +163,7 @@ export function createLingyunAgent(options: CreateLingyunAgentOptions): {
           name: options.llm.name,
           defaultModelId: options.llm.defaultModelId ?? modelId,
           timeoutMs: options.llm.timeoutMs,
+          allowInsecureTLS: options.llm.allowInsecureTLS,
         });
 
   const registry = new ToolRegistry({ defaultTimeoutMs: options.toolTimeoutMs });
@@ -197,6 +199,11 @@ export function createLingyunAgent(options: CreateLingyunAgentOptions): {
         maxInjectChars: skills?.maxInjectChars,
       };
     })(),
+    openaiCompatible:
+      options.llm.provider === 'openaiCompatible'
+        ? { thinking: options.llm.thinking }
+        : undefined,
+    reasoning: options.reasoning,
     modelLimits: options.modelLimits,
     compaction: options.compaction,
   };

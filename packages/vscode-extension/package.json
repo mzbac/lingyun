@@ -301,6 +301,21 @@
           "default": "OPENAI_API_KEY",
           "description": "Environment variable name that contains the API key (if your server requires auth)"
         },
+        "lingyun.openaiCompatible.allowInsecureTLS": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow invalid or self-signed TLS certificates for the OpenAI-compatible provider only. This disables certificate verification for that provider's HTTPS requests."
+        },
+        "lingyun.openaiCompatible.thinking": {
+          "type": "string",
+          "default": "auto",
+          "enum": [
+            "auto",
+            "disabled",
+            "enabled"
+          ],
+          "description": "Thinking control for OpenAI-compatible chat-completions models. Auto disables thinking for DeepSeek chat/ds4 models while leaving reasoning models unchanged."
+        },
         "lingyun.modelLimits": {
           "type": "object",
           "default": {},

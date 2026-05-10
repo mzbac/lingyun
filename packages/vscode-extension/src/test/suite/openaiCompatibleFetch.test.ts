@@ -1,9 +1,45 @@
 import * as assert from 'assert';
+import { execFileSync } from 'node:child_process';
+import * as fs from 'node:fs';
 import http from 'node:http';
+import https from 'node:https';
+import * as os from 'node:os';
+import * as path from 'node:path';
 
 import { createFetchWithStreamingDefaults, createTimeoutSignal } from '../../providers/openaiFetch';
 import { OpenAICompatibleProvider } from '../../providers/openaiCompatible';
 import { fetchProviderResponse } from '../../providers/providerErrors';
+
+function createSelfSignedLocalhostCert(): { key: Buffer; cert: Buffer; cleanup: () => void } | undefined {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lingyun-selfsigned-'));
+  const keyPath = path.join(dir, 'key.pem');
+  const certPath = path.join(dir, 'cert.pem');
+  try {
+    execFileSync('openssl', [
+      'req',
+      '-x509',
+      '-newkey',
+      'rsa:2048',
+      '-nodes',
+      '-days',
+      '1',
+      '-keyout',
+      keyPath,
+      '-out',
+      certPath,
+      '-subj',
+      '/CN=localhost',
+    ], { stdio: 'ignore' });
+    return {
+      key: fs.readFileSync(keyPath),
+      cert: fs.readFileSync(certPath),
+      cleanup: () => fs.rmSync(dir, { recursive: true, force: true }),
+    };
+  } catch {
+    fs.rmSync(dir, { recursive: true, force: true });
+    return undefined;
+  }
+}
 
 async function readStreamParts(stream: ReadableStream<any>): Promise<any[]> {
   const reader = stream.getReader();
@@ -17,6 +53,43 @@ async function readStreamParts(stream: ReadableStream<any>): Promise<any[]> {
 }
 
 suite('OpenAICompatibleProvider fetch', () => {
+  test('allows self-signed TLS when explicitly enabled', async function () {
+    const cert = createSelfSignedLocalhostCert();
+    if (!cert) this.skip();
+
+    const server = https.createServer({ key: cert.key, cert: cert.cert }, (req, res) => {
+      if (req.url !== '/v1/models') {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'not found' }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ data: [{ id: 'self-signed-model' }] }));
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      server.close();
+      cert.cleanup();
+      assert.fail('Expected server to bind to a TCP port');
+    }
+
+    const provider = new OpenAICompatibleProvider({
+      baseURL: `https://127.0.0.1:${address.port}/v1`,
+      allowInsecureTLS: true,
+    });
+
+    try {
+      const models = await provider.getModels();
+      assert.strictEqual(models[0]?.id, 'self-signed-model');
+    } finally {
+      provider.dispose();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      cert.cleanup();
+    }
+  });
+
   test('uses Responses API for OpenAI-compatible models at or above GPT-5.3', async () => {
     const provider = new OpenAICompatibleProvider({
       baseURL: 'http://127.0.0.1:0',

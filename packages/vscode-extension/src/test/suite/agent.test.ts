@@ -438,7 +438,35 @@ suite('AgentLoop', () => {
 
       const options = codexLLM.lastCallOptions as any;
       assert.strictEqual(options?.providerOptions?.codexSubscription?.reasoningEffort, 'high');
+      assert.strictEqual(options?.providerOptions?.codexSubscription?.reasoningSummary, 'auto');
       assert.strictEqual(options?.providerOptions?.openai?.reasoningEffort, 'high');
+      assert.strictEqual(options?.providerOptions?.openai?.reasoningSummary, 'auto');
+    }
+  });
+
+  test('run - passes configured xhigh reasoningEffort for Codex Subscription GPT-5 models', async () => {
+    const config = vscode.workspace.getConfiguration('lingyun');
+    const previousEffort = config.get('copilot.reasoningEffort');
+    await config.update('copilot.reasoningEffort', 'xhigh', vscode.ConfigurationTarget.Global);
+
+    try {
+      const codexLLM = new MockCodexSubscriptionProvider();
+      agent = new AgentLoop(codexLLM, mockContext, { model: 'gpt-5.3-codex' }, registry);
+      codexLLM.setNextResponse({ kind: 'text', content: 'OK' });
+
+      await agent.run('Hi');
+
+      const options = codexLLM.lastCallOptions as any;
+      assert.strictEqual(options?.providerOptions?.codexSubscription?.reasoningEffort, 'xhigh');
+      assert.strictEqual(options?.providerOptions?.codexSubscription?.reasoningSummary, 'auto');
+      assert.strictEqual(options?.providerOptions?.openai?.reasoningEffort, 'xhigh');
+      assert.strictEqual(options?.providerOptions?.openai?.reasoningSummary, 'auto');
+    } finally {
+      if (previousEffort === undefined) {
+        await config.update('copilot.reasoningEffort', undefined, vscode.ConfigurationTarget.Global);
+      } else {
+        await config.update('copilot.reasoningEffort', previousEffort, vscode.ConfigurationTarget.Global);
+      }
     }
   });
 
@@ -2813,7 +2841,7 @@ suite('AgentLoop', () => {
       const history = agent.getHistory();
       const injected = history.find(
         (msg) =>
-          msg.role === 'assistant' &&
+          msg.role === 'system' &&
           msg.metadata?.synthetic &&
           String((msg.metadata as any).transientContext) === 'explore',
       );
@@ -5552,10 +5580,10 @@ suite('AgentLoop', () => {
 
       const historyAfterCompaction = agent.getHistory();
       const restoredRecall = historyAfterCompaction.find(
-        (msg) => msg.role === 'assistant' && msg.metadata?.compactionRestore?.source === 'memoryRecall',
+        (msg) => msg.role === 'system' && msg.metadata?.compactionRestore?.source === 'memoryRecall',
       );
       const restoredState = historyAfterCompaction.find(
-        (msg) => msg.role === 'assistant' && msg.metadata?.compactionRestore?.source === 'sessionState',
+        (msg) => msg.role === 'system' && msg.metadata?.compactionRestore?.source === 'sessionState',
       );
       assert.ok(restoredRecall, 'compaction should rehydrate the recalled memory context');
       assert.ok(restoredState, 'compaction should rehydrate current session state');

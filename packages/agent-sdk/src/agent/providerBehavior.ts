@@ -13,9 +13,10 @@ import {
 
 import { createStreamAdapter, type StreamAdapter } from './streamAdapters.js';
 
-type ChatProviderOptionParams = {
+export type ChatProviderOptionParams = {
   reasoningEffort: string;
   textVerbosity: string;
+  openaiCompatibleThinking?: string;
 };
 
 export type ProviderBehavior = {
@@ -26,11 +27,19 @@ export type ProviderBehavior = {
   /**
    * Provider-specific history transforms before `convertToModelMessages()`.
    */
-  prepareHistoryForPrompt: (history: AgentHistoryMessage[]) => AgentHistoryMessage[];
+  prepareHistoryForPrompt: (
+    history: AgentHistoryMessage[],
+    modelId: string,
+    params: ChatProviderOptionParams,
+  ) => AgentHistoryMessage[];
   /**
    * Provider-specific transforms after `convertToModelMessages()`.
    */
-  transformModelMessages: (modelId: string, messages: ModelMessage[]) => ModelMessage[];
+  transformModelMessages: (modelId: string, messages: ModelMessage[], params: ChatProviderOptionParams) => ModelMessage[];
+  /**
+   * Whether provider-emitted reasoning deltas should be treated as visible assistant text.
+   */
+  shouldTreatReasoningAsText: (modelId: string, params: ChatProviderOptionParams) => boolean;
   /**
    * Provider-specific stream adapters for provider quirks.
    */
@@ -76,6 +85,52 @@ export function createProviderBehavior(llmId: string): ProviderBehavior {
     return textVerbosity || undefined;
   }
 
+  function getOpenAICompatibleThinkingMode(params: Pick<ChatProviderOptionParams, 'openaiCompatibleThinking'>): 'auto' | 'disabled' | 'enabled' {
+    const normalized = String(params.openaiCompatibleThinking || '').trim().toLowerCase();
+    if (normalized === 'disabled' || normalized === 'off' || normalized === 'false') return 'disabled';
+    if (normalized === 'enabled' || normalized === 'on' || normalized === 'true') return 'enabled';
+    return 'auto';
+  }
+
+  function isDeepSeekFamilyModel(modelId: string): boolean {
+    const normalized = normalizeModelId(modelId);
+    return /(^|[/:_-])deepseek([/:_-]|$)/.test(normalized);
+  }
+
+  function isDeepSeekReasoningModel(modelId: string): boolean {
+    const normalized = normalizeModelId(modelId);
+    if (!isDeepSeekFamilyModel(normalized)) return false;
+    return (
+      /(^|[/:_-])deepseek([/:_-])?reasoner([/:_-]|$)/.test(normalized) ||
+      /(^|[/:_-])deepseek([/:_-])?r1([/:_-]|$)/.test(normalized) ||
+      /(^|[/:_-])r1([/:_-]|$)/.test(normalized)
+    );
+  }
+
+  function isDeepSeekNonReasoningChatModel(modelId: string): boolean {
+    const normalized = normalizeModelId(modelId);
+    if (/(^|[/:_-])ds[-_]?4([/:_-]|$)/.test(normalized)) return true;
+    return isDeepSeekFamilyModel(normalized) && !isDeepSeekReasoningModel(normalized);
+  }
+
+  function getOpenAICompatibleThinkValue(modelId: string, params: ChatProviderOptionParams): boolean | undefined {
+    if (shouldUseResponsesApiForModelId(modelId)) return undefined;
+
+    const mode = getOpenAICompatibleThinkingMode(params);
+    if (mode === 'disabled') return false;
+    if (mode === 'enabled') return true;
+    return isDeepSeekNonReasoningChatModel(modelId) ? false : undefined;
+  }
+
+  function isOpenAICompatibleThinkingDisabled(modelId: string, params: ChatProviderOptionParams): boolean {
+    return getOpenAICompatibleThinkValue(modelId, params) === false;
+  }
+
+  function shouldReplayOpenAICompatibleReasoning(modelId: string, params: ChatProviderOptionParams): boolean {
+    if (isOpenAICompatibleThinkingDisabled(modelId, params)) return false;
+    return !isDeepSeekNonReasoningChatModel(modelId) && !isDeepSeekReasoningModel(modelId);
+  }
+
   function omitEmptyProviderOptions(options: Record<string, unknown>): Record<string, unknown> | undefined {
     const entries = Object.entries(options).filter(([, value]) => {
       return value && typeof value === 'object' && Object.keys(value as Record<string, unknown>).length > 0;
@@ -112,6 +167,9 @@ export function createProviderBehavior(llmId: string): ProviderBehavior {
         const withReasoning = isCopilotResponsesModelId(modelId) ? messages : applyCopilotReasoningFields(messages);
         return applyCopilotImageInputPattern(withReasoning);
       },
+      shouldTreatReasoningAsText() {
+        return false;
+      },
       createStreamAdapter(modelId) {
         return createStreamAdapter({ llmId: 'copilot', modelId });
       },
@@ -136,7 +194,9 @@ export function createProviderBehavior(llmId: string): ProviderBehavior {
         const openai: Record<string, unknown> = {};
         if (reasoningEffort) {
           codexSubscription.reasoningEffort = reasoningEffort;
+          codexSubscription.reasoningSummary = 'auto';
           openai.reasoningEffort = reasoningEffort;
+          openai.reasoningSummary = 'auto';
         }
         if (textVerbosity) {
           codexSubscription.textVerbosity = textVerbosity;
@@ -150,6 +210,9 @@ export function createProviderBehavior(llmId: string): ProviderBehavior {
       },
       transformModelMessages(_modelId, messages) {
         return messages;
+      },
+      shouldTreatReasoningAsText() {
+        return false;
       },
       createStreamAdapter(modelId) {
         return createStreamAdapter({ llmId: 'codexSubscription', modelId });
@@ -166,7 +229,12 @@ export function createProviderBehavior(llmId: string): ProviderBehavior {
   if (llmId === 'openaiCompatible') {
     return {
       getChatProviderOptions(modelId, params) {
-        if (!shouldUseResponsesApiForModelId(modelId)) return undefined;
+        if (!shouldUseResponsesApiForModelId(modelId)) {
+          const openaiCompatible: Record<string, unknown> = {};
+          const think = getOpenAICompatibleThinkValue(modelId, params);
+          if (typeof think === 'boolean') openaiCompatible.think = think;
+          return omitEmptyProviderOptions({ openaiCompatible });
+        }
         const reasoningEffort = getGpt5ReasoningEffort(modelId, params);
         const textVerbosity = getTextVerbosity(params);
 
@@ -183,11 +251,20 @@ export function createProviderBehavior(llmId: string): ProviderBehavior {
 
         return omitEmptyProviderOptions({ openaiCompatible, openai });
       },
-      prepareHistoryForPrompt(history) {
-        return applyAssistantReplayForPrompt(history);
+      prepareHistoryForPrompt(history, modelId, params) {
+        return applyAssistantReplayForPrompt(history, {
+          includeReasoning: shouldReplayOpenAICompatibleReasoning(modelId, params),
+        });
       },
-      transformModelMessages(modelId, messages) {
-        return shouldUseResponsesApiForModelId(modelId) ? messages : applyOpenAICompatibleReasoningField(messages);
+      transformModelMessages(modelId, messages, params) {
+        return shouldUseResponsesApiForModelId(modelId)
+          ? messages
+          : applyOpenAICompatibleReasoningField(messages, {
+              includeReasoning: shouldReplayOpenAICompatibleReasoning(modelId, params),
+            });
+      },
+      shouldTreatReasoningAsText(modelId, params) {
+        return isOpenAICompatibleThinkingDisabled(modelId, params);
       },
       createStreamAdapter(modelId) {
         return createStreamAdapter({ llmId: 'openaiCompatible', modelId });
@@ -213,6 +290,9 @@ export function createProviderBehavior(llmId: string): ProviderBehavior {
     },
     transformModelMessages(_modelId, messages) {
       return messages;
+    },
+    shouldTreatReasoningAsText() {
+      return false;
     },
     createStreamAdapter(modelId) {
       return createStreamAdapter({ llmId, modelId });

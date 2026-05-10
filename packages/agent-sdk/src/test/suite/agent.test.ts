@@ -15,6 +15,7 @@ import type {
 import { createHistoryForModel, MISSING_TOOL_RESULT_PLACEHOLDER, TOOL_ERROR_CODES } from '@kooka/core';
 import {
   FileHandleRegistry,
+  createLingyunAgent,
   getBuiltinTools,
   getSkillIndex,
   loadSkillFile,
@@ -578,6 +579,11 @@ class MockCopilotProvider extends MockLLMProvider {
   override readonly name = 'Copilot';
 }
 
+class MockCodexSubscriptionProvider extends MockLLMProvider {
+  override readonly id = 'codexSubscription';
+  override readonly name = 'Codex Subscription';
+}
+
 class MockProviderWithModelMetadata extends MockLLMProvider {
   async getModels(): Promise<Array<{ id: string; name: string; vendor: string; family: string; maxInputTokens: number; maxOutputTokens: number }>> {
     return [
@@ -721,6 +727,125 @@ suite('LingYun Agent SDK', () => {
 
     assert.strictEqual(llm.lastOptions?.providerOptions?.openaiCompatible?.reasoningEffort, 'xhigh');
     assert.strictEqual(llm.lastOptions?.providerOptions?.openai?.reasoningEffort, 'xhigh');
+  });
+
+  test('passes reasoning effort for Codex subscription Responses models', async () => {
+    const llm = new MockCodexSubscriptionProvider();
+    const agent = new LingyunAgent(
+      llm,
+      { model: 'gpt-5.3-codex' },
+      new ToolRegistry(),
+      { reasoning: { effort: 'high' } },
+    );
+    const session = new LingyunSession();
+    llm.queueResponse({ kind: 'text', content: 'ok' });
+
+    const run = agent.run({ session, input: 'hi' });
+    for await (const _event of run.events) {
+      // drain
+    }
+    await run.done;
+
+    assert.strictEqual(llm.lastOptions?.providerOptions?.codexSubscription?.reasoningEffort, 'high');
+    assert.strictEqual(llm.lastOptions?.providerOptions?.codexSubscription?.reasoningSummary, 'auto');
+    assert.strictEqual(llm.lastOptions?.providerOptions?.openai?.reasoningEffort, 'high');
+    assert.strictEqual(llm.lastOptions?.providerOptions?.openai?.reasoningSummary, 'auto');
+  });
+
+  test('passes xhigh reasoning effort for Codex subscription Responses models', async () => {
+    const llm = new MockCodexSubscriptionProvider();
+    const agent = new LingyunAgent(
+      llm,
+      { model: 'gpt-5.3-codex' },
+      new ToolRegistry(),
+      { reasoning: { effort: 'xhigh' } },
+    );
+    const session = new LingyunSession();
+    llm.queueResponse({ kind: 'text', content: 'ok' });
+
+    const run = agent.run({ session, input: 'hi' });
+    for await (const _event of run.events) {
+      // drain
+    }
+    await run.done;
+
+    assert.strictEqual(llm.lastOptions?.providerOptions?.codexSubscription?.reasoningEffort, 'xhigh');
+    assert.strictEqual(llm.lastOptions?.providerOptions?.codexSubscription?.reasoningSummary, 'auto');
+    assert.strictEqual(llm.lastOptions?.providerOptions?.openai?.reasoningEffort, 'xhigh');
+    assert.strictEqual(llm.lastOptions?.providerOptions?.openai?.reasoningSummary, 'auto');
+  });
+
+  test('createLingyunAgent passes reasoning effort for custom Codex subscription providers', async () => {
+    const llm = new MockCodexSubscriptionProvider();
+    const { agent } = createLingyunAgent({
+      llm: { provider: 'custom', instance: llm, model: 'gpt-5.3-codex' },
+      reasoning: { effort: 'high' },
+      tools: { builtin: false },
+    });
+    const session = new LingyunSession();
+    llm.queueResponse({ kind: 'text', content: 'ok' });
+
+    const run = agent.run({ session, input: 'hi' });
+    for await (const _event of run.events) {
+      // drain
+    }
+    await run.done;
+
+    assert.strictEqual(llm.lastOptions?.providerOptions?.codexSubscription?.reasoningEffort, 'high');
+    assert.strictEqual(llm.lastOptions?.providerOptions?.codexSubscription?.reasoningSummary, 'auto');
+    assert.strictEqual(llm.lastOptions?.providerOptions?.openai?.reasoningEffort, 'high');
+    assert.strictEqual(llm.lastOptions?.providerOptions?.openai?.reasoningSummary, 'auto');
+  });
+
+  test('passes think:false for DeepSeek OpenAI-compatible chat models by default', async () => {
+    const llm = new MockOpenAICompatibleProvider();
+    const agent = new LingyunAgent(llm, { model: 'deepseek-v4-flash' }, new ToolRegistry());
+    const session = new LingyunSession();
+    llm.queueResponse({ kind: 'text', content: 'ok' });
+
+    const run = agent.run({ session, input: 'hi' });
+    for await (const _event of run.events) {
+      // drain
+    }
+    await run.done;
+
+    assert.strictEqual(llm.lastOptions?.providerOptions?.openaiCompatible?.think, false);
+    assert.strictEqual(llm.lastOptions?.providerOptions?.openaiCompatible?.reasoningEffort, undefined);
+  });
+
+  test('leaves DeepSeek reasoner thinking enabled in auto mode', async () => {
+    const llm = new MockOpenAICompatibleProvider();
+    const agent = new LingyunAgent(llm, { model: 'deepseek-reasoner' }, new ToolRegistry());
+    const session = new LingyunSession();
+    llm.queueResponse({ kind: 'text', content: 'ok' });
+
+    const run = agent.run({ session, input: 'hi' });
+    for await (const _event of run.events) {
+      // drain
+    }
+    await run.done;
+
+    assert.strictEqual(llm.lastOptions?.providerOptions?.openaiCompatible?.think, undefined);
+  });
+
+  test('passes think:false when OpenAI-compatible thinking is explicitly disabled', async () => {
+    const llm = new MockOpenAICompatibleProvider();
+    const agent = new LingyunAgent(
+      llm,
+      { model: 'local-chat' },
+      new ToolRegistry(),
+      { openaiCompatible: { thinking: 'disabled' } },
+    );
+    const session = new LingyunSession();
+    llm.queueResponse({ kind: 'text', content: 'ok' });
+
+    const run = agent.run({ session, input: 'hi' });
+    for await (const _event of run.events) {
+      // drain
+    }
+    await run.done;
+
+    assert.strictEqual(llm.lastOptions?.providerOptions?.openaiCompatible?.think, false);
   });
 
   test('prefers provider model metadata over configured maxOutputTokens', async () => {
@@ -1245,6 +1370,20 @@ suite('LingYun Agent SDK', () => {
     for await (const _event of agent.run({ session, input: 'hi' }).events) {
       // drain
     }
+
+    const firstPrompt = Array.isArray(llm.promptHistory[0]) ? (llm.promptHistory[0] as any[]) : [];
+    const recallPromptMessages = firstPrompt.filter((message) =>
+      JSON.stringify(message).includes('<memory_recall_context>'),
+    );
+    assert.ok(
+      recallPromptMessages.some((message) => message.role === 'system'),
+      'prepared synthetic context should be sent as system context, not assistant prefill',
+    );
+    assert.ok(
+      !recallPromptMessages.some((message) => message.role === 'assistant'),
+      'prepared synthetic context must not create an assistant prefill',
+    );
+
     for await (const _event of agent.run({ session, input: 'follow up' }).events) {
       // drain
     }
@@ -1253,7 +1392,7 @@ suite('LingYun Agent SDK', () => {
       .getHistory()
       .find(
         (message) =>
-          message.role === 'assistant' &&
+          message.role === 'system' &&
           message.metadata?.synthetic === true &&
           message.metadata.transientContext === 'memoryRecall',
       );
@@ -1263,6 +1402,51 @@ suite('LingYun Agent SDK', () => {
       'recorded synthetic context should preserve its prompt text',
     );
     assertSecondTurnCacheReuse(llm, session, 'persisted prepared synthetic context');
+  });
+
+  test('prompt - legacy assistant synthetic context is normalized before model input', async () => {
+    const llm = new MockLLMProvider();
+    const registry = new ToolRegistry();
+    const session = new LingyunSession();
+    session.history.push({
+      id: 'legacy-user',
+      role: 'user',
+      parts: [{ type: 'text', text: 'hi' }] as any,
+    });
+    session.history.push({
+      id: 'legacy-synthetic',
+      role: 'assistant',
+      metadata: { synthetic: true, transientContext: 'memoryRecall' },
+      parts: [
+        {
+          type: 'text',
+          text: '<memory_recall_context>\nlegacy assistant context\n</memory_recall_context>',
+          state: 'done',
+        },
+      ] as any,
+    });
+
+    llm.queueResponse({ kind: 'text', content: 'done' });
+    const agent = new LingyunAgent(llm, { model: 'mock-model' }, registry, {
+      allowExternalPaths: false,
+      skills: { enabled: false },
+    });
+    for await (const _event of agent.run({ session, input: 'follow up' }).events) {
+      // drain
+    }
+
+    const prompt = Array.isArray(llm.promptHistory[0]) ? (llm.promptHistory[0] as any[]) : [];
+    const recallPromptMessages = prompt.filter((message) =>
+      JSON.stringify(message).includes('legacy assistant context'),
+    );
+    assert.ok(
+      recallPromptMessages.some((message) => message.role === 'system'),
+      'legacy synthetic context should be converted to system context in prompts',
+    );
+    assert.ok(
+      !recallPromptMessages.some((message) => message.role === 'assistant'),
+      'legacy synthetic context must not remain an assistant prefill in prompts',
+    );
   });
 
   test('prompt cache - restored sessions preserve prepared synthetic contexts and cacheable prefixes', async () => {
@@ -1315,7 +1499,7 @@ suite('LingYun Agent SDK', () => {
       .getHistory()
       .find(
         (message) =>
-          message.role === 'assistant' &&
+          message.role === 'system' &&
           message.metadata?.synthetic === true &&
           message.metadata.transientContext === 'explore',
       );
@@ -1362,7 +1546,7 @@ suite('LingYun Agent SDK', () => {
 
     const restored = session
       .getHistory()
-      .find((message) => message.role === 'assistant' && message.metadata?.compactionRestore?.source === 'memoryRecall');
+      .find((message) => message.role === 'system' && message.metadata?.compactionRestore?.source === 'memoryRecall');
     assert.ok(restored, 'compaction should restore the prepared synthetic context');
     assert.ok(
       getMessageText(restored).includes('replay synthetic context after compaction'),
@@ -2252,6 +2436,119 @@ suite('LingYun Agent SDK', () => {
       .map((part) => part.text)
       .join('');
     assert.strictEqual(assistantText, ' Hello<tool_call>{}</tool_call>World');
+  });
+
+  test('prompt - treats DeepSeek reasoning_content as text when thinking is disabled', async () => {
+    const llm = new MockOpenAICompatibleProvider();
+    const registry = new ToolRegistry();
+
+    llm.queueResponse({
+      kind: 'stream',
+      chunks: [
+        { type: 'reasoning-start' as const, id: 'r1' },
+        { type: 'reasoning-delta' as const, id: 'r1', delta: 'hello' },
+        { type: 'reasoning-end' as const, id: 'r1' },
+        { type: 'finish' as const, usage: usage(), finishReason: { unified: 'stop', raw: 'stop' } },
+      ],
+    });
+    llm.queueResponse({ kind: 'text', content: 'ok' });
+
+    const agent = new LingyunAgent(llm, { model: 'deepseek-v4-flash' }, registry, { allowExternalPaths: false });
+    const session = new LingyunSession();
+
+    const firstRun = agent.run({ session, input: 'hi' });
+    for await (const _event of firstRun.events) {
+      // drain
+    }
+    assert.strictEqual((await firstRun.done).text, 'hello');
+
+    const firstAssistant = session.getHistory().find((msg) => msg.role === 'assistant');
+    assert.ok(firstAssistant, 'expected assistant history');
+    assert.strictEqual(getMessageText(firstAssistant), 'hello');
+    assert.strictEqual(
+      firstAssistant.parts.some((part: any) => part?.type === 'reasoning'),
+      false,
+      'reasoning content should not be stored as hidden thinking when disabled',
+    );
+    assert.strictEqual(firstAssistant.metadata?.replay?.reasoning, '');
+
+    await agent.run({ session, input: 'follow up' }).done;
+
+    const prompt = llm.lastPrompt as any[];
+    const assistant = prompt.find((msg) => msg?.role === 'assistant');
+    assert.ok(assistant, 'expected assistant message in prompt');
+    assert.strictEqual(assistant.providerOptions?.openaiCompatible?.reasoning_content, undefined);
+    assert.ok(Array.isArray(assistant.content), 'expected multipart assistant content');
+    assert.strictEqual(
+      (assistant.content as any[]).some((part) => part?.type === 'reasoning'),
+      false,
+      'disabled thinking should not replay hidden reasoning parts',
+    );
+    const assistantText = (assistant.content as any[])
+      .filter((part) => part?.type === 'text')
+      .map((part) => part.text)
+      .join('');
+    assert.strictEqual(assistantText, 'hello');
+  });
+
+  test('prompt - does not replay DeepSeek reasoning_content when thinking is enabled', async () => {
+    const llm = new MockOpenAICompatibleProvider();
+    const registry = new ToolRegistry();
+
+    llm.queueResponse({
+      kind: 'stream',
+      chunks: [
+        { type: 'reasoning-start' as const, id: 'r1' },
+        { type: 'reasoning-delta' as const, id: 'r1', delta: 'hidden reasoning' },
+        { type: 'reasoning-end' as const, id: 'r1' },
+        { type: 'text-start' as const, id: 't1' },
+        { type: 'text-delta' as const, id: 't1', delta: 'hello' },
+        { type: 'text-end' as const, id: 't1' },
+        { type: 'finish' as const, usage: usage(), finishReason: { unified: 'stop', raw: 'stop' } },
+      ],
+    });
+    llm.queueResponse({ kind: 'text', content: 'ok' });
+
+    const agent = new LingyunAgent(
+      llm,
+      { model: 'deepseek-v4-flash' },
+      registry,
+      { allowExternalPaths: false, openaiCompatible: { thinking: 'enabled' } },
+    );
+    const session = new LingyunSession();
+
+    const firstRun = agent.run({ session, input: 'hi' });
+    for await (const _event of firstRun.events) {
+      // drain
+    }
+    assert.strictEqual((await firstRun.done).text, 'hello');
+
+    const firstAssistant = session.getHistory().find((msg) => msg.role === 'assistant');
+    assert.ok(firstAssistant, 'expected assistant history');
+    assert.strictEqual(
+      firstAssistant.parts.some((part: any) => part?.type === 'reasoning' && part.text === 'hidden reasoning'),
+      true,
+      'enabled thinking should still store live reasoning for display/history',
+    );
+
+    await agent.run({ session, input: 'follow up' }).done;
+
+    assert.strictEqual(llm.lastOptions?.providerOptions?.openaiCompatible?.think, true);
+    const prompt = llm.lastPrompt as any[];
+    const assistant = prompt.find((msg) => msg?.role === 'assistant');
+    assert.ok(assistant, 'expected assistant message in prompt');
+    assert.strictEqual(assistant.providerOptions?.openaiCompatible?.reasoning_content, undefined);
+    assert.ok(Array.isArray(assistant.content), 'expected multipart assistant content');
+    assert.strictEqual(
+      (assistant.content as any[]).some((part) => part?.type === 'reasoning'),
+      false,
+      'DeepSeek reasoning should not be replayed into later prompts',
+    );
+    const assistantText = (assistant.content as any[])
+      .filter((part) => part?.type === 'text')
+      .map((part) => part.text)
+      .join('');
+    assert.strictEqual(assistantText, 'hello');
   });
 
   test('resume - copilot Claude prompts append a synthetic trailing user turn without persisting it', async () => {

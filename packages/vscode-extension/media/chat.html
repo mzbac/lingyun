@@ -4465,6 +4465,11 @@
             <input id="openAIApiKeyEnvInput" type="text" value="OPENAI_API_KEY" aria-label="OpenAI-compatible API key environment variable" />
             <span class="model-setting-hint">Only the environment variable name is stored; the API key value is never shown here.</span>
           </label>
+          <label id="openAIAllowInsecureTLSLabel" class="model-setting-field" title="Allow self-signed or invalid TLS certificates for OpenAI-compatible HTTPS requests">
+            <span>Allow insecure TLS</span>
+            <input id="openAIAllowInsecureTLSInput" type="checkbox" aria-label="Allow insecure TLS for OpenAI-compatible provider" />
+            <span class="model-setting-hint">For local self-signed HTTPS servers only. Disables certificate verification for this provider.</span>
+          </label>
           <label id="openAIModelDisplayNamesLabel" class="model-setting-field" title="Friendly names for OpenAI-compatible model ids">
             <span>Model display names</span>
             <textarea id="openAIModelDisplayNamesInput" rows="3" placeholder="model-id = Friendly name" aria-label="OpenAI-compatible model display names"></textarea>

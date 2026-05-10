@@ -27,6 +27,7 @@ type ResponsesModelBehavior = {
   providerOptionKeys: string[];
   systemPromptMode: 'input' | 'instructions';
   includeSamplingOptions: boolean;
+  defaultReasoningSummary?: string;
   reasoningReplayProviderKey?: string;
   finishProviderMetadataKey?: string;
 };
@@ -359,6 +360,11 @@ function createResponsesBody(
   behavior: ResponsesModelBehavior,
 ): Record<string, unknown> {
   const effort = extractProviderOptionString(options.providerOptions, behavior.providerOptionKeys, 'reasoningEffort');
+  const configuredSummary = extractProviderOptionString(
+    options.providerOptions,
+    behavior.providerOptionKeys,
+    'reasoningSummary',
+  );
   const verbosity = extractProviderOptionString(options.providerOptions, behavior.providerOptionKeys, 'textVerbosity');
   const instructionsOverride = extractProviderOptionString(
     options.providerOptions,
@@ -370,7 +376,13 @@ function createResponsesBody(
       ? { ...behavior, systemPromptMode: 'instructions' as const }
       : behavior;
   const promptParts = promptToResponsesRequest(options.prompt, effectiveBehavior);
-  const reasoning = effort ? { effort } : undefined;
+  const summary = configuredSummary ?? (effort ? behavior.defaultReasoningSummary : undefined);
+  const reasoning = effort || summary
+    ? omitUndefinedFields({
+        effort,
+        summary,
+      })
+    : undefined;
 
   return omitUndefinedFields({
     model: modelId,

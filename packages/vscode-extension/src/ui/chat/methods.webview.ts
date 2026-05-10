@@ -237,6 +237,7 @@ type OpenAICompatibleSettings = {
   baseURL: string;
   defaultModelId: string;
   apiKeyEnv: string;
+  allowInsecureTLS: boolean;
   modelDisplayNames: Record<string, string>;
 };
 
@@ -500,6 +501,7 @@ function getOpenAICompatibleSettings(): OpenAICompatibleSettings {
     baseURL: normalizeOpenAICompatibleText(config.get<unknown>('openaiCompatible.baseURL', ''), 500),
     defaultModelId: normalizeOpenAICompatibleText(config.get<unknown>('openaiCompatible.defaultModelId', ''), 200),
     apiKeyEnv: normalizeOpenAICompatibleText(config.get<unknown>('openaiCompatible.apiKeyEnv', 'OPENAI_API_KEY'), 120) || 'OPENAI_API_KEY',
+    allowInsecureTLS: config.get<unknown>('openaiCompatible.allowInsecureTLS') === true,
     modelDisplayNames: normalizeOpenAICompatibleModelDisplayNames(config.get<unknown>('openaiCompatible.modelDisplayNames', {})),
   };
 }
@@ -2190,6 +2192,9 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
       apiKeyEnv: Object.prototype.hasOwnProperty.call(raw, 'apiKeyEnv')
         ? (normalizeOpenAICompatibleText(raw.apiKeyEnv, 120) || 'OPENAI_API_KEY')
         : current.apiKeyEnv,
+      allowInsecureTLS: Object.prototype.hasOwnProperty.call(raw, 'allowInsecureTLS')
+        ? raw.allowInsecureTLS === true
+        : current.allowInsecureTLS,
       modelDisplayNames: Object.prototype.hasOwnProperty.call(raw, 'modelDisplayNames')
         ? normalizeOpenAICompatibleModelDisplayNames(raw.modelDisplayNames)
         : current.modelDisplayNames,
@@ -2211,6 +2216,7 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
       await config.update('openaiCompatible.baseURL', next.baseURL, true);
       await config.update('openaiCompatible.defaultModelId', next.defaultModelId, true);
       await config.update('openaiCompatible.apiKeyEnv', next.apiKeyEnv, true);
+      await config.update('openaiCompatible.allowInsecureTLS', next.allowInsecureTLS, true);
       await config.update('openaiCompatible.modelDisplayNames', next.modelDisplayNames, true);
       this.postMessage({
         type: 'openAICompatibleSettingsState',

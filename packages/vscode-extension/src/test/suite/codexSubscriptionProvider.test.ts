@@ -670,7 +670,7 @@ suite('CodexSubscriptionProvider', () => {
       assert.strictEqual(requestBody?.stream, true);
       assert.deepStrictEqual(requestBody?.include, ['reasoning.encrypted_content']);
       assert.strictEqual(requestBody?.instructions, 'Follow the workspace instructions exactly.');
-      assert.deepStrictEqual(requestBody?.reasoning, { effort: 'high' });
+      assert.deepStrictEqual(requestBody?.reasoning, { effort: 'high', summary: 'auto' });
       assert.ok(!Object.prototype.hasOwnProperty.call(requestBody || {}, 'temperature'));
       assert.ok(!Object.prototype.hasOwnProperty.call(requestBody || {}, 'top_p'));
       assert.ok(!Object.prototype.hasOwnProperty.call(requestBody || {}, 'max_output_tokens'));

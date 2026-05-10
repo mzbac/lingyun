@@ -156,21 +156,32 @@ function isTextHistoryPart(part: unknown): part is { type: 'text'; text: string 
  * `message.metadata.replay`. This helper swaps assistant `text`/`reasoning` parts for the replay payload
  * (leaving tool parts untouched) without mutating the original history.
  */
-export function applyAssistantReplayForPrompt(history: AgentHistoryMessage[]): AgentHistoryMessage[] {
+export function applyAssistantReplayForPrompt(
+  history: AgentHistoryMessage[],
+  options?: { includeReasoning?: boolean },
+): AgentHistoryMessage[] {
+  const includeReasoning = options?.includeReasoning !== false;
   let anyChanged = false;
 
   const next = history.map((message) => {
     if (message.role !== 'assistant' || !Array.isArray(message.parts)) return message;
 
     const replayText = getReplayField(message, 'text');
-    const replayReasoning = getReplayField(message, 'reasoning');
-    if (replayText === undefined && replayReasoning === undefined) return message;
+    const replayReasoning = includeReasoning ? getReplayField(message, 'reasoning') : undefined;
+    const hasReasoningParts = message.parts.some(isReasoningPart);
+    if (replayText === undefined && replayReasoning === undefined && (includeReasoning || !hasReasoningParts)) {
+      return message;
+    }
 
-    const existingReasoningProviderMetadata = findProviderMetadata(message.parts as unknown[], 'reasoning');
+    const existingReasoningProviderMetadata = includeReasoning
+      ? findProviderMetadata(message.parts as unknown[], 'reasoning')
+      : undefined;
     const existingTextProviderMetadata = findProviderMetadata(message.parts as unknown[], 'text');
 
-    const copilotReasoningOpaque = getReplayCopilotField(message, 'reasoningOpaque');
-    const copilotReasoningEncryptedContent = getReplayCopilotField(message, 'reasoningEncryptedContent');
+    const copilotReasoningOpaque = includeReasoning ? getReplayCopilotField(message, 'reasoningOpaque') : undefined;
+    const copilotReasoningEncryptedContent = includeReasoning
+      ? getReplayCopilotField(message, 'reasoningEncryptedContent')
+      : undefined;
     const reasoningProviderMetadata: UnknownRecord | undefined = (() => {
       if (!existingReasoningProviderMetadata && !copilotReasoningOpaque && !copilotReasoningEncryptedContent) return undefined;
       const merged = { ...(existingReasoningProviderMetadata ?? {}) };
@@ -193,18 +204,20 @@ export function applyAssistantReplayForPrompt(history: AgentHistoryMessage[]): A
     });
 
     const rebuilt: unknown[] = [];
-    if (replayReasoning !== undefined) {
-      if (replayReasoning.length > 0 || reasoningProviderMetadata) {
-        rebuilt.push({
-          type: 'reasoning',
-          text: replayReasoning,
-          state: 'done',
-          ...(reasoningProviderMetadata ? { providerMetadata: { ...reasoningProviderMetadata } } : {}),
-        });
+    if (includeReasoning) {
+      if (replayReasoning !== undefined) {
+        if (replayReasoning.length > 0 || reasoningProviderMetadata) {
+          rebuilt.push({
+            type: 'reasoning',
+            text: replayReasoning,
+            state: 'done',
+            ...(reasoningProviderMetadata ? { providerMetadata: { ...reasoningProviderMetadata } } : {}),
+          });
+        }
+      } else {
+        const originalReasoning = message.parts.filter(isReasoningPart);
+        rebuilt.push(...originalReasoning.map((part) => ({ ...(part as any) })));
       }
-    } else {
-      const originalReasoning = message.parts.filter(isReasoningPart);
-      rebuilt.push(...originalReasoning.map((part) => ({ ...(part as any) })));
     }
 
     if (replayText !== undefined) {
@@ -248,9 +261,10 @@ function getModelMessageProviderOptions(message: ModelMessage): UnknownRecord | 
  */
 export function applyOpenAICompatibleReasoningField(
   messages: ModelMessage[],
-  params?: { field?: ReasoningField },
+  params?: { field?: ReasoningField; includeReasoning?: boolean },
 ): ModelMessage[] {
   const field: ReasoningField = params?.field ?? 'reasoning_content';
+  const includeReasoning = params?.includeReasoning !== false;
   let anyChanged = false;
 
   const next = messages.map((message) => {
@@ -265,12 +279,24 @@ export function applyOpenAICompatibleReasoningField(
       .map((part) => (part as any).text as string)
       .join('');
 
-    if (!reasoningText) return message;
+    const hasReasoning = contentParts.some((part) => {
+      const record = asRecord(part);
+      return !!record && record.type === 'reasoning';
+    });
+    if (!hasReasoning) return message;
 
     const filteredContent = contentParts.filter((part) => {
       const record = asRecord(part);
       return !(record && record.type === 'reasoning');
     });
+
+    if (!includeReasoning || !reasoningText) {
+      anyChanged = true;
+      return {
+        ...message,
+        content: filteredContent as any,
+      };
+    }
 
     const existingProviderOptions = getModelMessageProviderOptions(message);
     const openaiCompatibleOptions = asRecord(existingProviderOptions?.openaiCompatible) ?? {};

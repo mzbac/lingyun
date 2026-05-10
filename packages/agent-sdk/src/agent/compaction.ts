@@ -21,10 +21,11 @@ import {
 
 import type { AgentCallbacks, LLMProvider } from '../types.js';
 import type { LingyunHookName } from '../plugins/types.js';
-import type { ProviderBehavior } from './providerBehavior.js';
+import type { ChatProviderOptionParams, ProviderBehavior } from './providerBehavior.js';
 import { LingyunSession } from './session.js';
 import {
   appendCompactionRestoredSyntheticMessage,
+  normalizeSyntheticContextMessageRoles,
   stripCompactionRestoredSyntheticMessages,
 } from './transientSyntheticContext.js';
 import { streamTextWithLingyunDefaults } from '../llm/streamText.js';
@@ -94,6 +95,7 @@ export async function compactSessionInternal(params: {
   plugins: PluginManagerLike;
   providerBehavior: ProviderBehavior;
   compactionConfig: CompactionConfig;
+  providerOptionParams?: ChatProviderOptionParams;
   maxOutputTokens: number;
 }): Promise<void> {
   const maybeAwait = async (value: unknown) => {
@@ -144,7 +146,7 @@ export async function compactSessionInternal(params: {
       middleware: [extractReasoningMiddleware({ tagName: 'think', startWithReasoning: false })],
     });
 
-    const effective = getEffectiveHistory(params.session.history);
+    const effective = normalizeSyntheticContextMessageRoles(getEffectiveHistory(params.session.history));
     const prepared = createHistoryForCompactionPrompt(
       stripCompactionRestoredSyntheticMessages(effective),
       params.compactionConfig,
@@ -159,12 +161,17 @@ export async function compactSessionInternal(params: {
     const compactionModelMessages = params.providerBehavior.transformModelMessages(
       params.modelId,
       convertedCompactionModelMessages,
+      params.providerOptionParams ?? { reasoningEffort: '', textVerbosity: '' },
     );
 
     const stream = streamTextWithLingyunDefaults({
       model: compactionModel as any,
       system: COMPACTION_SYSTEM_PROMPT,
       messages: compactionModelMessages,
+      providerOptions: params.providerBehavior.getChatProviderOptions(
+        params.modelId,
+        params.providerOptionParams ?? { reasoningEffort: '', textVerbosity: '' },
+      ) as any,
       maxRetries: 0,
       temperature: normalizeTemperatureForModel(params.modelId, 0.0),
       maxOutputTokens: params.maxOutputTokens,

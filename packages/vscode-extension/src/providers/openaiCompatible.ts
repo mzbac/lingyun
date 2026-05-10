@@ -18,6 +18,7 @@ export interface OpenAICompatibleProviderOptions {
   fallbackMaxInputTokens?: number;
   fallbackMaxOutputTokens?: number;
   timeoutMs?: number;
+  allowInsecureTLS?: boolean;
   fetch?: FetchFunction;
   createResponsesModel?: typeof createOpenAICompatibleResponsesModel;
 }
@@ -252,12 +253,14 @@ export class OpenAICompatibleProvider implements LLMProvider {
       this.fetchFn = options.fetch;
       this.disposeFetch = () => {};
     } else {
-      const fetchWithDefaults = createFetchWithStreamingDefaults(this.timeoutMs);
+      const fetchWithDefaults = createFetchWithStreamingDefaults(this.timeoutMs, {
+        allowInsecureTLS: options.allowInsecureTLS,
+      });
       this.fetchFn = fetchWithDefaults.fetch;
       this.disposeFetch = fetchWithDefaults.dispose;
     }
     this.provider = createOpenAICompatible({
-      name: this.name,
+      name: this.id,
       baseURL: this.baseURL,
       apiKey: this.apiKey,
       fetch: this.fetchFn,

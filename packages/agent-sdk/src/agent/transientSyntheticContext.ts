@@ -1,5 +1,5 @@
 import {
-  createAssistantHistoryMessage,
+  createSystemHistoryMessage,
   type AgentHistoryMessage,
 } from '@kooka/core';
 
@@ -59,6 +59,30 @@ export function stripCompactionRestoredSyntheticMessages(
   return history.filter((message) => !isCompactionRestoredSyntheticMessage(message));
 }
 
+export function normalizeSyntheticContextMessageRoles(
+  history: readonly AgentHistoryMessage[],
+): AgentHistoryMessage[] {
+  if (!Array.isArray(history) || history.length === 0) return [];
+  let changed = false;
+  const normalized = history.map((message) => {
+    if (
+      message.role === 'system' ||
+      (!isTransientSyntheticMessage(message) && !isCompactionRestoredSyntheticMessage(message))
+    ) {
+      return message;
+    }
+
+    changed = true;
+    return {
+      ...message,
+      role: 'system' as const,
+      metadata: message.metadata ? { ...message.metadata } : undefined,
+      parts: message.parts.map((part: AgentHistoryMessage['parts'][number]) => ({ ...(part as any) })) as AgentHistoryMessage['parts'],
+    };
+  });
+  return changed ? normalized : [...history];
+}
+
 export function appendSyntheticContextMessage(
   history: AgentHistoryMessage[],
   context: LingyunAgentSyntheticContext,
@@ -66,12 +90,12 @@ export function appendSyntheticContextMessage(
   const text = String(context.text || '').trim();
   if (!text) return history;
 
-  const message = createAssistantHistoryMessage();
+  const message = createSystemHistoryMessage(text, { synthetic: true });
   message.metadata = {
+    ...(message.metadata ?? {}),
     synthetic: true,
     transientContext: context.transientContext,
   };
-  message.parts.push({ type: 'text', text, state: 'done' } as any);
   history.push(message);
   return history;
 }
@@ -83,12 +107,12 @@ export function appendCompactionRestoredSyntheticMessage(
   const text = String(params.text || '').trim();
   if (!text) return history;
 
-  const message = createAssistantHistoryMessage();
+  const message = createSystemHistoryMessage(text, { synthetic: true });
   message.metadata = {
+    ...(message.metadata ?? {}),
     synthetic: true,
     compactionRestore: { source: params.source },
   };
-  message.parts.push({ type: 'text', text, state: 'done' } as any);
   history.push(message);
   return history;
 }

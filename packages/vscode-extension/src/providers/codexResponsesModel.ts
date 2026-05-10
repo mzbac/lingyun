@@ -20,6 +20,7 @@ export function createCodexResponsesModel(options: CodexResponsesModelOptions) {
       providerOptionKeys: ['openai', 'codexSubscription'],
       systemPromptMode: 'instructions',
       includeSamplingOptions: false,
+      defaultReasoningSummary: 'auto',
     },
   });
 }

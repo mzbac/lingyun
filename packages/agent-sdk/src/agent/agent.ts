@@ -49,6 +49,7 @@ import { createBlankFileHandlesState, createBlankSemanticHandlesState, LingyunSe
 import { TaskSubagentRunner } from './taskSubagentRunner.js';
 import {
   appendSyntheticContextMessage,
+  normalizeSyntheticContextMessageRoles,
   snapshotSyntheticContextsForCompaction,
   type LingyunAgentSyntheticContext,
 } from './transientSyntheticContext.js';
@@ -131,6 +132,9 @@ export type LingyunAgentRuntimeOptions = {
   reasoning?: {
     effort?: string;
   };
+  openaiCompatible?: {
+    thinking?: string;
+  };
   text?: {
     verbosity?: string;
   };
@@ -156,6 +160,7 @@ export type LingyunAgentRuntimeSnapshot = {
   systemPrompt?: string;
   allowExternalPaths?: boolean;
   reasoningEffort?: string;
+  openaiCompatibleThinking?: string;
   textVerbosity?: string;
   taskMaxOutputChars?: number;
   skills?: LingyunAgentSkillsRuntimeOptions;
@@ -172,6 +177,7 @@ type LingyunAgentExecutionRuntime = {
   systemPrompt: string;
   allowExternalPaths: boolean;
   reasoningEffort: string;
+  openaiCompatibleThinking: string;
   textVerbosity: string;
   taskMaxOutputChars: number;
   skillsConfig: NormalizedSkillsRuntimeConfig;
@@ -236,6 +242,7 @@ export class LingyunAgent {
   private readonly runtimePolicy?: LingyunAgentRuntimePolicy;
   private readonly allowExternalPaths: boolean;
   private readonly reasoningEffort: string;
+  private readonly openaiCompatibleThinking: string;
   private readonly textVerbosity: string;
   private readonly reminderPrompts?: {
     planPrompt?: string;
@@ -267,6 +274,10 @@ export class LingyunAgent {
     this.runtimePolicy = runtime?.runtimePolicy;
     this.allowExternalPaths = !!runtime?.allowExternalPaths;
     this.reasoningEffort = typeof runtime?.reasoning?.effort === 'string' ? runtime.reasoning.effort.trim() : '';
+    this.openaiCompatibleThinking =
+      typeof runtime?.openaiCompatible?.thinking === 'string'
+        ? runtime.openaiCompatible.thinking.trim()
+        : 'auto';
     this.textVerbosity = typeof runtime?.text?.verbosity === 'string' ? runtime.text.verbosity.trim() : '';
     this.reminderPrompts = runtime?.prompts;
 
@@ -368,6 +379,10 @@ export class LingyunAgent {
           typeof snapshot?.reasoningEffort === 'string'
             ? snapshot.reasoningEffort.trim()
             : this.reasoningEffort,
+        openaiCompatibleThinking:
+          typeof snapshot?.openaiCompatibleThinking === 'string'
+            ? snapshot.openaiCompatibleThinking.trim()
+            : this.openaiCompatibleThinking,
         textVerbosity:
           typeof snapshot?.textVerbosity === 'string'
             ? snapshot.textVerbosity.trim()
@@ -394,6 +409,7 @@ export class LingyunAgent {
       workspaceRoot: this.workspaceRoot,
       allowExternalPaths: runtime.allowExternalPaths,
       reasoning: { effort: runtime.reasoningEffort },
+      openaiCompatible: { thinking: runtime.openaiCompatibleThinking },
       text: { verbosity: runtime.textVerbosity },
       prompts: this.reminderPrompts,
       skills: runtime.skillsConfig,
@@ -587,6 +603,11 @@ export class LingyunAgent {
       plugins: this.plugins,
       providerBehavior: this.providerBehavior,
       compactionConfig: prepared.execution.runtime.compactionConfig,
+      providerOptionParams: {
+        reasoningEffort: prepared.execution.runtime.reasoningEffort,
+        textVerbosity: prepared.execution.runtime.textVerbosity,
+        openaiCompatibleThinking: prepared.execution.runtime.openaiCompatibleThinking,
+      },
       maxOutputTokens: this.getMaxOutputTokens(prepared.execution.config, prepared.execution.runtime, modelId),
     });
   }
@@ -788,7 +809,7 @@ export class LingyunAgent {
     syntheticContexts: readonly LingyunAgentSyntheticContext[] = [],
     options?: { syntheticResumeUserText?: string },
   ): Promise<ModelMessage[]> {
-    const effective = [...getEffectiveHistory(session.history)];
+    const effective = normalizeSyntheticContextMessageRoles(getEffectiveHistory(session.history));
     for (const context of syntheticContexts) {
       appendSyntheticContextMessage(effective, context);
     }
@@ -810,9 +831,18 @@ export class LingyunAgent {
     );
 
     const messages = Array.isArray((messagesOutput as any).messages) ? (messagesOutput as any).messages : withoutIds;
-    const replayed = this.providerBehavior.prepareHistoryForPrompt(messages as unknown as AgentHistoryMessage[]);
+    const providerOptionParams = {
+      reasoningEffort: execution.runtime.reasoningEffort,
+      textVerbosity: execution.runtime.textVerbosity,
+      openaiCompatibleThinking: execution.runtime.openaiCompatibleThinking,
+    };
+    const replayed = this.providerBehavior.prepareHistoryForPrompt(
+      messages as unknown as AgentHistoryMessage[],
+      modelId,
+      providerOptionParams,
+    );
     const converted = await convertToModelMessages(replayed as any, { tools: tools as any });
-    return this.providerBehavior.transformModelMessages(modelId, converted);
+    return this.providerBehavior.transformModelMessages(modelId, converted, providerOptionParams);
   }
 
   private createToolContext(
@@ -1106,6 +1136,7 @@ export class LingyunAgent {
       registry: this.registry,
       providerBehavior: this.providerBehavior,
       reasoningEffort: execution.runtime.reasoningEffort,
+      openaiCompatibleThinking: execution.runtime.openaiCompatibleThinking,
       textVerbosity: execution.runtime.textVerbosity,
       compactionConfig: execution.runtime.compactionConfig,
       temperature: execution.config.temperature ?? 0.0,
@@ -1336,6 +1367,11 @@ export class LingyunAgent {
             plugins: this.plugins,
             providerBehavior: this.providerBehavior,
             compactionConfig: execution.runtime.compactionConfig,
+            providerOptionParams: {
+              reasoningEffort: execution.runtime.reasoningEffort,
+              textVerbosity: execution.runtime.textVerbosity,
+              openaiCompatibleThinking: execution.runtime.openaiCompatibleThinking,
+            },
             maxOutputTokens: this.getMaxOutputTokens(execution.config, execution.runtime, modelId),
           });
         }

@@ -35,7 +35,7 @@ import {
 } from '../memories/currentState';
 
 import type { ConsolidatedMemoryEntry } from '../memories/model';
-import { getConfiguredReasoningEffort } from '../reasoningEffort';
+import { getConfiguredOpenAICompatibleThinking, getConfiguredReasoningEffort } from '../reasoningEffort';
 import {
   extractExplicitForgetScopeHint,
   extractExplicitMemoryRecallScopeHint,
@@ -879,6 +879,7 @@ type PreparedRuntime = {
   systemPrompt: string;
   allowExternalPaths: boolean;
   reasoningEffort: string;
+  openaiCompatibleThinking: string;
   textVerbosity: string;
   taskMaxOutputChars: number;
   snapshot: LingyunAgentRuntimeSnapshot;
@@ -950,6 +951,7 @@ export class VsCodeAgentRuntimePolicy implements LingyunAgentRuntimePolicy {
     const allowExternalPaths =
       cfg.get<boolean>('security.allowExternalPaths', false) ?? false;
     const reasoningEffort = getConfiguredReasoningEffort();
+    const openaiCompatibleThinking = getConfiguredOpenAICompatibleThinking();
     const textVerbosity = getConfiguredTextVerbosity(cfg);
     const taskMaxOutputChars = cfg.get<number>('subagents.task.maxOutputChars', 8000) ?? 8000;
     const skills = {
@@ -970,12 +972,14 @@ export class VsCodeAgentRuntimePolicy implements LingyunAgentRuntimePolicy {
       systemPrompt,
       allowExternalPaths,
       reasoningEffort,
+      openaiCompatibleThinking,
       textVerbosity,
       taskMaxOutputChars,
       snapshot: {
         systemPrompt,
         allowExternalPaths,
         reasoningEffort,
+        openaiCompatibleThinking,
         textVerbosity,
         taskMaxOutputChars,
         skills,
@@ -1088,6 +1092,7 @@ export class VsCodeAgentRuntimePolicy implements LingyunAgentRuntimePolicy {
       runtime: {
         allowExternalPaths: runtime.allowExternalPaths,
         reasoningEffort: runtime.reasoningEffort,
+        openaiCompatibleThinking: runtime.openaiCompatibleThinking,
         textVerbosity: runtime.textVerbosity,
         taskMaxOutputChars: runtime.taskMaxOutputChars,
         skills: runtime.snapshot.skills,

@@ -144,13 +144,23 @@ function combineAbortSignals(signals: AbortSignal[]): AbortSignal {
 
 export type FetchWithStreamingDefaults = { fetch: FetchFunction; dispose: () => void };
 
+export type FetchWithStreamingDefaultsOptions = {
+  allowInsecureTLS?: boolean;
+};
+
 export function normalizeBaseURL(input: string): string {
   return input.replace(/\/+$/, '');
 }
 
-export function createFetchWithStreamingDefaults(timeoutMs?: number): FetchWithStreamingDefaults {
+export function createFetchWithStreamingDefaults(
+  timeoutMs?: number,
+  options?: FetchWithStreamingDefaultsOptions,
+): FetchWithStreamingDefaults {
   const timeoutValue = typeof timeoutMs === 'number' && Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 0;
-  const dispatcher = new Agent({ bodyTimeout: 0 });
+  const dispatcher = new Agent({
+    bodyTimeout: 0,
+    ...(options?.allowInsecureTLS ? { connect: { rejectUnauthorized: false } } : {}),
+  });
   const fetchUndici = undiciFetch as unknown as (input: unknown, init?: unknown) => Promise<unknown>;
 
   const fetchFn: FetchFunction = (input, init?) => {

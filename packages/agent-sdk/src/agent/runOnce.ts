@@ -63,6 +63,7 @@ export async function runOnce(params: {
   providerBehavior: ProviderBehavior;
   reasoningEffort: string;
   textVerbosity: string;
+  openaiCompatibleThinking?: string;
   compactionConfig: CompactionConfig;
 
   temperature: number;
@@ -167,6 +168,13 @@ export async function runOnce(params: {
     const tools = params.filterTools(await registry.getTools());
     const toolNameToDefinition = new Map<string, ToolDefinition>();
 
+    const providerOptionParams = {
+      reasoningEffort: params.reasoningEffort,
+      textVerbosity: params.textVerbosity,
+      openaiCompatibleThinking: params.openaiCompatibleThinking,
+    };
+    const treatReasoningAsText = providerBehavior.shouldTreatReasoningAsText(modelId, providerOptionParams);
+
     const callParams = await plugins.trigger(
       'chat.params',
       {
@@ -182,10 +190,7 @@ export async function runOnce(params: {
         temperature,
         topP: params.topP,
         topK: params.topK,
-        options: providerBehavior.getChatProviderOptions(modelId, {
-          reasoningEffort: params.reasoningEffort,
-          textVerbosity: params.textVerbosity,
-        }),
+        options: providerBehavior.getChatProviderOptions(modelId, providerOptionParams),
       },
     );
 
@@ -283,12 +288,26 @@ export async function runOnce(params: {
                 break;
               }
               case 'reasoning-delta': {
-                attemptReasoning += part.text;
-                invokeCallbackSafely(
-                  callbacksSafe?.onThoughtToken,
-                  { label: 'onThoughtToken', onDebug: callbacksSafe?.onDebug },
-                  part.text,
-                );
+                if (treatReasoningAsText) {
+                  invokeCallbackSafely(
+                    callbacksSafe?.onToken,
+                    { label: 'onToken', onDebug: callbacksSafe?.onDebug },
+                    part.text,
+                  );
+                  attemptText += part.text;
+                  invokeCallbackSafely(
+                    callbacksSafe?.onAssistantToken,
+                    { label: 'onAssistantToken', onDebug: callbacksSafe?.onDebug },
+                    part.text,
+                  );
+                } else {
+                  attemptReasoning += part.text;
+                  invokeCallbackSafely(
+                    callbacksSafe?.onThoughtToken,
+                    { label: 'onThoughtToken', onDebug: callbacksSafe?.onDebug },
+                    part.text,
+                  );
+                }
                 break;
               }
               case 'tool-call': {
@@ -567,6 +586,7 @@ export async function runOnce(params: {
           plugins,
           providerBehavior,
           compactionConfig: params.compactionConfig,
+          providerOptionParams,
           maxOutputTokens: params.getMaxOutputTokens(),
         });
         continue;

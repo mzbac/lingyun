@@ -7,7 +7,7 @@ import * as vscode from 'vscode';
 
 import { createAgentConfig, shouldRefreshChatModelStateForConfigChange } from '../../extension';
 import { getModelLimit } from '../../core/compaction';
-import { getConfiguredReasoningEffort } from '../../core/reasoningEffort';
+import { getConfiguredOpenAICompatibleThinking, getConfiguredReasoningEffort } from '../../core/reasoningEffort';
 import { WorkspaceToolProvider } from '../../providers/workspace';
 
 suite('Extension Integration', () => {
@@ -60,6 +60,8 @@ suite('Extension Integration', () => {
     assert.strictEqual(config.get('codexSubscription.defaultModelId'), 'gpt-5.3-codex');
     assert.strictEqual(config.get('mode'), 'build');
     assert.strictEqual(config.get('copilot.reasoningEffort'), 'high');
+    assert.strictEqual(config.get('openaiCompatible.thinking'), 'auto');
+    assert.strictEqual(config.get('openaiCompatible.allowInsecureTLS'), false);
     assert.strictEqual(config.get('temperature'), 0);
     assert.strictEqual(config.get('maxOutputTokens'), 32000);
     assert.strictEqual(config.get('llm.timeoutMs'), 0);
@@ -137,6 +139,22 @@ suite('Extension Integration', () => {
         await config.update('copilot.reasoningEffort', undefined, vscode.ConfigurationTarget.Global);
       } else {
         await config.update('copilot.reasoningEffort', previousEffort, vscode.ConfigurationTarget.Global);
+      }
+    }
+  });
+
+  test('getConfiguredOpenAICompatibleThinking normalizes explicit disabled setting', async () => {
+    const config = vscode.workspace.getConfiguration('lingyun');
+    const previousThinking = config.get('openaiCompatible.thinking');
+
+    await config.update('openaiCompatible.thinking', 'disabled', vscode.ConfigurationTarget.Global);
+    try {
+      assert.strictEqual(getConfiguredOpenAICompatibleThinking(), 'disabled');
+    } finally {
+      if (previousThinking === undefined) {
+        await config.update('openaiCompatible.thinking', undefined, vscode.ConfigurationTarget.Global);
+      } else {
+        await config.update('openaiCompatible.thinking', previousThinking, vscode.ConfigurationTarget.Global);
       }
     }
   });

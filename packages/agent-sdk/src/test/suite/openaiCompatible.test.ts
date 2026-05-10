@@ -1,10 +1,131 @@
 import * as assert from 'assert';
+import { execFileSync } from 'node:child_process';
+import * as fs from 'node:fs';
 import http from 'node:http';
+import https from 'node:https';
+import * as os from 'node:os';
+import * as path from 'node:path';
 
 import { timeoutSignal } from '../../abort.js';
-import { OpenAICompatibleProvider } from '../../index.js';
+import { LingyunAgent, LingyunSession, OpenAICompatibleProvider, ToolRegistry } from '../../index.js';
+
+function createSelfSignedLocalhostCert(): { key: Buffer; cert: Buffer; cleanup: () => void } | undefined {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lingyun-sdk-selfsigned-'));
+  const keyPath = path.join(dir, 'key.pem');
+  const certPath = path.join(dir, 'cert.pem');
+  try {
+    execFileSync('openssl', [
+      'req',
+      '-x509',
+      '-newkey',
+      'rsa:2048',
+      '-nodes',
+      '-days',
+      '1',
+      '-keyout',
+      keyPath,
+      '-out',
+      certPath,
+      '-subj',
+      '/CN=localhost',
+    ], { stdio: 'ignore' });
+    return {
+      key: fs.readFileSync(keyPath),
+      cert: fs.readFileSync(certPath),
+      cleanup: () => fs.rmSync(dir, { recursive: true, force: true }),
+    };
+  } catch {
+    fs.rmSync(dir, { recursive: true, force: true });
+    return undefined;
+  }
+}
 
 suite('OpenAICompatibleProvider fetch', () => {
+  test('allows self-signed TLS when explicitly enabled', async function () {
+    const cert = createSelfSignedLocalhostCert();
+    if (!cert) this.skip();
+
+    const server = https.createServer({ key: cert.key, cert: cert.cert }, (req, res) => {
+      if (req.url !== '/v1/models') {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'not found' }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ data: [{ id: 'self-signed-model' }] }));
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      server.close();
+      cert.cleanup();
+      assert.fail('Expected server to bind to a TCP port');
+    }
+
+    const provider = new OpenAICompatibleProvider({
+      baseURL: `https://127.0.0.1:${address.port}/v1`,
+      allowInsecureTLS: true,
+    });
+
+    try {
+      const models = await provider.getModels();
+      assert.strictEqual(models[0]?.id, 'self-signed-model');
+    } finally {
+      provider.dispose();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      cert.cleanup();
+    }
+  });
+
+  test('sends think:false in DeepSeek chat-completions request bodies', async () => {
+    let observedBody: any;
+    const server = http.createServer((req, res) => {
+      if (req.url !== '/v1/chat/completions') {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'not found' }));
+        return;
+      }
+
+      const chunks: Buffer[] = [];
+      req.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+      req.on('end', () => {
+        observedBody = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        res.end([
+          'data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":0,"model":"deepseek-v4-flash","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}\n\n',
+          'data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":0,"model":"deepseek-v4-flash","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n',
+          'data: [DONE]\n\n',
+        ].join(''));
+      });
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      server.close();
+      assert.fail('Expected server to bind to a TCP port');
+    }
+
+    const llm = new OpenAICompatibleProvider({ baseURL: `http://127.0.0.1:${address.port}/v1` });
+    const agent = new LingyunAgent(llm, { model: 'deepseek-v4-flash', maxOutputTokens: 16 }, new ToolRegistry());
+    const session = new LingyunSession();
+    try {
+      const run = agent.run({ session, input: 'hi' });
+      for await (const _event of run.events) {
+        // drain
+      }
+      assert.strictEqual((await run.done).text, 'ok');
+
+      assert.strictEqual(observedBody?.model, 'deepseek-v4-flash');
+      assert.strictEqual(observedBody?.think, false);
+      assert.strictEqual(observedBody?.reasoning_effort, undefined);
+    } finally {
+      llm.dispose();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   test('trims OpenAI-compatible string options before provider construction', async () => {
     const provider = new OpenAICompatibleProvider({
       baseURL: '  http://127.0.0.1:12345/  ',

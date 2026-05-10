@@ -86,6 +86,8 @@
 	    const openAIDefaultModelInput = document.getElementById('openAIDefaultModelInput');
 	    const openAIApiKeyEnvLabel = document.getElementById('openAIApiKeyEnvLabel');
 	    const openAIApiKeyEnvInput = document.getElementById('openAIApiKeyEnvInput');
+	    const openAIAllowInsecureTLSLabel = document.getElementById('openAIAllowInsecureTLSLabel');
+	    const openAIAllowInsecureTLSInput = document.getElementById('openAIAllowInsecureTLSInput');
 	    const openAIModelDisplayNamesLabel = document.getElementById('openAIModelDisplayNamesLabel');
 	    const openAIModelDisplayNamesInput = document.getElementById('openAIModelDisplayNamesInput');
 	    const providerSettingsApply = document.getElementById('providerSettingsApply');
@@ -335,7 +337,7 @@
 			    let currentProviderId = 'copilot';
 			    let providerSwitchPending = false;
 			    let codexSubscriptionSettings = { defaultModelId: 'gpt-5.3-codex' };
-			    let openAICompatibleSettings = { baseURL: '', defaultModelId: '', apiKeyEnv: 'OPENAI_API_KEY', modelDisplayNames: {} };
+			    let openAICompatibleSettings = { baseURL: '', defaultModelId: '', apiKeyEnv: 'OPENAI_API_KEY', allowInsecureTLS: false, modelDisplayNames: {} };
 			    let planFirstEnabled = true;
 			    let autoApproveEnabled = false;
 			    let allowExternalPathsEnabled = false;
@@ -1794,6 +1796,7 @@
 	        baseURL: typeof source.baseURL === 'string' ? source.baseURL.trim().slice(0, 500) : '',
 	        defaultModelId: typeof source.defaultModelId === 'string' ? source.defaultModelId.trim().slice(0, 200) : '',
 	        apiKeyEnv,
+	        allowInsecureTLS: source.allowInsecureTLS === true,
 	        modelDisplayNames: normalizeOpenAICompatibleDisplayNames(source.modelDisplayNames),
 	      };
 	    }
@@ -1813,6 +1816,7 @@
 	        providerSettings.title = 'Provider settings: Codex default ' + codexSubscriptionSettings.defaultModelId
 	          + ', OpenAI-compatible ' + (hasBaseURL ? 'base URL set' : 'base URL not set')
 	          + (openAICompatibleSettings.defaultModelId ? ', OpenAI-compatible default ' + openAICompatibleSettings.defaultModelId : ', no OpenAI-compatible default')
+	          + (openAICompatibleSettings.allowInsecureTLS ? ', insecure TLS allowed' : '')
 	          + (modelCount ? ', ' + modelCount + ' display name(s)' : '');
 	      }
 	    }
@@ -1831,6 +1835,7 @@
 	      if (openAIBaseURLInput) openAIBaseURLInput.value = openAICompatibleSettings.baseURL;
 	      if (openAIDefaultModelInput) openAIDefaultModelInput.value = openAICompatibleSettings.defaultModelId;
 	      if (openAIApiKeyEnvInput) openAIApiKeyEnvInput.value = openAICompatibleSettings.apiKeyEnv;
+	      if (openAIAllowInsecureTLSInput) openAIAllowInsecureTLSInput.checked = openAICompatibleSettings.allowInsecureTLS;
 	      if (openAIModelDisplayNamesInput) openAIModelDisplayNamesInput.value = serializeOpenAICompatibleDisplayNames(openAICompatibleSettings.modelDisplayNames);
 	      const hasBaseURL = !!openAICompatibleSettings.baseURL;
 	      const modelCount = Object.keys(openAICompatibleSettings.modelDisplayNames).length;
@@ -1845,6 +1850,11 @@
 	      }
 	      if (openAIApiKeyEnvLabel) {
 	        openAIApiKeyEnvLabel.title = 'API key environment variable: ' + openAICompatibleSettings.apiKeyEnv;
+	      }
+	      if (openAIAllowInsecureTLSLabel) {
+	        openAIAllowInsecureTLSLabel.title = openAICompatibleSettings.allowInsecureTLS
+	          ? 'OpenAI-compatible TLS certificate verification is disabled.'
+	          : 'OpenAI-compatible TLS certificate verification is enabled.';
 	      }
 	      if (openAIModelDisplayNamesLabel) {
 	        openAIModelDisplayNamesLabel.title = modelCount
@@ -1890,6 +1900,7 @@
 	        baseURL: openAIBaseURLInput ? openAIBaseURLInput.value : openAICompatibleSettings.baseURL,
 	        defaultModelId: openAIDefaultModelInput ? openAIDefaultModelInput.value : openAICompatibleSettings.defaultModelId,
 	        apiKeyEnv: openAIApiKeyEnvInput ? openAIApiKeyEnvInput.value : openAICompatibleSettings.apiKeyEnv,
+	        allowInsecureTLS: openAIAllowInsecureTLSInput ? openAIAllowInsecureTLSInput.checked : openAICompatibleSettings.allowInsecureTLS,
 	        modelDisplayNames: displayNames.names,
 	      });
 	      if (next.baseURL && !/^https?:\/\//i.test(next.baseURL)) {
@@ -6177,6 +6188,8 @@
 		      if (openAIDefaultModelLabel) openAIDefaultModelLabel.classList.toggle('disabled', providerSettingsDisabled);
 		      if (openAIApiKeyEnvInput) openAIApiKeyEnvInput.disabled = providerSettingsDisabled;
 		      if (openAIApiKeyEnvLabel) openAIApiKeyEnvLabel.classList.toggle('disabled', providerSettingsDisabled);
+		      if (openAIAllowInsecureTLSInput) openAIAllowInsecureTLSInput.disabled = providerSettingsDisabled;
+		      if (openAIAllowInsecureTLSLabel) openAIAllowInsecureTLSLabel.classList.toggle('disabled', providerSettingsDisabled);
 		      if (openAIModelDisplayNamesInput) openAIModelDisplayNamesInput.disabled = providerSettingsDisabled;
 		      if (openAIModelDisplayNamesLabel) openAIModelDisplayNamesLabel.classList.toggle('disabled', providerSettingsDisabled);
 		      if (providerSettingsApply) providerSettingsApply.disabled = providerSettingsDisabled;

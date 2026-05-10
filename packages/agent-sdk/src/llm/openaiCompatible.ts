@@ -12,6 +12,7 @@ export interface OpenAICompatibleProviderOptions {
   apiKey?: string;
   defaultModelId?: string;
   timeoutMs?: number;
+  allowInsecureTLS?: boolean;
 }
 
 type OpenAICompatibleModelRecord = {
@@ -218,9 +219,12 @@ function mergeHeaders(headers: Record<string, string>, initHeaders: unknown): vo
 
 type FetchWithDefaults = { fetch: FetchFunction; dispose: () => void };
 
-function createFetchWithStreamingDefaults(timeoutMs?: number): FetchWithDefaults {
+function createFetchWithStreamingDefaults(timeoutMs?: number, options?: { allowInsecureTLS?: boolean }): FetchWithDefaults {
   const timeoutValue = typeof timeoutMs === 'number' && Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 0;
-  const dispatcher = new Agent({ bodyTimeout: 0 });
+  const dispatcher = new Agent({
+    bodyTimeout: 0,
+    ...(options?.allowInsecureTLS ? { connect: { rejectUnauthorized: false } } : {}),
+  });
 
   const fetchFn: FetchFunction = (input, init?) => {
     const requestDefaults = requestInputInit(input);
@@ -274,12 +278,14 @@ export class OpenAICompatibleProvider implements LLMProvider {
     this.timeoutMs = options.timeoutMs;
     this.name = options.name || 'OpenAI-Compatible';
 
-    const fetchWithDefaults = createFetchWithStreamingDefaults(this.timeoutMs);
+    const fetchWithDefaults = createFetchWithStreamingDefaults(this.timeoutMs, {
+      allowInsecureTLS: options.allowInsecureTLS,
+    });
     this.fetchFn = fetchWithDefaults.fetch;
     this.disposeFetch = fetchWithDefaults.dispose;
 
     this.provider = createOpenAICompatible({
-      name: this.name,
+      name: this.id,
       baseURL: this.baseURL,
       apiKey: this.apiKey,
       fetch: this.fetchFn,

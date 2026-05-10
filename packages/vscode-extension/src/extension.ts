@@ -206,6 +206,7 @@ function createLLMProviderFromConfig(context: vscode.ExtensionContext): LLMProvi
     const defaultModelId = getConfig<string>('openaiCompatible.defaultModelId') || undefined;
     const modelDisplayNames =
       getConfig<Record<string, string>>('openaiCompatible.modelDisplayNames') || undefined;
+    const allowInsecureTLS = getConfig<boolean>('openaiCompatible.allowInsecureTLS') === true;
     log('Using OpenAI-compatible provider');
     return new OpenAICompatibleProvider({
       baseURL,
@@ -213,6 +214,7 @@ function createLLMProviderFromConfig(context: vscode.ExtensionContext): LLMProvi
       defaultModelId,
       modelDisplayNames,
       timeoutMs,
+      allowInsecureTLS,
     });
   }
 
@@ -420,6 +422,7 @@ export async function activate(
           e.affectsConfiguration('lingyun.openaiCompatible.defaultModelId') ||
           e.affectsConfiguration('lingyun.openaiCompatible.modelDisplayNames') ||
           e.affectsConfiguration('lingyun.openaiCompatible.apiKeyEnv') ||
+          e.affectsConfiguration('lingyun.openaiCompatible.allowInsecureTLS') ||
           e.affectsConfiguration('lingyun.llm.timeoutMs');
 
         const sessionsChanged =
