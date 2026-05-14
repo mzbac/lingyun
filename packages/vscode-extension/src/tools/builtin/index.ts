@@ -6,6 +6,7 @@ import { bashHandler, bashTool } from './bash';
 import { editHandler, editTool } from './edit';
 import { globHandler, globTool } from './glob';
 import { grepHandler, grepTool } from './grep';
+import { createGoalHandler, createGoalTool, getGoalHandler, getGoalTool, updateGoalHandler, updateGoalTool } from './goal';
 import { listHandler, listTool } from './list';
 import { lspHandler, lspTool } from './lsp';
 import { getMemoryHandler, getMemoryTool } from './getMemory';
@@ -30,6 +31,9 @@ export function registerBuiltinTools(): vscode.Disposable[] {
     toolRegistry.registerTool(symbolsSearchTool, symbolsSearchHandler),
     toolRegistry.registerTool(symbolsPeekTool, symbolsPeekHandler),
     toolRegistry.registerTool(grepTool, grepHandler),
+    toolRegistry.registerTool(getGoalTool, getGoalHandler),
+    toolRegistry.registerTool(createGoalTool, createGoalHandler),
+    toolRegistry.registerTool(updateGoalTool, updateGoalHandler),
     toolRegistry.registerTool(readTool, readHandler),
     toolRegistry.registerTool(readRangeTool, readRangeHandler),
     toolRegistry.registerTool(writeTool, writeHandler),

@@ -1,3 +1,5 @@
+import * as vscode from 'vscode';
+
 import type { UserHistoryInputPart } from '@kooka/core';
 import {
   hasSessionMemoryDisableIntent,
@@ -22,6 +24,12 @@ import {
 } from './runCoordinatorPendingPlan';
 import { findLatestToolMessageByApprovalId } from '../toolMessageLookup';
 import { postInputNotice } from '../inputNotice';
+import {
+  createGoalContinuationPrompt,
+  formatGoalSummary,
+  parseGoalSlashCommand,
+  type GoalSlashCommand,
+} from '../goals';
 
 const MAX_USER_IMAGE_ATTACHMENTS = 8;
 const MAX_USER_IMAGE_DATA_URL_LENGTH = 12_000_000;
@@ -133,22 +141,12 @@ function appendAssumptionsToPlan(plan: string): string {
 }
 
 export class RunCoordinator {
-  private loopSteerableDuringProcessing = false;
-
   constructor(private readonly controller: RunCoordinatorHost) {}
-
-  canAcceptLoopSteer(): boolean {
-    const c = this.controller;
-    const turnId = typeof c.currentTurnId === 'string' ? c.currentTurnId.trim() : '';
-    return c.isProcessing && this.loopSteerableDuringProcessing && c.agent.running && !!turnId;
-  }
 
   private finalizeRun(params?: { postProcessingSignal?: boolean; keepAbortFlag?: boolean; suppressQueueAutosend?: boolean }): void {
     const c = this.controller;
     const sessionId = c.activeSessionId;
     c.isProcessing = false;
-    this.loopSteerableDuringProcessing = false;
-    c.loopManager.onRunEnd(sessionId);
     if (!params?.keepAbortFlag) {
       c.abortRequested = false;
     }
@@ -169,13 +167,11 @@ export class RunCoordinator {
    * - entering a run always clears stale abort state from any previous canceled run
    * - entering a run always clears per-run auto-approval state
    * - approval state must be reposted whenever processing begins
-   * - loop steerability is part of the run activation contract, not an ad hoc branch detail
    */
-  private activateRun(steerableDuringProcessing: boolean): void {
+  private activateRun(): void {
     const c = this.controller;
     c.isProcessing = true;
     c.abortRequested = false;
-    this.loopSteerableDuringProcessing = steerableDuringProcessing;
     c.autoApproveThisRun = false;
     c.postApprovalState();
   }
@@ -220,8 +216,7 @@ export class RunCoordinator {
     displayContent?: string;
   }): void {
     const c = this.controller;
-    this.activateRun(!params.shouldGeneratePlan);
-    c.loopManager.onRunStart(params.activeSession.id);
+    this.activateRun();
 
     const checkpointState = c.agent.exportState();
     const memoryExcluded =
@@ -404,10 +399,9 @@ export class RunCoordinator {
     const lastUserTurn = findLatestUserTurnId(c.messages);
     c.currentTurnId = planMsg.turnId || lastUserTurn || c.currentTurnId;
 
-    this.activateRun(true);
+    this.activateRun();
     c.postMessage({ type: 'processing', value: true });
     postPlanPendingState(c, { active: false });
-    c.loopManager.onRunStart(c.activeSessionId);
 
     const previousStatus = planMsg.plan?.status ?? 'draft';
     if (!planMsg.plan) {
@@ -453,12 +447,10 @@ export class RunCoordinator {
   }
 
   private beginPendingPlanUpdateRun(): void {
-    this.loopSteerableDuringProcessing = false;
     beginPendingPlanUpdateRun(this.controller);
   }
 
   private finishPendingPlanUpdateRun(wasCanceled: boolean): void {
-    this.loopSteerableDuringProcessing = false;
     finishPendingPlanUpdateRun(this.controller, {
       currentPlanMessageId: this.controller.getActiveSession().pendingPlan?.planMessageId,
       wasCanceled,
@@ -747,36 +739,134 @@ export class RunCoordinator {
     return true;
   }
 
-  async triggerLoopPrompt(content: string): Promise<boolean> {
+  private postGoalMessage(content: string): void {
+    const msg: ChatMessage = {
+      id: crypto.randomUUID(),
+      role: 'assistant',
+      content,
+      timestamp: Date.now(),
+    };
+    this.controller.messages.push(msg);
+    this.controller.postMessage({ type: 'message', message: msg });
+    this.controller.persistActiveSession();
+  }
+
+  private async handleGoalSlashCommand(text: string): Promise<boolean> {
+    let command: GoalSlashCommand | undefined;
+    try {
+      command = parseGoalSlashCommand(text);
+    } catch (error) {
+      postInputNotice(this.controller, error instanceof Error ? error.message : String(error));
+      return true;
+    }
+    if (!command) return false;
+
     const c = this.controller;
-    if (!c.view) return false;
+    if (c.isProcessing && command.kind !== 'summary') {
+      postInputNotice(c, 'Stop the current task before changing the goal.');
+      return true;
+    }
 
-    const normalized = normalizeUserInput(content);
-    if (!normalized.hasContent) return false;
+    if (command.kind === 'summary') {
+      this.postGoalMessage(formatGoalSummary(c.agent.getThreadGoal()));
+      return true;
+    }
 
-    if (this.canAcceptLoopSteer()) {
-      return this.steerIntoActiveRun({
-        normalized,
-        queueOnFailure: false,
+    if (command.kind === 'clear') {
+      c.agent.clearThreadGoal();
+      this.postGoalMessage('Goal cleared.');
+      return true;
+    }
+
+    if (command.kind === 'setStatus') {
+      try {
+        const goal = c.agent.updateThreadGoalStatus(command.status);
+        this.postGoalMessage(formatGoalSummary(goal));
+        if (goal.status === 'active') {
+          void this.maybeContinueActiveGoal();
+        }
+      } catch (error) {
+        postInputNotice(c, error instanceof Error ? error.message : String(error));
+      }
+      return true;
+    }
+
+    if (command.kind === 'edit') {
+      const existing = c.agent.getThreadGoal();
+      if (!existing) {
+        postInputNotice(c, 'No goal is set for this session.');
+        return true;
+      }
+      const objective = await vscode.window.showInputBox({
+        title: 'Edit goal',
+        prompt: 'Type a goal objective and press Enter.',
+        value: existing.objective,
+        ignoreFocusOut: true,
       });
+      if (objective === undefined) return true;
+      try {
+        const goal = c.agent.setThreadGoalObjective({
+          objective,
+          status: existing.status === 'paused' ? 'paused' : 'active',
+          replaceExisting: true,
+          preserveUsage: true,
+        });
+        this.postGoalMessage(formatGoalSummary(goal));
+        if (goal.status === 'active') {
+          void this.maybeContinueActiveGoal();
+        }
+      } catch (error) {
+        postInputNotice(c, error instanceof Error ? error.message : String(error));
+      }
+      return true;
     }
 
-    if (c.isProcessing) return false;
-
-    if (!c.loopManager.hasLoopContext(c.getActiveSession())) {
-      return false;
+    const existing = c.agent.getThreadGoal();
+    let replaceExisting = false;
+    if (existing) {
+      const choice = await vscode.window.showWarningMessage(
+        'This session already has a goal. Replace it?',
+        { modal: true },
+        'Replace',
+      );
+      if (choice !== 'Replace') return true;
+      replaceExisting = true;
     }
 
-    await this.handleUserMessage(content, {
-      fromQueue: true,
-      synthetic: true,
-    });
+    try {
+      const goal = c.agent.setThreadGoalObjective({
+        objective: command.objective,
+        tokenBudget: command.tokenBudget,
+        replaceExisting,
+      });
+      this.postGoalMessage(formatGoalSummary(goal));
+      void this.maybeContinueActiveGoal();
+    } catch (error) {
+      postInputNotice(c, error instanceof Error ? error.message : String(error));
+    }
     return true;
+  }
+
+  private async maybeContinueActiveGoal(): Promise<void> {
+    const c = this.controller;
+    if (!c.view || c.isProcessing || c.mode === 'plan') return;
+    const activeSession = c.getActiveSession();
+    if (activeSession.pendingPlan) return;
+
+    const goal = c.agent.getThreadGoal();
+    if (!goal || goal.status !== 'active') return;
+
+    const objective = goal.objective.length > 80 ? `${goal.objective.slice(0, 77)}...` : goal.objective;
+    await this.handleUserMessage(createGoalContinuationPrompt(goal), {
+      synthetic: true,
+      displayContent: `Continue goal: ${objective}`,
+      forceBuild: true,
+    });
   }
 
   async handleUserMessage(
     content: string | ChatUserInput,
-    options?: { fromQueue?: boolean; synthetic?: boolean; displayContent?: string }
+    options?: { fromQueue?: boolean; synthetic?: boolean; displayContent?: string; forceBuild?: boolean }
   ): Promise<void> {
     const c = this.controller;
     if (!c.view) return;
@@ -785,6 +875,11 @@ export class RunCoordinator {
     if (!normalizedInput.hasContent) return;
 
     await c.ensureSessionsLoaded();
+
+    if (normalizedInput.text && !options?.fromQueue && !options?.synthetic) {
+      const handledGoal = await this.handleGoalSlashCommand(normalizedInput.text);
+      if (handledGoal) return;
+    }
 
     if (normalizedInput.text && !options?.synthetic) {
       applySessionMemoryModeIntent(c.signals, normalizedInput.text);
@@ -825,7 +920,7 @@ export class RunCoordinator {
 
     const isNew = c.agent.getHistory().length === 0;
     const planFirst = c.isPlanFirstEnabled();
-    const shouldGeneratePlan = c.mode === 'plan' || (planFirst && isNew);
+    const shouldGeneratePlan = !options?.forceBuild && (c.mode === 'plan' || (planFirst && isNew));
 
     this.beginUserTurnRun({
       activeSession,
@@ -836,6 +931,7 @@ export class RunCoordinator {
     });
 
     let wasCanceled = false;
+    let failed = false;
     try {
       if (shouldGeneratePlan) {
         await c.setModeAndPersist('plan');
@@ -867,6 +963,7 @@ export class RunCoordinator {
 
       await c.agent[isNew ? 'run' : 'continue'](normalizedInput.agentInput, c.createAgentCallbacks());
     } catch (error) {
+      failed = true;
       wasCanceled = this.handleRunFailure({
         error,
         turnId: c.currentTurnId,
@@ -874,6 +971,9 @@ export class RunCoordinator {
       });
     } finally {
       this.finalizeRun({ keepAbortFlag: wasCanceled, suppressQueueAutosend: wasCanceled });
+      if (!failed && !wasCanceled && !shouldGeneratePlan) {
+        void this.maybeContinueActiveGoal();
+      }
     }
   }
 
@@ -907,8 +1007,7 @@ export class RunCoordinator {
 
     c.commitRevertedConversationIfNeeded();
 
-    this.activateRun(true);
-    c.loopManager.onRunStart(c.activeSessionId);
+    this.activateRun();
     c.postMessage({ type: 'processing', value: true });
 
     let wasCanceled = false;
@@ -958,8 +1057,6 @@ export class RunCoordinator {
 
     session.pendingPlan = undefined;
     await c.agent.clear();
-    c.loopManager.syncActiveSession();
-    c.postLoopState(session);
     postPlanPendingState(c, { active: false });
     c.persistActiveSession();
     void c.queueManager.flushAutosendForActiveSession();

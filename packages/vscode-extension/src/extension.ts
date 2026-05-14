@@ -158,6 +158,19 @@ export function createAgentConfig(): AgentConfig {
     (maxOutputTokensParsed as number) > 0
       ? Math.floor(maxOutputTokensParsed as number)
       : undefined;
+  const maxIterationsRaw = getConfig<unknown>('maxIterations');
+  const maxIterationsParsed =
+    typeof maxIterationsRaw === 'number'
+      ? maxIterationsRaw
+      : typeof maxIterationsRaw === 'string'
+        ? Number(maxIterationsRaw)
+        : undefined;
+  const maxIterations =
+    maxIterationsParsed === -1
+      ? -1
+      : Number.isFinite(maxIterationsParsed as number) && (maxIterationsParsed as number) > 0
+        ? Math.floor(maxIterationsParsed as number)
+        : undefined;
 
   return {
     model: resolveConfiguredModelId(),
@@ -169,6 +182,7 @@ export function createAgentConfig(): AgentConfig {
     maxRetries,
     retryWithPartialOutput,
     maxOutputTokens,
+    maxIterations,
     autoApprove: getConfig('autoApprove') || false,
     toolFilter: normalizeToolFilterSetting(getConfig('toolFilter')),
   };

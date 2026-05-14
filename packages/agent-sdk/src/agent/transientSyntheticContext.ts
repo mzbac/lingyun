@@ -3,7 +3,7 @@ import {
   type AgentHistoryMessage,
 } from '@kooka/core';
 
-export type LingyunAgentTransientContextKind = 'explore' | 'memoryRecall';
+export type LingyunAgentTransientContextKind = 'explore' | 'memoryRecall' | 'goal';
 
 export type LingyunAgentSyntheticContext = {
   transientContext: LingyunAgentTransientContextKind;
@@ -36,13 +36,13 @@ function trimCompactionText(text: string, maxChars?: number): string {
 export function isTransientSyntheticMessage(message: AgentHistoryMessage): boolean {
   if (!message.metadata?.synthetic) return false;
   const tag = message.metadata.transientContext;
-  return tag === 'explore' || tag === 'memoryRecall';
+  return tag === 'explore' || tag === 'memoryRecall' || tag === 'goal';
 }
 
 export function isCompactionRestoredSyntheticMessage(message: AgentHistoryMessage): boolean {
   if (!message.metadata?.synthetic) return false;
   const source = message.metadata.compactionRestore?.source;
-  return source === 'sessionState' || source === 'explore' || source === 'memoryRecall';
+  return source === 'sessionState' || source === 'explore' || source === 'memoryRecall' || source === 'goal';
 }
 
 export function stripTransientSyntheticMessages(

@@ -5,8 +5,6 @@ import { appendErrorLog } from '../../core/logger';
 
 import { bindChatControllerService } from './controllerService';
 import { postWebviewInputNotice as postInputNotice } from './inputNotice';
-import type { ChatLoopManager } from './loopManager';
-import type { ChatLoopService } from './methods.loop';
 import type { ChatSessionsService } from './methods.sessions';
 import type { ChatWebviewService } from './methods.webview';
 import type { ChatMode } from './types';
@@ -22,8 +20,6 @@ export interface ChatModeDeps {
   mode: ChatMode;
   agent: Pick<AgentLoop, 'setMode'>;
   outputChannel?: vscode.OutputChannel;
-  loopManager: Pick<ChatLoopManager, 'syncActiveSession'>;
-  loopApi: Pick<ChatLoopService, 'postLoopState'>;
   sessionApi: Pick<ChatSessionsService, 'persistActiveSession'>;
   webviewApi: Pick<ChatWebviewService, 'postMessage'>;
 }
@@ -51,11 +47,6 @@ export function createChatModeService(controller: ChatModeDeps): ChatModeService
 
       if (changed && options?.notifyWebview !== false) {
         this.webviewApi.postMessage({ type: 'modeChanged', mode: nextMode });
-      }
-
-      if (changed) {
-        this.loopManager.syncActiveSession();
-        this.loopApi.postLoopState();
       }
 
       if (changed && options?.persistSession !== false) {

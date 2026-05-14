@@ -3,6 +3,7 @@ import * as vscode from 'vscode';
 import type {
   AgentCallbacks as SdkAgentCallbacks,
   AgentConfig as SdkAgentConfig,
+  LingyunSession,
   LLMProvider as SdkLLMProvider,
   SubagentEvent as SdkSubagentEvent,
   ToolCall as SdkToolCall,
@@ -25,8 +26,12 @@ export interface ToolContext {
   /**
    * Optional UI session identifier (set by the chat UI layer).
    * Used by stateful tools (e.g. todo) to scope persisted data.
-   */
+  */
   sessionId?: string;
+  /**
+   * Active SDK session when invoked by the agent. Manual UI tool runs do not have one.
+   */
+  agentSession?: LingyunSession;
   cancellationToken: vscode.CancellationToken;
   progress: vscode.Progress<{ message?: string; increment?: number }>;
   log: (message: string) => void;

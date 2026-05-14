@@ -13,7 +13,6 @@ import { loadAutoApprovedTools } from './autoApprovedToolsStore';
 import { installChatControllerComposition } from './controllerComposition';
 import type { ChatApprovalsService } from './methods.approvals';
 import type { ChatInputHistoryService } from './methods.inputHistory';
-import type { ChatLoopService } from './methods.loop';
 import type { ChatModeService } from './methods.mode';
 import type { ChatModelsService } from './methods.models';
 import type { ChatRevertService } from './methods.revert';
@@ -25,7 +24,6 @@ import type { ChatSkillsService } from './methods.skills';
 import type { ChatWebviewService } from './methods.webview';
 import type { ChatMessage, ChatMode, ChatSessionInfo } from './types';
 import type { PendingApprovalEntry } from './controllerPorts';
-import type { ChatLoopManager } from './loopManager';
 import type { ChatQueueManager } from './queueManager';
 import type { RunCoordinator } from './runner/runCoordinator';
 
@@ -87,7 +85,6 @@ export class ChatController {
 
   approvalsApi!: ChatApprovalsService;
   inputHistoryApi!: ChatInputHistoryService;
-  loopApi!: ChatLoopService;
   modeApi!: ChatModeService;
   modelApi!: ChatModelsService;
   revertApi!: ChatRevertService;
@@ -97,7 +94,6 @@ export class ChatController {
   sessionApi!: ChatSessionsService;
   skillsApi!: ChatSkillsService;
   webviewApi!: ChatWebviewService;
-  loopManager!: ChatLoopManager;
   queueManager!: ChatQueueManager;
   runner!: RunCoordinator;
 

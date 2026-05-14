@@ -9,7 +9,6 @@ import { bindChatControllerService } from './controllerService';
 import type { AgentLoop } from '../../core/agent';
 import type { ChatController } from './controller';
 import type { PendingApprovalEntry } from './controllerPorts';
-import type { ChatLoopManager } from './loopManager';
 import type { ChatSessionsService } from './methods.sessions';
 import { postInputNotice } from './inputNotice';
 
@@ -80,11 +79,9 @@ export interface ChatRevertDeps {
   mode: 'build' | 'plan';
   pendingApprovals: Map<string, PendingApprovalEntry>;
   agent: Pick<AgentLoop, 'clear' | 'exportState' | 'syncSession'>;
-  loopManager: Pick<ChatLoopManager, 'releaseSession' | 'syncActiveSession'>;
   ensureSessionsLoaded(): Promise<void>;
   getActiveSession(): ReturnType<ChatSessionsService['getActiveSession']>;
   persistActiveSession(): void;
-  postLoopState(session?: ReturnType<ChatSessionsService['getActiveSession']>): void;
   sendInit(force?: boolean): Promise<void>;
   postMessage(message: unknown): void;
 }
@@ -312,14 +309,12 @@ export function createChatRevertService(controller: ChatRevertDeps): ChatRevertS
     session.revert = undefined;
     this.pendingApprovals.clear();
     session.pendingPlan = derivePendingPlanFromMessages(this.messages, { fallback: previousPendingPlan });
-    this.loopManager.syncActiveSession();
     this.persistActiveSession();
     this.postMessage({
       type: 'planPending',
       value: !!session.pendingPlan,
       planMessageId: session.pendingPlan?.planMessageId ?? '',
     });
-    this.postLoopState(session);
     this.postRevertBarState();
   },
 
@@ -446,7 +441,6 @@ export function createChatRevertService(controller: ChatRevertDeps): ChatRevertS
         beforeIndex: boundaryIndex,
         fallback: baselinePendingPlan,
       });
-      this.loopManager.syncActiveSession();
       this.persistActiveSession();
       await this.sendInit(true);
     } catch (error) {
@@ -478,7 +472,6 @@ export function createChatRevertService(controller: ChatRevertDeps): ChatRevertS
 
       session.pendingPlan = revert.baselinePendingPlan;
       session.revert = undefined;
-      this.loopManager.syncActiveSession();
       this.persistActiveSession();
       await this.sendInit(true);
     } catch (error) {
@@ -526,13 +519,9 @@ function createChatRevertDepsForController(controller: ChatController): ChatReve
     get agent() {
       return controller.agent;
     },
-    get loopManager() {
-      return controller.loopManager;
-    },
     ensureSessionsLoaded: () => controller.sessionApi.ensureSessionsLoaded(),
     getActiveSession: () => controller.sessionApi.getActiveSession(),
     persistActiveSession: () => controller.sessionApi.persistActiveSession(),
-    postLoopState: () => controller.loopApi.postLoopState(),
     sendInit: (force?: boolean) => controller.webviewApi.sendInit(force),
     postMessage: (message: unknown) => controller.webviewApi.postMessage(message),
   };

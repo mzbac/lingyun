@@ -5,10 +5,14 @@ import {
   cloneSemanticHandlesState,
   createBlankFileHandlesState,
   createBlankSemanticHandlesState,
+  cloneThreadGoal,
   LingyunAgent,
   LingyunSession,
   normalizeFileHandlesState,
+  normalizeThreadGoal,
   normalizeSystemPromptSnapshot,
+  type LingyunThreadGoal,
+  type LingyunThreadGoalStatus,
   type LingyunCompactionSyntheticContext,
 } from '@kooka/agent-sdk';
 import type { AgentConfig as SdkAgentConfig } from '@kooka/agent-sdk';
@@ -38,11 +42,14 @@ import { VsCodeAgentRuntimePolicy } from './runtimePolicy';
 
 type SemanticHandlesState = NonNullable<LingyunSession['semanticHandles']>;
 
+const MAX_THREAD_GOAL_OBJECTIVE_CHARS = 4000;
+
 export type AgentSessionState = {
   history: AgentHistoryMessage[];
   fileHandles?: LingyunSession['fileHandles'];
   semanticHandles?: SemanticHandlesState;
   mentionedSkills?: string[];
+  threadGoal?: LingyunThreadGoal;
   systemPromptSnapshot?: string[];
   stats?: AgentHistoryStats;
   pendingInputs?: UserHistoryInput[];
@@ -150,6 +157,7 @@ export class AgentLoop {
       fileHandles,
       semanticHandles: cloneSemanticHandlesState(this.session.semanticHandles),
       mentionedSkills: [...(this.session.mentionedSkills || [])],
+      ...(this.session.threadGoal ? { threadGoal: cloneThreadGoal(this.session.threadGoal) } : {}),
       ...(systemPromptSnapshot ? { systemPromptSnapshot } : {}),
       stats: this.session.getStats(),
       pendingInputs: this.session.getPendingInputs().map((input) => cloneUserHistoryInput(input)),
@@ -174,6 +182,7 @@ export class AgentLoop {
     const history = Array.isArray(state.history) ? cloneAgentHistoryMessages(state.history) : [];
     this.session.history = history;
     this.session.setMentionedSkills(state.mentionedSkills);
+    this.session.threadGoal = cloneThreadGoal(normalizeThreadGoal(state.threadGoal));
     this.session.setSystemPromptSnapshot(normalizeSystemPromptSnapshot(state.systemPromptSnapshot));
     this.session.setPendingInputs(
       Array.isArray(state.pendingInputs)
@@ -189,7 +198,8 @@ export class AgentLoop {
               !!context &&
               typeof context === 'object' &&
               ((context as any).transientContext === 'explore' ||
-                (context as any).transientContext === 'memoryRecall') &&
+                (context as any).transientContext === 'memoryRecall' ||
+                (context as any).transientContext === 'goal') &&
               typeof (context as any).text === 'string',
           )
           .map((context) => ({ ...context }))
@@ -208,6 +218,70 @@ export class AgentLoop {
 
   getHistory(): AgentHistoryMessage[] {
     return cloneAgentHistoryMessages(this.session.history);
+  }
+
+  getThreadGoal(): LingyunThreadGoal | undefined {
+    return cloneThreadGoal(this.session.threadGoal);
+  }
+
+  setThreadGoal(goal: LingyunThreadGoal | undefined): void {
+    this.session.threadGoal = cloneThreadGoal(normalizeThreadGoal(goal));
+  }
+
+  setThreadGoalObjective(params: {
+    objective: string;
+    tokenBudget?: number;
+    status?: LingyunThreadGoalStatus;
+    replaceExisting?: boolean;
+    preserveUsage?: boolean;
+  }): LingyunThreadGoal {
+    const objective = String(params.objective || '').trim();
+    if (!objective) {
+      throw new Error('Goal objective must not be empty.');
+    }
+    if ([...objective].length > MAX_THREAD_GOAL_OBJECTIVE_CHARS) {
+      throw new Error(`Goal objective must be at most ${MAX_THREAD_GOAL_OBJECTIVE_CHARS} characters.`);
+    }
+
+    const now = Date.now();
+    const existing = this.session.threadGoal;
+    if (existing && !params.replaceExisting) {
+      throw new Error('This session already has a goal. Use /goal edit to replace it, or /goal clear first.');
+    }
+    const preserveUsage = !!params.replaceExisting && !!params.preserveUsage;
+
+    const tokenBudget =
+      typeof params.tokenBudget === 'number' && Number.isFinite(params.tokenBudget) && params.tokenBudget > 0
+        ? Math.floor(params.tokenBudget)
+        : undefined;
+    const goal: LingyunThreadGoal = {
+      id: preserveUsage && existing?.id ? existing.id : crypto.randomUUID(),
+      ...(this.session.sessionId ? { sessionId: this.session.sessionId } : {}),
+      objective,
+      status: params.status ?? (preserveUsage && existing?.status === 'paused' ? 'paused' : 'active'),
+      ...(tokenBudget ? { tokenBudget } : preserveUsage && existing?.tokenBudget ? { tokenBudget: existing.tokenBudget } : {}),
+      tokensUsed: preserveUsage ? existing?.tokensUsed ?? 0 : 0,
+      timeUsedSeconds: preserveUsage ? existing?.timeUsedSeconds ?? 0 : 0,
+      createdAt: preserveUsage ? existing?.createdAt ?? now : now,
+      updatedAt: now,
+    };
+
+    this.session.threadGoal = goal;
+    return cloneThreadGoal(goal)!;
+  }
+
+  updateThreadGoalStatus(status: LingyunThreadGoalStatus): LingyunThreadGoal {
+    const goal = this.session.threadGoal;
+    if (!goal) {
+      throw new Error('No goal is set for this session.');
+    }
+    goal.status = status;
+    goal.updatedAt = Date.now();
+    return cloneThreadGoal(goal)!;
+  }
+
+  clearThreadGoal(): void {
+    this.session.threadGoal = undefined;
   }
 
   setMode(mode: 'build' | 'plan'): void {
@@ -274,6 +348,9 @@ export class AgentLoop {
   }
 
   private async withRun<T>(fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    const startedAt = Date.now();
+    const statsBefore = this.session.getStats();
+    const activeGoalId = this.session.threadGoal?.status === 'active' ? this.session.threadGoal.id : undefined;
     const signal = this.startRun();
     try {
       return await fn(signal);
@@ -285,8 +362,27 @@ export class AgentLoop {
       }
       throw error;
     } finally {
+      this.accountActiveGoalUsage(startedAt, statsBefore.totalTokens, activeGoalId);
       this.endRun();
     }
+  }
+
+  private accountActiveGoalUsage(startedAt: number, totalTokensBefore: number, activeGoalId: string | undefined): void {
+    if (!activeGoalId) return;
+    const goal = this.session.threadGoal;
+    if (!goal || goal.id !== activeGoalId) return;
+
+    const elapsedSeconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+    const totalTokensAfter = this.session.getStats().totalTokens;
+    const tokenDelta = Math.max(0, totalTokensAfter - Math.max(0, totalTokensBefore));
+    if (elapsedSeconds === 0 && tokenDelta === 0) return;
+
+    goal.tokensUsed = Math.max(0, Math.floor(goal.tokensUsed + tokenDelta));
+    goal.timeUsedSeconds = Math.max(0, Math.floor(goal.timeUsedSeconds + elapsedSeconds));
+    if (goal.status === 'active' && goal.tokenBudget && goal.tokensUsed >= goal.tokenBudget) {
+      goal.status = 'budget_limited';
+    }
+    goal.updatedAt = Date.now();
   }
 
   async plan(task: UserHistoryInput, callbacks?: AgentCallbacks): Promise<string> {
@@ -338,6 +434,7 @@ export class AgentLoop {
       subagentType: this.sessionMetadata.subagentType,
       modelId: this.config.model,
       mentionedSkills: [...(this.session.mentionedSkills || [])],
+      threadGoal: this.session.threadGoal,
       fileHandles: createBlankFileHandlesState(),
       semanticHandles: createBlankSemanticHandlesState(),
     });
@@ -398,6 +495,10 @@ export class AgentLoop {
   }
 
   abort(): void {
+    if (this.session.threadGoal?.status === 'active') {
+      this.session.threadGoal.status = 'paused';
+      this.session.threadGoal.updatedAt = Date.now();
+    }
     this.activeAbortController?.abort();
   }
 

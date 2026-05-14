@@ -678,6 +678,127 @@ suite('LingYun Agent SDK', () => {
     assert.strictEqual(getMessageText(finalAssistant).trim(), 'done');
   });
 
+  test('uses configured maxIterations for tool-call loops', async () => {
+    const llm = new MockLLMProvider();
+    const registry = new ToolRegistry();
+
+    registry.registerTool(
+      {
+        id: 'test_echo',
+        name: 'Echo',
+        description: 'Echoes back input',
+        parameters: {
+          type: 'object',
+          properties: { message: { type: 'string' } },
+          required: ['message'],
+        },
+        execution: { type: 'function', handler: 'test_echo' },
+      },
+      async (args): Promise<ToolResult> => ({
+        success: true,
+        data: `Echo: ${String(args.message)}`,
+      })
+    );
+
+    llm.queueResponse({
+      kind: 'tool-call',
+      toolCallId: 'call_1',
+      toolName: 'test_echo',
+      input: { message: 'first' },
+      finishReason: 'tool-calls',
+    });
+    llm.queueResponse({
+      kind: 'tool-call',
+      toolCallId: 'call_2',
+      toolName: 'test_echo',
+      input: { message: 'second' },
+      finishReason: 'tool-calls',
+    });
+    llm.queueResponse({ kind: 'text', content: 'done' });
+
+    const agent = new LingyunAgent(llm, { model: 'mock-model', maxIterations: 2 }, registry, {
+      allowExternalPaths: false,
+    });
+    const session = new LingyunSession();
+
+    const run = agent.run({ session, input: 'keep using tools' });
+    for await (const _event of run.events) {
+      // drain
+    }
+    const result = await run.done;
+
+    assert.strictEqual(llm.callCount, 2);
+    assert.strictEqual(result.text, '');
+    assert.ok(
+      session
+        .getHistory()
+        .some(
+          (m) =>
+            m.role === 'assistant' &&
+            m.parts.some((p: any) => p.type === 'dynamic-tool' && p.toolCallId === 'call_2'),
+        ),
+      'expected second tool call to run before the configured cap',
+    );
+  });
+
+  test('treats maxIterations -1 as unlimited', async () => {
+    const llm = new MockLLMProvider();
+    const registry = new ToolRegistry();
+
+    registry.registerTool(
+      {
+        id: 'test_echo',
+        name: 'Echo',
+        description: 'Echoes back input',
+        parameters: {
+          type: 'object',
+          properties: { message: { type: 'string' } },
+          required: ['message'],
+        },
+        execution: { type: 'function', handler: 'test_echo' },
+      },
+      async (args): Promise<ToolResult> => ({
+        success: true,
+        data: `Echo: ${String(args.message)}`,
+      })
+    );
+
+    for (let i = 1; i <= 55; i++) {
+      llm.queueResponse({
+        kind: 'tool-call',
+        toolCallId: `call_${i}`,
+        toolName: 'test_echo',
+        input: { message: `iteration ${i}` },
+        finishReason: 'tool-calls',
+      });
+    }
+    llm.queueResponse({ kind: 'text', content: 'done' });
+
+    const agent = new LingyunAgent(llm, { model: 'mock-model', maxIterations: -1 }, registry, {
+      allowExternalPaths: false,
+    });
+    const session = new LingyunSession();
+
+    const run = agent.run({ session, input: 'keep using tools past default cap' });
+    for await (const _event of run.events) {
+      // drain
+    }
+    const result = await run.done;
+
+    assert.strictEqual(llm.callCount, 56);
+    assert.strictEqual(result.text, 'done');
+    assert.ok(
+      session
+        .getHistory()
+        .some(
+          (m) =>
+            m.role === 'assistant' &&
+            m.parts.some((p: any) => p.type === 'dynamic-tool' && p.toolCallId === 'call_55'),
+        ),
+      'expected the run to continue beyond the default 50-iteration cap',
+    );
+  });
+
   test('normalizes mentioned skills inside session state', () => {
     const session = new LingyunSession({ mentionedSkills: ['skill-1', '', '  skill-2  ', 'skill-1', '   '] as any });
     assert.deepStrictEqual(session.mentionedSkills, ['skill-1', 'skill-2']);
@@ -3523,7 +3644,7 @@ suite('LingYun Agent SDK', () => {
     registerTaskTool(registry);
 
     const runs = 2;
-    const perRun = 30; // maxIterations is 50; keep each run under the limit.
+    const perRun = 30; // default maxIterations is 50; keep each run under the limit.
     let counter = 0;
 
     for (let run = 1; run <= runs; run++) {

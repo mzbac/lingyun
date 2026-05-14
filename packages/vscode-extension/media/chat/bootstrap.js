@@ -9,6 +9,8 @@
 			    const empty = document.getElementById('empty');
 	    const input = document.getElementById('input');
 	    const skillDropdown = document.getElementById('skillDropdown');
+	    const goalCommandSuggestion = document.getElementById('goalCommandSuggestion');
+	    const goalCommandInsert = document.getElementById('goalCommandInsert');
 	    const liveRegion = document.getElementById('liveRegion');
 
 	    const skillsToggleLabel = document.getElementById('skillsToggleLabel');
@@ -30,29 +32,10 @@
 		    const queueItems = document.getElementById('queueItems');
 		    const queueClearBtn = document.getElementById('queueClear');
 			    const sendBtn = document.getElementById('send');
-			    const stopBtn = document.getElementById('stop');
-		    const newSessionBtn = document.getElementById('newSession');
-		    const compactSessionBtn = document.getElementById('compactSession');
-		    const loopControlBtn = document.getElementById('loopControl');
-	    const loopSettingsPopover = document.getElementById('loopSettingsPopover');
-	    const loopSettingsClose = document.getElementById('loopSettingsClose');
-	    const loopEnabledLabel = document.getElementById('loopEnabledLabel');
-	    const loopEnabledToggle = document.getElementById('loopEnabledToggle');
-	    const loopStatusHint = document.getElementById('loopStatusHint');
-	    const loopIntervalLabel = document.getElementById('loopIntervalLabel');
-	    const loopIntervalInput = document.getElementById('loopIntervalInput');
-	    const loopPromptLabel = document.getElementById('loopPromptLabel');
-	    const loopPromptInput = document.getElementById('loopPromptInput');
-	    const loopResetDefaults = document.getElementById('loopResetDefaults');
-	    const loopSettingsApply = document.getElementById('loopSettingsApply');
-	    const loopDefaultEnabledLabel = document.getElementById('loopDefaultEnabledLabel');
-	    const loopDefaultEnabledToggle = document.getElementById('loopDefaultEnabledToggle');
-	    const loopDefaultIntervalLabel = document.getElementById('loopDefaultIntervalLabel');
-	    const loopDefaultIntervalInput = document.getElementById('loopDefaultIntervalInput');
-	    const loopDefaultPromptLabel = document.getElementById('loopDefaultPromptLabel');
-	    const loopDefaultPromptInput = document.getElementById('loopDefaultPromptInput');
-	    const loopDefaultsApply = document.getElementById('loopDefaultsApply');
-		    const undoBtn = document.getElementById('undo');
+		    const stopBtn = document.getElementById('stop');
+	    const newSessionBtn = document.getElementById('newSession');
+	    const compactSessionBtn = document.getElementById('compactSession');
+	    const undoBtn = document.getElementById('undo');
 		    const redoBtn = document.getElementById('redo');
 	    const clearInputBtn = document.getElementById('clearInput');
 	    const attachImageButton = document.getElementById('attachImageButton');
@@ -172,6 +155,7 @@
 	    const topKLabel = document.getElementById('topKLabel');
 	    const topKInput = document.getElementById('topKInput');
 	    const maxOutputTokensInput = document.getElementById('maxOutputTokensInput');
+	    const maxIterationsInput = document.getElementById('maxIterationsInput');
 	    const textVerbosityLabel = document.getElementById('textVerbosityLabel');
 	    const textVerbositySelect = document.getElementById('textVerbositySelect');
 	    const maxRetriesInput = document.getElementById('maxRetriesInput');
@@ -328,6 +312,7 @@
 			    let generationTopP = 0;
 			    let generationTopK = 0;
 			    let generationMaxOutputTokens = 32000;
+			    let generationMaxIterations = 50;
 			    let generationTextVerbosity = '';
 			    let generationMaxRetries = 2;
 			    let generationRetryWithPartialOutput = false;
@@ -401,7 +386,7 @@
 			    let compactionPruneProtectTokens = 40000;
 			    let compactionPruneMinimumTokens = 20000;
 			    let compactionToolOutputMode = 'afterToolCall';
-			    let currentProviderAuth = {
+		    let currentProviderAuth = {
 			      providerId: '',
 			      providerName: '',
 			      supported: false,
@@ -412,27 +397,11 @@
 			      accountLabel: '',
 			      primaryActionLabel: '',
 			      secondaryActionLabel: '',
-			    };
-			    let providerAuthBusy = false;
-			    let currentMode = 'build';
-			    let modeSwitchPending = false;
-		    let currentLoop = {
-		      available: true,
-		      enabled: false,
-		      canRunNow: false,
-		      intervalMinutes: 5,
-		      prompt: '',
-		      reason: 'disabled',
-		      statusText: 'Loop is off for this session.',
-		      lastFiredAt: undefined,
-		      nextFireAt: undefined,
 		    };
-	    let loopDefaults = {
-	      enabled: false,
-	      intervalMinutes: 5,
-	      prompt: 'review your recent activity - has it been in alignment with our principles? ./AGENTS.md',
-	    };
-			    let currentOperation = null;
+		    let providerAuthBusy = false;
+		    let currentMode = 'build';
+		    let modeSwitchPending = false;
+		    let currentOperation = null;
 		    let operationTimer = null;
 		    let pendingApprovalsCount = 0;
 		    let manualApprovalsCount = 0;
@@ -698,6 +667,33 @@
 	      if (!name) return false;
 	      applySkillSuggestion(name);
 	      return true;
+	    }
+
+	    function shouldShowGoalCommandSuggestion() {
+	      if (!input || !initReceived) return false;
+	      const token = String(input.value || '').trimStart();
+	      return token.startsWith('/') && !/\s/.test(token) && '/goal'.startsWith(token.toLowerCase());
+	    }
+
+	    function updateGoalCommandSuggestion() {
+	      if (!goalCommandSuggestion) return;
+	      goalCommandSuggestion.classList.toggle('hidden', !shouldShowGoalCommandSuggestion());
+	    }
+
+	    function insertGoalCommand() {
+	      if (!input) return;
+	      const current = String(input.value || '');
+	      const next = current.trimStart().toLowerCase().startsWith('/goal') ? current : '/goal ';
+	      inputHistoryIndex = -1;
+	      inputHistorySavedDraft = null;
+	      input.value = next;
+	      const caret = next.length;
+	      updateInputLayout();
+	      closeSkillDropdown();
+	      updateGoalCommandSuggestion();
+	      syncInputState();
+	      try { input.focus(); } catch {}
+	      try { input.setSelectionRange(caret, caret); } catch {}
 	    }
 
 	    function setInputHistoryEntries(entries) {
@@ -1109,6 +1105,7 @@
       if (topKInput) topKInput.disabled = disabled;
       if (topKLabel) topKLabel.classList.toggle('disabled', !!disabled);
       if (maxOutputTokensInput) maxOutputTokensInput.disabled = disabled;
+      if (maxIterationsInput) maxIterationsInput.disabled = disabled;
       if (textVerbositySelect) textVerbositySelect.disabled = disabled;
       if (textVerbosityLabel) textVerbosityLabel.classList.toggle('disabled', !!disabled);
       if (maxRetriesInput) maxRetriesInput.disabled = disabled;
@@ -1175,7 +1172,6 @@
           sessionClearSavedBtn.disabled = true;
         }
         setInstructionFileInputsDisabled(true);
-        setLoopInputsDisabled(true);
         if (thinkingToggle) {
           thinkingToggle.disabled = true;
         }
@@ -1343,8 +1339,7 @@
 	      sessionClearSavedBtn.disabled = true;
 	    }
 	    setInstructionFileInputsDisabled(true);
-	    setLoopInputsDisabled(true);
-	    if (thinkingToggle) {
+    if (thinkingToggle) {
 	      thinkingToggle.disabled = true;
 	    }
 	    if (thinkingLabel) {
@@ -1474,256 +1469,7 @@
 	      warning: '!',
 	    };
 
-	    function formatLoopIntervalText(intervalMinutes) {
-	      const minutes = Number(intervalMinutes);
-	      const normalized = Number.isFinite(minutes) && minutes >= 1 ? Math.floor(minutes) : 5;
-	      if (normalized === 60) return 'every hour';
-	      if (normalized % 60 === 0 && normalized > 60) return 'every ' + (normalized / 60) + ' hours';
-	      if (normalized === 1) return 'every minute';
-	      return 'every ' + normalized + ' minutes';
-	    }
-
-	    function normalizeLoopSettings(raw, fallback) {
-	      const source = raw && typeof raw === 'object' ? raw : {};
-	      const base = fallback && typeof fallback === 'object' ? fallback : {};
-	      const parsedInterval = Number(source.intervalMinutes);
-	      const fallbackInterval = Number(base.intervalMinutes);
-	      const intervalMinutes = Number.isFinite(parsedInterval) && parsedInterval >= 1
-	        ? Math.min(1440, Math.floor(parsedInterval))
-	        : Number.isFinite(fallbackInterval) && fallbackInterval >= 1
-	          ? Math.min(1440, Math.floor(fallbackInterval))
-	          : 5;
-	      const prompt = typeof source.prompt === 'string' && source.prompt.trim()
-	        ? source.prompt.trim()
-	        : typeof base.prompt === 'string' && base.prompt.trim()
-	          ? base.prompt.trim()
-	          : 'review your recent activity - has it been in alignment with our principles? ./AGENTS.md';
-	      return {
-	        enabled: typeof source.enabled === 'boolean' ? source.enabled : !!base.enabled,
-	        intervalMinutes,
-	        prompt,
-	      };
-	    }
-
-	    function updateLoopSessionInputs() {
-	      if (loopEnabledToggle) loopEnabledToggle.checked = !!currentLoop.enabled;
-	      if (loopIntervalInput) loopIntervalInput.value = String(currentLoop.intervalMinutes || 5);
-	      if (loopPromptInput) loopPromptInput.value = currentLoop.prompt || '';
-	      if (loopStatusHint) loopStatusHint.textContent = currentLoop.statusText || 'Loop is off for this session.';
-	      if (loopEnabledLabel) loopEnabledLabel.title = currentLoop.enabled
-	        ? 'Loop steering is enabled for this session.'
-	        : 'Loop steering is disabled for this session.';
-	      if (loopIntervalLabel) loopIntervalLabel.title = 'Session loop interval: ' + formatLoopIntervalText(currentLoop.intervalMinutes) + '.';
-	      if (loopPromptLabel) loopPromptLabel.title = currentLoop.prompt
-	        ? 'Session loop prompt: ' + currentLoop.prompt
-	        : 'Prompt injected on each loop tick.';
-	    }
-
-	    function updateLoopDefaultsState(defaults) {
-	      loopDefaults = normalizeLoopSettings(defaults, loopDefaults);
-	      if (loopDefaultEnabledToggle) loopDefaultEnabledToggle.checked = !!loopDefaults.enabled;
-	      if (loopDefaultIntervalInput) loopDefaultIntervalInput.value = String(loopDefaults.intervalMinutes || 5);
-	      if (loopDefaultPromptInput) loopDefaultPromptInput.value = loopDefaults.prompt || '';
-	      if (loopDefaultEnabledLabel) loopDefaultEnabledLabel.title = loopDefaults.enabled
-	        ? 'New sessions default to loop steering on.'
-	        : 'New sessions default to loop steering off.';
-	      if (loopDefaultIntervalLabel) loopDefaultIntervalLabel.title = 'Default loop interval: ' + formatLoopIntervalText(loopDefaults.intervalMinutes) + '.';
-	      if (loopDefaultPromptLabel) loopDefaultPromptLabel.title = loopDefaults.prompt
-	        ? 'Default loop prompt: ' + loopDefaults.prompt
-	        : 'Default loop prompt.';
-	    }
-
-	    function setLoopState(loop) {
-	      const next = loop && typeof loop === 'object' ? loop : {};
-	      const parsedInterval = Number(next.intervalMinutes);
-	      currentLoop = {
-	        available: next.available !== false,
-	        enabled: !!next.enabled,
-	        canRunNow: !!next.canRunNow,
-	        intervalMinutes: Number.isFinite(parsedInterval) && parsedInterval > 0 ? Math.min(1440, Math.floor(parsedInterval)) : 5,
-	        prompt: typeof next.prompt === 'string' ? next.prompt : '',
-	        reason: typeof next.reason === 'string' ? next.reason : 'disabled',
-	        statusText:
-	          typeof next.statusText === 'string' && next.statusText.trim()
-	            ? next.statusText.trim()
-	            : 'Loop is off for this session.',
-	        lastFiredAt:
-	          typeof next.lastFiredAt === 'number' && Number.isFinite(next.lastFiredAt)
-	            ? next.lastFiredAt
-	            : undefined,
-	        nextFireAt:
-	          typeof next.nextFireAt === 'number' && Number.isFinite(next.nextFireAt)
-	            ? next.nextFireAt
-	            : undefined,
-	      };
-	      updateLoopSessionInputs();
-	      updateLoopControl();
-	    }
-
-	    function updateLoopControl() {
-	      if (!loopControlBtn) return;
-	      const available = currentLoop.available !== false;
-	      const intervalText = formatLoopIntervalText(currentLoop.intervalMinutes);
-	      const nextFireText =
-	        typeof currentLoop.nextFireAt === 'number'
-	          ? new Date(currentLoop.nextFireAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-	          : '';
-
-	      loopControlBtn.classList.toggle('active', available && currentLoop.enabled);
-	      loopControlBtn.setAttribute(
-	        'aria-pressed',
-	        available && currentLoop.enabled ? 'true' : 'false'
-	      );
-
-	      if (!available) {
-	        loopControlBtn.title = 'Loop steering is unavailable for subagent sessions';
-	        loopControlBtn.setAttribute('aria-label', 'Loop steering unavailable');
-	        return;
-	      }
-
-	      if (!currentLoop.enabled) {
-	        loopControlBtn.title = 'Loop off. Click to configure. Current interval: ' + intervalText + '.';
-	        loopControlBtn.setAttribute('aria-label', 'Loop steering off. Click to configure.');
-	        return;
-	      }
-
-	      if (currentLoop.canRunNow) {
-	        loopControlBtn.title = 'Loop on, ' + intervalText + (nextFireText ? (', next ' + nextFireText) : '') + '. Click to configure.';
-	        loopControlBtn.setAttribute('aria-label', 'Loop steering on. ' + intervalText + '. Click to configure.');
-	        return;
-	      }
-
-	      loopControlBtn.title = currentLoop.statusText + ' Current interval: ' + intervalText + '. Click to configure.';
-	      loopControlBtn.setAttribute('aria-label', 'Loop steering on. ' + currentLoop.statusText);
-	    }
-
-	    function setLoopInputsDisabled(disabled) {
-	      [
-	        loopEnabledToggle,
-	        loopIntervalInput,
-	        loopPromptInput,
-	        loopResetDefaults,
-	        loopSettingsApply,
-	        loopDefaultEnabledToggle,
-	        loopDefaultIntervalInput,
-	        loopDefaultPromptInput,
-	        loopDefaultsApply,
-	      ].forEach((el) => {
-	        if (el) el.disabled = !!disabled;
-	      });
-	      [
-	        loopEnabledLabel,
-	        loopIntervalLabel,
-	        loopPromptLabel,
-	        loopDefaultEnabledLabel,
-	        loopDefaultIntervalLabel,
-	        loopDefaultPromptLabel,
-	      ].forEach((el) => {
-	        if (el) el.classList.toggle('disabled', !!disabled);
-	      });
-	    }
-
-	    function closeLoopSettingsPopover() {
-	      if (loopSettingsPopover) loopSettingsPopover.classList.add('hidden');
-	    }
-
-	    function openLoopSettingsPopover() {
-	      if (!loopSettingsPopover || currentLoop.available === false) return;
-	      clearInvalidFields([loopIntervalInput, loopPromptInput, loopDefaultIntervalInput, loopDefaultPromptInput]);
-	      updateLoopSessionInputs();
-	      updateLoopDefaultsState(loopDefaults);
-	      loopSettingsPopover.classList.remove('hidden');
-	    }
-
-	    function toggleLoopSettingsPopover() {
-	      if (!loopSettingsPopover) return;
-	      if (loopSettingsPopover.classList.contains('hidden')) {
-	        openLoopSettingsPopover();
-	      } else {
-	        closeLoopSettingsPopover();
-	      }
-	    }
-
-	    function applyLoopSettings() {
-	      if (!initReceived || isProcessing || currentLoop.available === false || hasPendingSettingState('loopState')) {
-	        updateLoopSessionInputs();
-	        updateLoopControl();
-	        clearInvalidFields([loopIntervalInput, loopPromptInput]);
-	        return;
-	      }
-	      const intervalMinutes = Number(loopIntervalInput ? loopIntervalInput.value : currentLoop.intervalMinutes);
-	      const prompt = loopPromptInput ? String(loopPromptInput.value || '').trim() : currentLoop.prompt;
-	      if (!Number.isFinite(intervalMinutes) || intervalMinutes < 1 || intervalMinutes > 1440) {
-	        markInvalidField(loopIntervalInput, 'Loop interval must be between 1 and 1440 minutes.');
-	        return;
-	      }
-	      if (!prompt) {
-	        markInvalidField(loopPromptInput, 'Loop prompt cannot be empty.');
-	        return;
-	      }
-	      clearInvalidFields([loopIntervalInput, loopPromptInput]);
-	      const settings = {
-	        enabled: !!(loopEnabledToggle && loopEnabledToggle.checked),
-	        intervalMinutes: Math.floor(intervalMinutes),
-	        prompt,
-	      };
-	      postSettingWithPendingState(
-	        'loopState',
-	        { type: 'setLoopSettings', settings },
-	        () => {
-	          updateLoopSessionInputs();
-	          updateLoopControl();
-	        }
-	      );
-	    }
-
-	    function resetLoopSettings() {
-	      if (!initReceived || isProcessing || currentLoop.available === false || hasPendingSettingState('loopState')) {
-	        updateLoopSessionInputs();
-	        updateLoopControl();
-	        return;
-	      }
-	      clearInvalidFields([loopIntervalInput, loopPromptInput]);
-	      postSettingWithPendingState(
-	        'loopState',
-	        { type: 'resetLoopSettings' },
-	        () => {
-	          updateLoopSessionInputs();
-	          updateLoopControl();
-	        }
-	      );
-	    }
-
-	    function applyLoopDefaults() {
-	      if (!initReceived || isProcessing || hasPendingSettingState('loopDefaultsState')) {
-	        updateLoopDefaultsState(loopDefaults);
-	        clearInvalidFields([loopDefaultIntervalInput, loopDefaultPromptInput]);
-	        return;
-	      }
-	      const intervalMinutes = Number(loopDefaultIntervalInput ? loopDefaultIntervalInput.value : loopDefaults.intervalMinutes);
-	      const prompt = loopDefaultPromptInput ? String(loopDefaultPromptInput.value || '').trim() : loopDefaults.prompt;
-	      if (!Number.isFinite(intervalMinutes) || intervalMinutes < 1 || intervalMinutes > 1440) {
-	        markInvalidField(loopDefaultIntervalInput, 'Default loop interval must be between 1 and 1440 minutes.');
-	        return;
-	      }
-	      if (!prompt) {
-	        markInvalidField(loopDefaultPromptInput, 'Default loop prompt cannot be empty.');
-	        return;
-	      }
-	      clearInvalidFields([loopDefaultIntervalInput, loopDefaultPromptInput]);
-	      const settings = {
-	        enabled: !!(loopDefaultEnabledToggle && loopDefaultEnabledToggle.checked),
-	        intervalMinutes: Math.floor(intervalMinutes),
-	        prompt,
-	      };
-	      postSettingWithPendingState(
-	        'loopDefaultsState',
-	        { type: 'setLoopDefaults', settings },
-	        () => updateLoopDefaultsState(loopDefaults)
-	      );
-	    }
-
-	    function normalizeProviderId(value) {
+    function normalizeProviderId(value) {
 	      const id = String(value || '').trim();
 	      return ['copilot', 'codexSubscription', 'openaiCompatible'].indexOf(id) >= 0 ? id : 'copilot';
 	    }
@@ -1951,12 +1697,14 @@
 	      const topP = Number(next.topP);
 	      const topK = Number(next.topK);
 	      const max = Number(next.maxOutputTokens);
+	      const iterations = Number(next.maxIterations);
 	      const retries = Number(next.maxRetries);
 	      const timeoutMs = Number(next.timeoutMs);
 	      generationTemperature = Number.isFinite(temp) ? Math.max(0, Math.min(2, temp)) : 0;
 	      generationTopP = Number.isFinite(topP) ? Math.max(0, Math.min(1, topP)) : 0;
 	      generationTopK = Number.isFinite(topK) && topK > 0 ? Math.floor(topK) : 0;
 	      generationMaxOutputTokens = Number.isFinite(max) && max > 0 ? Math.floor(max) : 32000;
+	      generationMaxIterations = iterations === -1 ? -1 : Number.isFinite(iterations) && iterations > 0 ? Math.floor(iterations) : 50;
 	      generationTextVerbosity = normalizeTextVerbosity(next.textVerbosity);
 	      generationMaxRetries = Number.isFinite(retries) && retries >= 0 ? Math.floor(retries) : 2;
 	      generationRetryWithPartialOutput = !!next.retryWithPartialOutput;
@@ -1983,6 +1731,9 @@
 	      if (maxOutputTokensInput) {
 	        maxOutputTokensInput.value = String(generationMaxOutputTokens);
 	      }
+	      if (maxIterationsInput) {
+	        maxIterationsInput.value = String(generationMaxIterations);
+	      }
 	      if (textVerbositySelect) {
 	        textVerbositySelect.value = generationTextVerbosity;
 	      }
@@ -2006,7 +1757,7 @@
 	          : 'Partial-output retry is off: transient streaming failures after partial output are shown for manual retry.';
 	      }
 	      if (modelSettings) {
-	        modelSettings.title = 'Generation settings: temperature ' + generationTemperature + ', top-p ' + (generationTopP || 'default') + ', top-k ' + (generationTopK || 'default') + ', max output ' + generationMaxOutputTokens + ', verbosity ' + (generationTextVerbosity || 'default') + ', retries ' + generationMaxRetries + ', timeout ' + generationTimeoutMs + 'ms';
+	        modelSettings.title = 'Generation settings: temperature ' + generationTemperature + ', top-p ' + (generationTopP || 'default') + ', top-k ' + (generationTopK || 'default') + ', max output ' + generationMaxOutputTokens + ', max iterations ' + (generationMaxIterations === -1 ? 'unlimited' : generationMaxIterations) + ', verbosity ' + (generationTextVerbosity || 'default') + ', retries ' + generationMaxRetries + ', timeout ' + generationTimeoutMs + 'ms';
 	      }
 	    }
 
@@ -2021,6 +1772,7 @@
 	        topPInput,
 	        topKInput,
 	        maxOutputTokensInput,
+	        maxIterationsInput,
 	        maxRetriesInput,
 	        llmTimeoutInput,
 	      ]);
@@ -2029,6 +1781,7 @@
 	        topP: generationTopP,
 	        topK: generationTopK,
 	        maxOutputTokens: generationMaxOutputTokens,
+	        maxIterations: generationMaxIterations,
 	        textVerbosity: generationTextVerbosity,
 	        maxRetries: generationMaxRetries,
 	        retryWithPartialOutput: generationRetryWithPartialOutput,
@@ -2052,6 +1805,7 @@
 	        topP: generationTopP,
 	        topK: generationTopK,
 	        maxOutputTokens: generationMaxOutputTokens,
+	        maxIterations: generationMaxIterations,
 	        textVerbosity: generationTextVerbosity,
 	        maxRetries: generationMaxRetries,
 	        retryWithPartialOutput: generationRetryWithPartialOutput,
@@ -2062,6 +1816,7 @@
 	        topPInput,
 	        topKInput,
 	        maxOutputTokensInput,
+	        maxIterationsInput,
 	        maxRetriesInput,
 	        llmTimeoutInput,
 	      ];
@@ -2074,6 +1829,7 @@
 	      const topP = Number(topPInput ? topPInput.value : generationTopP);
 	      const topK = Number(topKInput ? topKInput.value : generationTopK);
 	      const maxOutputTokens = Number(maxOutputTokensInput ? maxOutputTokensInput.value : generationMaxOutputTokens);
+	      const maxIterations = Number(maxIterationsInput ? maxIterationsInput.value : generationMaxIterations);
 	      const maxRetries = Number(maxRetriesInput ? maxRetriesInput.value : generationMaxRetries);
 	      const textVerbosity = normalizeTextVerbosity(textVerbositySelect ? textVerbositySelect.value : generationTextVerbosity);
 	      const timeoutMs = Number(llmTimeoutInput ? llmTimeoutInput.value : generationTimeoutMs);
@@ -2082,10 +1838,11 @@
 	      if (!validateNumberField(topPInput, topP, 0, 'Top-p must be between 0 and 1. Use 0 for provider default.', 1)) return;
 	      if (!validateNumberField(topKInput, topK, 0, 'Top-k must be 0 or greater. Use 0 for provider default.')) return;
 	      if (!validateNumberField(maxOutputTokensInput, maxOutputTokens, Number.MIN_VALUE, 'Max output tokens must be greater than 0.')) return;
+	      if (!(maxIterations === -1 || validateNumberField(maxIterationsInput, maxIterations, Number.MIN_VALUE, 'Max iterations must be -1 for no limit or greater than 0.'))) return;
 	      if (!validateNumberField(maxRetriesInput, maxRetries, 0, 'Max retries must be 0 or greater.')) return;
 	      if (!validateNumberField(llmTimeoutInput, timeoutMs, 0, 'Timeout must be 0 or greater. Use 0 for no override.')) return;
 	      clearInvalidFields(generationFields);
-	      const settings = { temperature, topP, topK, maxOutputTokens, textVerbosity, maxRetries, retryWithPartialOutput, timeoutMs };
+	      const settings = { temperature, topP, topK, maxOutputTokens, maxIterations, textVerbosity, maxRetries, retryWithPartialOutput, timeoutMs };
 	      postSettingWithPendingState(
 	        'generationSettingsState',
 	        { type: 'setGenerationSettings', settings },
@@ -3936,77 +3693,7 @@
 	      });
 	    }
 
-	    if (loopControlBtn) {
-	      loopControlBtn.addEventListener('click', (e) => {
-	        if (e) {
-	          e.preventDefault();
-	          e.stopPropagation();
-	        }
-	        if (!initReceived || isProcessing || currentLoop.available === false) return;
-	        toggleLoopSettingsPopover();
-	      });
-	      loopControlBtn.setAttribute('aria-pressed', 'false');
-	    }
-
-	    if (loopSettingsClose) {
-	      loopSettingsClose.addEventListener('click', (e) => {
-	        if (e) e.preventDefault();
-	        closeLoopSettingsPopover();
-	      });
-	    }
-
-	    if (loopSettingsApply) {
-	      loopSettingsApply.addEventListener('click', (e) => {
-	        if (e) e.preventDefault();
-	        applyLoopSettings();
-	      });
-	    }
-
-	    if (loopResetDefaults) {
-	      loopResetDefaults.addEventListener('click', (e) => {
-	        if (e) e.preventDefault();
-	        resetLoopSettings();
-	      });
-	    }
-
-	    if (loopDefaultsApply) {
-	      loopDefaultsApply.addEventListener('click', (e) => {
-	        if (e) e.preventDefault();
-	        applyLoopDefaults();
-	      });
-	    }
-
-	    [loopIntervalInput, loopDefaultIntervalInput].forEach((el) => {
-	      if (!el) return;
-	      el.addEventListener('keydown', (e) => {
-	        if (e.key !== 'Enter') return;
-	        if (el === loopDefaultIntervalInput) {
-	          applyLoopDefaults();
-	        } else {
-	          applyLoopSettings();
-	        }
-	      });
-	    });
-
-	    if (loopPromptInput) {
-	      loopPromptInput.addEventListener('keydown', (e) => {
-	        if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-	          e.preventDefault();
-	          applyLoopSettings();
-	        }
-	      });
-	    }
-
-	    if (loopDefaultPromptInput) {
-	      loopDefaultPromptInput.addEventListener('keydown', (e) => {
-	        if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-	          e.preventDefault();
-	          applyLoopDefaults();
-	        }
-	      });
-	    }
-
-	    function requestAbort() {
+    function requestAbort() {
 	      if (!initReceived || !isProcessing || abortRequestPending) return;
 	      abortRequestPending = true;
 	      armPendingActionTimer('abort', () => recoverPendingAction('abort', 'Stop request is taking longer than expected. Controls were re-enabled.', () => { abortRequestPending = false; updateOperationBanner(); updateApprovalBanner(); }));
@@ -5125,6 +4812,12 @@
 			      });
 			    }
 
+			    if (maxIterationsInput) {
+			      maxIterationsInput.addEventListener('keydown', (e) => {
+			        if (e.key === 'Enter') applyGenerationSettings();
+			      });
+			    }
+
 			    if (maxRetriesInput) {
 			      maxRetriesInput.addEventListener('keydown', (e) => {
 			        if (e.key === 'Enter') applyGenerationSettings();
@@ -5528,15 +5221,40 @@
         inputHistoryIndex = -1;
         inputHistorySavedDraft = null;
       }
+      updateGoalCommandSuggestion();
       updateSkillDropdown();
     });
 
-    input.addEventListener('click', () => updateSkillDropdown());
-    input.addEventListener('keyup', () => updateSkillDropdown());
-    input.addEventListener('focus', () => updateSkillDropdown());
+    input.addEventListener('click', () => {
+      updateGoalCommandSuggestion();
+      updateSkillDropdown();
+    });
+    input.addEventListener('keyup', () => {
+      updateGoalCommandSuggestion();
+      updateSkillDropdown();
+    });
+    input.addEventListener('focus', () => {
+      updateGoalCommandSuggestion();
+      updateSkillDropdown();
+    });
     input.addEventListener('paste', (e) => {
       void handleClipboardPaste(e);
     });
+
+    if (goalCommandSuggestion) {
+      goalCommandSuggestion.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+      });
+      goalCommandSuggestion.addEventListener('click', () => {
+        insertGoalCommand();
+      });
+    }
+
+    if (goalCommandInsert) {
+      goalCommandInsert.addEventListener('click', () => {
+        insertGoalCommand();
+      });
+    }
 
     if (attachImageButton && imageFileInput) {
       attachImageButton.addEventListener('click', () => {
@@ -5764,6 +5482,12 @@
         }
       }
 
+      if (e.key === 'Tab' && !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && shouldShowGoalCommandSuggestion()) {
+        e.preventDefault();
+        insertGoalCommand();
+        return;
+      }
+
       if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
         if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
         if (!initReceived || isProcessing) return;
@@ -5897,14 +5621,6 @@
         }
       }
 
-      if (loopSettingsPopover && !loopSettingsPopover.classList.contains('hidden')) {
-        const clickedPopover = !!(target && loopSettingsPopover.contains && loopSettingsPopover.contains(target));
-        const clickedButton = !!(target && loopControlBtn && loopControlBtn.contains && loopControlBtn.contains(target));
-        if (!clickedPopover && !clickedButton) {
-          closeLoopSettingsPopover();
-        }
-      }
-
       if (safetySettingsPopover && !safetySettingsPopover.classList.contains('hidden')) {
         const clickedPopover = !!(target && safetySettingsPopover.contains && safetySettingsPopover.contains(target));
         const clickedButton = !!(target && safetySettings && safetySettings.contains && safetySettings.contains(target));
@@ -5946,10 +5662,7 @@
 	      if (sessionSettingsPopover && !sessionSettingsPopover.classList.contains('hidden')) {
 	        closeSessionSettingsPopover();
 	      }
-	      if (loopSettingsPopover && !loopSettingsPopover.classList.contains('hidden')) {
-	        closeLoopSettingsPopover();
-	      }
-	      if (safetySettingsPopover && !safetySettingsPopover.classList.contains('hidden')) {
+      if (safetySettingsPopover && !safetySettingsPopover.classList.contains('hidden')) {
 	        closeSafetySettingsPopover();
 	      }
 	      if (skillsSettingsPopover && !skillsSettingsPopover.classList.contains('hidden')) {
@@ -6140,9 +5853,11 @@
 		        : (!!input.value.trim() || pendingImageAttachments.length > 0);
 		      input.disabled = !connected;
 		      input.placeholder = connected
-	        ? (showPlanUpdate ? 'Answer plan questions / add constraints…' : defaultPlaceholder)
-	        : 'Connecting…';
+		        ? (showPlanUpdate ? 'Answer plan questions / add constraints…' : defaultPlaceholder)
+		        : 'Connecting…';
 		      clearInputBtn.disabled = !connected || (!input.value.trim() && pendingImageAttachments.length === 0);
+		      if (goalCommandInsert) goalCommandInsert.disabled = !connected;
+		      updateGoalCommandSuggestion();
 		      if (attachImageButton) attachImageButton.disabled = !connected;
 		      if (imageFileInput) imageFileInput.disabled = !connected;
 		      if (!connected) clearInputImageDragState();
@@ -6152,11 +5867,6 @@
 		      }
 		      if (newSessionBtn) newSessionBtn.disabled = !connected || isProcessing || sessionActionBusy;
 		      if (compactSessionBtn) compactSessionBtn.disabled = !connected || isProcessing || sessionActionBusy;
-		      const loopSettingsPending = hasPendingSettingState('loopState') || hasPendingSettingState('loopDefaultsState');
-		      const loopControlsDisabled = !connected || isProcessing || currentLoop.available === false || loopSettingsPending;
-		      if (loopControlBtn) loopControlBtn.disabled = loopControlsDisabled;
-		      setLoopInputsDisabled(loopControlsDisabled);
-		      if (!connected || isProcessing || currentLoop.available === false) closeLoopSettingsPopover();
 		      const revertActionBusy = !!revertActionPending;
 		      if (undoBtn) undoBtn.disabled = !connected || isProcessing || revertActionBusy || !canUndo;
 		      if (redoBtn) redoBtn.disabled = !connected || isProcessing || revertActionBusy || !canRedo;
@@ -6430,9 +6140,9 @@
 	              : isProcessing
 	                ? 'Enter to queue another message · ' + queuedCount + ' queued · Attach images · Stop button or Ctrl/Cmd+. to stop'
 
-		                : skillsEnabled
-		                  ? 'Enter to send · Shift+Enter for newline · Paste or attach images · $ for skills'
-		                  : 'Enter to send · Shift+Enter for newline · Paste or attach images';
+			                : skillsEnabled
+			                  ? 'Enter to send · Shift+Enter for newline · Paste or attach images · /goal for goals · $ for skills'
+			                  : 'Enter to send · Shift+Enter for newline · Paste or attach images · /goal for goals';
 		        }
 		      }
 
@@ -6464,8 +6174,7 @@
 		        setSendButtonPresentation('→', 'Send', 'Enter to send; Shift+Enter for newline');
 		      }
 		      setSendButtonDisabled(!hasContent);
-		      updateLoopControl();
-	    }
+    }
 
 		    function setProcessing(val) {
 		      isProcessing = val;

@@ -14,6 +14,20 @@ export type LingyunFileHandlesState = {
   byId: Record<string, string>;
 };
 
+export type LingyunThreadGoalStatus = 'active' | 'paused' | 'budget_limited' | 'complete';
+
+export type LingyunThreadGoal = {
+  id: string;
+  sessionId?: string;
+  objective: string;
+  status: LingyunThreadGoalStatus;
+  tokenBudget?: number;
+  tokensUsed: number;
+  timeUsedSeconds: number;
+  createdAt: number;
+  updatedAt: number;
+};
+
 export function createBlankFileHandlesState(): LingyunFileHandlesState {
   return { nextId: 1, byId: {} };
 }
@@ -124,6 +138,57 @@ export function normalizeOptionalMentionedSkills(value: unknown): string[] | und
   return mentionedSkills.length > 0 ? mentionedSkills : undefined;
 }
 
+function readTrimmedOptionalString(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed || undefined;
+}
+
+function readPositiveInteger(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return undefined;
+  return Math.floor(value);
+}
+
+function readNonNegativeInteger(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return undefined;
+  return Math.floor(value);
+}
+
+export function cloneThreadGoal(goal: LingyunThreadGoal | undefined): LingyunThreadGoal | undefined {
+  return goal ? { ...goal } : undefined;
+}
+
+export function normalizeThreadGoal(value: unknown): LingyunThreadGoal | undefined {
+  if (!isRecord(value)) return undefined;
+
+  const id = readTrimmedOptionalString(value.id);
+  const objective = readTrimmedOptionalString(value.objective);
+  const status = value.status;
+  if (!id || !objective) return undefined;
+  if (status !== 'active' && status !== 'paused' && status !== 'budget_limited' && status !== 'complete') {
+    return undefined;
+  }
+
+  const tokensUsed = readNonNegativeInteger(value.tokensUsed) ?? 0;
+  const timeUsedSeconds = readNonNegativeInteger(value.timeUsedSeconds) ?? 0;
+  const createdAt = readNonNegativeInteger(value.createdAt) ?? Date.now();
+  const updatedAt = readNonNegativeInteger(value.updatedAt) ?? createdAt;
+  const tokenBudget = readPositiveInteger(value.tokenBudget);
+  const sessionId = readTrimmedOptionalString(value.sessionId);
+
+  return {
+    id,
+    ...(sessionId ? { sessionId } : {}),
+    objective,
+    status,
+    ...(tokenBudget ? { tokenBudget } : {}),
+    tokensUsed,
+    timeUsedSeconds,
+    createdAt,
+    updatedAt,
+  };
+}
+
 export class LingyunSession {
   history: AgentHistoryMessage[] = [];
   pendingPlan?: string;
@@ -135,6 +200,7 @@ export class LingyunSession {
   modelId?: string;
   systemPromptSnapshot?: string[];
   mentionedSkills: string[] = [];
+  threadGoal?: LingyunThreadGoal;
   fileHandles?: LingyunFileHandlesState;
   semanticHandles?: SemanticHandlesState;
 
@@ -152,6 +218,7 @@ export class LingyunSession {
         | 'modelId'
         | 'systemPromptSnapshot'
         | 'mentionedSkills'
+        | 'threadGoal'
         | 'fileHandles'
         | 'semanticHandles'
       >
@@ -169,6 +236,7 @@ export class LingyunSession {
     if (init?.modelId) this.modelId = init.modelId;
     this.setSystemPromptSnapshot(init?.systemPromptSnapshot);
     this.setMentionedSkills(init?.mentionedSkills);
+    this.threadGoal = cloneThreadGoal(normalizeThreadGoal(init?.threadGoal));
     this.fileHandles = cloneFileHandlesState(init?.fileHandles);
     this.semanticHandles = normalizeSemanticHandlesState(init?.semanticHandles);
   }
@@ -244,6 +312,7 @@ export class LingyunSession {
     this.fileHandles = createBlankFileHandlesState();
     this.semanticHandles = createBlankSemanticHandlesState();
     this.clearMentionedSkills();
+    this.threadGoal = undefined;
     this.systemPromptSnapshot = undefined;
     this.compactionSyntheticContexts = [];
   }

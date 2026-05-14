@@ -236,7 +236,6 @@
     .model-settings-wrap,
     .provider-settings-wrap,
     .session-settings-wrap,
-    .loop-control-wrap,
     .safety-settings-wrap {
       position: relative;
       display: flex;
@@ -3257,6 +3256,42 @@
       position: relative;
     }
 
+    .slash-command-suggestion {
+      align-self: flex-start;
+      max-width: 100%;
+      border: 1px solid color-mix(in srgb, var(--vscode-focusBorder) 48%, var(--vscode-widget-border));
+      border-radius: 5px;
+      background: var(--vscode-editorWidget-background);
+      color: var(--vscode-foreground);
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 8px;
+      cursor: pointer;
+      font-size: 0.78em;
+      line-height: 1.2;
+      box-shadow: 0 6px 16px rgba(0, 0, 0, 0.18);
+    }
+
+    .slash-command-suggestion:hover:not(:disabled) {
+      background: var(--vscode-toolbar-hoverBackground);
+    }
+
+    .slash-command-suggestion:focus {
+      outline: 1px solid var(--vscode-focusBorder);
+      outline-offset: 1px;
+    }
+
+    .slash-command-name,
+    .status-command code {
+      font-family: var(--vscode-editor-font-family);
+      color: var(--vscode-textLink-foreground);
+    }
+
+    .slash-command-name {
+      font-weight: 700;
+    }
+
     .input-composer.drag-over .input-wrapper textarea {
       border-color: var(--vscode-focusBorder);
       box-shadow: 0 0 0 1px var(--vscode-focusBorder);
@@ -3272,6 +3307,45 @@
       grid-column: 1 / span 3;
       grid-row: 2;
       min-width: 0;
+    }
+
+    .status-command {
+      min-width: 0;
+      height: 22px;
+      border: 1px solid color-mix(in srgb, var(--vscode-focusBorder) 40%, var(--vscode-dropdown-border));
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--vscode-editorWidget-background) 82%, var(--vscode-focusBorder) 18%);
+      color: var(--vscode-descriptionForeground);
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 0 8px;
+      cursor: pointer;
+      font-size: 0.72em;
+      line-height: 1;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .status-command:hover:not(:disabled) {
+      background: var(--vscode-toolbar-hoverBackground);
+      color: var(--vscode-foreground);
+    }
+
+    .status-command:focus {
+      outline: 1px solid var(--vscode-focusBorder);
+      outline-offset: 1px;
+    }
+
+    .status-command:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .status-command code {
+      background: transparent;
+      padding: 0;
+      font-size: inherit;
     }
 
     .skills-settings-wrap {
@@ -4330,58 +4404,6 @@
         <path d="M14 6.5H11V5L8 8L11 11V9.5H14V6.5Z"></path>
       </svg>
     </button>
-    <div class="loop-control-wrap">
-      <button id="loopControl" class="header-btn" title="Loop steering" aria-label="Loop steering off" aria-pressed="false">
-        ⟲
-      </button>
-      <div id="loopSettingsPopover" class="session-settings-popover hidden" role="dialog" aria-label="Loop steering settings">
-        <div class="session-settings-popover-header">
-          <span>Loop steering</span>
-          <button id="loopSettingsClose" class="session-settings-popover-close" type="button" aria-label="Close loop settings">✕</button>
-        </div>
-        <label id="loopEnabledLabel" class="safety-setting-toggle" title="Enable loop steering for this session">
-          <input id="loopEnabledToggle" type="checkbox" />
-          <span class="safety-setting-copy">
-            <span class="safety-setting-title">Enable for this session</span>
-            <span id="loopStatusHint" class="safety-setting-hint">Loop is off for this session.</span>
-          </span>
-        </label>
-        <label id="loopIntervalLabel" class="model-setting-field" title="Loop interval for this session">
-          <span>Session interval (minutes)</span>
-          <input id="loopIntervalInput" type="number" min="1" max="1440" step="1" value="5" />
-          <span class="model-setting-hint">How often the loop prompt is injected.</span>
-        </label>
-        <label id="loopPromptLabel" class="model-setting-field" title="Prompt injected on each loop tick">
-          <span>Session prompt</span>
-          <textarea id="loopPromptInput" rows="3"></textarea>
-          <span class="model-setting-hint">Injected into the active run on each loop tick.</span>
-        </label>
-        <div class="model-settings-actions">
-          <button id="loopResetDefaults" class="context-btn" type="button">Reset to defaults</button>
-          <button id="loopSettingsApply" class="context-btn" type="button">Apply</button>
-        </div>
-        <div class="context-divider"></div>
-        <label id="loopDefaultEnabledLabel" class="safety-setting-toggle" title="Enable loop steering by default for new sessions">
-          <input id="loopDefaultEnabledToggle" type="checkbox" />
-          <span class="safety-setting-copy">
-            <span class="safety-setting-title">Default on for new sessions</span>
-            <span class="safety-setting-hint">Workspace default used by new sessions and reset.</span>
-          </span>
-        </label>
-        <label id="loopDefaultIntervalLabel" class="model-setting-field" title="Default loop interval in minutes">
-          <span>Default interval (minutes)</span>
-          <input id="loopDefaultIntervalInput" type="number" min="1" max="1440" step="1" value="5" />
-        </label>
-        <label id="loopDefaultPromptLabel" class="model-setting-field" title="Default loop prompt">
-          <span>Default prompt</span>
-          <textarea id="loopDefaultPromptInput" rows="3"></textarea>
-        </label>
-        <div class="model-settings-actions">
-          <button id="loopDefaultsApply" class="context-btn" type="button">Apply defaults</button>
-        </div>
-        <div class="safety-warning">Loop settings affect automatic prompt injection and are locked while a task is running.</div>
-      </div>
-    </div>
     <div class="header-title">
       <span class="header-label">Session</span>
       <select id="sessionSelect" class="session-select" aria-label="Select session">
@@ -4536,6 +4558,11 @@
             <span>Fallback max output tokens</span>
             <input id="maxOutputTokensInput" type="number" min="1" step="1000" value="32000" />
             <span class="model-setting-hint">Used when the selected model does not publish an output limit.</span>
+          </label>
+          <label class="model-setting-field">
+            <span>Max iterations</span>
+            <input id="maxIterationsInput" type="number" min="-1" step="1" value="50" />
+            <span class="model-setting-hint">Assistant/tool loop cap. Set -1 for no limit.</span>
           </label>
           <label id="textVerbosityLabel" class="model-setting-field" title="Text verbosity for GPT-5/Responses API models">
             <span>Text verbosity</span>
@@ -5047,8 +5074,12 @@
     <div id="inputComposer" class="input-composer">
       <div id="inputAttachments" class="input-attachments hidden" role="list" aria-label="Attached images"></div>
       <input id="imageFileInput" class="image-file-input" type="file" accept="image/*" multiple aria-hidden="true" tabindex="-1" />
+      <button id="goalCommandSuggestion" class="slash-command-suggestion hidden" type="button" aria-label="Insert /goal slash command">
+        <span class="slash-command-name">/goal</span>
+        <span>Set session goal</span>
+      </button>
       <div class="input-wrapper">
-        <textarea id="input" placeholder="Describe a task..." rows="1" aria-label="Chat input"></textarea>
+        <textarea id="input" placeholder="Describe a task or type /goal <objective>" rows="1" aria-label="Chat input"></textarea>
         <div id="skillDropdown" class="skill-dropdown hidden" role="listbox" aria-label="Skill suggestions"></div>
         <div class="input-actions">
           <button id="attachImageButton" class="input-btn attach-image-btn" type="button" title="Attach images" aria-label="Attach images">＋</button>
@@ -5094,7 +5125,11 @@
           </div>
         </div>
       </div>
-      <div id="inputHint" class="input-hint">Enter to send · Shift+Enter for newline · Paste or attach images · $ for skills</div>
+      <button id="goalCommandInsert" class="status-command" type="button" title="Set a session goal with /goal <objective>" aria-label="Insert /goal slash command">
+        <code>/goal</code>
+        <span>set goal</span>
+      </button>
+      <div id="inputHint" class="input-hint">Enter to send · Shift+Enter for newline · Paste or attach images · /goal for goals · $ for skills</div>
       <div id="queueBanner" class="queue-banner hidden" role="status" aria-live="polite">
         <div class="queue-banner-summary">
           <span id="queueBannerCount" class="queue-banner-count"></span>

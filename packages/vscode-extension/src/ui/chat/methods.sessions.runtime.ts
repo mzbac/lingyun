@@ -60,12 +60,6 @@ export interface ChatSessionRuntimeDeps {
   isProcessing: boolean;
   pendingApprovals: Map<string, PendingApprovalEntry>;
   initAcked: boolean;
-  loopManager: {
-    normalizeSessionState(raw: unknown): ChatSessionInfo['loop'];
-    syncActiveSession(options?: { resetSchedule?: boolean }): void;
-    releaseSession(session: ChatSessionInfo | undefined): void;
-    clearAllRuntimeData(): void;
-  };
   queueManager: {
     clearActiveSession(options?: { persist?: boolean }): void;
     clearAllRuntimeData(): void;
@@ -73,7 +67,6 @@ export interface ChatSessionRuntimeDeps {
   persistence: Pick<ChatSessionPersistenceService, 'ensureSessionsLoaded' | 'markSessionDirty'>;
   sendInit(force?: boolean): Promise<void>;
   postMessage(message: unknown): void;
-  postLoopState(): void;
 }
 
 type ChatSessionRuntimeRuntime = ChatSessionRuntimeDeps & ChatSessionRuntimeService;
@@ -113,7 +106,6 @@ export function createChatSessionRuntimeService(
         mode: this.mode,
         stepCounter: 0,
         queuedInputs: [],
-        loop: this.loopManager.normalizeSessionState(undefined),
       };
       this.sessions.set(initialId, session);
       this.switchToSessionSync(initialId);
@@ -269,7 +261,6 @@ export function createChatSessionRuntimeService(
         mode: this.mode,
         stepCounter: 0,
         queuedInputs: [],
-        loop: this.loopManager.normalizeSessionState(undefined),
       };
 
       this.sessions.set(id, session);
@@ -321,7 +312,6 @@ export function createChatSessionRuntimeService(
         },
       });
 
-      this.loopManager.syncActiveSession({ resetSchedule: true });
     },
 
     async setBackend(
@@ -332,7 +322,6 @@ export function createChatSessionRuntimeService(
       this.agent = agent;
       this.llmProvider = llmProvider;
       this.isProcessing = false;
-      this.loopManager.clearAllRuntimeData();
       this.availableModels = [];
       this.currentModel = resolveConfiguredModelId(this.llmProvider?.id);
       this.mode =
@@ -384,10 +373,6 @@ export function createChatSessionRuntimeService(
       session.messages = [];
       session.pendingPlan = undefined;
       this.queueManager.clearActiveSession({ persist: false });
-      this.loopManager.releaseSession(session);
-      if (session.loop) {
-        session.loop.lastFiredAt = undefined;
-      }
       session.stepCounter = 0;
       session.activeStepId = undefined;
       session.agentState = this.getBlankAgentState();
@@ -453,9 +438,7 @@ export function createChatSessionRuntimeService(
       this.persistActiveSession();
 
       this.isProcessing = true;
-      this.loopManager.syncActiveSession();
       this.postMessage({ type: 'processing', value: true });
-      this.postLoopState();
 
       try {
         await this.agent.compactSession();
@@ -524,9 +507,7 @@ export function createChatSessionRuntimeService(
       } finally {
         this.isProcessing = false;
         this.abortRequested = false;
-        this.loopManager.syncActiveSession();
         this.postMessage({ type: 'processing', value: false });
-        this.postLoopState();
         this.persistActiveSession();
       }
     },

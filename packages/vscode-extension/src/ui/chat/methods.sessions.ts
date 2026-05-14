@@ -124,16 +124,12 @@ function createChatSessionRuntimeDeps(
     set initAcked(value) {
       controller.initAcked = value;
     },
-    get loopManager() {
-      return controller.loopManager;
-    },
     get queueManager() {
       return controller.queueManager;
     },
     persistence,
     sendInit: (force?: boolean) => controller.sendInit(force),
     postMessage: (message: unknown) => controller.postMessage(message),
-    postLoopState: () => controller.postLoopState(),
   };
 }
 
@@ -226,9 +222,6 @@ function createChatSessionPersistenceDeps(
     },
     set inputHistoryStore(value) {
       controller.inputHistoryStore = value;
-    },
-    get loopManager() {
-      return controller.loopManager;
     },
     get queueManager() {
       return controller.queueManager;
@@ -514,16 +507,12 @@ function createChatSessionsDepsForController(controller: ChatController): ChatSe
     set inputHistoryStore(value) {
       controller.inputHistoryStore = value;
     },
-    get loopManager() {
-      return controller.loopManager;
-    },
     get queueManager() {
       return controller.queueManager;
     },
     ensureInputHistoryLoaded: () => controller.inputHistoryApi.ensureInputHistoryLoaded(),
     sendInit: (force?: boolean) => controller.webviewApi.sendInit(force),
     postMessage: (message: unknown) => controller.webviewApi.postMessage(message),
-    postLoopState: () => controller.loopApi.postLoopState(),
   };
 }
 

@@ -158,7 +158,10 @@ export function createFetchWithStreamingDefaults(
 ): FetchWithStreamingDefaults {
   const timeoutValue = typeof timeoutMs === 'number' && Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 0;
   const dispatcher = new Agent({
+    // Streaming model responses can legitimately spend a long time before headers.
+    // Use LingYun's AbortSignal timeout below as the single request timeout source.
     bodyTimeout: 0,
+    headersTimeout: 0,
     ...(options?.allowInsecureTLS ? { connect: { rejectUnauthorized: false } } : {}),
   });
   const fetchUndici = undiciFetch as unknown as (input: unknown, init?: unknown) => Promise<unknown>;

@@ -27,6 +27,27 @@ export function createRunCoordinatorHostForController(controller: ChatController
           ? controller.agent.getHistory()
           : controller.agent.exportState().history,
       exportState: () => controller.agent.exportState(),
+      getThreadGoal: () =>
+        typeof (controller.agent as any).getThreadGoal === 'function'
+          ? (controller.agent as any).getThreadGoal()
+          : undefined,
+      setThreadGoalObjective: (params) => {
+        if (typeof (controller.agent as any).setThreadGoalObjective === 'function') {
+          return (controller.agent as any).setThreadGoalObjective(params);
+        }
+        throw new Error('Goal support is not available for this agent.');
+      },
+      updateThreadGoalStatus: (status) => {
+        if (typeof (controller.agent as any).updateThreadGoalStatus === 'function') {
+          return (controller.agent as any).updateThreadGoalStatus(status);
+        }
+        throw new Error('Goal support is not available for this agent.');
+      },
+      clearThreadGoal: () => {
+        if (typeof (controller.agent as any).clearThreadGoal === 'function') {
+          (controller.agent as any).clearThreadGoal();
+        }
+      },
       clear: () => controller.agent.clear(),
       steer: (input) => controller.agent.steer(input),
       plan: (task, callbacks) => controller.agent.plan(task, callbacks),
@@ -69,12 +90,6 @@ export function createRunCoordinatorHostForController(controller: ChatController
     get llmProvider() {
       return controller.llmProvider;
     },
-    loopManager: {
-      hasLoopContext: (session) => controller.loopManager.hasLoopContext(session),
-      onRunStart: (sessionId) => controller.loopManager.onRunStart(sessionId),
-      onRunEnd: (sessionId) => controller.loopManager.onRunEnd(sessionId),
-      syncActiveSession: (options) => controller.loopManager.syncActiveSession(options),
-    },
     maybeGenerateSessionTitle: ({ sessionId, message, synthetic }) => {
       if (!message || !message.trim() || synthetic) return;
       const session = controller.sessions.get(sessionId);
@@ -114,7 +129,6 @@ export function createRunCoordinatorHostForController(controller: ChatController
     },
     persistActiveSession: () => controller.sessionApi.persistActiveSession(),
     postApprovalState: () => controller.approvalsApi.postApprovalState(),
-    postLoopState: (session) => controller.loopApi.postLoopState(session),
     postMessage: (message: unknown) => controller.webviewApi.postMessage(message),
     postSessions: () => controller.sessionApi.postSessions(),
     postUnknownSkillWarnings: (content: string, turnId?: string) =>

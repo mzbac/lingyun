@@ -1,4 +1,5 @@
 export const MAX_TOOL_RESULT_LENGTH = 40_000;
+export const DEFAULT_MAX_ITERATIONS = 50;
 
 export const EDIT_TOOL_IDS = new Set([
   'edit',

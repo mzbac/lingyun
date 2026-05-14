@@ -272,6 +272,24 @@ suite('Chat Webview Assets', () => {
     assert.match(bootstrap, /inputComposer\.addEventListener\('drop'/);
   });
 
+  test('composer exposes goal command affordances', () => {
+    const controller = createStandaloneChatController();
+    const webview = {
+      cspSource: 'test-csp',
+      asWebviewUri: (uri: unknown) => uri,
+    } as unknown as vscode.Webview;
+
+    const html = controller.webviewApi.getHtml(webview);
+    const scripts = extractOrderedScriptSources(html);
+    const bootstrap = scripts.find(script => script.label === 'bootstrap.js')?.source || '';
+
+    assert.match(html, /id="goalCommandSuggestion"/);
+    assert.match(html, /id="goalCommandInsert"/);
+    assert.match(html, /placeholder="Describe a task or type \/goal <objective>"/);
+    assert.match(bootstrap, /function insertGoalCommand\(/);
+    assert.match(bootstrap, /function updateGoalCommandSuggestion\(/);
+  });
+
   test('queue renderer skips duplicate DOM rebuilds for identical queue state', () => {
     const controller = createStandaloneChatController();
     const webview = {

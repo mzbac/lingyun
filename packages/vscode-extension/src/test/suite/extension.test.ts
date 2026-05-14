@@ -64,12 +64,11 @@ suite('Extension Integration', () => {
     assert.strictEqual(config.get('openaiCompatible.allowInsecureTLS'), false);
     assert.strictEqual(config.get('temperature'), 0);
     assert.strictEqual(config.get('maxOutputTokens'), 32000);
+    assert.strictEqual(config.get('maxIterations'), 50);
     assert.strictEqual(config.get('llm.timeoutMs'), 0);
     assert.strictEqual(config.get('toolTimeoutMs'), 0);
     assert.strictEqual(config.get('autoApprove'), false);
     assert.strictEqual(config.get('planFirst'), true);
-    assert.strictEqual(config.get('loop.enabled'), false);
-    assert.strictEqual(config.get('loop.intervalMinutes'), 5);
     assert.strictEqual(config.get('sessions.persist'), true);
     assert.deepStrictEqual(config.get('skills.paths'), [
       '.lingyun/skills',
@@ -108,6 +107,22 @@ suite('Extension Integration', () => {
     } finally {
       await config.update('maxOutputTokens', undefined, vscode.ConfigurationTarget.Global);
       await config.update('llmProvider', undefined, vscode.ConfigurationTarget.Global);
+    }
+  });
+
+  test('createAgentConfig should map maxIterations and preserve -1 as unlimited', async () => {
+    const config = vscode.workspace.getConfiguration('lingyun');
+    const previous = config.inspect<number>('maxIterations')?.globalValue;
+
+    await config.update('maxIterations', 123, vscode.ConfigurationTarget.Global);
+
+    try {
+      assert.strictEqual(createAgentConfig().maxIterations, 123);
+
+      await config.update('maxIterations', -1, vscode.ConfigurationTarget.Global);
+      assert.strictEqual(createAgentConfig().maxIterations, -1);
+    } finally {
+      await config.update('maxIterations', previous, vscode.ConfigurationTarget.Global);
     }
   });
 

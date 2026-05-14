@@ -118,8 +118,6 @@ suite('Chat sessions facade', () => {
       const { agent, syncCalls } = createTrackingAgent(() => controller.sessionApi.getBlankAgentState());
       const posted: unknown[] = [];
       const sendInitCalls: boolean[] = [];
-      let loopCleared = 0;
-
       controller.view = {} as vscode.WebviewView;
       controller.sessions = new Map();
       controller.activeSessionId = 'missing-session';
@@ -142,9 +140,6 @@ suite('Chat sessions facade', () => {
       controller.webviewApi.sendInit = async (force?: boolean) => {
         sendInitCalls.push(!!force);
       };
-      controller.loopManager.clearAllRuntimeData = () => {
-        loopCleared++;
-      };
 
       const nextProvider = { id: 'next-provider' } as any;
       await controller.sessionApi.setBackend(agent, nextProvider);
@@ -160,7 +155,6 @@ suite('Chat sessions facade', () => {
       assert.strictEqual(controller.abortRequested, false);
       assert.strictEqual(controller.pendingApprovals.size, 0);
       assert.strictEqual(controller.initAcked, false);
-      assert.strictEqual(loopCleared, 1);
       assert.deepStrictEqual(controller.availableModels, []);
       assert.strictEqual(controller.sessions.size, 1);
       assert.strictEqual(activeSession.currentModel, 'config-model');
@@ -279,7 +273,6 @@ suite('Chat sessions facade', () => {
       });
       const posted: unknown[] = [];
       const sendInitCalls: boolean[] = [];
-      let loopCleared = 0;
       let queueCleared = 0;
       let storeCleared = 0;
 
@@ -303,9 +296,6 @@ suite('Chat sessions facade', () => {
       controller.webviewApi.sendInit = async (force?: boolean) => {
         sendInitCalls.push(!!force);
       };
-      controller.loopManager.clearAllRuntimeData = () => {
-        loopCleared++;
-      };
       controller.queueManager.clearAllRuntimeData = () => {
         queueCleared++;
       };
@@ -320,7 +310,6 @@ suite('Chat sessions facade', () => {
       assert.deepStrictEqual(controller.inputHistoryEntries, []);
       assert.strictEqual(controller.inputHistoryStore, undefined);
       assert.strictEqual(controller.inputHistoryLoadedFromDisk, true);
-      assert.strictEqual(loopCleared, 1);
       assert.strictEqual(queueCleared, 1);
       assert.notStrictEqual(controller.activeSessionId, previousActiveSessionId);
       assert.strictEqual(controller.sessions.size, 1);

@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 
 import type { AgentHistoryMessage, UserHistoryInput } from '@kooka/core';
+import type { LingyunThreadGoal, LingyunThreadGoalStatus } from '@kooka/agent-sdk';
 
 import type { AgentSessionState } from '../../core/agent';
 import type { SessionSignals } from '../../core/sessionSignals';
@@ -17,12 +18,8 @@ export type PendingApprovalEntry = {
 export interface ChatQueueRunnerPort {
   handleUserMessage(
     content: string | ChatUserInput,
-    options?: { fromQueue?: boolean; synthetic?: boolean; displayContent?: string }
+    options?: { fromQueue?: boolean; synthetic?: boolean; displayContent?: string; forceBuild?: boolean }
   ): Promise<void>;
-}
-
-export interface ChatLoopRunnerPort {
-  canAcceptLoopSteer(): boolean;
 }
 
 export interface ChatAgentPort {
@@ -31,6 +28,16 @@ export interface ChatAgentPort {
   continue(message: UserHistoryInput, callbacks?: AgentCallbacks): Promise<string>;
   getHistory(): AgentHistoryMessage[];
   exportState(): AgentSessionState;
+  getThreadGoal(): LingyunThreadGoal | undefined;
+  setThreadGoalObjective(params: {
+    objective: string;
+    tokenBudget?: number;
+    status?: LingyunThreadGoalStatus;
+    replaceExisting?: boolean;
+    preserveUsage?: boolean;
+  }): LingyunThreadGoal;
+  updateThreadGoalStatus(status: LingyunThreadGoalStatus): LingyunThreadGoal;
+  clearThreadGoal(): void;
   clear(): Promise<void>;
   steer(input: UserHistoryInput): void;
   plan(task: UserHistoryInput, callbacks?: AgentCallbacks): Promise<string>;
@@ -50,13 +57,6 @@ export interface RunCoordinatorQueuePort {
   flushAutosendForActiveSession(): Promise<void>;
 }
 
-export interface RunCoordinatorLoopPort {
-  hasLoopContext(session?: ChatSessionInfo): boolean;
-  onRunStart(sessionId?: string): void;
-  onRunEnd(sessionId?: string): void;
-  syncActiveSession(options?: { resetSchedule?: boolean }): void;
-}
-
 export interface ChatQueueHost {
   activeSessionId: string;
   isProcessing: boolean;
@@ -66,19 +66,6 @@ export interface ChatQueueHost {
   runner: ChatQueueRunnerPort;
   getActiveSession(): ChatSessionInfo;
   postMessage(message: unknown): void;
-  persistActiveSession(): void;
-}
-
-export interface ChatLoopHost {
-  activeSessionId: string;
-  isProcessing: boolean;
-  mode: ChatMode;
-  sessions: Map<string, ChatSessionInfo>;
-  agent: { exportState(): AgentSessionState };
-  runner: ChatLoopRunnerPort;
-  getActiveSession(): ChatSessionInfo;
-  postLoopState(session?: ChatSessionInfo): void;
-  injectLoopPrompt(prompt?: string): Promise<boolean>;
   persistActiveSession(): void;
 }
 
@@ -108,7 +95,6 @@ export interface RunCoordinatorHost {
   isProcessing: boolean;
   isSessionPersistenceEnabled(): boolean;
   llmProvider?: LLMProvider;
-  loopManager: RunCoordinatorLoopPort;
   maybeGenerateSessionTitle(params: { sessionId: string; message: string; synthetic?: boolean }): void;
   markActiveStepStatus(status: 'running' | 'done' | 'error' | 'canceled'): void;
   messages: ChatMessage[];
@@ -116,7 +102,6 @@ export interface RunCoordinatorHost {
   pendingApprovals: Map<string, PendingApprovalEntry>;
   persistActiveSession(): void;
   postApprovalState(): void;
-  postLoopState(session?: ChatSessionInfo): void;
   postMessage(message: unknown): void;
   postSessions(): void;
   postUnknownSkillWarnings(content: string, turnId?: string): Promise<void>;

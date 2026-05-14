@@ -57,10 +57,6 @@ export interface ChatSessionPersistenceDeps {
   inputHistoryEntries: string[];
   inputHistoryLoadedFromDisk: boolean;
   inputHistoryStore?: unknown;
-  loopManager: {
-    normalizeStoredSessionState(raw: unknown): ChatSessionInfo['loop'];
-    clearAllRuntimeData(): void;
-  };
   queueManager: {
     releaseSession(session: ChatSessionInfo | undefined): void;
     clearAllRuntimeData(): void;
@@ -138,7 +134,6 @@ export function createChatSessionPersistenceService(
       const base: ChatSessionInfo = {
         ...session,
         messages: [...(session.messages || [])],
-        loop: this.loopManager.normalizeStoredSessionState(session.loop),
       };
 
       const measure = (value: unknown) => Buffer.byteLength(JSON.stringify(value), 'utf8');
@@ -286,7 +281,6 @@ export function createChatSessionPersistenceService(
         pendingPlan:
           raw.pendingPlan && typeof raw.pendingPlan === 'object' ? raw.pendingPlan : undefined,
         queuedInputs,
-        loop: this.loopManager.normalizeStoredSessionState((raw as any).loop),
         parentSessionId:
           typeof (raw as any).parentSessionId === 'string' ? String((raw as any).parentSessionId) : undefined,
         subagentType:
@@ -396,10 +390,6 @@ export function createChatSessionPersistenceService(
           lastTool.toolCall.status = 'error';
           lastTool.toolCall.result =
             lastTool.toolCall.result || 'Interrupted (VS Code closed or extension reloaded).';
-        }
-
-        if (session.loop?.nextFireAt) {
-          session.loop.nextFireAt = undefined;
         }
 
         session.runtime = { wasRunning: false, updatedAt: now };
@@ -546,7 +536,6 @@ export function createChatSessionPersistenceService(
       this.inputHistoryEntries = [];
       this.inputHistoryStore = undefined;
       this.inputHistoryLoadedFromDisk = true;
-      this.loopManager.clearAllRuntimeData();
       this.queueManager.clearAllRuntimeData();
 
       this.activeSessionId = crypto.randomUUID();

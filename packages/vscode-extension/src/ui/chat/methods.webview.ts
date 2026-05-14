@@ -22,7 +22,6 @@ import type { PendingApprovalEntry } from './controllerPorts';
 import type { ChatImageAttachment, ChatUserInput } from './types';
 import { bindChatControllerService } from './controllerService';
 import { createLingyunDiffUri } from './diffContentProvider';
-import type { ChatLoopService, LoopSessionSettingsInput, LoopWorkspaceDefaultsInput } from './methods.loop';
 import type { ChatRevertService } from './methods.revert';
 import type { ChatSessionsService } from './methods.sessions';
 import type { ChatSkillsService } from './methods.skills';
@@ -589,6 +588,7 @@ type GenerationSettings = {
   topP: number;
   topK: number;
   maxOutputTokens: number;
+  maxIterations: number;
   maxRetries: number;
   retryWithPartialOutput: boolean;
   timeoutMs: number;
@@ -626,6 +626,13 @@ function getConfiguredMaxOutputTokens(): number {
   return Number.isFinite(parsed) && (parsed as number) > 0 ? Math.floor(parsed as number) : 32000;
 }
 
+function getConfiguredMaxIterations(): number {
+  const raw = vscode.workspace.getConfiguration('lingyun').get<unknown>('maxIterations');
+  const parsed = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : undefined;
+  if (parsed === -1) return -1;
+  return Number.isFinite(parsed) && (parsed as number) > 0 ? Math.floor(parsed as number) : 50;
+}
+
 function getConfiguredMaxRetries(): number {
   const raw = vscode.workspace.getConfiguration('lingyun').get<unknown>('llm.maxRetries');
   const parsed = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : undefined;
@@ -658,6 +665,7 @@ function getGenerationSettings(): GenerationSettings {
     topP: getConfiguredTopP(),
     topK: getConfiguredTopK(),
     maxOutputTokens: getConfiguredMaxOutputTokens(),
+    maxIterations: getConfiguredMaxIterations(),
     maxRetries: getConfiguredMaxRetries(),
     retryWithPartialOutput: getConfiguredRetryWithPartialOutput(),
     timeoutMs: getConfiguredLlmTimeoutMs(),
@@ -937,9 +945,6 @@ export interface ChatWebviewDeps {
   switchToSession(sessionId: string): Promise<void>;
   postSessions(): void;
   handleUserMessage(content: string | ChatUserInput): Promise<void>;
-  setLoopSettingsForActiveSession(settings: LoopSessionSettingsInput): Promise<void>;
-  resetLoopSettingsForActiveSession(): Promise<void>;
-  setLoopWorkspaceDefaults(settings: LoopWorkspaceDefaultsInput): Promise<void>;
   approveAllPendingApprovals(options?: { includeManual?: boolean }): void;
   postApprovalState(): void;
   handleAlwaysAllowApproval(approvalId: string): Promise<void>;
@@ -973,8 +978,6 @@ export interface ChatWebviewDeps {
   getRenderableMessages(): ReturnType<ChatSessionsService['getRenderableMessages']>;
   getRevertBarStateForUI(): ReturnType<ChatRevertService['getRevertBarStateForUI']>;
   getContextForUI(): ReturnType<ChatSessionsService['getContextForUI']>;
-  getLoopStateForUI(): ReturnType<ChatLoopService['getLoopStateForUI']>;
-  getLoopDefaultsForUI(): ReturnType<ChatLoopService['getLoopDefaultsForUI']>;
   getSessionsForUI(): ReturnType<ChatSessionsService['getSessionsForUI']>;
   getSkillNamesForUI(): Promise<Awaited<ReturnType<ChatSkillsService['getSkillNamesForUI']>>>;
   getUndoRedoAvailability(): ReturnType<ChatRevertService['getUndoRedoAvailability']>;
@@ -1046,7 +1049,6 @@ type ChatWebviewSettingsStateMessage = {
   modelLimits: ModelLimits;
   generationSettings: GenerationSettings;
   mode: 'build' | 'plan';
-  loopDefaults: ReturnType<ChatLoopService['getLoopDefaultsForUI']>;
   skillsEnabled: boolean;
   skillSearchPaths: SkillSearchPaths;
   skillsBudget: SkillsBudget;
@@ -1065,7 +1067,6 @@ type ChatWebviewInitMessage = ChatWebviewSettingsStateMessage & {
   revertState: ReturnType<ChatRevertService['getRevertBarStateForUI']>;
   context: ReturnType<ChatSessionsService['getContextForUI']>;
   todos: Awaited<ReturnType<typeof readTodos>>;
-  loop: ReturnType<ChatLoopService['getLoopStateForUI']>;
   planPending: boolean;
   activePlanMessageId: string;
   processing: boolean;
@@ -1146,7 +1147,6 @@ async function buildWebviewSettingsStateMessage(
     modelLimits: getModelLimits(),
     generationSettings: getGenerationSettings(),
     mode: runtime.mode,
-    loopDefaults: runtime.getLoopDefaultsForUI(),
     skillsEnabled: getSkillsEnabled(),
     skillSearchPaths: getSkillSearchPaths(),
     skillsBudget: getSkillsBudget(),
@@ -1183,7 +1183,6 @@ async function buildWebviewInitMessage(
     revertState: runtime.getRevertBarStateForUI(),
     context: runtime.getContextForUI(),
     todos,
-    loop: runtime.getLoopStateForUI(),
     planPending: !!pendingPlan,
     activePlanMessageId: pendingPlan?.planMessageId ?? '',
     processing: runtime.isProcessing,
@@ -1520,27 +1519,6 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
             }
             break;
           }
-          case 'configureLoop':
-            this.postMessage({ type: 'loopState', loop: this.getLoopStateForUI() });
-            this.postMessage({ type: 'loopDefaultsState', loopDefaults: this.getLoopDefaultsForUI() });
-            break;
-          case 'setLoopSettings':
-            if (data.settings && typeof data.settings === 'object') {
-              await this.setLoopSettingsForActiveSession(data.settings as LoopSessionSettingsInput);
-            } else {
-              this.postMessage({ type: 'loopState', loop: this.getLoopStateForUI() });
-            }
-            break;
-          case 'resetLoopSettings':
-            await this.resetLoopSettingsForActiveSession();
-            break;
-          case 'setLoopDefaults':
-            if (data.settings && typeof data.settings === 'object') {
-              await this.setLoopWorkspaceDefaults(data.settings as LoopWorkspaceDefaultsInput);
-            } else {
-              this.postMessage({ type: 'loopDefaultsState', loopDefaults: this.getLoopDefaultsForUI() });
-            }
-            break;
           case 'steerQueuedInput': {
             const id = typeof (data as any).id === 'string' ? String((data as any).id) : '';
             try {
@@ -3443,6 +3421,7 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
     const nextTopP = Number(settings.topP ?? currentSettings.topP);
     const nextTopK = Number(settings.topK ?? currentSettings.topK);
     const nextMaxOutputTokens = Number(settings.maxOutputTokens ?? currentSettings.maxOutputTokens);
+    const nextMaxIterations = Number(settings.maxIterations ?? currentSettings.maxIterations);
     const nextMaxRetries = Number(settings.maxRetries ?? currentSettings.maxRetries);
     const nextRetryWithPartialOutput = typeof settings.retryWithPartialOutput === 'boolean'
       ? settings.retryWithPartialOutput
@@ -3476,6 +3455,11 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
       this.postMessage({ type: 'generationSettingsState', generationSettings: getGenerationSettings() });
       return;
     }
+    if (!Number.isFinite(nextMaxIterations) || (nextMaxIterations !== -1 && nextMaxIterations <= 0)) {
+      postInputNotice(this, 'Max iterations must be -1 for no limit or a positive number.');
+      this.postMessage({ type: 'generationSettingsState', generationSettings: getGenerationSettings() });
+      return;
+    }
     if (!Number.isFinite(nextMaxRetries) || nextMaxRetries < 0) {
       postInputNotice(this, 'Max retries must be zero or greater.');
       this.postMessage({ type: 'generationSettingsState', generationSettings: getGenerationSettings() });
@@ -3491,6 +3475,7 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
     const normalizedTopP = Math.round(nextTopP * 1000) / 1000;
     const normalizedTopK = Math.floor(nextTopK);
     const normalizedMaxOutputTokens = Math.floor(nextMaxOutputTokens);
+    const normalizedMaxIterations = nextMaxIterations === -1 ? -1 : Math.floor(nextMaxIterations);
     const normalizedMaxRetries = Math.floor(nextMaxRetries);
     const normalizedTimeoutMs = Math.floor(nextTimeoutMs);
 
@@ -3500,6 +3485,7 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
       await config.update('topP', normalizedTopP, true);
       await config.update('topK', normalizedTopK, true);
       await config.update('maxOutputTokens', normalizedMaxOutputTokens, true);
+      await config.update('maxIterations', normalizedMaxIterations, true);
       await config.update('llm.maxRetries', normalizedMaxRetries, true);
       await config.update('llm.retryWithPartialOutput', nextRetryWithPartialOutput, true);
       await config.update('llm.timeoutMs', normalizedTimeoutMs, true);
@@ -3511,6 +3497,7 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
           topP: normalizedTopP,
           topK: normalizedTopK,
           maxOutputTokens: normalizedMaxOutputTokens,
+          maxIterations: normalizedMaxIterations,
           maxRetries: normalizedMaxRetries,
           retryWithPartialOutput: nextRetryWithPartialOutput,
           timeoutMs: normalizedTimeoutMs,
@@ -3731,11 +3718,6 @@ function createChatWebviewDepsForController(controller: ChatController): ChatWeb
     switchToSession: (sessionId: string) => controller.sessionApi.switchToSession(sessionId),
     postSessions: () => controller.sessionApi.postSessions(),
     handleUserMessage: (content: string | ChatUserInput) => controller.runnerInputApi.handleUserMessage(content),
-    setLoopSettingsForActiveSession: (settings: LoopSessionSettingsInput) =>
-      controller.loopApi.setLoopSettingsForActiveSession(settings),
-    resetLoopSettingsForActiveSession: () => controller.loopApi.resetLoopSettingsForActiveSession(),
-    setLoopWorkspaceDefaults: (settings: LoopWorkspaceDefaultsInput) =>
-      controller.loopApi.setLoopWorkspaceDefaults(settings),
     approveAllPendingApprovals: (options?: { includeManual?: boolean }) =>
       controller.approvalsApi.approveAllPendingApprovals(options),
     postApprovalState: () => controller.approvalsApi.postApprovalState(),
@@ -3772,8 +3754,6 @@ function createChatWebviewDepsForController(controller: ChatController): ChatWeb
     getRenderableMessages: () => controller.sessionApi.getRenderableMessages(),
     getRevertBarStateForUI: () => controller.revertApi.getRevertBarStateForUI(),
     getContextForUI: () => controller.sessionApi.getContextForUI(),
-    getLoopStateForUI: () => controller.loopApi.getLoopStateForUI(),
-    getLoopDefaultsForUI: () => controller.loopApi.getLoopDefaultsForUI(),
     getSessionsForUI: () => controller.sessionApi.getSessionsForUI(),
     getSkillNamesForUI: () => controller.skillsApi.getSkillNamesForUI(),
     getUndoRedoAvailability: () => controller.revertApi.getUndoRedoAvailability(),

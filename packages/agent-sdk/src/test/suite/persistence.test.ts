@@ -89,6 +89,17 @@ suite('persistence', () => {
         { id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hello' }] } as any,
         { id: 'm2', role: 'assistant', parts: [{ type: 'text', text: 'hi' }] } as any,
       ],
+      threadGoal: {
+        id: 'goal-1',
+        sessionId: 's1',
+        objective: 'Finish the release',
+        status: 'active',
+        tokenBudget: 1000,
+        tokensUsed: 250,
+        timeUsedSeconds: 60,
+        createdAt: 100,
+        updatedAt: 200,
+      },
       fileHandles: { nextId: 2, byId: { F1: 'src/index.ts' } },
     });
 
@@ -122,6 +133,17 @@ suite('persistence', () => {
         text: '<memory_recall_context>\nRemember this\n</memory_recall_context>',
       },
     ]);
+    assert.deepEqual(snapshot.threadGoal, {
+      id: 'goal-1',
+      sessionId: 's1',
+      objective: 'Finish the release',
+      status: 'active',
+      tokenBudget: 1000,
+      tokensUsed: 250,
+      timeUsedSeconds: 60,
+      createdAt: 100,
+      updatedAt: 200,
+    });
     assert.deepEqual(snapshot.fileHandles, { nextId: 2, byId: { F1: 'src/index.ts' } });
     assert.equal(snapshot.history.length, 2);
 
@@ -138,6 +160,7 @@ suite('persistence', () => {
         text: '<memory_recall_context>\nRemember this\n</memory_recall_context>',
       },
     ]);
+    assert.deepEqual(restored.threadGoal, snapshot.threadGoal);
     assert.deepEqual(restored.fileHandles, { nextId: 2, byId: { F1: 'src/index.ts' } });
     assert.equal(restored.getHistory().length, 2);
   });

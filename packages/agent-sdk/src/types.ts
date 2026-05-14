@@ -1,4 +1,5 @@
 import type { AgentHistoryMessage, ToolErrorCode } from '@kooka/core';
+import type { LingyunSession } from './agent/session.js';
 
 export interface ToolParameterSchema {
   type: 'string' | 'number' | 'boolean' | 'array' | 'object';
@@ -97,6 +98,11 @@ export interface ToolContext {
    * Optional session identifier used by stateful tools.
    */
   sessionId?: string;
+  /**
+   * Active agent session for built-in stateful tools.
+   * Host tools should treat this as optional because manual tool runs may not have an agent session.
+   */
+  session?: LingyunSession;
   /**
    * Abort signal for cancellation/timeouts.
    */
@@ -209,6 +215,11 @@ export interface AgentConfig {
    * Maximum tokens for generated output (provider-dependent).
    */
   maxOutputTokens?: number;
+  /**
+   * Maximum assistant/tool iterations for one run.
+   * Defaults to 50. Set to -1 to disable the iteration limit.
+   */
+  maxIterations?: number;
   toolFilter?: string[];
   autoApprove?: boolean;
   /**

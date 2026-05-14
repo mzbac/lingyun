@@ -5,10 +5,12 @@ import { getAgentHistoryStats } from '@kooka/core';
 import {
   cloneFileHandlesState,
   cloneSemanticHandlesState,
+  cloneThreadGoal,
   LingyunSession,
   normalizeFileHandlesState,
   normalizeOptionalMentionedSkills,
   normalizeSystemPromptSnapshot,
+  normalizeThreadGoal,
   type LingyunSession as LingyunSessionType,
 } from '../agent/session.js';
 import { normalizeSemanticHandlesState, type SemanticHandlesState } from '../agent/semanticHandles.js';
@@ -26,6 +28,7 @@ export type LingyunSessionSnapshotV1 = {
   history: AgentHistoryMessage[];
   stats?: AgentHistoryStats;
   mentionedSkills?: string[];
+  threadGoal?: LingyunSession['threadGoal'];
   compactionSyntheticContexts?: LingyunCompactionSyntheticContext[];
   fileHandles?: LingyunSession['fileHandles'];
   semanticHandles?: SemanticHandlesState;
@@ -79,7 +82,7 @@ function normalizeCompactionSyntheticContexts(
     .filter(
       (context): context is LingyunCompactionSyntheticContext =>
         isRecord(context) &&
-        (context.transientContext === 'explore' || context.transientContext === 'memoryRecall') &&
+        (context.transientContext === 'explore' || context.transientContext === 'memoryRecall' || context.transientContext === 'goal') &&
         typeof context.text === 'string',
     )
     .map(context => ({
@@ -105,6 +108,7 @@ function coerceSessionSnapshot(value: RecordLike): LingyunSessionSnapshot | unde
   const pendingPlan = readTrimmedOptionalString(value.pendingPlan);
   const history = Array.isArray(value.history) ? (value.history as AgentHistoryMessage[]) : [];
   const mentionedSkills = normalizeOptionalMentionedSkills(value.mentionedSkills);
+  const threadGoal = normalizeThreadGoal(value.threadGoal);
   const compactionSyntheticContexts = normalizeCompactionSyntheticContexts(value.compactionSyntheticContexts);
   const fileHandles = normalizeFileHandlesState(value.fileHandles);
   const semanticHandles = normalizeSemanticHandlesState(value.semanticHandles);
@@ -121,6 +125,7 @@ function coerceSessionSnapshot(value: RecordLike): LingyunSessionSnapshot | unde
     history,
     stats: getAgentHistoryStats(history),
     ...(mentionedSkills ? { mentionedSkills } : {}),
+    ...(threadGoal ? { threadGoal } : {}),
     ...(compactionSyntheticContexts ? { compactionSyntheticContexts } : {}),
     ...(fileHandles ? { fileHandles } : {}),
     ...(semanticHandles ? { semanticHandles } : {}),
@@ -140,10 +145,11 @@ export const LingyunSessionSnapshotSchema = z
     history: z.array(z.unknown()),
     stats: z.unknown().optional(),
     mentionedSkills: z.array(z.string()).optional(),
+    threadGoal: z.unknown().optional(),
     compactionSyntheticContexts: z
       .array(
         z.object({
-          transientContext: z.enum(['explore', 'memoryRecall']),
+          transientContext: z.enum(['explore', 'memoryRecall', 'goal']),
           text: z.string(),
         }),
       )
@@ -175,6 +181,7 @@ export function snapshotSession(
     history: session.getHistory(),
     stats: session.getStats(),
     ...(mentionedSkills ? { mentionedSkills } : {}),
+    ...(session.threadGoal ? { threadGoal: cloneThreadGoal(session.threadGoal) } : {}),
     ...(session.compactionSyntheticContexts.length > 0
       ? {
           compactionSyntheticContexts: session.compactionSyntheticContexts.map((context) => ({ ...context })),
@@ -195,6 +202,7 @@ export function restoreSession(snapshot: LingyunSessionSnapshot): LingyunSession
     modelId: snapshot.modelId,
     systemPromptSnapshot: snapshot.systemPromptSnapshot,
     mentionedSkills: snapshot.mentionedSkills,
+    threadGoal: snapshot.threadGoal,
     compactionSyntheticContexts: snapshot.compactionSyntheticContexts,
     fileHandles: snapshot.fileHandles,
     semanticHandles: snapshot.semanticHandles,

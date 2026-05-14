@@ -10,10 +10,10 @@ export type AgentHistoryMetadata = {
   synthetic?: boolean;
   skill?: boolean;
   summary?: boolean;
-  transientContext?: 'explore' | 'memoryRecall';
+  transientContext?: 'explore' | 'memoryRecall' | 'goal';
   compaction?: { auto: boolean };
   compactionRestore?: {
-    source: 'sessionState' | 'explore' | 'memoryRecall';
+    source: 'sessionState' | 'explore' | 'memoryRecall' | 'goal';
   };
   replay?: {
     text?: string;

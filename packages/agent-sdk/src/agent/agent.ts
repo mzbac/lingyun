@@ -31,7 +31,7 @@ import { PluginManager } from '../plugins/pluginManager.js';
 import type { LingyunHookName, LingyunPluginToolEntry } from '../plugins/types.js';
 import { appendModeReminderMessage } from './reminders.js';
 import { DEFAULT_SYSTEM_PROMPT } from './prompts.js';
-import { MAX_TOOL_RESULT_LENGTH } from './constants.js';
+import { DEFAULT_MAX_ITERATIONS, MAX_TOOL_RESULT_LENGTH } from './constants.js';
 import { createProviderBehavior } from './providerBehavior.js';
 import type { ProviderBehavior } from './providerBehavior.js';
 import type { ToolRegistry } from '../tools/registry.js';
@@ -454,6 +454,7 @@ export class LingyunAgent {
       maxRetries: parentExecution.config.maxRetries,
       retryWithPartialOutput: parentExecution.config.retryWithPartialOutput,
       maxOutputTokens: parentExecution.config.maxOutputTokens,
+      maxIterations: parentExecution.config.maxIterations,
       toolFilter: seed.toolFilter,
       autoApprove: mode === 'plan' ? false : parentExecution.config.autoApprove,
       systemPrompt: seed.systemPrompt,
@@ -751,6 +752,17 @@ export class LingyunAgent {
     return 4096;
   }
 
+  private getMaxIterations(config: Readonly<AgentConfig>): number {
+    const maxIterations = config.maxIterations;
+    if (maxIterations === -1) {
+      return -1;
+    }
+    if (typeof maxIterations === 'number' && Number.isFinite(maxIterations) && maxIterations > 0) {
+      return Math.floor(maxIterations);
+    }
+    return DEFAULT_MAX_ITERATIONS;
+  }
+
   private async ensurePluginToolsRegistered(): Promise<void> {
     const entries = await this.plugins.getPluginTools?.();
     if (!entries) return;
@@ -855,6 +867,7 @@ export class LingyunAgent {
       workspaceRoot: this.workspaceRoot,
       allowExternalPaths: execution.runtime.allowExternalPaths,
       sessionId: session.sessionId ?? execution.config.sessionId,
+      session,
       signal,
       log: (message: string) => {
         try {
@@ -1143,6 +1156,7 @@ export class LingyunAgent {
       topP: execution.config.topP,
       topK: execution.config.topK,
       maxRetries: execution.config.maxRetries ?? 0,
+      maxIterations: this.getMaxIterations(execution.config),
       retryWithPartialOutput: execution.config.retryWithPartialOutput === true,
       getMaxOutputTokens: () => this.getMaxOutputTokens(execution.config, execution.runtime, modelId),
       getModelLimit: (id) => this.getModelLimit(id, execution.runtime),

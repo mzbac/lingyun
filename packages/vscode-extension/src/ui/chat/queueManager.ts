@@ -349,7 +349,7 @@ export function createChatQueueManager(controller: ChatController): ChatQueueMan
     runner: {
       handleUserMessage: (
         content: string | ChatUserInput,
-        options?: { fromQueue?: boolean; synthetic?: boolean; displayContent?: string }
+        options?: { fromQueue?: boolean; synthetic?: boolean; displayContent?: string; forceBuild?: boolean }
       ) => controller.runner.handleUserMessage(content, options),
     },
     getActiveSession: () => controller.sessionApi.getActiveSession(),

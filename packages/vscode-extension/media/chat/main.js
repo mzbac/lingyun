@@ -124,12 +124,11 @@
 		      );
 		      updateCompactionToolOutputModeState(data.compactionToolOutputMode || 'afterToolCall');
 		      updateModelLimitsState(data.modelLimits || {});
-		      updateGenerationSettingsState(data.generationSettings || {});
-		      updateSkillsEnabledState(data.skillsEnabled !== false);
-		      updateSkillSearchPathsState(data.skillSearchPaths || []);
-		      updateSkillsBudgetState(data.skillsBudget || {});
-		      updateLoopDefaultsState(data.loopDefaults || {});
-		      setMode(data.mode || 'build');
+			      updateGenerationSettingsState(data.generationSettings || {});
+			      updateSkillsEnabledState(data.skillsEnabled !== false);
+			      updateSkillSearchPathsState(data.skillSearchPaths || []);
+			      updateSkillsBudgetState(data.skillsBudget || {});
+			      setMode(data.mode || 'build');
 		      try { setAvailableSkills(Array.isArray(data.skills) ? data.skills : []); } catch {}
 		      syncInputState();
 		    }
@@ -262,10 +261,9 @@
       if (data.sessions && data.sessions.length > 0) {
         sessionSwitchPending = false;
         updateSessionSelect(data.sessions, data.activeSessionId);
-      }
-      applySettingsState(data);
-		      setLoopState(data.loop);
-		      updateContextIndicatorState(data.context);
+	      }
+	      applySettingsState(data);
+			      updateContextIndicatorState(data.context);
 
 			      closeContextPopover();
 			      updateTodoIndicatorState(data.todos);
@@ -298,16 +296,6 @@
           clearPendingSettingStates();
           applySettingsState(data);
           break;
-	        case 'loopState':
-	          setPendingSettingState('loopState', false);
-	          try { setLoopState(data.loop); } catch {}
-	          syncInputState();
-	          break;
-	        case 'loopDefaultsState':
-	          setPendingSettingState('loopDefaultsState', false);
-	          try { updateLoopDefaultsState(data.loopDefaults || {}); } catch {}
-	          syncInputState();
-	          break;
 	        case 'context':
 	          updateContextIndicatorState(data.context);
 	          break;

@@ -97,6 +97,7 @@ export class ToolRegistry {
         activeEditor,
         extensionContext,
         sessionId: agentContext.sessionId,
+        agentSession: agentContext.session,
         cancellationToken: token,
         progress: { report: () => {} },
         log: agentContext.log,

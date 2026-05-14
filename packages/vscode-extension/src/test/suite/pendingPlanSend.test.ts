@@ -159,8 +159,6 @@ suite('Pending plan send', () => {
       posted.push(JSON.parse(JSON.stringify(message)));
     };
     provider.runnerInputApi.isPlanFirstEnabled = () => false;
-    provider.loopManager.onRunStart = () => {};
-    provider.loopManager.onRunEnd = () => {};
     provider.queueManager.scheduleAutosendForSession = () => {};
     provider.runnerCallbacksApi.createAgentCallbacks = () => ({}) as any;
     provider.agent.run = async () => {
@@ -568,7 +566,6 @@ suite('Pending plan send', () => {
     const posted: any[] = [];
     const scheduledAutosends: Array<{ sessionId: string; suppress?: boolean }> = [];
     let approvalStatePosts = 0;
-    let runStartSessionId: string | undefined;
 
     provider.webviewApi.postMessage = (message: unknown) => {
       posted.push(JSON.parse(JSON.stringify(message)));
@@ -576,10 +573,6 @@ suite('Pending plan send', () => {
     provider.approvalsApi.postApprovalState = () => {
       approvalStatePosts += 1;
     };
-    provider.loopManager.onRunStart = (sessionId?: string) => {
-      runStartSessionId = sessionId;
-    };
-    provider.loopManager.onRunEnd = () => {};
     provider.queueManager.scheduleAutosendForSession = (sessionId: string, options?: { suppress?: boolean }) => {
       scheduledAutosends.push({ sessionId, suppress: options?.suppress });
     };
@@ -593,7 +586,6 @@ suite('Pending plan send', () => {
     };
     await provider.runnerPlanApi.executePendingPlan('plan-1');
 
-    assert.strictEqual(runStartSessionId, 'session-1');
     assert.strictEqual(approvalStatePosts, 2);
     assert.strictEqual(planMsg.plan?.status, 'done');
     assert.strictEqual(session.pendingPlan, undefined);
@@ -628,8 +620,6 @@ suite('Pending plan send', () => {
     provider.webviewApi.postMessage = (message: unknown) => {
       posted.push(JSON.parse(JSON.stringify(message)));
     };
-    provider.loopManager.onRunStart = () => {};
-    provider.loopManager.onRunEnd = () => {};
     provider.queueManager.scheduleAutosendForSession = () => {};
     provider.runnerCallbacksApi.createAgentCallbacks = () => ({}) as any;
     provider.modeApi.setModeAndPersist = async (mode) => {
@@ -727,8 +717,6 @@ suite('Pending plan send', () => {
     });
     installPendingPlanSession(provider, planMsg);
     provider.webviewApi.postMessage = () => {};
-    provider.loopManager.onRunStart = () => {};
-    provider.loopManager.onRunEnd = () => {};
     provider.queueManager.scheduleAutosendForSession = () => {};
     provider.runnerCallbacksApi.createAgentCallbacks = () => ({}) as any;
     provider.modeApi.setModeAndPersist = async (mode) => {
@@ -756,8 +744,6 @@ suite('Pending plan send', () => {
     provider.webviewApi.postMessage = (message: unknown) => {
       posted.push(JSON.parse(JSON.stringify(message)));
     };
-    provider.loopManager.onRunStart = () => {};
-    provider.loopManager.onRunEnd = () => {};
     provider.queueManager.scheduleAutosendForSession = (sessionId: string, options?: { suppress?: boolean }) => {
       scheduledAutosends.push({ sessionId, suppress: options?.suppress });
     };
@@ -803,8 +789,6 @@ suite('Pending plan send', () => {
       posted.push(JSON.parse(JSON.stringify(message)));
     };
     provider.runnerInputApi.isPlanFirstEnabled = () => false;
-    provider.loopManager.onRunStart = () => {};
-    provider.loopManager.onRunEnd = () => {};
     provider.queueManager.scheduleAutosendForSession = () => {};
     provider.runnerCallbacksApi.createAgentCallbacks = () => ({}) as any;
     provider.agent.run = async () => 'done';
@@ -849,8 +833,6 @@ suite('Pending plan send', () => {
       posted.push(JSON.parse(JSON.stringify(message)));
     };
     provider.runnerInputApi.isPlanFirstEnabled = () => false;
-    provider.loopManager.onRunStart = () => {};
-    provider.loopManager.onRunEnd = () => {};
     provider.queueManager.scheduleAutosendForSession = () => {};
     provider.runnerCallbacksApi.createAgentCallbacks = () => ({}) as any;
     provider.agent.run = async () => 'done';
@@ -873,8 +855,6 @@ suite('Pending plan send', () => {
       posted.push(JSON.parse(JSON.stringify(message)));
     };
     provider.runnerInputApi.isPlanFirstEnabled = () => false;
-    provider.loopManager.onRunStart = () => {};
-    provider.loopManager.onRunEnd = () => {};
     provider.queueManager.scheduleAutosendForSession = () => {};
     provider.runnerCallbacksApi.createAgentCallbacks = () => ({}) as any;
     provider.agent.run = async () => 'done';
@@ -916,8 +896,6 @@ suite('Pending plan send', () => {
       posted.push(JSON.parse(JSON.stringify(message)));
     };
     provider.runnerInputApi.isPlanFirstEnabled = () => false;
-    provider.loopManager.onRunStart = () => {};
-    provider.loopManager.onRunEnd = () => {};
     provider.queueManager.scheduleAutosendForSession = (sessionId: string, options?: { suppress?: boolean }) => {
       scheduledAutosends.push({ sessionId, suppress: options?.suppress });
     };
@@ -972,8 +950,6 @@ suite('Pending plan send', () => {
       posted.push(JSON.parse(JSON.stringify(message)));
     };
     provider.runnerInputApi.isPlanFirstEnabled = () => false;
-    provider.loopManager.onRunStart = () => {};
-    provider.loopManager.onRunEnd = () => {};
     provider.queueManager.scheduleAutosendForSession = (sessionId: string, options?: { suppress?: boolean }) => {
       scheduledAutosends.push({ sessionId, suppress: options?.suppress });
     };
@@ -1018,8 +994,6 @@ suite('Pending plan send', () => {
       posted.push(JSON.parse(JSON.stringify(message)));
     };
     provider.runnerInputApi.isPlanFirstEnabled = () => false;
-    provider.loopManager.onRunStart = () => {};
-    provider.loopManager.onRunEnd = () => {};
     provider.queueManager.scheduleAutosendForSession = (sessionId: string, options?: { suppress?: boolean }) => {
       scheduledAutosends.push({ sessionId, suppress: options?.suppress });
     };
@@ -1080,8 +1054,6 @@ suite('Pending plan send', () => {
     provider.webviewApi.postMessage = (message: unknown) => {
       posted.push(JSON.parse(JSON.stringify(message)));
     };
-    provider.loopManager.onRunStart = () => {};
-    provider.loopManager.onRunEnd = () => {};
     provider.queueManager.scheduleAutosendForSession = (sessionId: string, options?: { suppress?: boolean }) => {
       scheduledAutosends.push({ sessionId, suppress: options?.suppress });
     };

@@ -53,12 +53,16 @@ export {
 export {
   cloneFileHandlesState,
   cloneSemanticHandlesState,
+  cloneThreadGoal,
   createBlankFileHandlesState,
   createBlankSemanticHandlesState,
   normalizeFileHandlesState,
   normalizeMentionedSkills,
   normalizeOptionalMentionedSkills,
   normalizeSystemPromptSnapshot,
+  normalizeThreadGoal,
+  type LingyunThreadGoal,
+  type LingyunThreadGoalStatus,
 } from './agent/session.js';
 export { FileHandleRegistry } from './agent/fileHandles.js';
 export { normalizeSemanticHandlesState } from './agent/semanticHandles.js';

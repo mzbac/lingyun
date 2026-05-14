@@ -32,6 +32,7 @@ import type { ProviderBehavior } from './providerBehavior.js';
 import { combineAbortSignals } from '../abort.js';
 import { invokeCallbackSafely } from './callbacks.js';
 import { compactSessionInternal } from './compaction.js';
+import { DEFAULT_MAX_ITERATIONS } from './constants.js';
 import { SemanticHandleRegistry } from './semanticHandles.js';
 import { buildStreamReplay, type StreamReplayUpdate } from './streamAdapters.js';
 import { delay as getRetryDelayMs, retryable as getRetryableLlmError, sleep as retrySleep } from './retry.js';
@@ -70,6 +71,7 @@ export async function runOnce(params: {
   topP?: number;
   topK?: number;
   maxRetries: number;
+  maxIterations: number;
   retryWithPartialOutput: boolean;
   getMaxOutputTokens: () => number;
   getModelLimit: (modelId: string) => ModelLimit | undefined;
@@ -197,7 +199,12 @@ export async function runOnce(params: {
     let lastResponse = '';
     let syntheticResumeUserText = params.syntheticResumeUserText;
 
-    const maxIterations = 50;
+    const maxIterations =
+      params.maxIterations === -1
+        ? Number.POSITIVE_INFINITY
+        : Number.isFinite(params.maxIterations) && params.maxIterations > 0
+          ? Math.floor(params.maxIterations)
+          : DEFAULT_MAX_ITERATIONS;
     for (let iteration = 1; iteration <= maxIterations; iteration++) {
       await invokeCallbackSafely(
         callbacksSafe?.onIterationStart,

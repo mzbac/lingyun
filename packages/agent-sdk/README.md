@@ -73,6 +73,7 @@ const { agent, llm } = createLingyunAgent({
     mode: 'build',
     maxRetries: 1,
     maxOutputTokens: 2048,
+    maxIterations: 100, // Set to -1 for no assistant/tool iteration limit.
     autoApprove: false,
   },
   workspaceRoot: process.cwd(),
