@@ -14,7 +14,13 @@ export type LingyunFileHandlesState = {
   byId: Record<string, string>;
 };
 
-export type LingyunThreadGoalStatus = 'active' | 'paused' | 'budget_limited' | 'complete';
+export type LingyunThreadGoalStatus =
+  | 'active'
+  | 'paused'
+  | 'blocked'
+  | 'usageLimited'
+  | 'budgetLimited'
+  | 'complete';
 
 export type LingyunThreadGoal = {
   id: string;
@@ -27,6 +33,26 @@ export type LingyunThreadGoal = {
   createdAt: number;
   updatedAt: number;
 };
+
+export type LingyunThreadGoalToolResponse = {
+  goal: LingyunThreadGoalToolGoal | null;
+  remainingTokens: number | null;
+  completionBudgetReport: string | null;
+};
+
+export type LingyunThreadGoalToolGoal = {
+  threadId: string;
+  objective: string;
+  status: LingyunThreadGoalStatus;
+  tokenBudget?: number;
+  tokensUsed: number;
+  timeUsedSeconds: number;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export const THREAD_GOAL_COMPLETION_BUDGET_REPORT =
+  "Goal achieved. Report final usage from this tool result's structured goal fields. If `goal.tokenBudget` is present, include token usage from `goal.tokensUsed` and `goal.tokenBudget`. If `goal.timeUsedSeconds` is greater than 0, summarize elapsed time in a concise, human-friendly form appropriate to the response language.";
 
 export function createBlankFileHandlesState(): LingyunFileHandlesState {
   return { nextId: 1, byId: {} };
@@ -145,17 +171,92 @@ function readTrimmedOptionalString(value: unknown): string | undefined {
 }
 
 function readPositiveInteger(value: unknown): number | undefined {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return undefined;
-  return Math.floor(value);
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) return undefined;
+  return value;
 }
 
 function readNonNegativeInteger(value: unknown): number | undefined {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return undefined;
-  return Math.floor(value);
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) return undefined;
+  return value;
 }
 
 export function cloneThreadGoal(goal: LingyunThreadGoal | undefined): LingyunThreadGoal | undefined {
   return goal ? { ...goal } : undefined;
+}
+
+function threadGoalForToolResponse(goal: LingyunThreadGoal, threadId: string): LingyunThreadGoalToolGoal {
+  return {
+    threadId,
+    objective: goal.objective,
+    status: goal.status,
+    ...(goal.tokenBudget !== undefined ? { tokenBudget: goal.tokenBudget } : {}),
+    tokensUsed: goal.tokensUsed,
+    timeUsedSeconds: goal.timeUsedSeconds,
+    createdAt: goal.createdAt,
+    updatedAt: goal.updatedAt,
+  };
+}
+
+export function createThreadGoalToolResponse(
+  goal: LingyunThreadGoal | undefined,
+  options?: { includeCompletionReport?: boolean; threadId?: string | undefined },
+): LingyunThreadGoalToolResponse {
+  const threadId = options?.threadId ?? goal?.sessionId ?? '';
+  const response: LingyunThreadGoalToolResponse = {
+    goal: goal ? threadGoalForToolResponse(goal, threadId) : null,
+    remainingTokens: goal?.tokenBudget ? Math.max(0, goal.tokenBudget - goal.tokensUsed) : null,
+    completionBudgetReport: null,
+  };
+  if (
+    options?.includeCompletionReport &&
+    goal?.status === 'complete' &&
+    (goal.tokenBudget !== undefined || goal.timeUsedSeconds > 0)
+  ) {
+    response.completionBudgetReport = THREAD_GOAL_COMPLETION_BUDGET_REPORT;
+  }
+  return response;
+}
+
+export function resolveThreadGoalStatusAfterBudgetLimit(params: {
+  currentStatus?: LingyunThreadGoalStatus;
+  requestedStatus: LingyunThreadGoalStatus;
+  tokenBudget?: number;
+  tokensUsed: number;
+  budgetLimitEligible?: boolean;
+}): LingyunThreadGoalStatus {
+  if (
+    params.currentStatus === 'budgetLimited' &&
+    (params.requestedStatus === 'paused' || params.requestedStatus === 'blocked')
+  ) {
+    return 'budgetLimited';
+  }
+  if (
+    (params.budgetLimitEligible ?? params.requestedStatus === 'active') &&
+    params.requestedStatus !== 'complete' &&
+    params.tokenBudget !== undefined &&
+    Math.max(0, Math.floor(params.tokensUsed)) >= params.tokenBudget
+  ) {
+    return 'budgetLimited';
+  }
+  return params.requestedStatus;
+}
+
+function normalizeThreadGoalStatus(value: unknown): LingyunThreadGoalStatus | undefined {
+  switch (value) {
+    case 'active':
+    case 'paused':
+    case 'blocked':
+    case 'usageLimited':
+    case 'budgetLimited':
+    case 'complete':
+      return value;
+    case 'usage_limited':
+      return 'usageLimited';
+    case 'budget_limited':
+      return 'budgetLimited';
+    default:
+      return undefined;
+  }
 }
 
 export function normalizeThreadGoal(value: unknown): LingyunThreadGoal | undefined {
@@ -163,11 +264,9 @@ export function normalizeThreadGoal(value: unknown): LingyunThreadGoal | undefin
 
   const id = readTrimmedOptionalString(value.id);
   const objective = readTrimmedOptionalString(value.objective);
-  const status = value.status;
+  const status = normalizeThreadGoalStatus(value.status);
   if (!id || !objective) return undefined;
-  if (status !== 'active' && status !== 'paused' && status !== 'budget_limited' && status !== 'complete') {
-    return undefined;
-  }
+  if (!status) return undefined;
 
   const tokensUsed = readNonNegativeInteger(value.tokensUsed) ?? 0;
   const timeUsedSeconds = readNonNegativeInteger(value.timeUsedSeconds) ?? 0;
@@ -176,11 +275,17 @@ export function normalizeThreadGoal(value: unknown): LingyunThreadGoal | undefin
   const tokenBudget = readPositiveInteger(value.tokenBudget);
   const sessionId = readTrimmedOptionalString(value.sessionId);
 
+  const normalizedStatus = resolveThreadGoalStatusAfterBudgetLimit({
+    requestedStatus: status,
+    tokenBudget,
+    tokensUsed,
+  });
+
   return {
     id,
     ...(sessionId ? { sessionId } : {}),
     objective,
-    status,
+    status: normalizedStatus,
     ...(tokenBudget ? { tokenBudget } : {}),
     tokensUsed,
     timeUsedSeconds,

@@ -2,7 +2,7 @@
   "name": "lingyun",
   "displayName": "LingYun",
   "description": "Agentic AI assistant for VS Code",
-  "version": "2.5.1",
+  "version": "2.5.2",
   "publisher": "mzbac",
   "icon": "images/icon.png",
   "license": "MIT",
@@ -615,7 +615,7 @@
         "lingyun.debug.details": {
           "type": "boolean",
           "default": false,
-          "description": "Enable more detailed LingYun output-channel logs, including fuller error/cause/stack details. This also turns on the LLM, tools, and plugins debug streams and stops masking paths/URLs/hosts in those logs, while still hiding credential-like secrets."
+          "description": "Enable more detailed LingYun output-channel logs, including fuller error/cause/stack details. This also turns on the LLM, tools, and plugins debug streams while keeping secrets, paths, URLs, and hosts redacted."
         },
         "lingyun.debug.llm": {
           "type": "boolean",

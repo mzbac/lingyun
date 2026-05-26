@@ -101,12 +101,11 @@ function redactPrivateHosts(text: string): string {
 }
 
 export function redactSensitive(text: string, options?: DebugFormatOptions): string {
-  let out = redactSecrets(text);
-  if ((options?.redactionLevel ?? 'full') === 'secrets-only') {
-    return redactPrivateHosts(out);
-  }
+  void options;
+  let out = String(text ?? '');
   out = out.replace(URL_REGEX, '<url>');
   out = out.replace(FILE_URL_REGEX, '<file-url>');
+  out = redactSecrets(out);
   out = redactPrivateHosts(out);
   out = out.replace(IPV4_REGEX, '<ip>');
   out = redactHomePath(out);

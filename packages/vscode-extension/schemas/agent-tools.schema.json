@@ -47,7 +47,7 @@
                   "properties": {
                     "type": {
                       "type": "string",
-                      "enum": ["string", "number", "boolean", "array", "object"]
+                      "enum": ["string", "number", "integer", "boolean", "array", "object"]
                     },
                     "description": { "type": "string" },
                     "enum": { "type": "array" },
@@ -122,7 +122,7 @@
           "requiresApproval": {
             "type": "boolean",
             "default": true,
-            "description": "Whether user must approve before execution"
+            "description": "Whether user must approve before execution. Host security policy may still force approval for shell, HTTP, or secret-bearing workspace tools."
           },
           "category": {
             "type": "string",

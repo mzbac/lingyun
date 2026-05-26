@@ -2,7 +2,7 @@ import type { AgentHistoryMessage, ToolErrorCode } from '@kooka/core';
 import type { LingyunSession } from './agent/session.js';
 
 export interface ToolParameterSchema {
-  type: 'string' | 'number' | 'boolean' | 'array' | 'object';
+  type: 'string' | 'number' | 'integer' | 'boolean' | 'array' | 'object';
   description?: string;
   enum?: (string | number)[];
   items?: ToolParameterSchema;
@@ -33,6 +33,10 @@ export interface ToolDefinition {
     category?: string;
     icon?: string;
     requiresApproval?: boolean;
+    /**
+     * Host-enforced approval that cannot be bypassed by auto-approve.
+     */
+    requiresManualApproval?: boolean;
     timeout?: number;
     tags?: string[];
     /**

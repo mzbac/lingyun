@@ -12,6 +12,7 @@ export type ToolPermissionPattern = {
 
 export type ToolMetadataLike = {
   requiresApproval?: boolean;
+  requiresManualApproval?: boolean;
   supportsExternalPaths?: boolean;
   permission?: string;
   readOnly?: boolean;
@@ -163,4 +164,3 @@ export function evaluateShellSafetyForTool(def: ToolDefinitionLike, args: Record
 
   return typeof commandForSafety === 'string' ? evaluateShellCommand(commandForSafety) : undefined;
 }
-

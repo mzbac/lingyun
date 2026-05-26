@@ -25,6 +25,7 @@ import {
 import { findLatestToolMessageByApprovalId } from '../toolMessageLookup';
 import { postInputNotice } from '../inputNotice';
 import {
+  createBudgetLimitedPrompt,
   createGoalContinuationPrompt,
   formatGoalSummary,
   parseGoalSlashCommand,
@@ -141,6 +142,8 @@ function appendAssumptionsToPlan(plan: string): string {
 }
 
 export class RunCoordinator {
+  private readonly reportedBudgetLimitedGoalIds = new Set<string>();
+
   constructor(private readonly controller: RunCoordinatorHost) {}
 
   private finalizeRun(params?: { postProcessingSignal?: boolean; keepAbortFlag?: boolean; suppressQueueAutosend?: boolean }): void {
@@ -773,7 +776,9 @@ export class RunCoordinator {
     }
 
     if (command.kind === 'clear') {
+      const existing = c.agent.getThreadGoal();
       c.agent.clearThreadGoal();
+      if (existing) this.reportedBudgetLimitedGoalIds.delete(existing.id);
       this.postGoalMessage('Goal cleared.');
       return true;
     }
@@ -781,6 +786,9 @@ export class RunCoordinator {
     if (command.kind === 'setStatus') {
       try {
         const goal = c.agent.updateThreadGoalStatus(command.status);
+        if (goal.status !== 'budgetLimited') {
+          this.reportedBudgetLimitedGoalIds.delete(goal.id);
+        }
         this.postGoalMessage(formatGoalSummary(goal));
         if (goal.status === 'active') {
           void this.maybeContinueActiveGoal();
@@ -807,10 +815,16 @@ export class RunCoordinator {
       try {
         const goal = c.agent.setThreadGoalObjective({
           objective,
-          status: existing.status === 'paused' ? 'paused' : 'active',
+          status:
+            existing.status === 'paused' || existing.status === 'blocked' || existing.status === 'usageLimited'
+              ? existing.status
+              : 'active',
           replaceExisting: true,
           preserveUsage: true,
         });
+        if (goal.status !== 'budgetLimited') {
+          this.reportedBudgetLimitedGoalIds.delete(goal.id);
+        }
         this.postGoalMessage(formatGoalSummary(goal));
         if (goal.status === 'active') {
           void this.maybeContinueActiveGoal();
@@ -824,12 +838,14 @@ export class RunCoordinator {
     const existing = c.agent.getThreadGoal();
     let replaceExisting = false;
     if (existing) {
-      const choice = await vscode.window.showWarningMessage(
-        'This session already has a goal. Replace it?',
-        { modal: true },
-        'Replace',
-      );
-      if (choice !== 'Replace') return true;
+      if (existing.status !== 'complete') {
+        const choice = await vscode.window.showWarningMessage(
+          'This session already has a goal. Replace it?',
+          { modal: true },
+          'Replace',
+        );
+        if (choice !== 'Replace') return true;
+      }
       replaceExisting = true;
     }
 
@@ -839,6 +855,7 @@ export class RunCoordinator {
         tokenBudget: command.tokenBudget,
         replaceExisting,
       });
+      this.reportedBudgetLimitedGoalIds.delete(goal.id);
       this.postGoalMessage(formatGoalSummary(goal));
       void this.maybeContinueActiveGoal();
     } catch (error) {
@@ -862,6 +879,25 @@ export class RunCoordinator {
       displayContent: `Continue goal: ${objective}`,
       forceBuild: true,
     });
+  }
+
+  private async maybeReportBudgetLimitedGoal(): Promise<boolean> {
+    const c = this.controller;
+    if (!c.view || c.isProcessing || c.mode === 'plan') return false;
+    const activeSession = c.getActiveSession();
+    if (activeSession.pendingPlan) return false;
+
+    const goal = c.agent.getThreadGoal();
+    if (!goal || goal.status !== 'budgetLimited') return false;
+    if (this.reportedBudgetLimitedGoalIds.has(goal.id)) return false;
+    this.reportedBudgetLimitedGoalIds.add(goal.id);
+
+    await this.handleUserMessage(createBudgetLimitedPrompt(goal), {
+      synthetic: true,
+      displayContent: 'Goal budget reached',
+      forceBuild: true,
+    });
+    return true;
   }
 
   async handleUserMessage(
@@ -972,7 +1008,10 @@ export class RunCoordinator {
     } finally {
       this.finalizeRun({ keepAbortFlag: wasCanceled, suppressQueueAutosend: wasCanceled });
       if (!failed && !wasCanceled && !shouldGeneratePlan) {
-        void this.maybeContinueActiveGoal();
+        void (async () => {
+          if (await this.maybeReportBudgetLimitedGoal()) return;
+          await this.maybeContinueActiveGoal();
+        })();
       }
     }
   }

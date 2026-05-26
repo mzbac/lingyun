@@ -60,6 +60,8 @@ export { listBuiltinSubagents, resolveBuiltinSubagent } from './subagents';
 export type { ValidationResult, ShellCommandDecision } from './validation';
 export {
   evaluateShellCommand,
+  getShellCommandBase,
+  isUnsandboxableShellCommand,
   normalizeSessionId,
   optionalBoolean,
   optionalNumber,

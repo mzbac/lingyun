@@ -19,6 +19,7 @@ import {
   getBackgroundJob,
   isPathInsideWorkspace,
   isPidAlive,
+  isUnsandboxableShellCommand,
   killProcessTree,
   optionalBoolean,
   optionalNumber,
@@ -114,6 +115,9 @@ export const bashHandler: ToolHandler = async (args, context) => {
     for (const p of findExternalPathReferencesInShellCommand(command, { cwd, workspaceRoot })) {
       externalRefs.add(p);
     }
+    if (isUnsandboxableShellCommand(command)) {
+      externalRefs.add('<unsandboxable-shell-command>');
+    }
 
     if (externalRefs.size > 0) {
       const blockedPaths = [...externalRefs];
@@ -122,7 +126,7 @@ export const bashHandler: ToolHandler = async (args, context) => {
       return {
         success: false,
         error:
-          'External paths are disabled. This shell command references paths outside the current workspace. ' +
+          'External paths are disabled. This shell command references paths outside the current workspace or uses a runtime that cannot be confined to it. ' +
           'Enable allowExternalPaths to allow external path access.',
         metadata: {
           errorCode: TOOL_ERROR_CODES.external_paths_disabled,

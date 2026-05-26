@@ -54,6 +54,7 @@ export {
   cloneFileHandlesState,
   cloneSemanticHandlesState,
   cloneThreadGoal,
+  createThreadGoalToolResponse,
   createBlankFileHandlesState,
   createBlankSemanticHandlesState,
   normalizeFileHandlesState,
@@ -61,8 +62,12 @@ export {
   normalizeOptionalMentionedSkills,
   normalizeSystemPromptSnapshot,
   normalizeThreadGoal,
+  resolveThreadGoalStatusAfterBudgetLimit,
+  THREAD_GOAL_COMPLETION_BUDGET_REPORT,
   type LingyunThreadGoal,
   type LingyunThreadGoalStatus,
+  type LingyunThreadGoalToolGoal,
+  type LingyunThreadGoalToolResponse,
 } from './agent/session.js';
 export { FileHandleRegistry } from './agent/fileHandles.js';
 export { normalizeSemanticHandlesState } from './agent/semanticHandles.js';

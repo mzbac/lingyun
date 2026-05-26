@@ -115,6 +115,7 @@ export class WorkspaceToolProvider implements ToolProvider {
   }
 
   private toToolDefinition(tool: WorkspaceToolDefinition): ToolDefinition {
+    const requiresManualApproval = this.requiresHostManualApproval(tool);
     return {
       id: tool.id,
       name: tool.name,
@@ -123,10 +124,18 @@ export class WorkspaceToolProvider implements ToolProvider {
       execution: tool.execution,
       metadata: {
         category: tool.category || 'workspace',
-        requiresApproval: tool.requiresApproval ?? true,
+        permission: tool.execution.type === 'shell' ? 'bash' : tool.execution.type === 'http' ? 'network' : tool.id,
+        requiresApproval: true,
+        requiresManualApproval,
+        supportsExternalPaths: tool.execution.type === 'shell',
         tags: ['workspace'],
       },
     };
+  }
+
+  private requiresHostManualApproval(tool: WorkspaceToolDefinition): boolean {
+    if (tool.execution.type === 'shell' || tool.execution.type === 'http') return true;
+    return JSON.stringify(tool.execution).includes('${env:');
   }
 
   async executeTool(
@@ -183,7 +192,7 @@ export class WorkspaceToolProvider implements ToolProvider {
       const configEnv = vscode.workspace.getConfiguration('lingyun').get<Record<string, string>>('env') || {};
       const workspaceFolder = getPrimaryWorkspaceRootPath();
       str = str.replace(/\$\{env:(\w+)\}/g, (_, name) => {
-        return configEnv[name] || process.env[name] || '';
+        return Object.prototype.hasOwnProperty.call(configEnv, name) ? String(configEnv[name] ?? '') : '';
       });
 
       str = str.replace(/\$\{arg:([A-Za-z0-9_]+)\}/g, (_, name) => {
@@ -290,7 +299,7 @@ export async function createSampleToolsConfig(): Promise<void> {
             'Authorization': 'Bearer ${env:RAG_API_KEY}',
           },
         },
-        requiresApproval: false,
+        requiresApproval: true,
         category: 'knowledge',
       },
       {
@@ -315,7 +324,7 @@ export async function createSampleToolsConfig(): Promise<void> {
             'Authorization': 'Bearer ${env:RAG_API_KEY}',
           },
         },
-        requiresApproval: false,
+        requiresApproval: true,
         category: 'knowledge',
       },
       {
@@ -338,7 +347,7 @@ export async function createSampleToolsConfig(): Promise<void> {
           url: '${API_BASE}/tasks?status=${arg:status}',
           method: 'GET',
         },
-        requiresApproval: false,
+        requiresApproval: true,
         category: 'tasks',
       },
       {
@@ -376,7 +385,7 @@ export async function createSampleToolsConfig(): Promise<void> {
           type: 'command',
           command: 'editor.action.formatDocument',
         },
-        requiresApproval: false,
+        requiresApproval: true,
         category: 'editor',
       },
     ],

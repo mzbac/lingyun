@@ -36,7 +36,7 @@ import { DEFAULT_MAX_ITERATIONS } from './constants.js';
 import { SemanticHandleRegistry } from './semanticHandles.js';
 import { buildStreamReplay, type StreamReplayUpdate } from './streamAdapters.js';
 import { delay as getRetryDelayMs, retryable as getRetryableLlmError, sleep as retrySleep } from './retry.js';
-import { LingyunSession } from './session.js';
+import { createThreadGoalToolResponse, LingyunSession, resolveThreadGoalStatusAfterBudgetLimit } from './session.js';
 import { streamTextWithLingyunDefaults } from '../llm/streamText.js';
 
 type PluginManagerLike = {
@@ -46,6 +46,92 @@ type PluginManagerLike = {
     output: Output,
   ) => Promise<Output>;
 };
+
+type UsageTokens = NonNullable<ReturnType<typeof extractUsageTokens>>;
+type AccountedGoalAtIterationStart = { id: string; status: 'active' | 'budgetLimited' };
+
+function usageTokenDeltaForGoal(tokens: UsageTokens | undefined): number {
+  if (!tokens) return 0;
+  return Math.max(0, Math.floor((tokens.input ?? 0) + (tokens.output ?? 0)));
+}
+
+function accountThreadGoalIteration(params: {
+  session: LingyunSession;
+  activeGoalAtIterationStart: AccountedGoalAtIterationStart | undefined;
+  tokens: UsageTokens | undefined;
+  iterationStartedAt: number;
+}): void {
+  const { session, activeGoalAtIterationStart, tokens, iterationStartedAt } = params;
+  if (!activeGoalAtIterationStart) return;
+
+  const goal = session.threadGoal;
+  if (!goal || goal.id !== activeGoalAtIterationStart.id) return;
+
+  const tokenDelta = usageTokenDeltaForGoal(tokens);
+  const elapsedSeconds = Math.max(0, Math.floor((Date.now() - iterationStartedAt) / 1000));
+  if (tokenDelta === 0 && elapsedSeconds === 0) return;
+
+  goal.tokensUsed = Math.max(0, Math.floor(goal.tokensUsed + tokenDelta));
+  goal.timeUsedSeconds = Math.max(0, Math.floor(goal.timeUsedSeconds + elapsedSeconds));
+  goal.status = resolveThreadGoalStatusAfterBudgetLimit({
+    currentStatus: goal.status,
+    requestedStatus: goal.status,
+    tokenBudget: goal.tokenBudget,
+    tokensUsed: goal.tokensUsed,
+    budgetLimitEligible: activeGoalAtIterationStart.status === 'active',
+  });
+  goal.updatedAt = Date.now();
+}
+
+function parseToolInputObject(input: unknown): Record<string, unknown> | undefined {
+  if (input && typeof input === 'object' && !Array.isArray(input)) {
+    return input as Record<string, unknown>;
+  }
+  if (typeof input !== 'string') return undefined;
+  try {
+    const parsed = JSON.parse(input);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function refreshUpdateGoalToolOutputs(
+  message: ReturnType<typeof createAssistantHistoryMessage>,
+  session: LingyunSession,
+  threadId: string | undefined,
+): void {
+  const goal = session.threadGoal;
+  if (!goal) return;
+
+  for (const part of message.parts as any[]) {
+    if (!part || part.type !== 'dynamic-tool' || part.toolName !== 'update_goal') continue;
+    if (part.state !== 'output-available') continue;
+    const output = part.output;
+    if (!output || typeof output !== 'object' || output.success !== true) continue;
+
+    const status = parseToolInputObject(part.input)?.status;
+    if (status !== 'complete' && status !== 'blocked') continue;
+    if (status === 'complete' && goal.status !== 'complete') continue;
+    if (status === 'blocked' && goal.status !== 'blocked' && goal.status !== 'budgetLimited') continue;
+
+    const response = createThreadGoalToolResponse(goal, {
+      includeCompletionReport: goal.status === 'complete',
+      threadId,
+    });
+    const outputText = JSON.stringify(response, null, 2);
+    part.output = {
+      ...output,
+      data: outputText,
+      metadata: {
+        ...((output as ToolResult).metadata || {}),
+        outputText,
+      },
+    };
+  }
+}
 
 export async function runOnce(params: {
   session: LingyunSession;
@@ -205,7 +291,35 @@ export async function runOnce(params: {
         : Number.isFinite(params.maxIterations) && params.maxIterations > 0
           ? Math.floor(params.maxIterations)
           : DEFAULT_MAX_ITERATIONS;
+
+    async function completeChat(messageId: string, assistantText: string, returnedText: string): Promise<void> {
+      await plugins.trigger(
+        'experimental.chat.complete',
+        {
+          sessionId,
+          mode,
+          modelId,
+          messageId,
+          assistantText,
+          returnedText,
+        },
+        {},
+      );
+      invokeCallbackSafely(
+        callbacksSafe?.onComplete,
+        { label: 'onComplete', onDebug: callbacksSafe?.onDebug },
+        returnedText,
+      );
+    }
+
     for (let iteration = 1; iteration <= maxIterations; iteration++) {
+      const iterationStartedAt = Date.now();
+      const activeGoalAtIterationStart =
+        mode === 'build' &&
+        (session.threadGoal?.status === 'active' || session.threadGoal?.status === 'budgetLimited')
+          ? { id: session.threadGoal.id, status: session.threadGoal.status }
+          : undefined;
+
       await invokeCallbackSafely(
         callbacksSafe?.onIterationStart,
         {
@@ -511,6 +625,17 @@ export async function runOnce(params: {
       }
 
       const tokens = extractUsageTokens(streamUsage);
+      accountThreadGoalIteration({
+        session,
+        activeGoalAtIterationStart,
+        tokens,
+        iterationStartedAt,
+      });
+      const goalBudgetLimitedAfterIteration =
+        !!activeGoalAtIterationStart &&
+        session.threadGoal?.id === activeGoalAtIterationStart.id &&
+        session.threadGoal.status === 'budgetLimited';
+      refreshUpdateGoalToolOutputs(assistantMessage, session, session.sessionId ?? sessionId);
       const replay = buildStreamReplay({
         text: attemptText,
         reasoning: attemptReasoning,
@@ -567,6 +692,11 @@ export async function runOnce(params: {
         iteration,
       );
 
+      if (goalBudgetLimitedAfterIteration) {
+        await completeChat(assistantMessage.id, lastAssistantText, lastResponse);
+        return lastResponse;
+      }
+
       const modelLimit = params.getModelLimit(modelId);
       const reservedOutputTokens = getReservedOutputTokens({
         modelLimit,
@@ -605,20 +735,7 @@ export async function runOnce(params: {
       const drained = await params.drainPendingInputs(session, callbacksSafe, signal);
       if (drained > 0) continue;
 
-      await plugins.trigger(
-        'experimental.chat.complete',
-        {
-          sessionId,
-          mode,
-          modelId,
-          messageId: assistantMessage.id,
-          assistantText: lastAssistantText,
-          returnedText: lastResponse,
-        },
-        {},
-      );
-
-      invokeCallbackSafely(callbacksSafe?.onComplete, { label: 'onComplete', onDebug: callbacksSafe?.onDebug }, lastResponse);
+      await completeChat(assistantMessage.id, lastAssistantText, lastResponse);
       return lastResponse;
     }
 

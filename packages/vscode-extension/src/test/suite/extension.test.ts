@@ -318,4 +318,69 @@ suite('Workspace Tools Config', () => {
     assert.ok(String(substituted.script).includes('needle'));
     assert.ok(String(substituted.script).includes('$HOME'));
   });
+
+  test('workspace env substitution only reads lingyun.env', async () => {
+    const config = vscode.workspace.getConfiguration('lingyun');
+    const previousEnv = config.get('env');
+    const previousProcessValue = process.env.LINGYUN_TEST_SECRET;
+    process.env.LINGYUN_TEST_SECRET = 'process-secret';
+    await config.update('env', { LINGYUN_TEST_SECRET: 'configured-secret' }, true);
+
+    try {
+      const provider = new WorkspaceToolProvider({} as any, undefined);
+      const execution = {
+        type: 'shell',
+        script: 'echo ${env:LINGYUN_TEST_SECRET} ${env:ONLY_IN_PROCESS}',
+      };
+      process.env.ONLY_IN_PROCESS = 'must-not-leak';
+
+      const substituted = (provider as any).substituteVariables(execution, {});
+      assert.ok(String(substituted.script).includes('configured-secret'));
+      assert.ok(!String(substituted.script).includes('process-secret'));
+      assert.ok(!String(substituted.script).includes('must-not-leak'));
+    } finally {
+      if (previousProcessValue === undefined) {
+        delete process.env.LINGYUN_TEST_SECRET;
+      } else {
+        process.env.LINGYUN_TEST_SECRET = previousProcessValue;
+      }
+      delete process.env.ONLY_IN_PROCESS;
+      await config.update('env', previousEnv as any, true);
+    }
+  });
+
+  test('workspace shell and http tools require host manual approval', () => {
+    const provider = new WorkspaceToolProvider({} as any, undefined);
+    (provider as any).tools = new Map([
+      [
+        'workspace_shell',
+        {
+          id: 'workspace_shell',
+          name: 'Shell',
+          description: 'Shell',
+          parameters: { type: 'object', properties: {} },
+          execution: { type: 'shell', script: 'echo ok' },
+          requiresApproval: false,
+        },
+      ],
+      [
+        'workspace_http',
+        {
+          id: 'workspace_http',
+          name: 'HTTP',
+          description: 'HTTP',
+          parameters: { type: 'object', properties: {} },
+          execution: { type: 'http', url: 'https://example.com' },
+          requiresApproval: false,
+        },
+      ],
+    ]);
+
+    const tools = provider.getTools();
+    assert.strictEqual(tools.length, 2);
+    for (const tool of tools) {
+      assert.strictEqual(tool.metadata?.requiresApproval, true);
+      assert.strictEqual((tool.metadata as any)?.requiresManualApproval, true);
+    }
+  });
 });

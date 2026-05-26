@@ -11,6 +11,7 @@ import {
   normalizeFileHandlesState,
   normalizeThreadGoal,
   normalizeSystemPromptSnapshot,
+  resolveThreadGoalStatusAfterBudgetLimit,
   type LingyunThreadGoal,
   type LingyunThreadGoalStatus,
   type LingyunCompactionSyntheticContext,
@@ -63,6 +64,14 @@ function isAbortError(error: unknown): boolean {
     return /abort/i.test(error.message);
   }
   return /abort/i.test(String(error));
+}
+
+function goalAccountableTokenTotal(stats: AgentHistoryStats): number {
+  return Math.max(0, Math.floor(stats.totalInputTokens + stats.totalOutputTokens));
+}
+
+function defaultEditedGoalStatus(status: LingyunThreadGoalStatus | undefined): LingyunThreadGoalStatus {
+  return status === 'paused' || status === 'blocked' || status === 'usageLimited' ? status : 'active';
 }
 
 function toSdkAgentConfig(config: AgentConfig): SdkAgentConfig {
@@ -250,17 +259,31 @@ export class AgentLoop {
     }
     const preserveUsage = !!params.replaceExisting && !!params.preserveUsage;
 
-    const tokenBudget =
-      typeof params.tokenBudget === 'number' && Number.isFinite(params.tokenBudget) && params.tokenBudget > 0
-        ? Math.floor(params.tokenBudget)
-        : undefined;
+    if (
+      params.tokenBudget !== undefined &&
+      (typeof params.tokenBudget !== 'number' ||
+        !Number.isFinite(params.tokenBudget) ||
+        !Number.isSafeInteger(params.tokenBudget) ||
+        params.tokenBudget <= 0)
+    ) {
+      throw new Error('Goal token budget must be a positive integer when provided.');
+    }
+    const tokenBudget = params.tokenBudget;
+    const tokensUsed = preserveUsage ? existing?.tokensUsed ?? 0 : 0;
+    const requestedStatus = params.status ?? (preserveUsage ? defaultEditedGoalStatus(existing?.status) : 'active');
+    const status = resolveThreadGoalStatusAfterBudgetLimit({
+      currentStatus: existing?.status,
+      requestedStatus,
+      tokenBudget: tokenBudget ?? (preserveUsage ? existing?.tokenBudget : undefined),
+      tokensUsed,
+    });
     const goal: LingyunThreadGoal = {
       id: preserveUsage && existing?.id ? existing.id : crypto.randomUUID(),
       ...(this.session.sessionId ? { sessionId: this.session.sessionId } : {}),
       objective,
-      status: params.status ?? (preserveUsage && existing?.status === 'paused' ? 'paused' : 'active'),
+      status,
       ...(tokenBudget ? { tokenBudget } : preserveUsage && existing?.tokenBudget ? { tokenBudget: existing.tokenBudget } : {}),
-      tokensUsed: preserveUsage ? existing?.tokensUsed ?? 0 : 0,
+      tokensUsed,
       timeUsedSeconds: preserveUsage ? existing?.timeUsedSeconds ?? 0 : 0,
       createdAt: preserveUsage ? existing?.createdAt ?? now : now,
       updatedAt: now,
@@ -275,7 +298,12 @@ export class AgentLoop {
     if (!goal) {
       throw new Error('No goal is set for this session.');
     }
-    goal.status = status;
+    goal.status = resolveThreadGoalStatusAfterBudgetLimit({
+      currentStatus: goal.status,
+      requestedStatus: status,
+      tokenBudget: goal.tokenBudget,
+      tokensUsed: goal.tokensUsed,
+    });
     goal.updatedAt = Date.now();
     return cloneThreadGoal(goal)!;
   }
@@ -347,10 +375,14 @@ export class AgentLoop {
     this.activeAbortController = undefined;
   }
 
-  private async withRun<T>(fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  private async withRun<T>(fn: (signal: AbortSignal) => Promise<T>, options?: { accountGoal?: boolean }): Promise<T> {
     const startedAt = Date.now();
     const statsBefore = this.session.getStats();
-    const activeGoalId = this.session.threadGoal?.status === 'active' ? this.session.threadGoal.id : undefined;
+    const activeGoalId =
+      options?.accountGoal === true &&
+      (this.session.threadGoal?.status === 'active' || this.session.threadGoal?.status === 'budgetLimited')
+        ? this.session.threadGoal.id
+        : undefined;
     const signal = this.startRun();
     try {
       return await fn(signal);
@@ -362,26 +394,29 @@ export class AgentLoop {
       }
       throw error;
     } finally {
-      this.accountActiveGoalUsage(startedAt, statsBefore.totalTokens, activeGoalId);
+      this.accountActiveGoalUsage(startedAt, goalAccountableTokenTotal(statsBefore), activeGoalId);
       this.endRun();
     }
   }
 
-  private accountActiveGoalUsage(startedAt: number, totalTokensBefore: number, activeGoalId: string | undefined): void {
+  private accountActiveGoalUsage(startedAt: number, goalTokensBefore: number, activeGoalId: string | undefined): void {
     if (!activeGoalId) return;
     const goal = this.session.threadGoal;
     if (!goal || goal.id !== activeGoalId) return;
 
     const elapsedSeconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
-    const totalTokensAfter = this.session.getStats().totalTokens;
-    const tokenDelta = Math.max(0, totalTokensAfter - Math.max(0, totalTokensBefore));
+    const totalTokensAfter = goalAccountableTokenTotal(this.session.getStats());
+    const tokenDelta = Math.max(0, totalTokensAfter - Math.max(0, goalTokensBefore));
     if (elapsedSeconds === 0 && tokenDelta === 0) return;
 
     goal.tokensUsed = Math.max(0, Math.floor(goal.tokensUsed + tokenDelta));
     goal.timeUsedSeconds = Math.max(0, Math.floor(goal.timeUsedSeconds + elapsedSeconds));
-    if (goal.status === 'active' && goal.tokenBudget && goal.tokensUsed >= goal.tokenBudget) {
-      goal.status = 'budget_limited';
-    }
+    goal.status = resolveThreadGoalStatusAfterBudgetLimit({
+      currentStatus: goal.status,
+      requestedStatus: goal.status,
+      tokenBudget: goal.tokenBudget,
+      tokensUsed: goal.tokensUsed,
+    });
     goal.updatedAt = Date.now();
   }
 
@@ -400,7 +435,7 @@ export class AgentLoop {
       });
       const result = await run.done;
       return String(result.text || '').trim();
-    });
+    }, { accountGoal: false });
   }
 
   async execute(callbacks?: AgentCallbacks, options?: { approvedPlan?: string }): Promise<string> {
@@ -491,14 +526,10 @@ export class AgentLoop {
 
     await this.withRun(async () => {
       await this.agent.compactSession(this.session, undefined, { modelId: this.config.model, auto: false });
-    });
+    }, { accountGoal: false });
   }
 
   abort(): void {
-    if (this.session.threadGoal?.status === 'active') {
-      this.session.threadGoal.status = 'paused';
-      this.session.threadGoal.updatedAt = Date.now();
-    }
     this.activeAbortController?.abort();
   }
 

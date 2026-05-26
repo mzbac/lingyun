@@ -27,6 +27,7 @@ import { backgroundTerminalManager } from '../../core/terminal/backgroundTermina
 import { createBlankSessionSignals, recordConstraint, recordDecision, recordProcedure, recordStructuredMemory } from '../../core/sessionSignals';
 import { createCopilotResponsesModel } from '../../providers/copilotResponsesModel';
 import { bashHandler, bashTool } from '../../tools/builtin/bash';
+import { createGoalHandler, createGoalTool, updateGoalHandler, updateGoalTool } from '../../tools/builtin/goal';
 import { taskHandler, taskTool } from '../../tools/builtin/task';
 
 type ScriptedResponse =
@@ -873,6 +874,190 @@ suite('AgentLoop', () => {
     assert.ok(toolResult);
     assert.strictEqual(toolResult?.success, true);
     assert.strictEqual(toolResult?.data, 'Echo: Hello World');
+  });
+
+  test('run - update_goal output includes current-turn token accounting', async () => {
+    registry.registerTool(createGoalTool, createGoalHandler);
+    registry.registerTool(updateGoalTool, updateGoalHandler);
+
+    mockLLM.setNextResponse({
+      kind: 'tool-call',
+      toolCallId: 'call-create-goal',
+      toolName: 'create_goal',
+      input: { objective: 'write a report', token_budget: 500 },
+      usage: { inputNoCache: 10, outputTotal: 5 },
+      finishReason: 'tool-calls',
+    });
+    mockLLM.queueResponse({
+      kind: 'tool-call',
+      toolCallId: 'call-complete-goal',
+      toolName: 'update_goal',
+      input: { status: 'complete' },
+      usage: { inputNoCache: 400, cacheRead: 100, outputTotal: 180 },
+      finishReason: 'tool-calls',
+    });
+    mockLLM.queueResponse({ kind: 'text', content: 'Goal complete.' });
+
+    const result = await agent.run('write a report');
+    assert.strictEqual(result, 'Goal complete.');
+
+    const state = agent.exportState();
+    assert.strictEqual(state.threadGoal?.status, 'complete');
+    assert.strictEqual(state.threadGoal?.tokensUsed, 580);
+
+    const completeToolResult = findDynamicToolResult(agent.getHistory(), 'call-complete-goal');
+    assert.ok(completeToolResult);
+    assert.strictEqual(completeToolResult?.success, true);
+    const toolOutput = JSON.parse(String(completeToolResult?.data || '{}'));
+    assert.strictEqual(toolOutput.goal.status, 'complete');
+    assert.strictEqual(toolOutput.goal.tokensUsed, 580);
+    assert.strictEqual(toolOutput.remainingTokens, 0);
+    assert.match(String(toolOutput.completionBudgetReport || ''), /Report final usage from this tool result's structured goal fields/);
+  });
+
+  test('run - blocked update_goal output stays budget-limited when current-turn accounting crosses budget', async () => {
+    registry.registerTool(updateGoalTool, updateGoalHandler);
+    agent.setThreadGoalObjective({ objective: 'Stop if blocked or over budget', tokenBudget: 50 });
+
+    mockLLM.setNextResponse({
+      kind: 'tool-call',
+      toolCallId: 'call-blocked-goal',
+      toolName: 'update_goal',
+      input: { status: 'blocked' },
+      usage: { inputNoCache: 45, cacheRead: 100, outputTotal: 10 },
+      finishReason: 'tool-calls',
+    });
+    mockLLM.queueResponse({ kind: 'text', content: 'This should not run.' });
+
+    const result = await agent.run('Mark the goal blocked');
+    assert.strictEqual(result, '');
+    assert.strictEqual(mockLLM.callCount, 1);
+
+    const state = agent.exportState();
+    assert.strictEqual(state.threadGoal?.status, 'budgetLimited');
+    assert.strictEqual(state.threadGoal?.tokensUsed, 55);
+
+    const blockedToolResult = findDynamicToolResult(agent.getHistory(), 'call-blocked-goal');
+    assert.ok(blockedToolResult);
+    assert.strictEqual(blockedToolResult?.success, true);
+    const toolOutput = JSON.parse(String(blockedToolResult?.data || '{}'));
+    assert.strictEqual(toolOutput.goal.status, 'budgetLimited');
+    assert.strictEqual(toolOutput.goal.tokensUsed, 55);
+    assert.strictEqual(toolOutput.remainingTokens, 0);
+  });
+
+  test('run - stops active goal loop when the token budget is reached', async () => {
+    agent.setThreadGoalObjective({ objective: 'Stay within budget', tokenBudget: 50 });
+
+    mockLLM.setNextResponse({
+      kind: 'tool-call',
+      toolCallId: 'call-budget-echo',
+      toolName: 'test_echo',
+      input: { message: 'over budget' },
+      usage: { inputNoCache: 30, outputTotal: 25 },
+      finishReason: 'tool-calls',
+    });
+    mockLLM.queueResponse({ kind: 'text', content: 'This should not run.' });
+
+    const result = await agent.run('Do the budgeted work');
+    assert.strictEqual(result, '');
+    assert.strictEqual(mockLLM.callCount, 1);
+
+    const state = agent.exportState();
+    assert.strictEqual(state.threadGoal?.status, 'budgetLimited');
+    assert.strictEqual(state.threadGoal?.tokensUsed, 55);
+
+    const toolResult = findDynamicToolResult(agent.getHistory(), 'call-budget-echo');
+    assert.ok(toolResult);
+    assert.strictEqual(toolResult?.success, true);
+    assert.strictEqual(toolResult?.data, 'Echo: over budget');
+  });
+
+  test('run - accounts budget-limited wrap-up usage without cache reads', async () => {
+    agent.setThreadGoal({
+      id: 'goal-budget-wrap',
+      objective: 'Wrap up budget-limited work',
+      status: 'budgetLimited',
+      tokenBudget: 50,
+      tokensUsed: 55,
+      timeUsedSeconds: 3,
+      createdAt: 1,
+      updatedAt: 1,
+    });
+
+    mockLLM.setNextResponse({
+      kind: 'text',
+      content: 'Budget wrap-up.',
+      usage: { inputNoCache: 7, cacheRead: 100, outputTotal: 4 },
+    });
+
+    const result = await agent.run('Summarize the budget-limited goal');
+    assert.strictEqual(result, 'Budget wrap-up.');
+
+    const state = agent.exportState();
+    assert.strictEqual(state.threadGoal?.status, 'budgetLimited');
+    assert.strictEqual(state.threadGoal?.tokensUsed, 66);
+    assert.ok((state.threadGoal?.timeUsedSeconds ?? 0) >= 3);
+  });
+
+  test('goal edits preserve resumable statuses and validate token budgets', () => {
+    const resumableStatuses = ['paused', 'blocked', 'usageLimited'] as const;
+    for (const status of resumableStatuses) {
+      agent.clearThreadGoal();
+      agent.setThreadGoalObjective({ objective: `Base ${status}`, tokenBudget: 100 });
+      agent.updateThreadGoalStatus(status);
+
+      const edited = agent.setThreadGoalObjective({
+        objective: `Edited ${status}`,
+        replaceExisting: true,
+        preserveUsage: true,
+      });
+      assert.strictEqual(edited.status, status);
+      assert.strictEqual(edited.tokenBudget, 100);
+    }
+
+    const terminalStatuses = ['budgetLimited', 'complete'] as const;
+    for (const status of terminalStatuses) {
+      agent.clearThreadGoal();
+      agent.setThreadGoalObjective({ objective: `Base ${status}`, tokenBudget: 100 });
+      agent.updateThreadGoalStatus(status);
+
+      const edited = agent.setThreadGoalObjective({
+        objective: `Edited ${status}`,
+        replaceExisting: true,
+        preserveUsage: true,
+      });
+      assert.strictEqual(edited.status, 'active');
+      assert.strictEqual(edited.tokenBudget, 100);
+    }
+
+    agent.setThreadGoal({
+      id: 'goal-over-budget',
+      objective: 'Already over budget',
+      status: 'budgetLimited',
+      tokenBudget: 50,
+      tokensUsed: 55,
+      timeUsedSeconds: 3,
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    const editedOverBudget = agent.setThreadGoalObjective({
+      objective: 'Still over budget',
+      replaceExisting: true,
+      preserveUsage: true,
+    });
+    assert.strictEqual(editedOverBudget.status, 'budgetLimited');
+    assert.strictEqual(editedOverBudget.tokensUsed, 55);
+    assert.strictEqual(agent.updateThreadGoalStatus('paused').status, 'budgetLimited');
+    assert.strictEqual(agent.updateThreadGoalStatus('blocked').status, 'budgetLimited');
+    assert.strictEqual(agent.updateThreadGoalStatus('complete').status, 'complete');
+
+    agent.clearThreadGoal();
+    assert.throws(
+      () => agent.setThreadGoalObjective({ objective: 'Invalid budget', tokenBudget: 1.5 }),
+      /positive integer/,
+    );
+    assert.strictEqual(agent.getThreadGoal(), undefined);
   });
 
   test('run - actual Copilot Responses model preserves the v2.1.10 tool-call conversation flow', async () => {
@@ -1874,32 +2059,42 @@ suite('AgentLoop', () => {
   });
 
   test('run - real bash tool forwards foreground failure outputText into the next prompt', async () => {
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const prevAllowExternalPaths = cfg.get('security.allowExternalPaths');
+    await cfg.update('security.allowExternalPaths', true, true);
     registry.registerTool(bashTool, bashHandler);
 
-    mockLLM.setNextResponse({
-      kind: 'tool-call',
-      toolCallId: 'call_bash_real_fail',
-      toolName: 'bash',
-      input: { command: `node -e "console.error('boom from stderr'); process.exit(7)"` },
-    });
-    mockLLM.queueResponse({ kind: 'text', content: 'Done' });
+    try {
+      mockLLM.setNextResponse({
+        kind: 'tool-call',
+        toolCallId: 'call_bash_real_fail',
+        toolName: 'bash',
+        input: { command: 'cat __lingyun_missing_file_for_failure_test__' },
+      });
+      mockLLM.queueResponse({ kind: 'text', content: 'Done' });
 
-    const result = await agent.run('Run a failing shell command');
-    assert.strictEqual(result, 'Done');
-    assert.strictEqual(mockLLM.callCount, 2);
+      const result = await agent.run('Run a failing shell command');
+      assert.strictEqual(result, 'Done');
+      assert.strictEqual(mockLLM.callCount, 2);
 
-    const toolResult = findDynamicToolResult(agent.getHistory(), 'call_bash_real_fail');
-    assert.ok(toolResult);
-    assert.strictEqual(toolResult?.success, false);
-    assert.match(String((toolResult as any)?.metadata?.outputText || ''), /Command failed with exit code 7/);
-    assert.match(String((toolResult as any)?.metadata?.outputText || ''), /boom from stderr/);
+      const toolResult = findDynamicToolResult(agent.getHistory(), 'call_bash_real_fail');
+      assert.ok(toolResult);
+      assert.strictEqual(toolResult?.success, false);
+      assert.match(String((toolResult as any)?.metadata?.outputText || ''), /Command failed with exit code \d+/);
+      assert.match(String((toolResult as any)?.metadata?.outputText || ''), /__lingyun_missing_file_for_failure_test__/);
 
-    const prompt = JSON.stringify(mockLLM.lastPrompt ?? '');
-    assert.match(prompt, /Command failed with exit code 7/);
-    assert.match(prompt, /boom from stderr/);
+      const prompt = JSON.stringify(mockLLM.lastPrompt ?? '');
+      assert.match(prompt, /Command failed with exit code \d+/);
+      assert.match(prompt, /__lingyun_missing_file_for_failure_test__/);
+    } finally {
+      await cfg.update('security.allowExternalPaths', prevAllowExternalPaths as any, true);
+    }
   });
 
   test('run - real bash tool forwards background startup failure outputText into the next prompt', async () => {
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const prevAllowExternalPaths = cfg.get('security.allowExternalPaths');
+    await cfg.update('security.allowExternalPaths', true, true);
     registry.registerTool(bashTool, bashHandler);
 
     const originalRunner = process.env.LINGYUN_BASH_BACKGROUND_RUNNER;
@@ -1921,7 +2116,7 @@ suite('AgentLoop', () => {
         kind: 'tool-call',
         toolCallId: 'call_bash_real_bg_fail',
         toolName: 'bash',
-        input: { command: 'node -e "process.exit(1)"', background: true },
+        input: { command: 'tail -f README.md', background: true },
       });
       mockLLM.queueResponse({ kind: 'text', content: 'Done' });
 
@@ -1940,6 +2135,7 @@ suite('AgentLoop', () => {
       assert.match(prompt, /boom from startup/);
     } finally {
       (backgroundTerminalManager as any).start = originalStart;
+      await cfg.update('security.allowExternalPaths', prevAllowExternalPaths as any, true);
       if (originalRunner === undefined) {
         delete process.env.LINGYUN_BASH_BACKGROUND_RUNNER;
       } else {
@@ -2189,7 +2385,9 @@ suite('AgentLoop', () => {
   test('dotenv shell reads require manual approval even when autoApprove is enabled', async () => {
     const cfg = vscode.workspace.getConfiguration('lingyun');
     const prevAutoApprove = cfg.get('autoApprove');
+    const prevAllowExternalPaths = cfg.get('security.allowExternalPaths');
     await cfg.update('autoApprove', true, true);
+    await cfg.update('security.allowExternalPaths', true, true);
 
     try {
       let executed = false;
@@ -2241,6 +2439,7 @@ suite('AgentLoop', () => {
       assert.strictEqual(executed, true);
     } finally {
       await cfg.update('autoApprove', prevAutoApprove as any, true);
+      await cfg.update('security.allowExternalPaths', prevAllowExternalPaths as any, true);
     }
   });
 

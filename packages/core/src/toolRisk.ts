@@ -7,7 +7,7 @@ import {
   evaluateShellPathAccess,
   evaluateWorkspacePathPolicy,
 } from './pathPolicy';
-import { evaluateShellCommand, type ShellCommandDecision } from './validation';
+import { evaluateShellCommand, isUnsandboxableShellCommand, type ShellCommandDecision } from './validation';
 
 export type ToolPermissionPatternLike = {
   arg: string;
@@ -16,6 +16,7 @@ export type ToolPermissionPatternLike = {
 
 export type ToolMetadataRiskLike = {
   requiresApproval?: boolean;
+  requiresManualApproval?: boolean;
   supportsExternalPaths?: boolean;
   permissionPatterns?: ToolPermissionPatternLike[];
 };
@@ -36,6 +37,7 @@ export type ToolRiskDecision = 'allow' | 'require_manual_approval' | 'deny';
 
 export type ToolRiskReasonCode =
   | 'tool_metadata_requires_approval'
+  | 'tool_metadata_requires_manual_approval'
   | 'permission_requires_approval'
   | 'dotenv_protected'
   | 'shell_requires_approval'
@@ -187,7 +189,10 @@ export function evaluateToolRisk(params: {
   const dotEnvTargets = collectProtectedDotEnvTargets(params.def, params.args);
   const permissionAction = params.permissionAction ?? 'allow';
 
-  let requiresApproval = permissionAction === 'ask' || !!params.def.metadata?.requiresApproval;
+  let requiresApproval =
+    permissionAction === 'ask' ||
+    !!params.def.metadata?.requiresApproval ||
+    !!params.def.metadata?.requiresManualApproval;
   let manualApproval = false;
   let denied = permissionAction === 'deny';
 
@@ -201,6 +206,13 @@ export function evaluateToolRisk(params: {
     reasons.push({
       code: 'tool_metadata_requires_approval',
       message: 'Tool requires approval by tool metadata.',
+    });
+  }
+  if (params.def.metadata?.requiresManualApproval) {
+    manualApproval = true;
+    reasons.push({
+      code: 'tool_metadata_requires_manual_approval',
+      message: 'Tool requires manual approval by host policy.',
     });
   }
   if (dotEnvTargets.length > 0) {
@@ -251,6 +263,20 @@ export function evaluateToolRisk(params: {
           : params.def.execution?.type === 'shell' && typeof (params.def.execution as any).script === 'string'
             ? String((params.def.execution as any).script)
             : undefined;
+
+      if (commandText && isUnsandboxableShellCommand(commandText)) {
+        denied = true;
+        reasons.push({
+          code: 'external_paths_disabled',
+          message:
+            'External paths are disabled. This shell command uses a programmable runtime or shell that cannot be confined to the current workspace.',
+          metadata: {
+            errorCode: TOOL_ERROR_CODES.external_paths_disabled,
+            blockedSettingKey: 'lingyun.security.allowExternalPaths',
+            isOutsideWorkspace: true,
+          },
+        });
+      }
 
       const shellAccess = evaluateShellPathAccess(commandText || '', { cwd, workspaceRoot });
       if (shellAccess.blockedPaths.length > 0) {
@@ -320,5 +346,20 @@ export function evaluateToolRisk(params: {
 }
 
 export function getPrimaryToolRiskReason(evaluation: ToolRiskEvaluation): ToolRiskReason | undefined {
+  if (evaluation.denied) {
+    const denyReason = evaluation.reasons.find(reason =>
+      reason.code === 'shell_command_denied' ||
+      reason.code === 'external_paths_disabled' ||
+      reason.code === 'workspace_boundary_check_failed'
+    );
+    if (denyReason) return denyReason;
+  }
+  if (evaluation.manualApproval) {
+    const manualReason = evaluation.reasons.find(reason =>
+      reason.code === 'dotenv_protected' ||
+      reason.code === 'tool_metadata_requires_manual_approval'
+    );
+    if (manualReason) return manualReason;
+  }
   return evaluation.reasons[0];
 }

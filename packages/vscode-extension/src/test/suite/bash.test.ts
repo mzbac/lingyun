@@ -16,6 +16,17 @@ function createToolContext(): ToolContext {
   };
 }
 
+async function withAllowExternalPaths<T>(value: boolean, fn: () => Promise<T>): Promise<T> {
+  const cfg = vscode.workspace.getConfiguration('lingyun');
+  const prev = cfg.get<unknown>('security.allowExternalPaths');
+  await cfg.update('security.allowExternalPaths', value, true);
+  try {
+    return await fn();
+  } finally {
+    await cfg.update('security.allowExternalPaths', prev as any, true);
+  }
+}
+
 suite('Bash Tool', () => {
   test('blocks git push when configured', async () => {
     const cfg = vscode.workspace.getConfiguration('lingyun');
@@ -47,84 +58,114 @@ suite('Bash Tool', () => {
   });
 
   test('rejects likely long-running server commands without background or timeout', async () => {
-    const context = createToolContext();
-    const res = await bashHandler({ command: 'python -m http.server' }, context);
-    assert.strictEqual(res.success, false);
-    assert.strictEqual(
-      (res.metadata as any)?.errorCode,
-      TOOL_ERROR_CODES.bash_requires_background_or_timeout
-    );
+    await withAllowExternalPaths(true, async () => {
+      const context = createToolContext();
+      const res = await bashHandler({ command: 'python -m http.server' }, context);
+      assert.strictEqual(res.success, false);
+      assert.strictEqual(
+        (res.metadata as any)?.errorCode,
+        TOOL_ERROR_CODES.bash_requires_background_or_timeout
+      );
+    });
+  });
+
+  test('blocks programmable runtimes when external paths are disabled', async () => {
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const prev = cfg.get<unknown>('security.allowExternalPaths');
+    await cfg.update('security.allowExternalPaths', false, true);
+
+    try {
+      const context = createToolContext();
+      const res = await bashHandler(
+        { command: `python3 -c "from pathlib import Path; print(Path.home())"` },
+        context
+      );
+
+      assert.strictEqual(res.success, false);
+      assert.strictEqual((res.metadata as any)?.errorCode, TOOL_ERROR_CODES.external_paths_disabled);
+      assert.ok(String(res.error || '').includes('cannot be confined'));
+    } finally {
+      await cfg.update('security.allowExternalPaths', prev as any, true);
+    }
   });
 
   test('supports background mode without blocking', async () => {
-    const context = createToolContext();
-    const res = await bashHandler(
-      { command: 'node -e "setInterval(() => {}, 1000)"', background: true, captureMs: 0, captureLines: 0 },
-      context
-    );
+    await withAllowExternalPaths(true, async () => {
+      const context = createToolContext();
+      const res = await bashHandler(
+        { command: 'node -e "setInterval(() => {}, 1000)"', background: true, captureMs: 0, captureLines: 0 },
+        context
+      );
 
-    assert.strictEqual(res.success, true);
-    assert.strictEqual((res.metadata as any)?.background, true);
-    assert.match(String(res.data || ''), /Auto-stop:/);
+      assert.strictEqual(res.success, true);
+      assert.strictEqual((res.metadata as any)?.background, true);
+      assert.match(String(res.data || ''), /Auto-stop:/);
 
-    const pid = (res.metadata as any)?.pid;
-    assert.strictEqual(typeof pid, 'number');
+      const pid = (res.metadata as any)?.pid;
+      assert.strictEqual(typeof pid, 'number');
 
-    killProcessTree(pid, 'SIGTERM');
+      killProcessTree(pid, 'SIGTERM');
+    });
   });
 
   test('surfaces plain-text outputText for failed foreground commands', async () => {
-    const context = createToolContext();
-    const res = await bashHandler(
-      { command: `node -e "console.error('boom from stderr'); process.exit(7)"` },
-      context
-    );
+    await withAllowExternalPaths(true, async () => {
+      const context = createToolContext();
+      const res = await bashHandler(
+        { command: `node -e "console.error('boom from stderr'); process.exit(7)"` },
+        context
+      );
 
-    assert.strictEqual(res.success, false);
-    const outputText = String((res.metadata as any)?.outputText || '');
-    assert.match(outputText, /Command failed with exit code 7/);
-    assert.match(outputText, /boom from stderr/);
+      assert.strictEqual(res.success, false);
+      const outputText = String((res.metadata as any)?.outputText || '');
+      assert.match(outputText, /Command failed with exit code 7/);
+      assert.match(outputText, /boom from stderr/);
+    });
   });
 
   test('deduplicates background commands by (workdir + command)', async () => {
-    const context = createToolContext();
-    const args = { command: 'node -e "setInterval(() => {}, 1001)"', background: true, ttlMs: 60000, captureMs: 0, captureLines: 0 };
+    await withAllowExternalPaths(true, async () => {
+      const context = createToolContext();
+      const args = { command: 'node -e "setInterval(() => {}, 1001)"', background: true, ttlMs: 60000, captureMs: 0, captureLines: 0 };
 
-    const res1 = await bashHandler(args, context);
-    assert.strictEqual(res1.success, true);
-    const pid1 = (res1.metadata as any)?.pid;
-    assert.strictEqual(typeof pid1, 'number');
+      const res1 = await bashHandler(args, context);
+      assert.strictEqual(res1.success, true);
+      const pid1 = (res1.metadata as any)?.pid;
+      assert.strictEqual(typeof pid1, 'number');
 
-    const res2 = await bashHandler(args, context);
-    assert.strictEqual(res2.success, true);
-    assert.strictEqual((res2.metadata as any)?.reused, true);
-    assert.strictEqual((res2.metadata as any)?.pid, pid1);
+      const res2 = await bashHandler(args, context);
+      assert.strictEqual(res2.success, true);
+      assert.strictEqual((res2.metadata as any)?.reused, true);
+      assert.strictEqual((res2.metadata as any)?.pid, pid1);
 
-    killProcessTree(pid1, 'SIGTERM');
+      killProcessTree(pid1, 'SIGTERM');
+    });
   });
 
   test('auto-stops background commands after ttlMs', async function () {
     this.timeout(10000);
-    const context = createToolContext();
-    const res = await bashHandler(
-      { command: 'node -e "setInterval(() => {}, 1002)"', background: true, ttlMs: 200, captureMs: 0, captureLines: 0 },
-      context
-    );
+    await withAllowExternalPaths(true, async () => {
+      const context = createToolContext();
+      const res = await bashHandler(
+        { command: 'node -e "setInterval(() => {}, 1002)"', background: true, ttlMs: 200, captureMs: 0, captureLines: 0 },
+        context
+      );
 
-    assert.strictEqual(res.success, true);
-    const pid = (res.metadata as any)?.pid;
-    assert.strictEqual(typeof pid, 'number');
+      assert.strictEqual(res.success, true);
+      const pid = (res.metadata as any)?.pid;
+      assert.strictEqual(typeof pid, 'number');
 
-    await new Promise((r) => setTimeout(r, 2500));
+      await new Promise((r) => setTimeout(r, 2500));
 
-    let alive = false;
-    try {
-      process.kill(pid, 0);
-      alive = true;
-    } catch (err) {
-      alive = (err as { code?: string })?.code === 'EPERM';
-    }
+      let alive = false;
+      try {
+        process.kill(pid, 0);
+        alive = true;
+      } catch (err) {
+        alive = (err as { code?: string })?.code === 'EPERM';
+      }
 
-    assert.strictEqual(alive, false);
+      assert.strictEqual(alive, false);
+    });
   });
 });

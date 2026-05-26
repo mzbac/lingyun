@@ -177,6 +177,47 @@ suite('persistence', () => {
     assert.equal(snapshot.fileHandles, undefined);
   });
 
+  test('restoreSession normalizes thread goal counters as integers only', () => {
+    const restored = restoreSession({
+      version: 1,
+      sessionId: 's1',
+      savedAt: '2020-01-01T00:00:00.000Z',
+      history: [],
+      stats: {
+        totalMessages: 0,
+        userMessages: 0,
+        assistantMessages: 0,
+        systemMessages: 0,
+        syntheticMessages: 0,
+        toolCallCount: 0,
+        completedToolCallCount: 0,
+        failedToolCallCount: 0,
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        totalCacheReadTokens: 0,
+        totalCacheWriteTokens: 0,
+        totalTokens: 0,
+      },
+      threadGoal: {
+        id: 'goal-1',
+        sessionId: 's1',
+        objective: 'Finish the release',
+        status: 'active',
+        tokenBudget: 100.5,
+        tokensUsed: 9.5,
+        timeUsedSeconds: 1.5,
+        createdAt: 10.5,
+        updatedAt: 20.5,
+      } as any,
+    });
+
+    assert.equal(restored.threadGoal?.tokenBudget, undefined);
+    assert.equal(restored.threadGoal?.tokensUsed, 0);
+    assert.equal(restored.threadGoal?.timeUsedSeconds, 0);
+    assert.ok(Number.isSafeInteger(restored.threadGoal?.createdAt));
+    assert.equal(restored.threadGoal?.updatedAt, restored.threadGoal?.createdAt);
+  });
+
   test('serializeSessionSnapshot + parseSessionSnapshot roundtrip', () => {
     const snapshot: LingyunSessionSnapshot = {
       version: 1,

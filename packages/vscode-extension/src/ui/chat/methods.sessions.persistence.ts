@@ -10,6 +10,7 @@ import { cloneAgentHistoryMessages, getAgentHistoryStats, parseUserHistoryInput 
 
 import type { AgentSessionState } from '../../core/agent';
 import { WorkspaceMemories } from '../../core/memories';
+import { redactSensitive } from '../../core/agent/debug';
 import { appendErrorLog } from '../../core/logger';
 import { resolveModelIdWithWorkspaceDefaults } from '../../core/modelSelection';
 import { normalizeSessionSignals } from '../../core/sessionSignals';
@@ -17,7 +18,7 @@ import { SessionStore } from '../../core/sessionStore';
 import { bindChatControllerService } from './controllerService';
 import { postInputNotice } from './inputNotice';
 import { createDefaultSessionTitle, createSessionPreview } from './sessionTitle';
-import type { ChatSessionInfo } from './types';
+import type { ChatMessage, ChatSessionInfo } from './types';
 import type { PendingApprovalEntry } from './controllerPorts';
 import type { ChatSessionRuntimeService } from './methods.sessions.runtime';
 
@@ -71,6 +72,144 @@ export interface ChatSessionPersistenceDeps {
 }
 
 type ChatSessionPersistenceRuntime = ChatSessionPersistenceDeps & ChatSessionPersistenceService;
+
+const SESSION_STORAGE_REDACTION = { redactionLevel: 'full' as const };
+const MAX_PERSISTED_STRING_CHARS = 20_000;
+const MAX_PERSISTED_ARG_STRING_CHARS = 2_000;
+
+const OMIT_PERSISTED_ARG_KEYS = new Set([
+  'body',
+  'content',
+  'diff',
+  'newstring',
+  'oldstring',
+  'patch',
+  'patchtext',
+]);
+
+const REDACT_PERSISTED_ARG_KEYS = new Set([
+  'apikey',
+  'authorization',
+  'clientsecret',
+  'cookie',
+  'credential',
+  'credentials',
+  'headers',
+  'password',
+  'passwd',
+  'privatekey',
+  'proxyauthorization',
+  'refreshtoken',
+  'secret',
+  'setcookie',
+  'token',
+  'xapikey',
+]);
+
+function normalizeStorageKey(key: string): string {
+  return key.replace(/[^a-z0-9]/gi, '').toLowerCase();
+}
+
+function redactStringForStorage(value: string, maxChars = MAX_PERSISTED_STRING_CHARS): string {
+  const redacted = redactSensitive(value, SESSION_STORAGE_REDACTION);
+  if (redacted.length <= maxChars) return redacted;
+  return redacted.slice(0, maxChars) + '\n\n... [TRUNCATED FOR STORAGE]';
+}
+
+function sanitizeGenericStorageValue(value: unknown, depth = 0): unknown {
+  if (depth > 20) return '[omitted:depth]';
+  if (typeof value === 'string') return redactStringForStorage(value);
+  if (typeof value !== 'object' || value === null) return value;
+  if (Array.isArray(value)) return value.map(item => sanitizeGenericStorageValue(item, depth + 1));
+
+  const out: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    out[key] = sanitizeGenericStorageValue(child, depth + 1);
+  }
+  return out;
+}
+
+function sanitizeToolArgValue(key: string, value: unknown, depth = 0): unknown {
+  if (depth > 20) return '[omitted:depth]';
+  const normalizedKey = normalizeStorageKey(key);
+  if (OMIT_PERSISTED_ARG_KEYS.has(normalizedKey)) return '[omitted from persisted session]';
+  if (REDACT_PERSISTED_ARG_KEYS.has(normalizedKey)) return '[redacted]';
+  if (typeof value === 'string') return redactStringForStorage(value, MAX_PERSISTED_ARG_STRING_CHARS);
+  if (typeof value !== 'object' || value === null) return value;
+  if (Array.isArray(value)) return value.map(item => sanitizeToolArgValue('', item, depth + 1));
+
+  const out: Record<string, unknown> = {};
+  for (const [childKey, childValue] of Object.entries(value as Record<string, unknown>)) {
+    out[childKey] = sanitizeToolArgValue(childKey, childValue, depth + 1);
+  }
+  return out;
+}
+
+function sanitizeToolArgsForStorage(rawArgs: string): string {
+  try {
+    const parsed = rawArgs.trim() ? JSON.parse(rawArgs) : {};
+    return JSON.stringify(sanitizeToolArgValue('', parsed));
+  } catch {
+    return redactStringForStorage(String(rawArgs || ''), MAX_PERSISTED_ARG_STRING_CHARS);
+  }
+}
+
+function sanitizeToolCallForStorage(toolCall: NonNullable<ChatMessage['toolCall']>): NonNullable<ChatMessage['toolCall']> {
+  const sanitized: NonNullable<ChatMessage['toolCall']> = {
+    ...toolCall,
+    args: sanitizeToolArgsForStorage(toolCall.args),
+    result: toolCall.result ? redactStringForStorage(toolCall.result, 4_000) : undefined,
+    path: toolCall.path ? redactStringForStorage(toolCall.path, 1_000) : undefined,
+    approvalReason: toolCall.approvalReason ? redactStringForStorage(toolCall.approvalReason, 1_000) : undefined,
+    blockedReason: toolCall.blockedReason ? redactStringForStorage(toolCall.blockedReason, 1_000) : undefined,
+    batchFiles: Array.isArray(toolCall.batchFiles)
+      ? toolCall.batchFiles.map(file => redactStringForStorage(file, 1_000))
+      : undefined,
+    lsp: sanitizeGenericStorageValue(toolCall.lsp),
+    todos: sanitizeGenericStorageValue(toolCall.todos),
+  };
+
+  if (toolCall.diff || toolCall.diffView) {
+    sanitized.diff = undefined;
+    sanitized.diffView = undefined;
+    sanitized.diffTruncated = undefined;
+    sanitized.diffStats = toolCall.diffStats;
+    sanitized.diffUnavailableReason = toolCall.diffUnavailableReason || 'Diff omitted from persisted session for privacy';
+  }
+
+  return sanitized;
+}
+
+function sanitizeMessageForStorage(message: ChatMessage): ChatMessage {
+  return {
+    ...message,
+    content: redactStringForStorage(message.content),
+    plan: message.plan ? sanitizeGenericStorageValue(message.plan) as ChatMessage['plan'] : undefined,
+    revert: message.revert ? sanitizeGenericStorageValue(message.revert) as ChatMessage['revert'] : undefined,
+    operation: message.operation ? sanitizeGenericStorageValue(message.operation) as ChatMessage['operation'] : undefined,
+    toolCall: message.toolCall ? sanitizeToolCallForStorage(message.toolCall) : undefined,
+  };
+}
+
+export function sanitizeSessionForStorage(session: ChatSessionInfo): ChatSessionInfo {
+  return {
+    ...session,
+    title: redactStringForStorage(session.title, 500),
+    firstUserMessagePreview: session.firstUserMessagePreview
+      ? redactStringForStorage(session.firstUserMessagePreview, 500)
+      : undefined,
+    signals: sanitizeGenericStorageValue(session.signals) as ChatSessionInfo['signals'],
+    messages: (session.messages || []).map(sanitizeMessageForStorage),
+    agentState: sanitizeGenericStorageValue(session.agentState) as AgentSessionState,
+    queuedInputs: session.queuedInputs
+      ? sanitizeGenericStorageValue(session.queuedInputs) as ChatSessionInfo['queuedInputs']
+      : undefined,
+    pendingPlan: session.pendingPlan
+      ? sanitizeGenericStorageValue(session.pendingPlan) as ChatSessionInfo['pendingPlan']
+      : undefined,
+    revert: session.revert ? sanitizeGenericStorageValue(session.revert) as ChatSessionInfo['revert'] : undefined,
+  };
+}
 
 function deriveFirstUserMessagePreview(raw: ChatSessionInfo): string | undefined {
   const stored = createSessionPreview((raw as any).firstUserMessagePreview || '');
@@ -131,10 +270,7 @@ export function createChatSessionPersistenceService(
       session: ChatSessionInfo,
       maxSessionBytes: number
     ): ChatSessionInfo {
-      const base: ChatSessionInfo = {
-        ...session,
-        messages: [...(session.messages || [])],
-      };
+      const base = sanitizeSessionForStorage(session);
 
       const measure = (value: unknown) => Buffer.byteLength(JSON.stringify(value), 'utf8');
 

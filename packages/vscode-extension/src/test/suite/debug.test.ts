@@ -80,15 +80,16 @@ suite('Debug Redaction', () => {
     assert.ok(redacted.includes('AIza<redacted>'));
   });
 
-  test('redactSensitive redacts URL credentials while preserving public URLs in secrets-only mode', () => {
+  test('redactSensitive redacts complete URLs in secrets-only mode', () => {
     const queryApiKey = 'query-secret-value';
     const queryKey = 'second-query-secret-value';
     const input =
       `https://user:secret-pass@example.com/v1?api_key=${queryApiKey}&next=1 https://example.org/search?key=${queryKey}`;
     const redacted = redactSensitive(input, { redactionLevel: 'secrets-only' });
 
-    assert.ok(redacted.includes('https://user:<redacted>@example.com/v1?api_key=<redacted>&next=1'));
-    assert.ok(redacted.includes('https://example.org/search?key=<redacted>'));
+    assert.ok(redacted.includes('<url>'));
+    assert.ok(!redacted.includes('example.com'));
+    assert.ok(!redacted.includes('example.org'));
     assert.ok(!redacted.includes('secret-pass'));
     assert.ok(!redacted.includes(queryApiKey));
     assert.ok(!redacted.includes(queryKey));
@@ -107,23 +108,22 @@ suite('Debug Redaction', () => {
     assert.ok(redacted.includes('<file-url>'));
   });
 
-  test('redactSensitive keeps public urls and paths but redacts private hosts in secrets-only mode', () => {
+  test('redactSensitive redacts urls, home paths, and private hosts in secrets-only mode', () => {
     const home = os.homedir();
     const input = `authorization=Bearer abc https://example.com from ${home}/projects/demo via localhost:3000 and http://192.168.1.20:11434/v1 and http://10.0.0.2/models and https://api.internal:8443/v1 and http://[::1]:11434/v1`;
     const redacted = redactSensitive(input, { redactionLevel: 'secrets-only' });
 
     assert.ok(!redacted.includes('abc'));
-    assert.ok(redacted.includes('https://example.com'));
-    assert.ok(redacted.includes(home));
+    assert.ok(!redacted.includes('https://example.com'));
+    assert.ok(!redacted.includes(home));
     assert.ok(!redacted.includes('localhost:3000'));
     assert.ok(!redacted.includes('192.168.1.20'));
     assert.ok(!redacted.includes('10.0.0.2'));
     assert.ok(!redacted.includes('api.internal:8443'));
     assert.ok(!redacted.includes('[::1]:11434'));
     assert.ok(redacted.includes('<local-host>'));
-    assert.ok(redacted.includes('<private-ip>'));
-    assert.ok(redacted.includes('<ip>'));
-    assert.ok(redacted.includes('<private-host>'));
+    assert.ok(redacted.includes('<url>'));
+    assert.ok(redacted.includes('~'));
   });
 
   test('summarizeErrorForDebug includes safe provider diagnostics without leaking URLs or model IDs', () => {
@@ -228,7 +228,7 @@ suite('Debug Redaction', () => {
     assert.ok(details.includes('<url>'));
   });
 
-  test('formatDetailedErrorForDebug keeps urls in secrets-only mode', () => {
+  test('formatDetailedErrorForDebug redacts urls in secrets-only mode', () => {
     const cause = Object.assign(new TypeError('terminated token=inner-secret'), {
       responseHeaders: {
         location: 'https://example.com/v1/chat',
@@ -239,7 +239,8 @@ suite('Debug Redaction', () => {
     err.cause = cause;
 
     const details = formatDetailedErrorForDebug(err, { redactionLevel: 'secrets-only' });
-    assert.ok(details.includes('https://example.com/v1/chat'));
+    assert.ok(details.includes('<url>'));
+    assert.ok(!details.includes('https://example.com/v1/chat'));
     assert.ok(!details.includes('outer-secret'));
     assert.ok(!details.includes('inner-secret'));
     assert.ok(!details.includes('stack-secret'));

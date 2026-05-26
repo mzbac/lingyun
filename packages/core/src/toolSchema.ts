@@ -1,5 +1,5 @@
 export interface ToolParameterSchema {
-  type: 'string' | 'number' | 'boolean' | 'array' | 'object';
+  type: 'string' | 'number' | 'integer' | 'boolean' | 'array' | 'object';
   description?: string;
   enum?: string[];
   items?: ToolParameterSchema;
@@ -7,4 +7,3 @@ export interface ToolParameterSchema {
   required?: string[];
   default?: unknown;
 }
-

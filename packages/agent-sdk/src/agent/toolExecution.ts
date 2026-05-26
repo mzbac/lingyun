@@ -276,7 +276,7 @@ export async function executeToolWithPolicies(params: {
       return { success: false, error: reason };
     }
 
-    if ((permissionDecision as any)?.status === 'allow') {
+    if ((permissionDecision as any)?.status === 'allow' && !manualApproval) {
       requiresApproval = false;
       manualApproval = false;
     }

@@ -79,6 +79,21 @@ function validateType(
       }
       return { error: `${fieldName}: expected number, got ${typeof value}` };
     }
+    case 'integer': {
+      if (typeof value === 'number') {
+        if (!Number.isInteger(value)) {
+          return { error: `${fieldName}: expected integer, got ${Number.isNaN(value) ? 'NaN' : typeof value}` };
+        }
+        return { value };
+      }
+      if (typeof value === 'string' && /^[-+]?\d+$/.test(value.trim())) {
+        const num = Number(value);
+        if (Number.isSafeInteger(num)) {
+          return { value: num };
+        }
+      }
+      return { error: `${fieldName}: expected integer, got ${typeof value}` };
+    }
     case 'boolean': {
       if (typeof value === 'boolean') {
         return { value };
@@ -222,32 +237,46 @@ const SAFE_SHELL_COMMANDS = new Set([
   'grep',
   'find',
   'git',
-  'npm',
-  'npx',
-  'yarn',
-  'pnpm',
-  'node',
-  'python',
-  'python3',
-  'pip',
-  'cargo',
-  'go',
-  'make',
-  'cmake',
-  'dotnet',
-  'mvn',
-  'gradle',
   'tsc',
   'eslint',
   'prettier',
-  'jest',
-  'mocha',
-  'pytest',
-  'docker',
-  'kubectl',
-  'terraform',
   'jq',
   'yq',
+]);
+
+const UNSANDBOXABLE_SHELL_COMMANDS = new Set([
+  'bash',
+  'bun',
+  'cargo',
+  'cmake',
+  'deno',
+  'docker',
+  'dotnet',
+  'env',
+  'fish',
+  'go',
+  'gradle',
+  'jest',
+  'make',
+  'mocha',
+  'mvn',
+  'node',
+  'npm',
+  'npx',
+  'perl',
+  'php',
+  'pip',
+  'pip3',
+  'pnpm',
+  'python',
+  'python3',
+  'pytest',
+  'ruby',
+  'sh',
+  'swift',
+  'terraform',
+  'yarn',
+  'zsh',
 ]);
 
 const BLOCKED_SHELL_PATTERNS = [
@@ -359,9 +388,7 @@ function stripLeadingEnvAssignments(command: string): string {
 }
 
 export function evaluateShellCommand(command: string): ShellCommandDecision {
-  const normalized = stripLeadingEnvAssignments(command);
-  const firstToken = normalized.trim().split(/\s+/)[0] || '';
-  const baseCommand = firstToken.split(/[\\/]/).pop()?.toLowerCase() || '';
+  const baseCommand = getShellCommandBase(command);
 
   // Block Windows disk format only when it is the executable, not when "format"
   // appears as an argument (e.g. git --pretty=format).
@@ -395,4 +422,15 @@ export function evaluateShellCommand(command: string): ShellCommandDecision {
   }
 
   return { verdict: 'needs_approval', reason: `Command '${baseCommand}' requires approval` };
+}
+
+export function getShellCommandBase(command: string): string {
+  const normalized = stripLeadingEnvAssignments(command);
+  const firstToken = normalized.trim().split(/\s+/)[0] || '';
+  return firstToken.split(/[\\/]/).pop()?.toLowerCase() || '';
+}
+
+export function isUnsandboxableShellCommand(command: string): boolean {
+  const baseCommand = getShellCommandBase(command);
+  return !!baseCommand && UNSANDBOXABLE_SHELL_COMMANDS.has(baseCommand);
 }

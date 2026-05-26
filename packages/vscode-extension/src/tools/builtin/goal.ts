@@ -1,14 +1,13 @@
-import type { LingyunSession, LingyunThreadGoal } from '@kooka/agent-sdk';
+import {
+  createThreadGoalToolResponse,
+  resolveThreadGoalStatusAfterBudgetLimit,
+  type LingyunSession,
+  type LingyunThreadGoal,
+} from '@kooka/agent-sdk';
 
 import type { ToolContext, ToolDefinition, ToolResult } from '../../core/types';
 
 const MAX_GOAL_OBJECTIVE_CHARS = 4000;
-
-type GoalResponse = {
-  goal: LingyunThreadGoal | null;
-  remainingTokens?: number;
-  completionBudgetReport?: string;
-};
 
 function requireSession(context: ToolContext): LingyunSession {
   if (!context.agentSession) {
@@ -17,32 +16,19 @@ function requireSession(context: ToolContext): LingyunSession {
   return context.agentSession;
 }
 
-function positiveInteger(value: unknown): number | undefined {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return undefined;
-  return Math.floor(value);
+function toolThreadId(context: ToolContext, session: LingyunSession): string | undefined {
+  return session.sessionId ?? context.sessionId;
 }
 
-function goalResponse(goal: LingyunThreadGoal | undefined, options?: { includeCompletionReport?: boolean }): GoalResponse {
-  const response: GoalResponse = { goal: goal ? { ...goal } : null };
-  if (goal?.tokenBudget) {
-    response.remainingTokens = Math.max(0, goal.tokenBudget - goal.tokensUsed);
+function readPositiveIntegerArg(value: unknown): { ok: true; value?: number } | { ok: false; error: string } {
+  if (value === undefined || value === null) return { ok: true };
+  if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isSafeInteger(value) || value <= 0) {
+    return { ok: false, error: 'goal budgets must be positive integers when provided' };
   }
-  if (options?.includeCompletionReport && goal?.status === 'complete') {
-    const parts: string[] = [];
-    if (goal.tokenBudget) {
-      parts.push(`tokens used: ${goal.tokensUsed} of ${goal.tokenBudget}`);
-    }
-    if (goal.timeUsedSeconds > 0) {
-      parts.push(`time used: ${goal.timeUsedSeconds} seconds`);
-    }
-    if (parts.length > 0) {
-      response.completionBudgetReport = `Goal achieved. Report final budget usage to the user: ${parts.join('; ')}.`;
-    }
-  }
-  return response;
+  return { ok: true, value };
 }
 
-function success(data: GoalResponse): ToolResult {
+function success(data: ReturnType<typeof createThreadGoalToolResponse>): ToolResult {
   return {
     success: true,
     data,
@@ -55,7 +41,7 @@ function success(data: GoalResponse): ToolResult {
 export const getGoalTool: ToolDefinition = {
   id: 'get_goal',
   name: 'Get Goal',
-  description: 'Get the current goal for this session, including status, budgets, token and elapsed-time usage, and remaining token budget.',
+  description: 'Get the current goal for this thread, including status, budgets, token and elapsed-time usage, and remaining token budget.',
   parameters: {
     type: 'object',
     properties: {},
@@ -71,17 +57,18 @@ export const createGoalTool: ToolDefinition = {
   id: 'create_goal',
   name: 'Create Goal',
   description:
-    'Create a goal only when explicitly requested by the user or system/developer instructions; do not infer goals from ordinary tasks. Fails if a goal already exists; use update_goal only for completion.',
+    'Create a goal only when explicitly requested by the user or system/developer instructions; do not infer goals from ordinary tasks.\nSet token_budget only when an explicit token budget is requested. Fails if a goal exists; use update_goal only for status.',
   parameters: {
     type: 'object',
     properties: {
       objective: {
         type: 'string',
-        description: 'Required. The concrete objective to start pursuing.',
+        description:
+          'Required. The concrete objective to start pursuing. This starts a new active goal only when no goal is currently defined; if a goal already exists, this tool fails.',
       },
       token_budget: {
-        type: 'number',
-        description: 'Optional positive token budget for the new active goal.',
+        type: 'integer',
+        description: 'Optional positive integer token budget for the new active goal.',
       },
     },
     required: ['objective'],
@@ -97,14 +84,15 @@ export const updateGoalTool: ToolDefinition = {
   id: 'update_goal',
   name: 'Update Goal',
   description:
-    'Update the existing goal. Use this tool only to mark the goal achieved. Set status to complete only when the objective has actually been achieved and no required work remains.',
+    'Update the existing goal.\nUse this tool only to mark the goal achieved or genuinely blocked.\nSet status to `complete` only when the objective has actually been achieved and no required work remains.\nSet status to `blocked` only when the same blocking condition has repeated for at least three consecutive goal turns, counting the original/user-triggered turn and any automatic continuations, and the agent cannot make meaningful progress without user input or an external-state change.\nIf the user resumes a goal that was previously marked `blocked`, treat the resumed run as a fresh blocked audit. If the same blocking condition then repeats for at least three consecutive resumed goal turns, set status to `blocked` again.\nOnce the blocked threshold is satisfied, do not keep reporting that you are still blocked while leaving the goal active; set status to `blocked`.\nDo not use `blocked` merely because the work is hard, slow, uncertain, incomplete, or would benefit from clarification.\nDo not mark a goal complete merely because its budget is nearly exhausted or because you are stopping work.\nYou cannot use this tool to pause, resume, budget-limit, or usage-limit a goal; those status changes are controlled by the user or system.\nWhen marking a budgeted goal achieved with status `complete`, report the final token usage from the tool result to the user.',
   parameters: {
     type: 'object',
     properties: {
       status: {
         type: 'string',
-        enum: ['complete'],
-        description: 'Required. Set to complete only when the objective is achieved and no required work remains.',
+        enum: ['complete', 'blocked'],
+        description:
+          'Required. Set to `complete` only when the objective is achieved and no required work remains. Set to `blocked` only after the same blocking condition has recurred for at least three consecutive goal turns and the agent is at an impasse. After a previously blocked goal is resumed, the resumed run starts a fresh blocked audit.',
       },
     },
     required: ['status'],
@@ -118,7 +106,7 @@ export const updateGoalTool: ToolDefinition = {
 
 export async function getGoalHandler(_args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
   const session = requireSession(context);
-  return success(goalResponse(session.threadGoal));
+  return success(createThreadGoalToolResponse(session.threadGoal, { threadId: toolThreadId(context, session) }));
 }
 
 export async function createGoalHandler(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
@@ -126,7 +114,7 @@ export async function createGoalHandler(args: Record<string, unknown>, context: 
   if (session.threadGoal) {
     return {
       success: false,
-      error: 'cannot create a new goal because this session already has a goal; use update_goal only when the existing goal is complete',
+      error: 'cannot create a new goal because this thread already has a goal; use update_goal only when the existing goal is complete',
     };
   }
 
@@ -138,38 +126,53 @@ export async function createGoalHandler(args: Record<string, unknown>, context: 
     return { success: false, error: `objective must be at most ${MAX_GOAL_OBJECTIVE_CHARS} characters` };
   }
 
-  const tokenBudget = positiveInteger(args.token_budget);
+  const tokenBudgetArg = readPositiveIntegerArg(args.token_budget);
+  if (!tokenBudgetArg.ok) {
+    return { success: false, error: tokenBudgetArg.error };
+  }
   const now = Date.now();
+  const threadId = toolThreadId(context, session);
   const goal: LingyunThreadGoal = {
     id: crypto.randomUUID(),
-    ...(session.sessionId ? { sessionId: session.sessionId } : {}),
+    ...(threadId ? { sessionId: threadId } : {}),
     objective,
     status: 'active',
-    ...(tokenBudget ? { tokenBudget } : {}),
+    ...(tokenBudgetArg.value ? { tokenBudget: tokenBudgetArg.value } : {}),
     tokensUsed: 0,
     timeUsedSeconds: 0,
     createdAt: now,
     updatedAt: now,
   };
   session.threadGoal = goal;
-  return success(goalResponse(goal));
+  return success(createThreadGoalToolResponse(goal, { threadId }));
 }
 
 export async function updateGoalHandler(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
   const session = requireSession(context);
-  if (args.status !== 'complete') {
+  if (args.status !== 'complete' && args.status !== 'blocked') {
     return {
       success: false,
-      error: 'update_goal can only mark the existing goal complete; pause, resume, and budget-limited status changes are controlled by the user',
+      error:
+        'update_goal can only mark the existing goal complete or blocked; pause, resume, budget-limited, and usage-limited status changes are controlled by the user or system',
     };
   }
 
   const goal = session.threadGoal;
   if (!goal) {
-    return { success: false, error: 'cannot update goal because this session has no goal' };
+    return { success: false, error: 'cannot update goal because this thread has no goal' };
   }
 
-  goal.status = 'complete';
+  goal.status = resolveThreadGoalStatusAfterBudgetLimit({
+    currentStatus: goal.status,
+    requestedStatus: args.status,
+    tokenBudget: goal.tokenBudget,
+    tokensUsed: goal.tokensUsed,
+  });
   goal.updatedAt = Date.now();
-  return success(goalResponse(goal, { includeCompletionReport: true }));
+  return success(
+    createThreadGoalToolResponse(goal, {
+      includeCompletionReport: goal.status === 'complete',
+      threadId: toolThreadId(context, session),
+    }),
+  );
 }

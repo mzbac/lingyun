@@ -9,6 +9,7 @@ import {
   createStandaloneChatController,
   createWritableChatTestExtensionContext,
 } from './chatControllerHarness';
+import { sanitizeSessionForStorage } from '../../ui/chat/methods.sessions.persistence';
 
 function createTrackingAgent(blankState: () => AgentSessionState) {
   const syncCalls: any[] = [];
@@ -57,6 +58,65 @@ function createSession(
 }
 
 suite('Chat sessions facade', () => {
+  test('sanitizeSessionForStorage redacts persisted tool payloads and omits diffs', () => {
+    const controller = createStandaloneChatController();
+    const session = createSession(controller, 'session-privacy', {
+      messages: [
+        {
+          id: 'tool-1',
+          role: 'tool',
+          content: 'failed with token=raw-secret at https://internal-api.example.com/v1',
+          timestamp: Date.now(),
+          toolCall: {
+            id: 'bash',
+            name: 'Run Command',
+            args: JSON.stringify({
+              command: 'curl -H "Authorization: Bearer cmd-secret" https://internal-api.example.com/v1',
+              content: 'file-secret',
+              headers: { Authorization: 'Bearer header-secret' },
+            }),
+            status: 'error',
+            result: 'Authorization: Bearer result-secret from https://internal-api.example.com/v1',
+            diff: '+ API_KEY=diff-secret',
+            diffView: { filePath: 'src/index.ts', hunks: [] } as any,
+            path: `${process.env.HOME || ''}/private/project/.env`,
+          },
+        },
+      ],
+      agentState: {
+        ...controller.sessionApi.getBlankAgentState(),
+        history: [
+          {
+            role: 'assistant',
+            parts: [
+              {
+                type: 'text',
+                text: `token=history-secret ${process.env.HOME || ''}/private https://internal-api.example.com/v1`,
+              },
+            ],
+          } as any,
+        ],
+      },
+    });
+
+    const sanitized = sanitizeSessionForStorage(session);
+    const stored = JSON.stringify(sanitized);
+
+    assert.ok(!stored.includes('cmd-secret'));
+    assert.ok(!stored.includes('file-secret'));
+    assert.ok(!stored.includes('header-secret'));
+    assert.ok(!stored.includes('result-secret'));
+    assert.ok(!stored.includes('diff-secret'));
+    assert.ok(!stored.includes('history-secret'));
+    assert.ok(!stored.includes('internal-api.example.com'));
+    if (process.env.HOME) {
+      assert.ok(!stored.includes(process.env.HOME));
+    }
+    assert.strictEqual(sanitized.messages[0].toolCall?.diff, undefined);
+    assert.strictEqual(sanitized.messages[0].toolCall?.diffView, undefined);
+    assert.ok(sanitized.messages[0].toolCall?.diffUnavailableReason?.includes('privacy'));
+  });
+
   test('session list falls back to first user message preview while title is still default', () => {
     const controller = createStandaloneChatController();
     const defaultTitle = createDefaultSessionTitle(new Date(0));

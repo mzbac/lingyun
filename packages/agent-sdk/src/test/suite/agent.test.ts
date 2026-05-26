@@ -16,6 +16,7 @@ import { createHistoryForModel, MISSING_TOOL_RESULT_PLACEHOLDER, TOOL_ERROR_CODE
 import {
   FileHandleRegistry,
   createLingyunAgent,
+  createThreadGoalToolResponse,
   getBuiltinTools,
   getSkillIndex,
   loadSkillFile,
@@ -739,6 +740,111 @@ suite('LingYun Agent SDK', () => {
         ),
       'expected second tool call to run before the configured cap',
     );
+  });
+
+  test('accounts budget-limited wrap-up turns without cache reads', async () => {
+    const llm = new MockLLMProvider();
+    const registry = new ToolRegistry();
+    const agent = new LingyunAgent(llm, { model: 'mock-model' }, registry, { allowExternalPaths: false });
+    const session = new LingyunSession({
+      threadGoal: {
+        id: 'goal-budget-wrap',
+        objective: 'Wrap up budget-limited work',
+        status: 'budgetLimited',
+        tokenBudget: 50,
+        tokensUsed: 55,
+        timeUsedSeconds: 3,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    });
+
+    llm.queueResponse({
+      kind: 'text',
+      content: 'Budget wrap-up.',
+      usage: { inputNoCache: 7, cacheRead: 100, outputTotal: 4 },
+    });
+
+    const run = agent.run({ session, input: 'Summarize the budget-limited goal.' });
+    for await (const _event of run.events) {
+      // drain
+    }
+    const result = await run.done;
+
+    assert.strictEqual(result.text, 'Budget wrap-up.');
+    assert.strictEqual(session.threadGoal?.status, 'budgetLimited');
+    assert.strictEqual(session.threadGoal?.tokensUsed, 66);
+    assert.ok((session.threadGoal?.timeUsedSeconds ?? 0) >= 3);
+  });
+
+  test('keeps blocked update_goal turn budget-limited when final accounting crosses budget', async () => {
+    const llm = new MockLLMProvider();
+    const registry = new ToolRegistry();
+    registry.registerTool(
+      {
+        id: 'update_goal',
+        name: 'Update Goal',
+        description: 'Update the existing goal.',
+        parameters: {
+          type: 'object',
+          properties: { status: { type: 'string', enum: ['complete', 'blocked'] } },
+          required: ['status'],
+        },
+        execution: { type: 'function', handler: 'update_goal' },
+      },
+      async (_args, context): Promise<ToolResult> => {
+        const session = (context as any).session as LingyunSession;
+        assert.ok(session.threadGoal);
+        session.threadGoal.status = 'blocked';
+        const response = createThreadGoalToolResponse(session.threadGoal);
+        const outputText = JSON.stringify(response, null, 2);
+        return { success: true, data: outputText, metadata: { outputText } };
+      },
+    );
+    const agent = new LingyunAgent(llm, { model: 'mock-model' }, registry, { allowExternalPaths: false });
+    const session = new LingyunSession({
+      threadGoal: {
+        id: 'goal-blocked-budget',
+        objective: 'Stop if blocked or over budget',
+        status: 'active',
+        tokenBudget: 50,
+        tokensUsed: 0,
+        timeUsedSeconds: 0,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    });
+
+    llm.queueResponse({
+      kind: 'tool-call',
+      toolCallId: 'call-blocked-goal',
+      toolName: 'update_goal',
+      input: { status: 'blocked' },
+      usage: { inputNoCache: 45, cacheRead: 100, outputTotal: 10 },
+      finishReason: 'tool-calls',
+    });
+    llm.queueResponse({ kind: 'text', content: 'This should not run.' });
+
+    const run = agent.run({ session, input: 'Mark the goal blocked.' });
+    for await (const _event of run.events) {
+      // drain
+    }
+    const result = await run.done;
+
+    assert.strictEqual(result.text, '');
+    assert.strictEqual(llm.callCount, 1);
+    assert.strictEqual(session.threadGoal?.status, 'budgetLimited');
+    assert.strictEqual(session.threadGoal?.tokensUsed, 55);
+
+    const toolAssistant = session
+      .getHistory()
+      .find((m) => m.role === 'assistant' && m.parts.some((p: any) => p.type === 'dynamic-tool' && p.toolCallId === 'call-blocked-goal'));
+    const toolPart = toolAssistant?.parts.find((p: any) => p.type === 'dynamic-tool' && p.toolCallId === 'call-blocked-goal') as any;
+    assert.ok(toolPart);
+    const toolOutput = JSON.parse(String(toolPart.output?.data || '{}'));
+    assert.strictEqual(toolOutput.goal.status, 'budgetLimited');
+    assert.strictEqual(toolOutput.goal.tokensUsed, 55);
+    assert.strictEqual(toolOutput.remainingTokens, 0);
   });
 
   test('treats maxIterations -1 as unlimited', async () => {
@@ -3510,6 +3616,84 @@ suite('LingYun Agent SDK', () => {
       assert.ok(String(approvalContext?.reason || '').includes('Protected dotenv access requires manual approval'));
       assert.deepStrictEqual(approvalContext?.metadata?.dotEnvTargets, ['.env']);
       assert.ok(Array.isArray(approvalContext?.metadata?.riskReasons));
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('host manual approval cannot be bypassed by autoApprove or permission allow hooks', async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'lingyun-sdk-test-manual-approval-'));
+    try {
+      const llm = new MockLLMProvider();
+      const registry = new ToolRegistry();
+      const plugins = new PluginManager({ workspaceRoot: tmp });
+      plugins.registerHooks('allow-all', {
+        'permission.ask': async (_input, output) => {
+          output.status = 'allow';
+        },
+      });
+
+      let called = false;
+      const manualTool: ToolDefinition = {
+        id: 'workspace_http',
+        name: 'Workspace HTTP',
+        description: 'Host-controlled network tool',
+        parameters: {
+          type: 'object',
+          properties: {},
+        },
+        execution: { type: 'function', handler: 'test.workspace_http' },
+        metadata: {
+          requiresApproval: true,
+          requiresManualApproval: true,
+        },
+      };
+
+      registry.registerTool(manualTool, async () => {
+        called = true;
+        return { success: true, data: 'manual-ok' };
+      });
+
+      llm.queueResponse({
+        kind: 'tool-call',
+        toolCallId: 'call_manual_host_policy',
+        toolName: 'workspace_http',
+        input: {},
+        finishReason: 'tool-calls',
+      });
+      llm.queueResponse({ kind: 'text', content: 'done' });
+
+      let approvalCalls = 0;
+      let approvalContext: any;
+      const agent = new LingyunAgent(
+        llm,
+        { model: 'mock-model', autoApprove: true },
+        registry,
+        { workspaceRoot: tmp, plugins },
+      );
+      const session = new LingyunSession();
+
+      const run = agent.run({
+        session,
+        input: 'run host manual tool',
+        callbacks: {
+          onRequestApproval: async (_tool, _definition, context) => {
+            approvalCalls += 1;
+            approvalContext = context;
+            return true;
+          },
+        },
+      });
+      for await (const _event of run.events) {
+        // drain
+      }
+      const result = await run.done;
+
+      assert.strictEqual(result.text, 'done');
+      assert.strictEqual(approvalCalls, 1);
+      assert.strictEqual(called, true);
+      assert.strictEqual(approvalContext?.manual, true);
+      assert.ok(String(approvalContext?.reason || '').includes('manual approval'));
     } finally {
       await fs.rm(tmp, { recursive: true, force: true });
     }

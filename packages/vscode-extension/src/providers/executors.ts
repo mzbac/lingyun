@@ -1,12 +1,16 @@
 import * as vscode from 'vscode';
 import * as cp from 'child_process';
 import * as path from 'path';
+import type { LookupAddress, LookupOptions } from 'node:dns';
 import * as dns from 'node:dns/promises';
 import * as net from 'node:net';
+import { Agent, fetch as undiciFetch } from 'undici';
 import type { ToolContext, ToolResult } from '../core/types';
 import {
   TOOL_ERROR_CODES,
+  buildSafeChildProcessEnv,
   findExternalPathReferencesInShellCommand,
+  isUnsandboxableShellCommand,
   isPathInsideWorkspace,
   looksLikeLongRunningServerCommand,
 } from '@kooka/core';
@@ -81,14 +85,14 @@ function isPrivateIpAddress(address: string): boolean {
   return true;
 }
 
-async function validateResolvedHost(hostname: string): Promise<{ valid: boolean; error?: string }> {
+async function validateResolvedHost(hostname: string): Promise<{ valid: false; error: string } | { valid: true; records: LookupAddress[] }> {
   const host = hostname.toLowerCase();
   const ipFamily = net.isIP(host);
   if (ipFamily > 0) {
     if (isPrivateIpAddress(host)) {
       return { valid: false, error: `Requests to private or loopback addresses are not allowed (${hostname})` };
     }
-    return { valid: true };
+    return { valid: true, records: [{ address: host, family: ipFamily }] };
   }
 
   try {
@@ -104,10 +108,39 @@ async function validateResolvedHost(hostname: string): Promise<{ valid: boolean;
         };
       }
     }
-    return { valid: true };
+    return { valid: true, records };
   } catch {
     return { valid: false, error: `Could not resolve hostname: ${hostname}` };
   }
+}
+
+type PinnedLookupOptions = LookupOptions & { all?: boolean };
+type PinnedLookupCallback = {
+  (error: NodeJS.ErrnoException | null, address: string, family: number): void;
+  (error: NodeJS.ErrnoException | null, addresses: LookupAddress[]): void;
+};
+
+function createPinnedLookup(records: LookupAddress[]) {
+  return (_hostname: string, options: PinnedLookupOptions | PinnedLookupCallback, callback?: PinnedLookupCallback): void => {
+    const cb = typeof options === 'function' ? options : callback;
+    const opts = typeof options === 'object' && options ? options : {};
+    if (!cb) return;
+
+    const requestedFamily = opts.family === 'IPv4' ? 4 : opts.family === 'IPv6' ? 6 : opts.family;
+    const candidates = requestedFamily ? records.filter(record => record.family === requestedFamily) : records;
+    const selected = candidates[0];
+    if (!selected) {
+      cb(Object.assign(new Error('No validated address available for host'), { code: 'ENOTFOUND' }), '', 0);
+      return;
+    }
+
+    if (opts.all) {
+      cb(null, candidates);
+      return;
+    }
+
+    cb(null, selected.address, selected.family);
+  };
 }
 
 export async function executeShell(
@@ -130,6 +163,9 @@ export async function executeShell(
       for (const p of findExternalPathReferencesInShellCommand(execution.script, { cwd, workspaceRoot })) {
         externalRefs.add(p);
       }
+      if (isUnsandboxableShellCommand(execution.script)) {
+        externalRefs.add('<unsandboxable-shell-command>');
+      }
 
       if (externalRefs.size > 0) {
         const blockedPaths = [...externalRefs];
@@ -138,7 +174,7 @@ export async function executeShell(
         resolve({
           success: false,
           error:
-            'External paths are disabled. This shell script references paths outside the current workspace. ' +
+            'External paths are disabled. This shell script references paths outside the current workspace or uses a runtime that cannot be confined to it. ' +
             'Enable lingyun.security.allowExternalPaths to allow external path access.',
           metadata: {
             errorCode: TOOL_ERROR_CODES.external_paths_disabled,
@@ -166,7 +202,7 @@ export async function executeShell(
 
     const options: cp.ExecOptions = {
       cwd,
-      env: { ...process.env, ...execution.env },
+      env: { ...buildSafeChildProcessEnv({ baseEnv: process.env }), ...execution.env },
       maxBuffer: 1024 * 1024,
       ...(timeoutMs > 0 ? { timeout: timeoutMs } : {}),
     };
@@ -319,6 +355,7 @@ export async function executeHttp(
 
   let timedOut = false;
   let timeoutId: NodeJS.Timeout | undefined;
+  let dispatcher: Agent | undefined;
 
   try {
     const method = execution.method || 'GET';
@@ -329,7 +366,7 @@ export async function executeHttp(
 
     context.log(`HTTP ${method} request`);
 
-    const options: RequestInit = {
+    const options: NonNullable<Parameters<typeof undiciFetch>[1]> = {
       method,
       headers,
     };
@@ -364,7 +401,16 @@ export async function executeHttp(
     options.signal = controller.signal;
     options.redirect = 'error';
 
-    const response = await fetch(execution.url, options);
+    dispatcher = new Agent({
+      connect: {
+        lookup: createPinnedLookup(resolvedHostValidation.records),
+      },
+    });
+
+    const response = await undiciFetch(execution.url, {
+      ...options,
+      dispatcher,
+    });
 
     const contentType = response.headers.get('content-type') || '';
     let data: unknown;
@@ -397,5 +443,6 @@ export async function executeHttp(
     };
   } finally {
     if (timeoutId) clearTimeout(timeoutId);
+    await dispatcher?.close();
   }
 }
