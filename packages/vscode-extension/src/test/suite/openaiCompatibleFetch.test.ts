@@ -569,13 +569,14 @@ suite('OpenAICompatibleProvider fetch', () => {
 
     const fetchWithDefaults = createFetchWithStreamingDefaults();
     try {
+      const headers = Object.assign(Object.create({ 'x-inherited': 'skip' }), {
+        'AcCePt-EnCoDiNg': 'br',
+        'x-count': 42,
+        'x-optional': undefined,
+        'x-empty': null,
+      });
       const response = await fetchWithDefaults.fetch(`http://127.0.0.1:${address.port}/headers`, {
-        headers: {
-          'AcCePt-EnCoDiNg': 'br',
-          'x-count': 42,
-          'x-optional': undefined,
-          'x-empty': null,
-        } as any,
+        headers: headers as any,
       });
       await response.text();
 
@@ -583,10 +584,28 @@ suite('OpenAICompatibleProvider fetch', () => {
       assert.strictEqual(observedHeaders?.['x-count'], '42');
       assert.strictEqual(observedHeaders?.['x-optional'], undefined);
       assert.strictEqual(observedHeaders?.['x-empty'], undefined);
+      assert.strictEqual(observedHeaders?.['x-inherited'], undefined);
     } finally {
       fetchWithDefaults.dispose();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
+  });
+
+  test('fetch header helpers avoid key-array and entry-array scans', () => {
+    const source = fs.readFileSync(path.resolve(__dirname, '../../../src/providers/openaiFetch.ts'), 'utf8');
+    const start = source.indexOf('const hasOwnHeader = Object.prototype.hasOwnProperty;');
+    assert.ok(start >= 0, 'expected header ownership helper');
+    const end = source.indexOf('\nfunction abortSignalReason', start);
+    assert.ok(end > start, 'expected abort signal helper after header helpers');
+    const section = source.slice(start, end);
+
+    assert.match(section, /for \(const existing in headers\)/);
+    assert.match(section, /for \(const key in headers\)/);
+    assert.match(section, /hasOwnHeader\.call\(headers,/);
+    assert.match(section, /hasOwnHeader\.call\(headerRecord,/);
+    assert.doesNotMatch(section, /Object\.keys\(headers\)/);
+    assert.doesNotMatch(section, /Object\.entries\(/);
+    assert.doesNotMatch(section, /\.some\(/);
   });
 
   test('preserves Request headers and lets init headers override them', async () => {

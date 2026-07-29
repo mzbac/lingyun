@@ -99,6 +99,18 @@ const PROVIDER_DIAGNOSTIC_STRING_KEYS = [
   'errorDescription',
 ];
 
+const PROVIDER_DIAGNOSTIC_HEADER_KEYS = ['headers', 'responseHeaders'] as const;
+
+function sanitizeProviderDiagnosticHeaders(headers: Record<string, unknown>): Record<string, string> {
+  const sanitizedHeaders: Record<string, string> = {};
+  for (const headerName in headers) {
+    if (!Object.prototype.hasOwnProperty.call(headers, headerName)) continue;
+    const headerValue = headers[headerName];
+    if (typeof headerValue === 'string') sanitizedHeaders[headerName] = safeHeaderValue(headerName, headerValue);
+  }
+  return sanitizedHeaders;
+}
+
 function sanitizeProviderDiagnosticRecord(
   value: unknown,
   modelId: string | undefined,
@@ -121,15 +133,11 @@ function sanitizeProviderDiagnosticRecord(
     }
   }
 
-  for (const key of ['headers', 'responseHeaders']) {
+  for (const key of PROVIDER_DIAGNOSTIC_HEADER_KEYS) {
     const headers = asRecord(record[key]);
     if (!headers) continue;
-    const sanitizedHeaders: Record<string, string> = {};
-    for (const [headerName, headerValue] of Object.entries(headers)) {
-      if (typeof headerValue === 'string') sanitizedHeaders[headerName] = safeHeaderValue(headerName, headerValue);
-    }
     try {
-      record[key] = sanitizedHeaders;
+      record[key] = sanitizeProviderDiagnosticHeaders(headers);
     } catch {
       // Best-effort only; keep the original cause object when the field is read-only.
     }
@@ -296,12 +304,14 @@ function parseRetryAfterMs(headers: Record<string, string>): number | undefined 
 
 export function createProviderResponseMetadata(headersInput: Headers | undefined): ProviderResponseMetadata {
   const headers = headersToRecord(headersInput);
+  const requestId = requestIdFromHeaders(headers);
+  const cfRay = cfRayFromHeaders(headers);
   const retryAfterMs = parseRetryAfterMs(headers);
   return {
     responseHeaders: headers,
     headers,
-    ...(requestIdFromHeaders(headers) ? { requestId: requestIdFromHeaders(headers) } : {}),
-    ...(cfRayFromHeaders(headers) ? { cfRay: cfRayFromHeaders(headers) } : {}),
+    ...(requestId ? { requestId } : {}),
+    ...(cfRay ? { cfRay } : {}),
     ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
   };
 }
@@ -316,6 +326,11 @@ function getFirstRecordString(record: Record<string, unknown> | undefined, keys:
     if (value) return value;
   }
   return undefined;
+}
+
+function appendDiagnosticLine(text: string, value: string | undefined): string {
+  if (!value) return text;
+  return text ? `${text}\n${value}` : value;
 }
 
 function decodeBase64JsonObject(value: string | undefined): Record<string, unknown> | undefined {
@@ -391,8 +406,32 @@ const STRUCTURED_AUTH_ERROR_VALUES = new Set([
   'unauthorized',
 ]);
 
+const STRUCTURED_AUTH_ERROR_FIELD_KEYS = [
+  'code',
+  'type',
+  'error_code',
+  'error_type',
+  'errorCode',
+  'errorType',
+  'authorizationError',
+  'identityAuthorizationError',
+  'identityErrorCode',
+  'identityErrorType',
+] as const;
+
 function normalizeStructuredErrorValue(value: string): string {
   return value.trim().toLowerCase().replace(/[\s-]+/g, '_');
+}
+
+function hasStructuredAuthErrorRecord(source: Record<string, unknown> | undefined): boolean {
+  if (!source) return false;
+  for (const key of STRUCTURED_AUTH_ERROR_FIELD_KEYS) {
+    const value = getRecordString(source, key);
+    if (value && STRUCTURED_AUTH_ERROR_VALUES.has(normalizeStructuredErrorValue(value))) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function hasStructuredAuthErrorValue(error: unknown): boolean {
@@ -402,24 +441,13 @@ function hasStructuredAuthErrorValue(error: unknown): boolean {
     const nestedError = asRecord(record?.error);
     const dataError = asRecord(data?.error);
 
-    for (const source of [record, data, nestedError, dataError]) {
-      for (const key of [
-        'code',
-        'type',
-        'error_code',
-        'error_type',
-        'errorCode',
-        'errorType',
-        'authorizationError',
-        'identityAuthorizationError',
-        'identityErrorCode',
-        'identityErrorType',
-      ]) {
-        const value = getRecordString(source, key);
-        if (value && STRUCTURED_AUTH_ERROR_VALUES.has(normalizeStructuredErrorValue(value))) {
-          return true;
-        }
-      }
+    if (
+      hasStructuredAuthErrorRecord(record) ||
+      hasStructuredAuthErrorRecord(data) ||
+      hasStructuredAuthErrorRecord(nestedError) ||
+      hasStructuredAuthErrorRecord(dataError)
+    ) {
+      return true;
     }
   }
 
@@ -441,45 +469,41 @@ export function isProviderAuthError(error: unknown): boolean {
   if (statusCode === 401 || statusCode === 403) return true;
   if (hasStructuredAuthErrorValue(error)) return true;
 
-  const text = getErrorChain(error)
-    .map((item) => {
-      const record = asRecord(item);
-      const data = asRecord(record?.data);
-      const nestedError = asRecord(record?.error);
-      const dataError = asRecord(data?.error);
-      return [
-        getErrorMessage(item),
-        getRecordString(record, 'code'),
-        getRecordString(record, 'type'),
-        getRecordString(record, 'errorCode'),
-        getRecordString(record, 'errorType'),
-        getRecordString(record, 'authorizationError'),
-        getRecordString(record, 'identityAuthorizationError'),
-        getRecordString(record, 'identityErrorCode'),
-        getRecordString(record, 'identityErrorType'),
-        getRecordString(nestedError, 'code'),
-        getRecordString(nestedError, 'type'),
-        getRecordString(nestedError, 'errorCode'),
-        getRecordString(nestedError, 'errorType'),
-        getRecordString(nestedError, 'message'),
-        typeof record?.error === 'string' ? record.error : '',
-        getRecordString(data, 'code'),
-        getRecordString(data, 'type'),
-        getRecordString(data, 'errorCode'),
-        getRecordString(data, 'errorType'),
-        getRecordString(dataError, 'code'),
-        getRecordString(dataError, 'type'),
-        getRecordString(dataError, 'errorCode'),
-        getRecordString(dataError, 'errorType'),
-        getRecordString(dataError, 'message'),
-        typeof data?.error === 'string' ? data.error : '',
-        typeof record?.responseBody === 'string' ? record.responseBody : '',
-        typeof record?.body === 'string' ? record.body : '',
-      ]
-        .filter(Boolean)
-        .join('\n');
-    })
-    .join('\n');
+  let text = '';
+  for (const item of getErrorChain(error)) {
+    const record = asRecord(item);
+    const data = asRecord(record?.data);
+    const nestedError = asRecord(record?.error);
+    const dataError = asRecord(data?.error);
+
+    text = appendDiagnosticLine(text, getErrorMessage(item));
+    text = appendDiagnosticLine(text, getRecordString(record, 'code'));
+    text = appendDiagnosticLine(text, getRecordString(record, 'type'));
+    text = appendDiagnosticLine(text, getRecordString(record, 'errorCode'));
+    text = appendDiagnosticLine(text, getRecordString(record, 'errorType'));
+    text = appendDiagnosticLine(text, getRecordString(record, 'authorizationError'));
+    text = appendDiagnosticLine(text, getRecordString(record, 'identityAuthorizationError'));
+    text = appendDiagnosticLine(text, getRecordString(record, 'identityErrorCode'));
+    text = appendDiagnosticLine(text, getRecordString(record, 'identityErrorType'));
+    text = appendDiagnosticLine(text, getRecordString(nestedError, 'code'));
+    text = appendDiagnosticLine(text, getRecordString(nestedError, 'type'));
+    text = appendDiagnosticLine(text, getRecordString(nestedError, 'errorCode'));
+    text = appendDiagnosticLine(text, getRecordString(nestedError, 'errorType'));
+    text = appendDiagnosticLine(text, getRecordString(nestedError, 'message'));
+    text = appendDiagnosticLine(text, typeof record?.error === 'string' ? record.error : undefined);
+    text = appendDiagnosticLine(text, getRecordString(data, 'code'));
+    text = appendDiagnosticLine(text, getRecordString(data, 'type'));
+    text = appendDiagnosticLine(text, getRecordString(data, 'errorCode'));
+    text = appendDiagnosticLine(text, getRecordString(data, 'errorType'));
+    text = appendDiagnosticLine(text, getRecordString(dataError, 'code'));
+    text = appendDiagnosticLine(text, getRecordString(dataError, 'type'));
+    text = appendDiagnosticLine(text, getRecordString(dataError, 'errorCode'));
+    text = appendDiagnosticLine(text, getRecordString(dataError, 'errorType'));
+    text = appendDiagnosticLine(text, getRecordString(dataError, 'message'));
+    text = appendDiagnosticLine(text, typeof data?.error === 'string' ? data.error : undefined);
+    text = appendDiagnosticLine(text, typeof record?.responseBody === 'string' ? record.responseBody : undefined);
+    text = appendDiagnosticLine(text, typeof record?.body === 'string' ? record.body : undefined);
+  }
 
   return /\b(?:http|status(?:code| code)?)\s*[:=]?\s*40[13]\b|unauthori[sz]ed|forbidden|invalid[_ -]?api[_ -]?key|invalid[_ -]?token|expired[_ -]?token|token expired|invalid_grant/i.test(text);
 }
@@ -553,21 +577,17 @@ function getErrorCodeFromChain(error: unknown): string | undefined {
 }
 
 function errorChainText(error: unknown): string {
-  return getErrorChain(error)
-    .map((item) => {
-      const record = asRecord(item);
-      return [
-        item instanceof Error ? item.name : asNonEmptyString(record?.name),
-        getErrorMessage(item),
-        asNonEmptyString(record?.code),
-        asNonEmptyString(record?.errorCode),
-        asNonEmptyString(record?.type),
-        asNonEmptyString(record?.errorType),
-      ]
-        .filter(Boolean)
-        .join('\n');
-    })
-    .join('\n');
+  let text = '';
+  for (const item of getErrorChain(error)) {
+    const record = asRecord(item);
+    text = appendDiagnosticLine(text, item instanceof Error ? item.name : asNonEmptyString(record?.name));
+    text = appendDiagnosticLine(text, getErrorMessage(item));
+    text = appendDiagnosticLine(text, asNonEmptyString(record?.code));
+    text = appendDiagnosticLine(text, asNonEmptyString(record?.errorCode));
+    text = appendDiagnosticLine(text, asNonEmptyString(record?.type));
+    text = appendDiagnosticLine(text, asNonEmptyString(record?.errorType));
+  }
+  return text;
 }
 
 function isTimeoutLikeError(error: unknown): boolean {

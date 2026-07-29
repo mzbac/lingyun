@@ -22,7 +22,13 @@ import type { ChatRunnerPlanService } from './methods.runner.plan';
 import type { ChatSessionsService } from './methods.sessions';
 import type { ChatSkillsService } from './methods.skills';
 import type { ChatWebviewService } from './methods.webview';
-import type { ChatMessage, ChatMode, ChatSessionInfo } from './types';
+import type {
+  ChatComposerSubmissionState,
+  ChatImageAttachment,
+  ChatMessage,
+  ChatMode,
+  ChatSessionInfo,
+} from './types';
 import type { PendingApprovalEntry } from './controllerPorts';
 import type { ChatQueueManager } from './queueManager';
 import type { RunCoordinator } from './runner/runCoordinator';
@@ -50,6 +56,8 @@ export class ChatController {
   initInterval?: NodeJS.Timeout;
   initInFlight = false;
   webviewCrashToastClientId?: string;
+  pendingComposerAttachments: ChatImageAttachment[] = [];
+  composerSubmissionState?: ChatComposerSubmissionState;
   sessionStore?: SessionStore<ChatSessionInfo>;
   sessionsLoadedFromDisk = false;
   sessionsLoadPromise?: Promise<void>;

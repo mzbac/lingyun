@@ -76,7 +76,9 @@ export class SqliteSessionStore implements LingyunSessionStore {
 
     await this.driver.execute(
       `INSERT INTO ${this.tableName} (sessionId, snapshotJson, updatedAt) VALUES (?, ?, ?) ` +
-        `ON CONFLICT(sessionId) DO UPDATE SET snapshotJson=excluded.snapshotJson, updatedAt=excluded.updatedAt`,
+        `ON CONFLICT(sessionId) DO UPDATE SET snapshotJson=excluded.snapshotJson, updatedAt=excluded.updatedAt ` +
+        `WHERE ${this.tableName}.snapshotJson IS NOT excluded.snapshotJson ` +
+        `OR ${this.tableName}.updatedAt IS NOT excluded.updatedAt`,
       [persistedSnapshot.sessionId, snapshotJson, updatedAt]
     );
   }
@@ -114,9 +116,12 @@ export class SqliteSessionStore implements LingyunSessionStore {
       [limit, offset]
     );
 
-    return rows
-      .filter((row) => typeof row.sessionId === 'string' && typeof row.updatedAt === 'string')
-      .map((row) => ({ sessionId: row.sessionId, updatedAt: row.updatedAt }));
+    const entries: LingyunSessionStoreEntry[] = [];
+    for (const row of rows) {
+      if (typeof row.sessionId !== 'string' || typeof row.updatedAt !== 'string') continue;
+      entries.push({ sessionId: row.sessionId, updatedAt: row.updatedAt });
+    }
+    return entries;
   }
 
   async delete(sessionId: string): Promise<void> {
@@ -127,4 +132,3 @@ export class SqliteSessionStore implements LingyunSessionStore {
     await this.driver.execute(`DELETE FROM ${this.tableName} WHERE sessionId = ?`, [id]);
   }
 }
-

@@ -34,6 +34,10 @@ type DurableEntryScore = {
   breakdown: NonNullable<MemorySearchHit['scoreBreakdown']>;
 };
 
+type SearchCandidate =
+  | { type: 'durable'; candidate: DurableEntryScore }
+  | { type: 'record'; candidate: MemoryRecordScore };
+
 function normalizeSearchText(input: string | undefined): string {
   return String(input || '')
     .toLowerCase()
@@ -53,15 +57,24 @@ function splitSearchTerms(query: string): string[] {
   const normalized = normalizeSearchText(query);
   if (!normalized) return [];
 
-  const rawTerms = normalized
-    .split(/\s+/)
-    .flatMap((term) => term.split(/[/:._-]+/))
-    .map((term) => term.trim())
-    .filter((term) => term.length >= 2);
-
   const next: string[] = [];
   const seen = new Set<string>();
-  for (const term of rawTerms) {
+
+  let termStart = -1;
+  for (let i = 0; i <= normalized.length; i++) {
+    const char = i < normalized.length ? normalized.charCodeAt(i) : 32;
+    const isBoundary =
+      char === 32 || char === 47 || char === 58 || char === 46 || char === 95 || char === 45;
+
+    if (!isBoundary) {
+      if (termStart < 0) termStart = i;
+      continue;
+    }
+    if (termStart < 0) continue;
+
+    const term = normalized.slice(termStart, i);
+    termStart = -1;
+    if (term.length < 2) continue;
     if (seen.has(term)) continue;
     seen.add(term);
     next.push(term);
@@ -74,14 +87,41 @@ function hasNegativeRecallIntent(query: string): boolean {
   return hasMemoryOptOutIntent(query);
 }
 
+function firstTwoLongQueryTermsPhrase(normalizedQuery: string): string {
+  let first = '';
+  let second = '';
+  let termStart = -1;
+
+  for (let i = 0; i <= normalizedQuery.length; i++) {
+    const char = i < normalizedQuery.length ? normalizedQuery.charCodeAt(i) : 32;
+    if (char !== 32) {
+      if (termStart === -1) termStart = i;
+      continue;
+    }
+    if (termStart === -1) continue;
+
+    if (i - termStart >= 3) {
+      if (!first) {
+        first = normalizedQuery.slice(termStart, i);
+      } else {
+        second = normalizedQuery.slice(termStart, i);
+        break;
+      }
+    }
+    termStart = -1;
+  }
+
+  return first && second ? `${first} ${second}` : '';
+}
+
 function phraseBoostText(text: string, normalizedQuery: string): number {
   if (!normalizedQuery) return 0;
   const haystack = normalizeSearchText(text);
   if (!haystack) return 0;
   if (haystack.includes(normalizedQuery)) return 4.5;
 
-  const queryParts = normalizedQuery.split(/\s+/).filter((part) => part.length >= 3);
-  if (queryParts.length >= 2 && haystack.includes(queryParts.slice(0, 2).join(' '))) {
+  const leadingPhrase = firstTwoLongQueryTermsPhrase(normalizedQuery);
+  if (leadingPhrase && haystack.includes(leadingPhrase)) {
     return 2.5;
   }
   return 0;
@@ -111,23 +151,53 @@ function extractCurrentStateSpecificSignals(query: string): string[] {
   return next;
 }
 
+function collectCurrentStateSpecificPhraseTerms(query: string): string[] {
+  const normalized = normalizeSearchText(query);
+  const terms: string[] = [];
+  let termStart = -1;
+
+  for (let i = 0; i <= normalized.length; i++) {
+    const char = i < normalized.length ? normalized.charCodeAt(i) : 32;
+    if (char !== 32) {
+      if (termStart < 0) termStart = i;
+      continue;
+    }
+    if (termStart < 0) continue;
+
+    if (i - termStart >= 3) {
+      terms.push(normalized.slice(termStart, i));
+    }
+    termStart = -1;
+  }
+
+  return terms;
+}
+
+function currentStatePhraseFromTerms(terms: string[], startIndex: number, size: number): string {
+  let phrase = '';
+  for (let index = startIndex; index < startIndex + size; index += 1) {
+    const term = terms[index] || '';
+    if (!term) continue;
+    phrase = phrase ? `${phrase} ${term}` : term;
+  }
+  return phrase;
+}
+
 function extractCurrentStateSpecificPhrases(query: string): string[] {
-  const parts = normalizeSearchText(query)
-    .split(/\s+/)
-    .filter((part) => part.length >= 3);
-  const next: string[] = [];
+  const terms = collectCurrentStateSpecificPhraseTerms(query);
+  const phrases: string[] = [];
   const seen = new Set<string>();
 
   for (let size = 4; size >= 3; size -= 1) {
-    for (let index = 0; index + size <= parts.length; index += 1) {
-      const phrase = parts.slice(index, index + size).join(' ');
+    for (let index = 0; index + size <= terms.length; index += 1) {
+      const phrase = currentStatePhraseFromTerms(terms, index, size);
       if (phrase.length < 16 || seen.has(phrase)) continue;
       seen.add(phrase);
-      next.push(phrase);
+      phrases.push(phrase);
     }
   }
 
-  return next;
+  return phrases;
 }
 
 function hasStrongCurrentStateProjectEvidence(params: {
@@ -140,12 +210,12 @@ function hasStrongCurrentStateProjectEvidence(params: {
 
   const normalizedText = normalizeSearchText(params.text);
   const specificSignals = extractCurrentStateSpecificSignals(params.query);
-  if (specificSignals.some((signal) => normalizedText.includes(signal))) {
+  if (haystackContainsAnyTerm(normalizedText, specificSignals)) {
     return true;
   }
 
   const specificPhrases = extractCurrentStateSpecificPhrases(params.query);
-  return specificPhrases.some((phrase) => normalizedText.includes(phrase));
+  return haystackContainsAnyTerm(normalizedText, specificPhrases);
 }
 
 function shouldSuppressWeakCurrentStateProjectDurableMatch(
@@ -303,7 +373,9 @@ function hasStrongAgingProjectEvidence(
   tool: number,
 ): boolean {
   if (file > 0 || tool > 0) return true;
-  if (matchedTerms.some((term) => /\d/.test(term) || term.length >= 8)) return true;
+  for (const term of matchedTerms) {
+    if (/\d/.test(term) || term.length >= 8) return true;
+  }
   if (phrase > 0 && queryTerms.length >= 2) return true;
   if (matchedTerms.length >= 3) return true;
   return false;
@@ -318,12 +390,20 @@ function hasStrongAgingReferenceEvidence(
 ): boolean {
   if (file > 0 || tool > 0) return true;
 
-  const specificMatchedTerms = matchedTerms.filter((term) => !LOW_SIGNAL_REFERENCE_TERMS.has(term));
-  if (specificMatchedTerms.some((term) => /\d/.test(term) || term.length >= 8)) return true;
-  if (specificMatchedTerms.length >= 2) return true;
-  if (specificMatchedTerms.length >= 1 && matchedTerms.length >= 2) return true;
+  let specificMatchedTermCount = 0;
+  let hasSpecificDigitOrLongTerm = false;
+  for (const term of matchedTerms) {
+    if (LOW_SIGNAL_REFERENCE_TERMS.has(term)) continue;
+    specificMatchedTermCount++;
+    if (/\d/.test(term) || term.length >= 8) {
+      hasSpecificDigitOrLongTerm = true;
+    }
+  }
+  if (hasSpecificDigitOrLongTerm) return true;
+  if (specificMatchedTermCount >= 2) return true;
+  if (specificMatchedTermCount >= 1 && matchedTerms.length >= 2) return true;
   if (phrase > 0 && queryTerms.length >= 2) return true;
-  if (phrase > 0 && specificMatchedTerms.length > 0) return true;
+  if (phrase > 0 && specificMatchedTermCount > 0) return true;
   return false;
 }
 
@@ -336,7 +416,10 @@ function shouldSuppressWeakReferenceMatch(
 ): boolean {
   if (file > 0 || tool > 0) return false;
   if (matchedTerms.length === 0) return false;
-  return matchedTerms.every((term) => LOW_SIGNAL_REFERENCE_TERMS.has(term));
+  for (const term of matchedTerms) {
+    if (!LOW_SIGNAL_REFERENCE_TERMS.has(term)) return false;
+  }
+  return true;
 }
 
 function recordLooksLikeReferencePointer(record: MemoryRecord): boolean {
@@ -488,10 +571,68 @@ function freshnessPenalty(staleness: MemoryRecordStaleness): number {
   return 0;
 }
 
+function haystackContainsAnyTerm(haystack: string, terms: readonly string[]): boolean {
+  if (!haystack || terms.length === 0) return false;
+  for (const term of terms) {
+    if (term && haystack.includes(term)) return true;
+  }
+  return false;
+}
+
 function contradictionPenalty(record: MemoryRecord, queryTerms: string[]): number {
   if (!record.invalidatesIds || record.invalidatesIds.length === 0) return 0;
-  if (!queryTerms.some((term) => normalizeSearchText(record.text).includes(term))) return 0;
+  if (!haystackContainsAnyTerm(normalizeSearchText(record.text), queryTerms)) return 0;
   return 0.25;
+}
+
+function appendDelimitedSearchText(text: string, value: unknown, delimiter: string): string {
+  const part = String(value || '');
+  if (!part) return text;
+  return text ? `${text}${delimiter}${part}` : part;
+}
+
+function appendDelimitedSearchValues(
+  text: string,
+  values: Iterable<unknown> | undefined,
+  delimiter: string,
+): string {
+  let next = text;
+  if (!values) return next;
+  for (const value of values) {
+    next = appendDelimitedSearchText(next, value, delimiter);
+  }
+  return next;
+}
+
+function appendBasenameSearchValues(
+  text: string,
+  values: Iterable<unknown> | undefined,
+  delimiter: string,
+): string {
+  let next = text;
+  if (!values) return next;
+  for (const value of values) {
+    next = appendDelimitedSearchText(next, path.basename(String(value || '')), delimiter);
+  }
+  return next;
+}
+
+function memoryRecordSearchHaystack(record: MemoryRecord): string {
+  let text = '';
+  text = appendDelimitedSearchText(text, record.title, ' ');
+  text = appendDelimitedSearchText(text, record.text, ' ');
+  text = appendDelimitedSearchValues(text, record.filesTouched, ' ');
+  text = appendDelimitedSearchValues(text, record.toolsUsed, ' ');
+  text = appendDelimitedSearchValues(text, record.sourceTurnIds, ' ');
+  return normalizeSearchText(text);
+}
+
+function basenameSearchHaystack(values: Iterable<unknown> | undefined): string {
+  return normalizeSearchText(appendBasenameSearchValues('', values, ' '));
+}
+
+function valueSearchHaystack(values: Iterable<unknown> | undefined): string {
+  return normalizeSearchText(appendDelimitedSearchValues('', values, ' '));
 }
 
 function scoreMemoryRecord(
@@ -504,19 +645,15 @@ function scoreMemoryRecord(
   if (queryTerms.length === 0) return undefined;
   if (record.staleness === 'invalidated') return undefined;
 
-  const haystack = normalizeSearchText(
-    [record.title, record.text, ...record.filesTouched, ...record.toolsUsed, ...(record.sourceTurnIds || [])]
-      .filter(Boolean)
-      .join(' '),
-  );
+  const haystack = memoryRecordSearchHaystack(record);
   if (!haystack) return undefined;
 
-  const fileHaystack = normalizeSearchText(record.filesTouched.map((file) => path.basename(file)).join(' '));
-  const toolHaystack = normalizeSearchText(record.toolsUsed.join(' '));
+  const fileHaystack = basenameSearchHaystack(record.filesTouched);
+  const toolHaystack = valueSearchHaystack(record.toolsUsed);
   const lexical = lexicalScore(haystack, queryTerms);
   const phrase = phraseBoostText(record.text, normalizedQuery);
-  const file = lexical.matchedTerms.some((term) => fileHaystack.includes(term)) ? 1.8 : 0;
-  const tool = lexical.matchedTerms.some((term) => toolHaystack.includes(term)) ? 1.2 : 0;
+  const file = haystackContainsAnyTerm(fileHaystack, lexical.matchedTerms) ? 1.8 : 0;
+  const tool = haystackContainsAnyTerm(toolHaystack, lexical.matchedTerms) ? 1.2 : 0;
   const recency = recencyScore(record.lastConfirmedAt, now);
   const confidence = confidenceScore(record.confidence);
   const evidence = evidenceScore(record.evidenceCount || 1);
@@ -553,36 +690,40 @@ function scoreMemoryRecord(
 
 function durableSearchText(entry: ConsolidatedMemoryEntry): string {
   const fields = renderMemoryFields(entry);
-  return [
-    fields.guidance,
-    fields.why ? `Why: ${fields.why}` : '',
-    shouldSurfaceSelectiveHowToApply(entry, fields) ? `How to apply: ${fields.howToApply}` : '',
-  ]
-    .filter(Boolean)
-    .join('\n');
+  let text = '';
+  text = appendDelimitedSearchText(text, fields.guidance, '\n');
+  if (fields.why) {
+    text = appendDelimitedSearchText(text, `Why: ${fields.why}`, '\n');
+  }
+  if (shouldSurfaceSelectiveHowToApply(entry, fields)) {
+    text = appendDelimitedSearchText(text, `How to apply: ${fields.howToApply}`, '\n');
+  }
+  return text;
 }
 
 function durableScoringText(entry: ConsolidatedMemoryEntry): string {
   const fields = renderMemoryFields(entry);
-  return [fields.guidance, fields.why, fields.howToApplySource === 'explicit' ? fields.howToApply : '']
-    .filter(Boolean)
-    .join('\n');
+  let text = '';
+  text = appendDelimitedSearchText(text, fields.guidance, '\n');
+  text = appendDelimitedSearchText(text, fields.why, '\n');
+  if (fields.howToApplySource === 'explicit') {
+    text = appendDelimitedSearchText(text, fields.howToApply, '\n');
+  }
+  return text;
 }
 
 function durableSearchHaystack(entry: ConsolidatedMemoryEntry): string {
   const fields = renderMemoryFields(entry);
-  return normalizeSearchText(
-    [
-      fields.guidance,
-      fields.why,
-      fields.howToApplySource === 'explicit' ? fields.howToApply : '',
-      ...entry.titles,
-      ...entry.filesTouched,
-      ...entry.toolsUsed,
-    ]
-      .filter(Boolean)
-      .join(' '),
-  );
+  let text = '';
+  text = appendDelimitedSearchText(text, fields.guidance, ' ');
+  text = appendDelimitedSearchText(text, fields.why, ' ');
+  if (fields.howToApplySource === 'explicit') {
+    text = appendDelimitedSearchText(text, fields.howToApply, ' ');
+  }
+  text = appendDelimitedSearchValues(text, entry.titles, ' ');
+  text = appendDelimitedSearchValues(text, entry.filesTouched, ' ');
+  text = appendDelimitedSearchValues(text, entry.toolsUsed, ' ');
+  return normalizeSearchText(text);
 }
 
 function durableIntentFieldBoost(entry: ConsolidatedMemoryEntry, query: string, queryTerms: string[]): number {
@@ -618,12 +759,12 @@ function scoreDurableEntry(
   const haystack = durableSearchHaystack(entry);
   if (!haystack) return undefined;
 
-  const fileHaystack = normalizeSearchText(entry.filesTouched.map((file) => path.basename(file)).join(' '));
-  const toolHaystack = normalizeSearchText(entry.toolsUsed.join(' '));
+  const fileHaystack = basenameSearchHaystack(entry.filesTouched);
+  const toolHaystack = valueSearchHaystack(entry.toolsUsed);
   const lexical = lexicalScore(haystack, queryTerms);
   const phrase = durablePhraseBoost(searchableText, normalizedQuery, queryTerms, lexical.matchedTerms);
-  const file = lexical.matchedTerms.some((term) => fileHaystack.includes(term)) ? 1.6 : 0;
-  const tool = lexical.matchedTerms.some((term) => toolHaystack.includes(term)) ? 1 : 0;
+  const file = haystackContainsAnyTerm(fileHaystack, lexical.matchedTerms) ? 1.6 : 0;
+  const tool = haystackContainsAnyTerm(toolHaystack, lexical.matchedTerms) ? 1 : 0;
   const intentField = durableIntentFieldBoost(entry, query, queryTerms);
   const currentStatePointer = currentStateReferencePointerBoost(
     entry,
@@ -677,6 +818,31 @@ function supportRecordFallbackScore(record: MemoryRecord, now: number): number {
   return typeWeight + recencyScore(record.lastConfirmedAt, now) + confidenceScore(record.confidence) + evidenceScore(record.evidenceCount || 1);
 }
 
+function compareSupportRecords(
+  a: MemoryRecord,
+  b: MemoryRecord,
+  entry: ConsolidatedMemoryEntry,
+  usingSameSessionFallback: boolean,
+  query: string,
+  queryTerms: string[],
+  normalizedQuery: string,
+  now: number,
+): number {
+  const aSummaryPenalty = usingSameSessionFallback && a.signalKind === 'summary' ? 1 : 0;
+  const bSummaryPenalty = usingSameSessionFallback && b.signalKind === 'summary' ? 1 : 0;
+  const aReferenceNovelty = referenceEvidenceNoveltyCount(a, entry);
+  const bReferenceNovelty = referenceEvidenceNoveltyCount(b, entry);
+  const aScore = scoreMemoryRecord(a, query, queryTerms, normalizedQuery, now)?.score ?? supportRecordFallbackScore(a, now);
+  const bScore = scoreMemoryRecord(b, query, queryTerms, normalizedQuery, now)?.score ?? supportRecordFallbackScore(b, now);
+  return (
+    aSummaryPenalty - bSummaryPenalty ||
+    aReferenceNovelty - bReferenceNovelty ||
+    bScore - aScore ||
+    b.lastConfirmedAt - a.lastConfirmedAt ||
+    a.index - b.index
+  );
+}
+
 function selectSupportRecord(
   entry: ConsolidatedMemoryEntry,
   records: MemoryRecord[],
@@ -685,31 +851,31 @@ function selectSupportRecord(
   normalizedQuery: string,
   now: number,
 ): MemoryRecord | undefined {
-  const direct = records.filter(
-    (record) => String(record.memoryKey || '').trim() === entry.key && record.staleness !== 'invalidated',
-  );
-  const sameSession = records.filter(
-    (record) => entry.sessionIds.includes(record.sessionId) && record.staleness !== 'invalidated',
-  );
-  const usingSameSessionFallback = direct.length === 0;
-  const candidates = usingSameSessionFallback ? [...new Map(sameSession.map((record) => [record.id, record])).values()] : direct;
-  if (candidates.length === 0) return undefined;
+  let directBest: MemoryRecord | undefined;
+  const sameSessionCandidates = new Map<string, MemoryRecord>();
 
-  return [...candidates].sort((a, b) => {
-    const aSummaryPenalty = usingSameSessionFallback && a.signalKind === 'summary' ? 1 : 0;
-    const bSummaryPenalty = usingSameSessionFallback && b.signalKind === 'summary' ? 1 : 0;
-    const aReferenceNovelty = referenceEvidenceNoveltyCount(a, entry);
-    const bReferenceNovelty = referenceEvidenceNoveltyCount(b, entry);
-    const aScore = scoreMemoryRecord(a, query, queryTerms, normalizedQuery, now)?.score ?? supportRecordFallbackScore(a, now);
-    const bScore = scoreMemoryRecord(b, query, queryTerms, normalizedQuery, now)?.score ?? supportRecordFallbackScore(b, now);
-    return (
-      aSummaryPenalty - bSummaryPenalty ||
-      aReferenceNovelty - bReferenceNovelty ||
-      bScore - aScore ||
-      b.lastConfirmedAt - a.lastConfirmedAt ||
-      a.index - b.index
-    );
-  })[0];
+  for (const record of records) {
+    if (record.staleness === 'invalidated') continue;
+    if (String(record.memoryKey || '').trim() === entry.key) {
+      if (!directBest || compareSupportRecords(record, directBest, entry, false, query, queryTerms, normalizedQuery, now) < 0) {
+        directBest = record;
+      }
+      continue;
+    }
+    if (entry.sessionIds.includes(record.sessionId)) {
+      sameSessionCandidates.set(record.id, record);
+    }
+  }
+
+  if (directBest) return directBest;
+
+  let sameSessionBest: MemoryRecord | undefined;
+  for (const record of sameSessionCandidates.values()) {
+    if (!sameSessionBest || compareSupportRecords(record, sameSessionBest, entry, true, query, queryTerms, normalizedQuery, now) < 0) {
+      sameSessionBest = record;
+    }
+  }
+  return sameSessionBest;
 }
 
 function defaultPerKindLimit(limit: number): number {
@@ -746,18 +912,51 @@ function extractReferenceEvidenceTokens(text: string): string[] {
 }
 
 function durableSupportEvidenceText(entry: ConsolidatedMemoryEntry): string {
-  return entry.category === 'reference' ? `${durableSearchText(entry)}\n${entry.rolloutFiles.join('\n')}` : durableSearchText(entry);
+  const text = durableSearchText(entry);
+  if (entry.category !== 'reference') return text;
+  return appendDelimitedSearchValues(text, entry.rolloutFiles, '\n');
 }
 
 function referenceEvidenceNoveltyCount(record: MemoryRecord, durableEntry: ConsolidatedMemoryEntry): number {
   if (durableEntry.category !== 'reference') return 0;
   const durableTokens = new Set(extractReferenceEvidenceTokens(durableSupportEvidenceText(durableEntry)));
   const rawTokens = extractReferenceEvidenceTokens(record.text);
-  return rawTokens.filter((token) => !durableTokens.has(token)).length;
+  let noveltyCount = 0;
+  for (const token of rawTokens) {
+    if (!durableTokens.has(token)) noveltyCount++;
+  }
+  return noveltyCount;
 }
 
 function rawRecordAddsDistinctReferenceEvidence(record: MemoryRecord, durableEntry: ConsolidatedMemoryEntry): boolean {
   return referenceEvidenceNoveltyCount(record, durableEntry) > 0;
+}
+
+function collectLowercaseTermSet(values: Iterable<unknown> | undefined): Set<string> {
+  const terms = new Set<string>();
+  if (!values) return terms;
+  for (const value of values) {
+    terms.add(String(value || '').toLowerCase());
+  }
+  return terms;
+}
+
+function collectNormalizedSupportSet(values: Iterable<unknown> | undefined): Set<string> {
+  const support = new Set<string>();
+  if (!values) return support;
+  for (const value of values) {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (normalized) support.add(normalized);
+  }
+  return support;
+}
+
+function hasDistinctNormalizedSupport(values: Iterable<unknown>, existing: Set<string>): boolean {
+  for (const value of values) {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (normalized && !existing.has(normalized)) return true;
+  }
+  return false;
 }
 
 function rawRecordSupportsDurableReference(
@@ -768,34 +967,36 @@ function rawRecordSupportsDurableReference(
   if (!durableHit.durableEntry || durableHit.durableEntry.category !== 'reference') return false;
   if (!rawRecordAddsDistinctReferenceEvidence(record, durableHit.durableEntry)) return false;
 
-  const durableMatchedTerms = new Set((durableHit.matchedTerms || []).map((term) => String(term || '').toLowerCase()));
-  return matchedTerms.some((term) => {
+  const durableMatchedTerms = collectLowercaseTermSet(durableHit.matchedTerms);
+  for (const term of matchedTerms) {
     const normalized = String(term || '').toLowerCase();
-    return durableMatchedTerms.has(normalized) && !LOW_SIGNAL_REFERENCE_TERMS.has(normalized);
-  });
+    if (durableMatchedTerms.has(normalized) && !LOW_SIGNAL_REFERENCE_TERMS.has(normalized)) return true;
+  }
+  return false;
+}
+
+function findSelectedDurableReferenceSupport(
+  hits: readonly MemorySearchHit[],
+  record: MemoryRecord,
+  matchedTerms: string[],
+): MemorySearchHit | undefined {
+  for (const hit of hits) {
+    if (rawRecordSupportsDurableReference(record, hit, matchedTerms)) return hit;
+  }
+  return undefined;
 }
 
 function summaryRecordAddsDistinctSupport(
   record: MemoryRecord,
   durableEntry: ConsolidatedMemoryEntry,
 ): boolean {
-  const durableFiles = new Set((durableEntry.filesTouched || []).map((value) => String(value || '').trim().toLowerCase()).filter(Boolean));
-  if (
-    record.filesTouched.some((value) => {
-      const normalized = String(value || '').trim().toLowerCase();
-      return normalized && !durableFiles.has(normalized);
-    })
-  ) {
+  const durableFiles = collectNormalizedSupportSet(durableEntry.filesTouched);
+  if (hasDistinctNormalizedSupport(record.filesTouched, durableFiles)) {
     return true;
   }
 
-  const durableTools = new Set((durableEntry.toolsUsed || []).map((value) => String(value || '').trim().toLowerCase()).filter(Boolean));
-  if (
-    record.toolsUsed.some((value) => {
-      const normalized = String(value || '').trim().toLowerCase();
-      return normalized && !durableTools.has(normalized);
-    })
-  ) {
+  const durableTools = collectNormalizedSupportSet(durableEntry.toolsUsed);
+  if (hasDistinctNormalizedSupport(record.toolsUsed, durableTools)) {
     return true;
   }
 
@@ -819,29 +1020,20 @@ function summaryRecordIsRedundantToDurable(
 }
 
 function summaryRecordAddsDistinctRawSupport(summaryRecord: MemoryRecord, otherRecord: MemoryRecord): boolean {
-  const otherFiles = new Set((otherRecord.filesTouched || []).map((value) => String(value || '').trim().toLowerCase()).filter(Boolean));
-  if (
-    summaryRecord.filesTouched.some((value) => {
-      const normalized = String(value || '').trim().toLowerCase();
-      return normalized && !otherFiles.has(normalized);
-    })
-  ) {
+  const otherFiles = collectNormalizedSupportSet(otherRecord.filesTouched);
+  if (hasDistinctNormalizedSupport(summaryRecord.filesTouched, otherFiles)) {
     return true;
   }
 
-  const otherTools = new Set((otherRecord.toolsUsed || []).map((value) => String(value || '').trim().toLowerCase()).filter(Boolean));
-  if (
-    summaryRecord.toolsUsed.some((value) => {
-      const normalized = String(value || '').trim().toLowerCase();
-      return normalized && !otherTools.has(normalized);
-    })
-  ) {
+  const otherTools = collectNormalizedSupportSet(otherRecord.toolsUsed);
+  if (hasDistinctNormalizedSupport(summaryRecord.toolsUsed, otherTools)) {
     return true;
   }
 
   const otherReferenceTokens = new Set(extractReferenceEvidenceTokens(otherRecord.text));
-  if (extractReferenceEvidenceTokens(summaryRecord.text).some((token) => !otherReferenceTokens.has(token))) {
-    return true;
+  const summaryReferenceTokens = extractReferenceEvidenceTokens(summaryRecord.text);
+  for (const token of summaryReferenceTokens) {
+    if (!otherReferenceTokens.has(token)) return true;
   }
 
   return false;
@@ -881,45 +1073,80 @@ export function searchMemoryRecords(params: {
   }
 
   const now = params.now ?? Date.now();
-  const workspaceRecords = params.records.filter((record) => record.workspaceId === params.workspaceId);
-  const rawCandidates = workspaceRecords.filter((record) => {
-    if (params.kind && record.kind !== params.kind) return false;
-    if (params.scope && record.scope !== params.scope) return false;
-    if (record.staleness === 'invalidated') return false;
-    return true;
-  });
+  const workspaceRecords: MemoryRecord[] = [];
+  const workspaceRecordMap = new Map<string, MemoryRecord>();
+  const rawMatches: MemoryRecordScore[] = [];
+  for (const record of params.records) {
+    if (record.workspaceId !== params.workspaceId) continue;
+    workspaceRecords.push(record);
+    workspaceRecordMap.set(record.id, record);
+    if (params.kind && record.kind !== params.kind) continue;
+    if (params.scope && record.scope !== params.scope) continue;
+    if (record.staleness === 'invalidated') continue;
+    const score = scoreMemoryRecord(record, query, terms, normalizedQuery, now);
+    if (score) rawMatches.push(score);
+  }
 
-  const rawMatches = rawCandidates
-    .map((record) => scoreMemoryRecord(record, query, terms, normalizedQuery, now))
-    .filter((score): score is MemoryRecordScore => !!score);
-
-  const durableMatches = params.kind
-    ? []
-    : (params.durableEntries || [])
-        .filter((entry) => !params.scope || entry.scope === params.scope)
-        .map((entry) => scoreDurableEntry(entry, query, terms, normalizedQuery, now))
-        .filter((score): score is DurableEntryScore => !!score);
-
-  const filteredRawMatches = rawMatches.filter((candidate) => {
-    if (candidate.record.signalKind !== 'summary') return true;
-    if (durableMatches.some((durableCandidate) => summaryRecordIsRedundantToDurable(candidate.record, durableCandidate))) {
-      return false;
+  const durableMatches: DurableEntryScore[] = [];
+  if (!params.kind) {
+    for (const entry of params.durableEntries || []) {
+      if (params.scope && entry.scope !== params.scope) continue;
+      const score = scoreDurableEntry(entry, query, terms, normalizedQuery, now);
+      if (score) durableMatches.push(score);
     }
-    return !rawMatches.some((otherCandidate) => summaryRecordIsRedundantToRaw(candidate, otherCandidate));
-  });
+  }
+
+  const filteredRawMatches: MemoryRecordScore[] = [];
+  for (const candidate of rawMatches) {
+    if (candidate.record.signalKind !== 'summary') {
+      filteredRawMatches.push(candidate);
+      continue;
+    }
+    let isRedundantToDurable = false;
+    for (const durableCandidate of durableMatches) {
+      if (summaryRecordIsRedundantToDurable(candidate.record, durableCandidate)) {
+        isRedundantToDurable = true;
+        break;
+      }
+    }
+    if (isRedundantToDurable) {
+      continue;
+    }
+    let isRedundantToRaw = false;
+    for (const otherCandidate of rawMatches) {
+      if (summaryRecordIsRedundantToRaw(candidate, otherCandidate)) {
+        isRedundantToRaw = true;
+        break;
+      }
+    }
+    if (isRedundantToRaw) {
+      continue;
+    }
+    filteredRawMatches.push(candidate);
+  }
 
   const isCurrentStateQuery = queryLooksLikeCurrentStateIntent(query);
   const preferDurableFirst = params.preferDurableFirst === true && durableMatches.length > 0;
+  let hasDurableReferencePointer = false;
+  for (const candidate of durableMatches) {
+    if (candidate.entry.category === 'reference') {
+      hasDurableReferencePointer = true;
+      break;
+    }
+  }
   const preferCurrentStateDurablePointerFirst = shouldPreferCurrentStateDurablePointerFirst({
     query,
-    hasDurableReferencePointer: durableMatches.some((candidate) => candidate.entry.category === 'reference'),
+    hasDurableReferencePointer,
   });
 
-
-  const combined = [
-    ...durableMatches.map((candidate) => ({ type: 'durable' as const, candidate })),
-    ...filteredRawMatches.map((candidate) => ({ type: 'record' as const, candidate })),
-  ].sort((a, b) => {
+  const combined: SearchCandidate[] = [];
+  for (const candidate of durableMatches) {
+    combined.push({ type: 'durable', candidate });
+  }
+  for (const candidate of filteredRawMatches) {
+    combined.push({ type: 'record', candidate });
+  }
+  combined.sort((a, b) => {
     if (a.type !== b.type) {
       const durableCandidate = a.type === 'durable' ? a.candidate : b.type === 'durable' ? b.candidate : undefined;
       const rawCandidate = a.type === 'record' ? a.candidate : b.type === 'record' ? b.candidate : undefined;
@@ -963,10 +1190,10 @@ export function searchMemoryRecords(params: {
   const selected: MemorySearchHit[] = [];
   const visitedRecordIds = new Set<string>();
   const visitedDurableKeys = new Set<string>();
-  const coveredDurableKeys = new Set<string>();
+  const selectedDurableByKey = new Map<string, MemorySearchHit>();
+  const selectedDurableReferenceHits: MemorySearchHit[] = [];
   const seenSessionTurn = new Set<string>();
   const kindCounts = new Map<MemoryRecordKind, number>();
-  const workspaceRecordMap = new Map(workspaceRecords.map((record) => [record.id, record]));
   const maxResultsPerKind = Math.max(1, params.maxResultsPerKind ?? defaultPerKindLimit(params.limit));
   let totalTokens = 0;
   let matchCount = 0;
@@ -994,8 +1221,8 @@ export function searchMemoryRecords(params: {
     const coveredDurableHit =
       reason === 'match'
         ? durableKey
-          ? selected.find((hit) => hit.source === 'durable' && hit.durableEntry?.key === durableKey)
-          : selected.find((hit) => hit.source === 'durable' && rawRecordSupportsDurableReference(record, hit, matchedTerms))
+          ? selectedDurableByKey.get(durableKey)
+          : findSelectedDurableReferenceSupport(selectedDurableReferenceHits, record, matchedTerms)
         : undefined;
     if (
       coveredDurableHit &&
@@ -1028,10 +1255,9 @@ export function searchMemoryRecords(params: {
     if (!canAddText(durableText)) return;
 
     visitedDurableKeys.add(candidate.entry.key);
-    coveredDurableKeys.add(candidate.entry.key);
     visitedRecordIds.add(supportRecord.id);
     matchCount += 1;
-    addHit({
+    const hit: MemorySearchHit = {
       record: supportRecord,
       source: 'durable',
       durableEntry: candidate.entry,
@@ -1039,7 +1265,12 @@ export function searchMemoryRecords(params: {
       score: candidate.score,
       matchedTerms: candidate.matchedTerms,
       scoreBreakdown: candidate.breakdown,
-    });
+    };
+    selectedDurableByKey.set(candidate.entry.key, hit);
+    if (candidate.entry.category === 'reference') {
+      selectedDurableReferenceHits.push(hit);
+    }
+    addHit(hit);
   };
 
   for (const item of combined) {

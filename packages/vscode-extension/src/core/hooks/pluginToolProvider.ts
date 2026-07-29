@@ -99,7 +99,11 @@ export class PluginToolProvider implements ToolProvider {
   }
 
   getTools(): ToolDefinition[] {
-    return Array.from(this.tools.values()).map(t => t.definition);
+    const definitions: ToolDefinition[] = [];
+    for (const tool of this.tools.values()) {
+      definitions.push(tool.definition);
+    }
+    return definitions;
   }
 
   async executeTool(

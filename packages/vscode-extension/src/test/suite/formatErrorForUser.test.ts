@@ -1,4 +1,6 @@
 import * as assert from 'assert';
+import * as fs from 'fs';
+import * as path from 'path';
 
 import { formatErrorForUser } from '../../ui/chat/utils';
 
@@ -77,5 +79,31 @@ suite('formatErrorForUser', () => {
     assert.ok(!message.includes('sk-test-secret'));
     assert.ok(!message.includes('10.0.0.2'));
     assert.ok(!message.includes('abc123'));
+  });
+
+  test('formats metadata and diagnostics without filter arrays', () => {
+    const err: any = new Error('invalid parameter');
+    err.name = 'ProviderValidationError';
+    err.code = 'invalid_request';
+    err.param = 'temperature';
+    err.cause = 'temperature too high';
+
+    const message = formatErrorForUser(err, { llmProviderId: 'openaiCompatible' });
+
+    assert.ok(message.includes('ProviderValidationError | invalid_request | temperature too high'));
+    assert.ok(message.includes('Diagnostics: code=invalid_request param=temperature'));
+
+    const source = fs.readFileSync(path.join(__dirname, '../../../src/ui/chat/utils.ts'), 'utf8');
+    const diagnosticsStart = source.indexOf('function getProviderDiagnosticsForUser');
+    assert.ok(diagnosticsStart >= 0, 'expected provider diagnostics formatter');
+    const formatStart = source.indexOf('export function formatErrorForUser', diagnosticsStart);
+    assert.ok(formatStart > diagnosticsStart, 'expected user-facing error formatter after diagnostics formatter');
+    const formatEnd = source.indexOf('\nexport function isCancellationMessage', formatStart);
+    assert.ok(formatEnd > formatStart, 'expected cancellation helper after user-facing error formatter');
+    const section = source.slice(diagnosticsStart, formatEnd);
+
+    assert.match(section, /const parts: string\[\] = \[\];/);
+    assert.match(section, /let meta = '';/);
+    assert.doesNotMatch(section, /\.filter\(Boolean\)/);
   });
 });

@@ -33,6 +33,11 @@ import { ChatViewProvider } from './ui/chat';
 import { LingyunDiffContentProvider, LINGYUN_DIFF_SCHEME } from './ui/chat/diffContentProvider';
 import { requestApproval } from './ui/approval';
 
+export const CHAT_WEBVIEW_VIEW_PROVIDER_OPTIONS:
+  NonNullable<Parameters<typeof vscode.window.registerWebviewViewProvider>[2]> = {
+    webviewOptions: { retainContextWhenHidden: false },
+  };
+
 class ExtensionState implements vscode.Disposable {
   context: vscode.ExtensionContext | undefined;
   llmProvider: LLMProvider | undefined;
@@ -87,6 +92,7 @@ class ExtensionState implements vscode.Disposable {
 }
 
 let extensionState: ExtensionState | undefined;
+let llmInitializationRevision = 0;
 
 export function createAgentConfig(): AgentConfig {
   const temperatureRaw = getConfig<unknown>('temperature');
@@ -145,7 +151,7 @@ export function createAgentConfig(): AgentConfig {
       : typeof retryWithPartialOutputRaw === 'string'
         ? retryWithPartialOutputRaw.toLowerCase() === 'true'
         : undefined;
-  const retryWithPartialOutput = typeof retryWithPartialOutputParsed === 'boolean' ? retryWithPartialOutputParsed : undefined;
+  const retryWithPartialOutput = typeof retryWithPartialOutputParsed === 'boolean' ? retryWithPartialOutputParsed : true;
   const maxOutputTokensRaw = getConfig<unknown>('maxOutputTokens');
   const maxOutputTokensParsed =
     typeof maxOutputTokensRaw === 'number'
@@ -248,17 +254,25 @@ function createLLMProviderFromConfig(context: vscode.ExtensionContext): LLMProvi
   return new CopilotProvider({ timeoutMs, outputChannel: extensionState?.outputChannel });
 }
 
-async function initializeLLMAndAgent(context: vscode.ExtensionContext): Promise<void> {
-  if (!extensionState) {
+async function initializeLLMAndAgent(context: vscode.ExtensionContext): Promise<boolean> {
+  const state = extensionState;
+  if (!state) {
     throw new Error('Extension not activated');
   }
 
-  extensionState.llmProvider?.dispose?.();
-  extensionState.llmProvider = createLLMProviderFromConfig(context);
-  extensionState.agent = createAgent(extensionState.llmProvider, context, createAgentConfig(), extensionState.plugins);
-  extensionState.chatProvider?.controller.sessionApi.setBackend(
-    extensionState.agent,
-    extensionState.llmProvider
+  const revision = ++llmInitializationRevision;
+  state.llmProvider?.dispose?.();
+  const llmProvider = createLLMProviderFromConfig(context);
+  const agent = createAgent(llmProvider, context, createAgentConfig(), state.plugins);
+  state.llmProvider = llmProvider;
+  state.agent = agent;
+  await state.chatProvider?.controller.sessionApi.setBackend(agent, llmProvider);
+
+  return (
+    extensionState === state
+    && llmInitializationRevision === revision
+    && state.llmProvider === llmProvider
+    && state.agent === agent
   );
 }
 
@@ -422,7 +436,7 @@ export async function activate(
     vscode.window.registerWebviewViewProvider(
       ChatViewProvider.viewType,
       extensionState.chatProvider,
-      { webviewOptions: { retainContextWhenHidden: true } }
+      CHAT_WEBVIEW_VIEW_PROVIDER_OPTIONS
     )
   );
 
@@ -460,7 +474,8 @@ export async function activate(
         const settingsStateChanged = shouldRefreshChatSettingsStateForConfigChange(e);
 
         if (providerChanged) {
-          initializeLLMAndAgent(context).then(() => {
+          initializeLLMAndAgent(context).then((isCurrent) => {
+            if (!isCurrent) return;
             extensionState?.chatProvider?.controller.webviewApi.refreshSettingsState().catch((err: unknown) => {
               log(`Failed to refresh chat settings after provider update: ${err instanceof Error ? err.message : String(err)}`);
             });

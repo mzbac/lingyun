@@ -87,6 +87,14 @@ function trimHandleMap<T>(map: Map<string, T>, max: number): void {
   }
 }
 
+function exportHandleMap<T>(map: Map<string, T>): Record<string, T> {
+  const out: Record<string, T> = {};
+  for (const [id, value] of map) {
+    out[id] = value;
+  }
+  return out;
+}
+
 function looksLikeSemanticHandlesState(raw: Record<string, unknown>): boolean {
   return (
     'nextMatchId' in raw ||
@@ -130,9 +138,9 @@ export class SemanticHandleRegistry {
       nextMatchId: this.nextMatchId,
       nextSymbolId: this.nextSymbolId,
       nextLocId: this.nextLocId,
-      matches: Object.fromEntries(this.matches.entries()),
-      symbols: Object.fromEntries(this.symbols.entries()),
-      locations: Object.fromEntries(this.locations.entries()),
+      matches: exportHandleMap(this.matches),
+      symbols: exportHandleMap(this.symbols),
+      locations: exportHandleMap(this.locations),
     };
   }
 
@@ -156,7 +164,9 @@ export class SemanticHandleRegistry {
 
     const matchesRaw = asRecord(rawRecord.matches);
     if (matchesRaw) {
-      for (const [id, value] of Object.entries(matchesRaw)) {
+      for (const id in matchesRaw) {
+        if (!Object.prototype.hasOwnProperty.call(matchesRaw, id)) continue;
+        const value = matchesRaw[id];
         if (typeof id !== 'string' || !/^M\d+$/.test(id)) continue;
         const valueRecord = asRecord(value);
         if (!valueRecord) continue;
@@ -171,7 +181,9 @@ export class SemanticHandleRegistry {
 
     const symbolsRaw = asRecord(rawRecord.symbols);
     if (symbolsRaw) {
-      for (const [id, value] of Object.entries(symbolsRaw)) {
+      for (const id in symbolsRaw) {
+        if (!Object.prototype.hasOwnProperty.call(symbolsRaw, id)) continue;
+        const value = symbolsRaw[id];
         if (typeof id !== 'string' || !/^S\d+$/.test(id)) continue;
         const valueRecord = asRecord(value);
         if (!valueRecord) continue;
@@ -190,7 +202,9 @@ export class SemanticHandleRegistry {
 
     const locationsRaw = asRecord(rawRecord.locations);
     if (locationsRaw) {
-      for (const [id, value] of Object.entries(locationsRaw)) {
+      for (const id in locationsRaw) {
+        if (!Object.prototype.hasOwnProperty.call(locationsRaw, id)) continue;
+        const value = locationsRaw[id];
         if (typeof id !== 'string' || !/^L\d+$/.test(id)) continue;
         const valueRecord = asRecord(value);
         if (!valueRecord) continue;
@@ -428,4 +442,3 @@ export class SemanticHandleRegistry {
     };
   }
 }
-

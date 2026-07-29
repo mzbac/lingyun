@@ -11,6 +11,7 @@ import type { ToolCall, ToolDefinition, ToolResult, AgentCallbacks, AgentConfig,
 import {
   createHistoryForModel,
   createUserHistoryMessage,
+  createToolFilterMatcher,
   extractSkillMentions,
   getSkillIndex,
   getEffectiveHistory,
@@ -78,6 +79,13 @@ function getLastAssistantTokens(
     }
   }
   return undefined;
+}
+
+function appendHistoryWithoutIds(target: any[], history: AgentHistoryMessage[]): void {
+  for (const message of history) {
+    const { id: _id, ...rest } = message;
+    target.push(rest);
+  }
 }
 
 export type LingyunAgentSkillsRuntimeOptions = {
@@ -296,7 +304,7 @@ export class LingyunAgent {
       prune: true,
       pruneProtectTokens: 40_000,
       pruneMinimumTokens: 20_000,
-      toolOutputMode: 'afterToolCall',
+      toolOutputMode: 'onCompaction',
     };
     const c = runtime?.compaction ?? {};
     this.compactionConfig = {
@@ -769,7 +777,10 @@ export class LingyunAgent {
     if (entries.length === 0) return;
 
     const existing = await this.registry.getTools();
-    const existingById = new Map<string, ToolDefinition>(existing.map((t) => [t.id, t]));
+    const existingById = new Map<string, ToolDefinition>();
+    for (const tool of existing) {
+      existingById.set(tool.id, tool);
+    }
 
     for (const entry of entries) {
       const key = `${entry.pluginId}:${entry.toolId}`;
@@ -830,7 +841,12 @@ export class LingyunAgent {
       effective.push(createUserHistoryMessage(syntheticResumeUserText, { synthetic: true }));
     }
     const prepared = createHistoryForModel(effective);
-    const withoutIds = prepared.map(({ id: _id, ...rest }) => rest);
+    const modelHistoryInput: any[] = [];
+    appendHistoryWithoutIds(modelHistoryInput, prepared);
+    const pluginMessagesInput: any[] = [];
+    for (const message of modelHistoryInput) {
+      pluginMessagesInput.push(message);
+    }
 
     const messagesOutput = await this.plugins.trigger(
       'experimental.chat.messages.transform',
@@ -839,10 +855,10 @@ export class LingyunAgent {
         mode: this.getModeForConfig(execution.config),
         modelId,
       },
-      { messages: [...withoutIds] as unknown[] }
+      { messages: pluginMessagesInput }
     );
 
-    const messages = Array.isArray((messagesOutput as any).messages) ? (messagesOutput as any).messages : withoutIds;
+    const messages = Array.isArray((messagesOutput as any).messages) ? (messagesOutput as any).messages : modelHistoryInput;
     const providerOptionParams = {
       reasoningEffort: execution.runtime.reasoningEffort,
       textVerbosity: execution.runtime.textVerbosity,
@@ -1044,22 +1060,12 @@ export class LingyunAgent {
   }
 
   private filterTools(tools: ToolDefinition[], config: Readonly<AgentConfig>): ToolDefinition[] {
-    const filter = config.toolFilter;
-    if (!filter || filter.length === 0) {
-      return [...tools].sort((a, b) => a.id.localeCompare(b.id));
+    const allowTool = createToolFilterMatcher(config.toolFilter);
+    const filtered: ToolDefinition[] = [];
+    for (const tool of tools) {
+      if (allowTool(tool.id)) filtered.push(tool);
     }
-
-    return tools
-      .filter((tool) => {
-        return filter.some((pattern) => {
-          if (pattern.includes('*')) {
-            const regex = new RegExp('^' + pattern.replace(/\*/g, '.*') + '$');
-            return regex.test(tool.id);
-          }
-          return tool.id === pattern || tool.id.startsWith(pattern + '.');
-        });
-      })
-      .sort((a, b) => a.id.localeCompare(b.id));
+    return filtered.sort((a, b) => a.id.localeCompare(b.id));
   }
 
   private async composeSystemPrompt(
@@ -1207,10 +1213,22 @@ export class LingyunAgent {
 
     const maxSkills = skillsConfig.maxInjectSkills;
     const maxChars = skillsConfig.maxInjectChars;
-    const selectedForInject = selected.slice(0, maxSkills);
-    const blocks: string[] = [];
+    let activeLabel = '';
+    let selectedCount = 0;
+    for (const skill of selected) {
+      if (selectedCount >= maxSkills) break;
+      if (activeLabel) activeLabel += ', ';
+      activeLabel += `$${skill.name}`;
+      selectedCount += 1;
+    }
 
-    for (const skill of selectedForInject) {
+    let blocksText = '';
+    let blockCount = 0;
+    let injectedCount = 0;
+
+    for (const skill of selected) {
+      if (injectedCount >= selectedCount) break;
+      injectedCount += 1;
       if (signal?.aborted) break;
       session.rememberMentionedSkill(skill.name);
 
@@ -1227,34 +1245,32 @@ export class LingyunAgent {
         truncated = true;
       }
 
-      blocks.push(
-        [
-          '<skill>',
-          `<name>${skill.name}</name>`,
-          `<path>${redactFsPathForPrompt(skill.filePath, { workspaceRoot: this.workspaceRoot })}</path>`,
-          body.trimEnd(),
-          truncated ? '\n\n... [TRUNCATED]' : '',
-          '</skill>',
-        ]
-          .filter(Boolean)
-          .join('\n'),
-      );
+      let block =
+        '<skill>\n' +
+        `<name>${skill.name}</name>\n` +
+        `<path>${redactFsPathForPrompt(skill.filePath, { workspaceRoot: this.workspaceRoot })}</path>\n` +
+        body.trimEnd();
+      if (truncated) {
+        block += '\n\n... [TRUNCATED]';
+      }
+      block += '\n</skill>';
+
+      if (blocksText) blocksText += '\n\n';
+      blocksText += block;
+      blockCount += 1;
     }
 
-    if (blocks.length > 0) {
-      const activeLabel = selectedForInject.map((s: SkillInfo) => `$${s.name}`).join(', ');
+    if (blockCount > 0) {
       const header = activeLabel
-        ? [
-            '<skills>',
-            `<active>${activeLabel}</active>`,
-            'You MUST apply ALL active skills for the next user request.',
-            'Treat skill instructions as additive. If they conflict, call it out and ask the user how to proceed (do not ignore a skill silently).',
-            '</skills>',
-          ].join('\n')
+        ? '<skills>\n' +
+          `<active>${activeLabel}</active>\n` +
+          'You MUST apply ALL active skills for the next user request.\n' +
+          'Treat skill instructions as additive. If they conflict, call it out and ask the user how to proceed (do not ignore a skill silently).\n' +
+          '</skills>'
         : '';
 
       session.history.push(
-        createUserHistoryMessage([header, ...blocks].filter(Boolean).join('\n\n'), {
+        createUserHistoryMessage((header ? `${header}\n\n` : '') + blocksText, {
           synthetic: true,
           skill: true,
         }),

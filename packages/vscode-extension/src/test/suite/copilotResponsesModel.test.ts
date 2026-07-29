@@ -1,4 +1,6 @@
 import * as assert from 'assert';
+import * as fs from 'fs';
+import * as path from 'path';
 
 import { createCopilotResponsesModel } from '../../providers/copilotResponsesModel';
 
@@ -111,9 +113,62 @@ suite('CopilotResponsesModel', () => {
       for (const key of ['include', 'instructions', 'tools', 'tool_choice', 'top_p', 'max_output_tokens', 'text', 'reasoning']) {
         assert.ok(!Object.prototype.hasOwnProperty.call(capturedBody || {}, key), `expected ${key} to be omitted`);
       }
+
+      const source = fs.readFileSync(path.resolve(__dirname, '../../../src/providers/responsesModel.ts'), 'utf8');
+      const start = source.indexOf('function omitUndefinedFields');
+      assert.ok(start >= 0, 'expected request field sanitizer');
+      const end = source.indexOf('function usageFromResponses', start);
+      assert.ok(end > start, 'expected usage helper after request field sanitizer');
+      const section = source.slice(start, end);
+      assert.match(section, /const out: Record<string, unknown> = \{\};/);
+      assert.match(section, /for \(const key in record\)/);
+      assert.match(section, /Object\.prototype\.hasOwnProperty\.call\(record, key\)/);
+      assert.doesNotMatch(section, /Object\.entries/);
+      assert.doesNotMatch(section, /Object\.fromEntries/);
+      assert.doesNotMatch(section, /\.filter\(/);
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+
+  test('responses request assembly helpers avoid filter arrays on request and stream paths', () => {
+    const source = fs.readFileSync(path.resolve(__dirname, '../../../src/providers/responsesModel.ts'), 'utf8');
+    const section = (startText: string, endText: string): string => {
+      const start = source.indexOf(startText);
+      assert.ok(start >= 0, `expected section start: ${startText}`);
+      const end = source.indexOf(endText, start);
+      assert.ok(end > start, `expected section end after ${startText}: ${endText}`);
+      return source.slice(start, end);
+    };
+
+    const toolOutputSection = section('function serializeToolOutput', 'function normalizeSystemInstructionContent');
+    const instructionSection = section('function normalizeSystemInstructionContent', 'function getReasoningReplay');
+    const toolsSection = section('function toolsToResponses', 'function extractProviderOptionString');
+    const errorMessageSection = section('function formatResponsesErrorMessage', 'function extractNestedResponsesError');
+    const terminatedSection = section('function responsesStreamTerminatedError', 'function responsesStreamParseError');
+    const streamFinalizerSection = section("if (eventType === 'response.output_item.done')", "if (eventType === 'response.content_part.done'");
+
+    assert.match(toolOutputSection, /let text = '';/);
+    assert.match(toolOutputSection, /for \(const entry of value\)/);
+    assert.match(toolOutputSection, /text = text \? `\$\{text\}\\n\$\{partText\}` : partText;/);
+    assert.match(instructionSection, /for \(const entry of content\)/);
+    assert.match(instructionSection, /if \(partText\) text = text \? `\$\{text\}\\n\$\{partText\}` : partText;/);
+    assert.match(toolsSection, /const responseTools: unknown\[\] = \[\];/);
+    assert.match(toolsSection, /for \(const tool of tools\)/);
+    assert.match(toolsSection, /if \(tool\.type !== 'function'\) continue;/);
+    assert.match(toolsSection, /responseTools\.push\(\{/);
+    assert.doesNotMatch(toolsSection, /tools\.filter/);
+    assert.doesNotMatch(toolsSection, /functionTools\.map/);
+    assert.match(errorMessageSection, /let suffix = '';/);
+    assert.match(errorMessageSection, /const appendDetail = \(key: string, value: string \| undefined\) => \{/);
+    assert.match(errorMessageSection, /suffix = suffix \? `\$\{suffix\}, \$\{part\}` : part;/);
+    assert.match(terminatedSection, /let state = '';/);
+    assert.match(terminatedSection, /state = state \? `\$\{state\}, \$\{part\}` : part;/);
+    assert.match(streamFinalizerSection, /let textValue = '';/);
+    assert.match(streamFinalizerSection, /for \(const entry of content\)/);
+    assert.match(streamFinalizerSection, /textValue \+= contentPartText\(asRecord\(entry\)\);/);
+    assert.doesNotMatch(streamFinalizerSection, /\.map\(\(entry\) => contentPartText/);
+    assert.doesNotMatch(toolOutputSection + instructionSection + toolsSection + errorMessageSection + terminatedSection, /\.filter\(Boolean\)/);
   });
 
   test('serializes xhigh reasoning effort for GPT-5.5 responses requests', async () => {
@@ -238,6 +293,10 @@ suite('CopilotResponsesModel', () => {
             name: 'glob',
             description: 'Find files',
             inputSchema: { type: 'object', properties: { pattern: { type: 'string' } } },
+          },
+          {
+            type: 'provider-defined',
+            name: 'ignored_provider_tool',
           },
         ],
         toolChoice: { type: 'tool', toolName: 'glob' },

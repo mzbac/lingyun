@@ -21,6 +21,24 @@ export type LingyunCompactionRestoreSource = 'sessionState' | LingyunAgentTransi
 
 const TRUNCATED_SUFFIX = '\n\n... [TRUNCATED]';
 
+function isCompactionSyntheticContextKind(value: unknown): value is LingyunAgentTransientContextKind {
+  return value === 'explore' || value === 'memoryRecall' || value === 'goal';
+}
+
+export function normalizeCompactionSyntheticContexts(value: unknown): LingyunCompactionSyntheticContext[] {
+  if (!Array.isArray(value) || value.length === 0) return [];
+
+  const contexts: LingyunCompactionSyntheticContext[] = [];
+  for (const context of value) {
+    if (!context || typeof context !== 'object' || Array.isArray(context)) continue;
+    const transientContext = (context as any).transientContext;
+    if (!isCompactionSyntheticContextKind(transientContext)) continue;
+    if (typeof (context as any).text !== 'string') continue;
+    contexts.push({ transientContext, text: (context as any).text });
+  }
+  return contexts;
+}
+
 function trimCompactionText(text: string, maxChars?: number): string {
   const trimmed = String(text || '').trim();
   if (!trimmed) return '';
@@ -45,42 +63,70 @@ export function isCompactionRestoredSyntheticMessage(message: AgentHistoryMessag
   return source === 'sessionState' || source === 'explore' || source === 'memoryRecall' || source === 'goal';
 }
 
+function stripSyntheticMessages(
+  history: readonly AgentHistoryMessage[],
+  shouldStrip: (message: AgentHistoryMessage) => boolean,
+): AgentHistoryMessage[] {
+  if (!Array.isArray(history) || history.length === 0) return [];
+
+  let stripped: AgentHistoryMessage[] | undefined;
+  for (let i = 0; i < history.length; i++) {
+    const message = history[i];
+    if (!shouldStrip(message)) {
+      if (stripped) stripped.push(message);
+      continue;
+    }
+
+    if (!stripped) stripped = history.slice(0, i);
+  }
+
+  return stripped ?? [...history];
+}
+
 export function stripTransientSyntheticMessages(
   history: readonly AgentHistoryMessage[],
 ): AgentHistoryMessage[] {
-  if (!Array.isArray(history) || history.length === 0) return [];
-  return history.filter((message) => !isTransientSyntheticMessage(message));
+  return stripSyntheticMessages(history, isTransientSyntheticMessage);
 }
 
 export function stripCompactionRestoredSyntheticMessages(
   history: readonly AgentHistoryMessage[],
 ): AgentHistoryMessage[] {
-  if (!Array.isArray(history) || history.length === 0) return [];
-  return history.filter((message) => !isCompactionRestoredSyntheticMessage(message));
+  return stripSyntheticMessages(history, isCompactionRestoredSyntheticMessage);
 }
 
 export function normalizeSyntheticContextMessageRoles(
   history: readonly AgentHistoryMessage[],
 ): AgentHistoryMessage[] {
   if (!Array.isArray(history) || history.length === 0) return [];
-  let changed = false;
-  const normalized = history.map((message) => {
-    if (
-      message.role === 'system' ||
-      (!isTransientSyntheticMessage(message) && !isCompactionRestoredSyntheticMessage(message))
-    ) {
-      return message;
+
+  let normalized: AgentHistoryMessage[] | undefined;
+  for (let i = 0; i < history.length; i++) {
+    const message = history[i];
+    const shouldNormalize =
+      message.role !== 'system' &&
+      (isTransientSyntheticMessage(message) || isCompactionRestoredSyntheticMessage(message));
+
+    if (!shouldNormalize) {
+      if (normalized) normalized.push(message);
+      continue;
     }
 
-    changed = true;
-    return {
+    if (!normalized) normalized = history.slice(0, i);
+    const parts: AgentHistoryMessage['parts'] = [];
+    for (const part of message.parts) {
+      parts.push({ ...(part as any) } as AgentHistoryMessage['parts'][number]);
+    }
+
+    normalized.push({
       ...message,
       role: 'system' as const,
       metadata: message.metadata ? { ...message.metadata } : undefined,
-      parts: message.parts.map((part: AgentHistoryMessage['parts'][number]) => ({ ...(part as any) })) as AgentHistoryMessage['parts'],
-    };
-  });
-  return changed ? normalized : [...history];
+      parts,
+    });
+  }
+
+  return normalized ?? [...history];
 }
 
 export function appendSyntheticContextMessage(
@@ -122,16 +168,20 @@ export function snapshotSyntheticContextsForCompaction(
 ): LingyunCompactionSyntheticContext[] {
   if (!Array.isArray(contexts) || contexts.length === 0) return [];
 
-  const byKind = new Map<LingyunAgentTransientContextKind, LingyunCompactionSyntheticContext>();
+  const snapshots: LingyunCompactionSyntheticContext[] = [];
   for (const context of contexts) {
     if (!context?.persistAfterCompaction) continue;
     const text = trimCompactionText(context.text, context.maxCharsAfterCompaction);
     if (!text) continue;
-    byKind.set(context.transientContext, {
-      transientContext: context.transientContext,
-      text,
-    });
+    let updated = false;
+    for (let i = 0; i < snapshots.length; i++) {
+      if (snapshots[i]?.transientContext !== context.transientContext) continue;
+      snapshots[i] = { transientContext: context.transientContext, text };
+      updated = true;
+      break;
+    }
+    if (!updated) snapshots.push({ transientContext: context.transientContext, text });
   }
 
-  return [...byKind.values()];
+  return snapshots;
 }

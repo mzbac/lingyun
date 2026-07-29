@@ -5,9 +5,11 @@ import {
   parseWebviewErrorMessage,
   parseWebviewInitAckMessage,
   parseWebviewReadyMessage,
+  parseWebviewTranscriptHistoryRequest,
   WEBVIEW_MESSAGE_ERROR,
   WEBVIEW_MESSAGE_INIT_ACK,
   WEBVIEW_MESSAGE_READY,
+  WEBVIEW_MESSAGE_TRANSCRIPT_HISTORY_REQUEST,
 } from '../../ui/chat/webviewProtocol';
 import { handleWebviewInitAckMessage, handleWebviewReadyMessage } from '../../ui/chat/webviewHandshake';
 
@@ -86,5 +88,38 @@ suite('Chat webview protocol', () => {
     } finally {
       (global as any).clearInterval = originalClearInterval;
     }
+  });
+
+  test('transcript history requests require bounded current-page identifiers', () => {
+    assert.deepStrictEqual(parseWebviewTranscriptHistoryRequest({
+      type: WEBVIEW_MESSAGE_TRANSCRIPT_HISTORY_REQUEST,
+      requestId: 7,
+      sessionId: ' session-1 ',
+      cursor: ' user-20 ',
+    }), {
+      type: WEBVIEW_MESSAGE_TRANSCRIPT_HISTORY_REQUEST,
+      requestId: 7,
+      sessionId: 'session-1',
+      cursor: 'user-20',
+    });
+
+    assert.strictEqual(parseWebviewTranscriptHistoryRequest({
+      type: WEBVIEW_MESSAGE_TRANSCRIPT_HISTORY_REQUEST,
+      requestId: 0,
+      sessionId: 'session-1',
+      cursor: 'user-20',
+    }), undefined);
+    assert.strictEqual(parseWebviewTranscriptHistoryRequest({
+      type: WEBVIEW_MESSAGE_TRANSCRIPT_HISTORY_REQUEST,
+      requestId: 1,
+      sessionId: 'session-1',
+      cursor: 'x'.repeat(513),
+    }), undefined);
+    assert.strictEqual(parseWebviewTranscriptHistoryRequest({
+      type: WEBVIEW_MESSAGE_READY,
+      requestId: 1,
+      sessionId: 'session-1',
+      cursor: 'user-20',
+    }), undefined);
   });
 });

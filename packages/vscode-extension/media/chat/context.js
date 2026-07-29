@@ -1,42 +1,255 @@
-	    function escapeHtml(text) {
-	      const div = document.createElement('div');
-	      div.textContent = text || '';
-	      return div.innerHTML;
+		    const HTML_ESCAPE_TEST_RE = /[&<>"']/;
+		    const HTML_ESCAPE_RE = /[&<>"']/g;
+
+		    function escapeHtmlChar(ch) {
+		      switch (ch) {
+		        case '&': return '&amp;';
+		        case '<': return '&lt;';
+		        case '>': return '&gt;';
+		        case '"': return '&quot;';
+		        case "'": return '&#39;';
+		        default: return ch;
+		      }
+		    }
+
+		    function escapeHtml(text) {
+		      const value = String(text === undefined || text === null ? '' : text);
+		      return HTML_ESCAPE_TEST_RE.test(value) ? value.replace(HTML_ESCAPE_RE, escapeHtmlChar) : value;
+		    }
+
+	    let sessionSelectRenderKey = '';
+	    const SESSION_OPTION_LABEL_DISPLAY_LIMIT = 160;
+
+	    function getSessionSelectRenderKey(sessions, selectedId) {
+	      const list = Array.isArray(sessions) ? sessions : [];
+	      const key = createCompactRenderKeyBuilder();
+	      appendCompactContextRenderKeyPart(key, selectedId || '');
+		      appendCompactContextRenderKeyPart(key, list.length);
+	      for (let sessionIndex = 0; sessionIndex < list.length; sessionIndex++) {
+	        const s = list[sessionIndex];
+	        const id = s && s.id ? String(s.id) : '';
+	        appendCompactContextRenderKeyPart(key, id);
+	        appendCompactContextRenderKeyPart(key, s && s.title ? String(s.title) : id);
+	      }
+	      return finishCompactRenderKey(key);
 	    }
 
-	    function updateSessionSelect(sessions, selectedId) {
-	      if (!sessionSelect) return;
-	      sessionSelect.innerHTML = '';
-	      sessions.forEach(s => {
-	        const opt = document.createElement('option');
-	        let label = s.title || s.id;
-	        if (s.id === selectedId && isProcessing) {
-	          label = '◉ ' + label;
+	    function getSessionOptionLabelDisplayText(value) {
+	      const text = String(value === undefined || value === null ? '' : value);
+	      return text.length <= SESSION_OPTION_LABEL_DISPLAY_LIMIT
+	        ? text
+	        : text.slice(0, SESSION_OPTION_LABEL_DISPLAY_LIMIT) + '…';
+	    }
+
+		    function isSessionSelectRenderKeyCurrent(renderKey) {
+		      return renderKey === sessionSelectRenderKey;
+		    }
+
+		    function isSessionSelectCurrent(sessions, selectedId) {
+		      return isSessionSelectRenderKeyCurrent(getSessionSelectRenderKey(sessions, selectedId || ''));
+		    }
+
+		    let contextPopoverRenderKey = '';
+		    let todoPopoverRenderKey = null;
+		    let contextIndicatorStateKey = '';
+		    let todoIndicatorStateKey = '';
+		    let contextIndicatorVisible = false;
+		    let todoIndicatorVisible = false;
+		    const FILE_LINK_CANDIDATE_LABEL_DISPLAY_LIMIT = 160;
+		    const FILE_LINK_OPEN_LABEL_DISPLAY_LIMIT = 160;
+
+			    function appendCompactContextRenderKeyPart(builder, value) {
+			      const text = String(value === undefined || value === null ? '' : value);
+			      appendCompactRenderKeyText(builder, String(text.length));
+			      appendCompactRenderKeyCode(builder, 58);
+			      appendCompactRenderKeyText(builder, text);
+			      appendCompactRenderKeyCode(builder, 59);
+			      return builder;
+			    }
+
+			    function getFileLinkOpenDisplayPath(path) {
+			      const value = formatFilePath(path);
+			      return value.length <= FILE_LINK_OPEN_LABEL_DISPLAY_LIMIT
+			        ? value
+			        : value.slice(0, FILE_LINK_OPEN_LABEL_DISPLAY_LIMIT) + '…';
+			    }
+
+			    function getFileLinkCandidateDisplayLabel(label, raw) {
+			      const value = String(label || raw || '');
+			      return value.length <= FILE_LINK_CANDIDATE_LABEL_DISPLAY_LIMIT
+			        ? value
+			        : value.slice(0, FILE_LINK_CANDIDATE_LABEL_DISPLAY_LIMIT) + '…';
+			    }
+
+	    function getContextPopoverRenderKey(ctx) {
+	      const key = createCompactRenderKeyBuilder();
+	      appendCompactContextRenderKeyPart(key, ctx && typeof ctx.totalTokens === 'number' ? ctx.totalTokens : '');
+	      appendCompactContextRenderKeyPart(key, ctx && typeof ctx.contextLimitTokens === 'number' ? ctx.contextLimitTokens : '');
+	      appendCompactContextRenderKeyPart(key, ctx && typeof ctx.outputLimitTokens === 'number' ? ctx.outputLimitTokens : '');
+	      appendCompactContextRenderKeyPart(key, ctx && typeof ctx.percent === 'number' ? ctx.percent : '');
+	      appendCompactContextRenderKeyPart(key, ctx && typeof ctx.inputTokens === 'number' ? ctx.inputTokens : '');
+	      appendCompactContextRenderKeyPart(key, ctx && typeof ctx.outputTokens === 'number' ? ctx.outputTokens : '');
+	      appendCompactContextRenderKeyPart(key, ctx && typeof ctx.cacheReadTokens === 'number' ? ctx.cacheReadTokens : '');
+	      appendCompactContextRenderKeyPart(key, ctx && typeof ctx.cacheWriteTokens === 'number' ? ctx.cacheWriteTokens : '');
+	      return finishCompactRenderKey(key);
+	    }
+
+		    function isContextIndicatorRenderKeyCurrent(renderKey) {
+		      return renderKey === contextIndicatorStateKey;
+		    }
+
+		    function isContextIndicatorStateCurrent(ctx) {
+		      return isContextIndicatorRenderKeyCurrent(getContextPopoverRenderKey(ctx));
+		    }
+
+	    function normalizeTodoStatus(value) {
+	      return value === 'in_progress' || value === 'completed' || value === 'cancelled' ? value : 'pending';
+	    }
+
+		    function normalizeTodoPriority(value) {
+		      return value === 'high' || value === 'low' ? value : 'medium';
+		    }
+
+			    const TODO_CONTENT_BOUNDARY_WHITESPACE_RE = /^\s|\s$/;
+			    const TODO_POPOVER_RENDER_LIMIT = 100;
+			    const TODO_CONTENT_DISPLAY_LIMIT = 240;
+
+		    function getTodoRenderContent(todo) {
+		      if (!todo || typeof todo !== 'object') return '';
+		      const content = typeof todo.content === 'string' ? todo.content : '';
+		      if (!content) return '';
+		      return TODO_CONTENT_BOUNDARY_WHITESPACE_RE.test(content) ? content.trim() : content;
+		    }
+
+		    function getTodoDisplayContent(content) {
+		      const text = String(content === undefined || content === null ? '' : content);
+		      return text.length <= TODO_CONTENT_DISPLAY_LIMIT
+		        ? text
+		        : text.slice(0, TODO_CONTENT_DISPLAY_LIMIT) + '…';
+		    }
+
+		    function getTodoRenderState(todos) {
+		      const list = Array.isArray(todos) ? todos : [];
+		      const key = createCompactRenderKeyBuilder();
+		      let open = 0;
+		      let total = 0;
+		      for (let todoIndex = 0; todoIndex < list.length; todoIndex++) {
+		        const todo = list[todoIndex];
+	        const content = getTodoRenderContent(todo);
+	        if (!content) continue;
+	        const status = normalizeTodoStatus(typeof todo.status === 'string' ? todo.status : 'pending');
+	        const priority = normalizeTodoPriority(typeof todo.priority === 'string' ? todo.priority : 'medium');
+		        total++;
+		        if (status !== 'completed' && status !== 'cancelled') open++;
+		        appendCompactContextRenderKeyPart(key, content);
+		        appendCompactContextRenderKeyPart(key, status);
+		        appendCompactContextRenderKeyPart(key, priority);
+		      }
+		      return { key: finishCompactRenderKey(key), open, total };
+		    }
+
+	    function getTodoPopoverRenderKey(todos) {
+	      return getTodoRenderState(todos).key;
+	    }
+
+	    function normalizeTodoRenderState(todosOrRenderState) {
+	      if (todosOrRenderState && typeof todosOrRenderState.key === 'string') {
+	        return todosOrRenderState;
+	      }
+	      return getTodoRenderState(todosOrRenderState);
+	    }
+
+	    function isTodoIndicatorStateCurrent(todosOrRenderState) {
+	      const renderState = normalizeTodoRenderState(todosOrRenderState);
+	      return renderState.key === todoIndicatorStateKey;
+	    }
+
+		    function updateSessionSelect(sessions, selectedId, renderKey) {
+		      if (!sessionSelect) return;
+		      const nextSelectedId = selectedId || '';
+		      const nextRenderKey = typeof renderKey === 'string' && renderKey ? renderKey : getSessionSelectRenderKey(sessions, nextSelectedId);
+		      currentSessionId = nextSelectedId;
+		      if (nextRenderKey === sessionSelectRenderKey) return;
+	      sessionSelectRenderKey = nextRenderKey;
+	      currentSessionOption = null;
+		      const list = Array.isArray(sessions) ? sessions : [];
+		      const fragment = list.length > 1 ? document.createDocumentFragment() : null;
+		      let singleOption = null;
+		      for (let sessionIndex = 0; sessionIndex < list.length; sessionIndex++) {
+		        const s = list[sessionIndex];
+		        const opt = document.createElement('option');
+	        const id = s && s.id ? String(s.id) : '';
+	        const rawLabel = s && s.title ? String(s.title) : id;
+	        const baseLabel = getSessionOptionLabelDisplayText(rawLabel);
+	        let label = baseLabel;
+	        opt.__lingyunSessionBaseLabel = baseLabel;
+	        if (id === nextSelectedId) {
+	          currentSessionOption = opt;
+	          if (isProcessing) {
+	            label = '◉ ' + baseLabel;
+	          }
 	        }
-	        opt.value = s.id;
-	        opt.textContent = label;
-	        if (s.id === selectedId) opt.selected = true;
-	        sessionSelect.appendChild(opt);
-	      });
-	      currentSessionId = selectedId || '';
-	    }
+		        opt.value = id;
+		        opt.textContent = label;
+		        if (id === nextSelectedId) opt.selected = true;
+		        if (fragment) {
+		          fragment.appendChild(opt);
+		        } else {
+		          singleOption = opt;
+		        }
+		      }
+		      replaceElementChildren(sessionSelect, fragment || singleOption);
+		    }
 
-	    function updateModelHeader(state) {
+	    let modelHeaderRenderKey = '';
+	    const MODEL_HEADER_REASONING_EFFORTS = ['', 'low', 'medium', 'high', 'xhigh'];
+
+	    function normalizeModelHeaderState(state) {
 	      const modelId = state && (state.model || state.id) ? String(state.model || state.id) : '';
 	      const label = state && state.label ? String(state.label) : (modelId || 'Pick model');
 	      const isFavorite = !!(state && state.isFavorite);
-	      const allowedReasoningEfforts = ['', 'low', 'medium', 'high', 'xhigh'];
 	      const nextReasoningEffort = state && typeof state.reasoningEffort === 'string' ? String(state.reasoningEffort) : 'high';
-	      const reasoningEffort = allowedReasoningEfforts.indexOf(nextReasoningEffort) >= 0 ? nextReasoningEffort : 'high';
+	      const reasoningEffort = MODEL_HEADER_REASONING_EFFORTS.indexOf(nextReasoningEffort) >= 0 ? nextReasoningEffort : 'high';
 	      const reasoningLabel = reasoningEffort ? reasoningEffort : 'off';
-	      const title = label + ' • reasoning ' + reasoningLabel;
+	      return { modelId, label, isFavorite, reasoningEffort, reasoningLabel };
+	    }
 
-	      if (modelPickerLabel) {
-	        modelPickerLabel.textContent = label;
-	        modelPickerLabel.title = title;
-	      } else if (modelPicker) {
-	        modelPicker.textContent = label;
-	      }
+	    function getModelHeaderRenderKeyForState(state) {
+	      const key = createCompactRenderKeyBuilder();
+	      appendCompactContextRenderKeyPart(key, state.modelId);
+	      appendCompactContextRenderKeyPart(key, state.label);
+	      appendCompactContextRenderKeyPart(key, state.isFavorite ? '1' : '0');
+	      appendCompactContextRenderKeyPart(key, state.reasoningEffort);
+	      appendCompactContextRenderKeyPart(key, initReceived ? '1' : '0');
+	      appendCompactContextRenderKeyPart(key, isProcessing ? '1' : '0');
+	      appendCompactContextRenderKeyPart(key, reasoningEffortPending ? '1' : '0');
+	      appendCompactContextRenderKeyPart(key, modelSwitchPending ? '1' : '0');
+	      appendCompactContextRenderKeyPart(key, modelFavoritePending ? '1' : '0');
+	      appendCompactContextRenderKeyPart(key, modelPickerRefreshPending ? '1' : '0');
+	      return finishCompactRenderKey(key);
+	    }
+
+		    function getModelHeaderRenderKey(state) {
+		      return getModelHeaderRenderKeyForState(normalizeModelHeaderState(state));
+		    }
+
+		    function isModelHeaderRenderKeyCurrent(renderKey) {
+		      return renderKey === modelHeaderRenderKey;
+		    }
+
+		    function isModelHeaderStateCurrent(state) {
+		      return isModelHeaderRenderKeyCurrent(getModelHeaderRenderKey(state));
+		    }
+
+		    function updateNormalizedModelHeader(modelHeaderState, renderKey) {
+		      const nextRenderKey = typeof renderKey === 'string' && renderKey ? renderKey : getModelHeaderRenderKeyForState(modelHeaderState);
+		      const modelId = modelHeaderState.modelId;
+		      const label = modelHeaderState.label;
+		      const isFavorite = modelHeaderState.isFavorite;
+	      const reasoningEffort = modelHeaderState.reasoningEffort;
+	      const reasoningLabel = modelHeaderState.reasoningLabel;
+	      const displayLabel = getModelDisplayText(label);
+	      const displayTitle = displayLabel + ' • reasoning ' + reasoningLabel;
 
 	      currentModel = modelId;
 	      currentReasoningEffort = reasoningEffort;
@@ -44,31 +257,48 @@
 	        updateCustomModelInputState(modelId);
 	      }
 
-	      if (modelPicker) {
-	        modelPicker.title = title;
+	      if (nextRenderKey === modelHeaderRenderKey) return;
+	      modelHeaderRenderKey = nextRenderKey;
+
+	      if (modelPickerLabel) {
+	        setTextContent(modelPickerLabel, displayLabel);
+	        setTitle(modelPickerLabel, displayTitle);
+	      } else if (modelPicker) {
+	        setTextContent(modelPicker, displayLabel);
 	      }
 
-      if (reasoningEffortSelect) {
-        reasoningEffortSelect.value = reasoningEffort;
-        reasoningEffortSelect.disabled = !initReceived || isProcessing || reasoningEffortPending || modelSwitchPending;
-        reasoningEffortSelect.title = 'Reasoning effort: ' + reasoningLabel + ' (GPT-5/Codex models)';
+	      if (modelPicker) {
+	        setTitle(modelPicker, displayTitle);
+	        setAttributeValue(modelPicker, 'aria-label', displayLabel + ', select AI model');
+	      }
+
+	      if (reasoningEffortSelect) {
+        setValue(reasoningEffortSelect, reasoningEffort);
+        setDisabled(reasoningEffortSelect, !initReceived || isProcessing || reasoningEffortPending || modelSwitchPending);
+        setTitle(reasoningEffortSelect, 'Reasoning effort: ' + reasoningLabel + ' (GPT-5/Codex models)');
       }
 
 	      if (modelFavoriteToggle) {
-	        modelFavoriteToggle.disabled = !currentModel || !initReceived || isProcessing || modelFavoritePending || modelSwitchPending || modelPickerRefreshPending;
-	        modelFavoriteToggle.textContent = isFavorite ? '★' : '☆';
-	        modelFavoriteToggle.title = isFavorite ? 'Unfavorite model' : 'Favorite model';
-	        modelFavoriteToggle.setAttribute('aria-label', (isFavorite ? 'Unfavorite model ' : 'Favorite model ') + (label || modelId || 'current model'));
-	      }
+	        const favoriteModelLabel = displayLabel || getModelDisplayText(modelId) || 'current model';
+	        setDisabled(modelFavoriteToggle, !currentModel || !initReceived || isProcessing || modelFavoritePending || modelSwitchPending || modelPickerRefreshPending);
+	        setTextContent(modelFavoriteIcon || modelFavoriteToggle, isFavorite ? '★' : '☆');
+	        setTitle(modelFavoriteToggle, (isFavorite ? 'Remove from favorites: ' : 'Add to favorites: ') + favoriteModelLabel);
+        setAttributeValue(modelFavoriteToggle, 'aria-label', 'Toggle favorite model: ' + favoriteModelLabel);
+        setAttributeValue(modelFavoriteToggle, 'aria-pressed', isFavorite ? 'true' : 'false');
+      }
 
 	      if (modelSettings) {
-	        modelSettings.disabled = !initReceived || isProcessing || modelSwitchPending || modelFavoritePending || modelPickerRefreshPending;
+	        setDisabled(modelSettings, !initReceived || isProcessing || modelSwitchPending || modelFavoritePending || modelPickerRefreshPending);
 	      }
 	    }
 
-	    function normalizeProviderAuthState(state) {
-	      const next = state && typeof state === 'object' ? state : {};
-	      return {
+		    function updateModelHeader(state, renderKey) {
+		      updateNormalizedModelHeader(normalizeModelHeaderState(state), renderKey);
+		    }
+
+		    function normalizeProviderAuthState(state) {
+		      const next = state && typeof state === 'object' ? state : {};
+		      return {
 	        providerId: next.providerId ? String(next.providerId) : '',
 	        providerName: next.providerName ? String(next.providerName) : '',
 	        supported: !!next.supported,
@@ -79,50 +309,137 @@
 	        accountLabel: next.accountLabel ? String(next.accountLabel) : '',
 	        primaryActionLabel: next.primaryActionLabel ? String(next.primaryActionLabel) : '',
 	        secondaryActionLabel: next.secondaryActionLabel ? String(next.secondaryActionLabel) : '',
-	      };
-	    }
+		      };
+		    }
 
-	    function updateProviderAuthHeader(state) {
-	      currentProviderAuth = normalizeProviderAuthState(state);
+		    let providerAuthRenderKey = '';
+		    let providerAuthGroupVisible = false;
+		    let providerAuthPrimaryConnected = false;
+		    let providerAuthSecondaryVisible = null;
+		    const PROVIDER_AUTH_DISPLAY_LIMIT = 160;
 
-	      if (!providerAuthGroup) return;
+			    function getProviderAuthHeaderRenderKey(state) {
+			      const key = createCompactRenderKeyBuilder();
+			      appendCompactContextRenderKeyPart(key, state.providerId);
+			      appendCompactContextRenderKeyPart(key, state.providerName);
+			      appendCompactContextRenderKeyPart(key, state.supported ? '1' : '0');
+			      appendCompactContextRenderKeyPart(key, state.authenticated ? '1' : '0');
+			      appendCompactContextRenderKeyPart(key, state.status);
+			      appendCompactContextRenderKeyPart(key, state.label);
+			      appendCompactContextRenderKeyPart(key, state.detail);
+			      appendCompactContextRenderKeyPart(key, state.accountLabel);
+			      appendCompactContextRenderKeyPart(key, state.primaryActionLabel);
+			      appendCompactContextRenderKeyPart(key, state.secondaryActionLabel);
+			      appendCompactContextRenderKeyPart(key, providerAuthBusy ? '1' : '0');
+			      return finishCompactRenderKey(key);
+			    }
 
-	      const visible =
+			    function getProviderAuthDisplayText(value) {
+			      const text = String(value === undefined || value === null ? '' : value);
+			      return text.length <= PROVIDER_AUTH_DISPLAY_LIMIT
+			        ? text
+			        : text.slice(0, PROVIDER_AUTH_DISPLAY_LIMIT) + '…';
+			    }
+
+		    function providerAuthStatesEqual(left, right) {
+		      return !!left && !!right &&
+		        left.providerId === right.providerId &&
+		        left.providerName === right.providerName &&
+		        left.supported === right.supported &&
+		        left.authenticated === right.authenticated &&
+		        left.status === right.status &&
+		        left.label === right.label &&
+		        left.detail === right.detail &&
+		        left.accountLabel === right.accountLabel &&
+		        left.primaryActionLabel === right.primaryActionLabel &&
+		        left.secondaryActionLabel === right.secondaryActionLabel;
+		    }
+
+		    function setProviderAuthGroupVisible(visible) {
+		      const visibleFlag = !!visible;
+		      if (providerAuthGroupVisible === visibleFlag) return;
+		      providerAuthGroupVisible = visibleFlag;
+		      if (providerAuthGroup && providerAuthGroup.classList) {
+		        providerAuthGroup.classList.toggle('hidden', !visibleFlag);
+		      }
+		    }
+
+		    function setProviderAuthPrimaryConnected(connected) {
+		      const connectedFlag = !!connected;
+		      if (providerAuthPrimaryConnected === connectedFlag) return;
+		      providerAuthPrimaryConnected = connectedFlag;
+		      if (providerAuthPrimary && providerAuthPrimary.classList) {
+		        providerAuthPrimary.classList.toggle('connected', connectedFlag);
+		      }
+		    }
+
+		    function setProviderAuthSecondaryVisible(visible) {
+		      const visibleFlag = !!visible;
+		      if (providerAuthSecondaryVisible === visibleFlag) return;
+		      providerAuthSecondaryVisible = visibleFlag;
+		      if (providerAuthSecondary && providerAuthSecondary.classList) {
+		        providerAuthSecondary.classList.toggle('hidden', !visibleFlag);
+		      }
+		    }
+
+				    function updateNormalizedProviderAuthHeader(nextProviderAuth, renderKey) {
+			      currentProviderAuth = nextProviderAuth;
+
+			      if (!providerAuthGroup) return;
+			      const nextRenderKey = typeof renderKey === 'string' && renderKey ? renderKey : getProviderAuthHeaderRenderKey(currentProviderAuth);
+			      if (nextRenderKey === providerAuthRenderKey) return;
+			      providerAuthRenderKey = nextRenderKey;
+
+		      const visible =
 	        !!currentProviderAuth.supported &&
 	        currentProviderAuth.status !== 'hidden';
-	      providerAuthGroup.classList.toggle('hidden', !visible);
+	      setProviderAuthGroupVisible(visible);
 	      if (!visible) return;
 
 	      const connected = !!currentProviderAuth.authenticated;
-	      const primaryLabel = providerAuthBusy
+	      const rawPrimaryLabel = providerAuthBusy
 	        ? (connected ? 'Updating…' : 'Signing in…')
 	        : (connected
 	          ? (currentProviderAuth.accountLabel || currentProviderAuth.label || 'Connected')
 	          : (currentProviderAuth.primaryActionLabel || currentProviderAuth.label || 'Sign in'));
-	      const detailParts = [];
-	      if (currentProviderAuth.providerName) detailParts.push(currentProviderAuth.providerName);
-	      if (currentProviderAuth.detail) detailParts.push(currentProviderAuth.detail);
-	      const title = detailParts.join(' • ') || primaryLabel;
+	      const primaryLabel = getProviderAuthDisplayText(rawPrimaryLabel);
+	      const providerName = getProviderAuthDisplayText(currentProviderAuth.providerName);
+	      const providerDetail = getProviderAuthDisplayText(currentProviderAuth.detail);
+		      let title = primaryLabel;
+		      if (providerName) {
+		        title = providerName;
+		        if (providerDetail) {
+		          title += ' • ' + providerDetail;
+		        }
+		      } else if (providerDetail) {
+		        title = providerDetail;
+		      }
 
 	      if (providerAuthPrimary) {
-	        providerAuthPrimary.textContent = primaryLabel;
-	        providerAuthPrimary.title = title;
-	        const providerSuffix = currentProviderAuth.providerName ? (' ' + currentProviderAuth.providerName) : '';
-	        providerAuthPrimary.setAttribute('aria-label', connected ? ('Provider account: ' + primaryLabel) : ('Sign in to' + providerSuffix));
-	        providerAuthPrimary.classList.toggle('connected', connected);
+	        setTextContent(providerAuthPrimary, primaryLabel);
+	        setTitle(providerAuthPrimary, title);
+	        const providerAccountLabel = providerName
+	          ? (primaryLabel + ', ' + providerName + ' account')
+	          : primaryLabel;
+	        setAttributeValue(providerAuthPrimary, 'aria-label', providerAccountLabel);
+	        setProviderAuthPrimaryConnected(connected);
 	      }
 
 	      if (providerAuthSecondary) {
-	        const secondaryLabel = currentProviderAuth.secondaryActionLabel || 'Disconnect';
-	        const secondaryTitle = currentProviderAuth.providerName
-	          ? (secondaryLabel + ' from ' + currentProviderAuth.providerName)
+	        const secondaryLabel = getProviderAuthDisplayText(currentProviderAuth.secondaryActionLabel || 'Disconnect');
+	        const secondaryTitle = providerName
+	          ? (secondaryLabel + ' from ' + providerName)
 	          : secondaryLabel;
-	        providerAuthSecondary.textContent = secondaryLabel;
-	        providerAuthSecondary.title = secondaryTitle;
-	        providerAuthSecondary.setAttribute('aria-label', secondaryTitle);
-	        providerAuthSecondary.classList.toggle('hidden', !connected);
+	        setTextContent(providerAuthSecondary, secondaryLabel);
+	        setTitle(providerAuthSecondary, secondaryTitle);
+	        setAttributeValue(providerAuthSecondary, 'aria-label', secondaryTitle);
+	        setProviderAuthSecondaryVisible(connected);
 	      }
 	    }
+
+				    function updateProviderAuthHeader(state, renderKey) {
+			      updateNormalizedProviderAuthHeader(normalizeProviderAuthState(state), renderKey);
+			    }
 
 	    function formatInt(value) {
 	      try {
@@ -132,53 +449,193 @@
 	      }
 	    }
 
+	    const COMPACT_NUMBER_DECIMAL_ZERO_SUFFIX_RE = /\.0$/;
+
 	    function formatCompact(value) {
 	      const num = Number(value);
 	      if (!Number.isFinite(num)) return String(value);
 	      const abs = Math.abs(num);
 	      if (abs < 1000) return String(Math.round(num));
-	      if (abs < 100_000) return (num / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
+	      if (abs < 100_000) return (num / 1000).toFixed(1).replace(COMPACT_NUMBER_DECIMAL_ZERO_SUFFIX_RE, '') + 'k';
 	      if (abs < 1_000_000) return Math.round(num / 1000) + 'k';
-	      if (abs < 100_000_000) return (num / 1_000_000).toFixed(1).replace(/\.0$/, '') + 'm';
+	      if (abs < 100_000_000) return (num / 1_000_000).toFixed(1).replace(COMPACT_NUMBER_DECIMAL_ZERO_SUFFIX_RE, '') + 'm';
 	      return Math.round(num / 1_000_000) + 'm';
 	    }
 
-	    function closeContextPopover() {
-	      if (!contextPopover) return;
-	      contextPopover.classList.add('hidden');
+	    function setContextIndicatorVisible(visible) {
+	      const visibleFlag = !!visible;
+	      if (contextIndicatorVisible === visibleFlag) return;
+	      contextIndicatorVisible = visibleFlag;
+	      if (contextIndicator && contextIndicator.classList) {
+	        contextIndicator.classList.toggle('hidden', !visibleFlag);
+	      }
 	    }
 
-	    function closeTodoPopover() {
+	    function setTodoIndicatorVisible(visible) {
+	      const visibleFlag = !!visible;
+	      if (todoIndicatorVisible === visibleFlag) return;
+	      todoIndicatorVisible = visibleFlag;
+	      if (todoIndicator && todoIndicator.classList) {
+	        todoIndicator.classList.toggle('hidden', !visibleFlag);
+	      }
+	    }
+
+		    let contextPopoverFocusReturnTarget = null;
+		    let todoPopoverFocusReturnTarget = null;
+		    let popoverFocusRestoreTimer = null;
+		    const popoverOpenStates = new WeakMap();
+		    if (contextPopover) popoverOpenStates.set(contextPopover, false);
+		    if (todoPopover) popoverOpenStates.set(todoPopover, false);
+
+		    function isPopoverOpen(popover) {
+		      if (!popover) return false;
+		      const knownOpen = popoverOpenStates.get(popover);
+		      if (knownOpen === true) return true;
+		      if (knownOpen === false) return false;
+		      const open = !popover.classList || !popover.classList.contains('hidden');
+		      popoverOpenStates.set(popover, open);
+		      return open;
+		    }
+
+		    function setPopoverOpenState(popover, open) {
+		      if (!popover) return;
+		      const nextOpen = !!open;
+		      if (popover.classList) {
+		        popover.classList.toggle('hidden', !nextOpen);
+		      }
+		      popoverOpenStates.set(popover, nextOpen);
+		    }
+
+	    function canFocusPopoverTarget(element) {
+	      if (!element || typeof element.focus !== 'function') return false;
+	      if (element.disabled) return false;
+	      if (element.isConnected === false) return false;
+	      if (element.classList && element.classList.contains('hidden')) return false;
+	      if (element.getAttribute && element.getAttribute('aria-hidden') === 'true') return false;
+	      return true;
+	    }
+
+		    function focusPopoverTarget(element) {
+		      if (!canFocusPopoverTarget(element)) return false;
+		      try {
+		        element.focus({ preventScroll: true });
+		      } catch {
+		        try {
+		          element.focus();
+		        } catch {
+		          return false;
+		        }
+		      }
+		      return document.activeElement === element;
+		    }
+
+	    function getPopoverFocusReturnTarget(fallback) {
+	      const activeElement = document && document.activeElement;
+	      if (canFocusPopoverTarget(activeElement) && activeElement !== document.body) return activeElement;
+	      return canFocusPopoverTarget(fallback) ? fallback : null;
+	    }
+
+		    function restorePopoverFocus(target) {
+		      if (focusPopoverTarget(target)) return;
+		      focusPopoverTarget(input);
+		    }
+
+		    function clearPopoverFocusRestoreTimer() {
+		      if (popoverFocusRestoreTimer === null) return;
+		      clearTimeout(popoverFocusRestoreTimer);
+		      popoverFocusRestoreTimer = null;
+		    }
+
+	    function popoverContainsFocus(popover) {
+	      if (!popover || !popover.contains) return false;
+	      const activeElement = document && document.activeElement;
+	      return !!activeElement && popover.contains(activeElement);
+	    }
+
+		    function restoreFocusAfterPointerDismiss(popover, target) {
+		      if (!popoverContainsFocus(popover)) return;
+		      const fallbackTarget = target && target !== document.body ? target : null;
+		      clearPopoverFocusRestoreTimer();
+		      const timer = setTimeout(() => {
+		        if (popoverFocusRestoreTimer !== timer) return;
+		        popoverFocusRestoreTimer = null;
+		        if (!popoverContainsFocus(popover)) return;
+		        if (focusPopoverTarget(fallbackTarget)) return;
+		        restorePopoverFocus(null);
+		      }, 0);
+		      popoverFocusRestoreTimer = timer;
+		    }
+
+		    function dismissPopoverFromOutsidePointer(popover, trigger, closePopover, target) {
+		      if (!isPopoverOpen(popover)) return;
+		      if (elementContainsTarget(popover, target) || elementContainsTarget(trigger, target)) return;
+		      restoreFocusAfterPointerDismiss(popover, target);
+		      closePopover({ restoreFocus: false });
+		    }
+
+	    function closeContextPopover(options) {
+	      if (!contextPopover) return;
+	      const wasOpen = isPopoverOpen(contextPopover);
+	      const focusReturnTarget = contextPopoverFocusReturnTarget || contextIndicator;
+	      contextPopoverFocusReturnTarget = null;
+	      if (!wasOpen) return;
+	      setPopoverOpenState(contextPopover, false);
+	      setAttributeValue(contextIndicator, 'aria-expanded', 'false');
+	      if (!options || options.restoreFocus !== false) {
+	        restorePopoverFocus(focusReturnTarget);
+	      }
+	    }
+
+	    function closeTodoPopover(options) {
 	      if (!todoPopover) return;
-	      todoPopover.classList.add('hidden');
+	      const wasOpen = isPopoverOpen(todoPopover);
+	      const focusReturnTarget = todoPopoverFocusReturnTarget || todoIndicator;
+	      todoPopoverFocusReturnTarget = null;
+	      if (!wasOpen) return;
+	      setPopoverOpenState(todoPopover, false);
+	      setAttributeValue(todoIndicator, 'aria-expanded', 'false');
+	      if (!options || options.restoreFocus !== false) {
+	        restorePopoverFocus(focusReturnTarget);
+	      }
 	    }
 
 	    let outputModalText = '';
-	    let outputModalTitleText = '';
+		    let outputModalTitleText = '';
+	    let outputModalOpen = false;
+	    let outputModalFocusReturnTarget = null;
+	    const OUTPUT_MODAL_TITLE_DISPLAY_LIMIT = 160;
 
-		    async function writeClipboard(text) {
-		      if (!text) return false;
-		      try {
-		        if (navigator && navigator.clipboard && navigator.clipboard.writeText) {
-		          await navigator.clipboard.writeText(String(text));
-		          return true;
-		        }
-		      } catch {}
+			    async function writeClipboard(text) {
+			      if (text === undefined || text === null) return false;
+			      const textToCopy = String(text);
+			      if (!textToCopy) return false;
+			      try {
+			        if (navigator && navigator.clipboard && navigator.clipboard.writeText) {
+			          await navigator.clipboard.writeText(textToCopy);
+			          return true;
+			        }
+			      } catch {}
 
-	      try {
-	        const el = document.createElement('textarea');
-	        el.value = String(text);
-	        el.setAttribute('readonly', 'true');
-	        el.style.position = 'fixed';
-	        el.style.top = '-9999px';
-	        el.style.left = '-9999px';
-	        document.body.appendChild(el);
-	        el.select();
-	        const ok = document.execCommand('copy');
-	        document.body.removeChild(el);
-	        return !!ok;
-	      } catch {
+			      const el = document.createElement('textarea');
+			      let appended = false;
+			      try {
+			        el.value = textToCopy;
+		        el.setAttribute('readonly', 'true');
+		        el.style.position = 'fixed';
+		        el.style.top = '-9999px';
+		        el.style.left = '-9999px';
+		        el.style.opacity = '0';
+		        el.style.pointerEvents = 'none';
+		        document.body.appendChild(el);
+		        appended = true;
+		        el.select();
+		        return !!document.execCommand('copy');
+		      } catch {
 		        return false;
+		      } finally {
+		        if (appended) {
+		          try { document.body.removeChild(el); } catch {}
+		        }
 		      }
 		    }
 
@@ -200,53 +657,194 @@
 		      } catch {}
 
 		      return writeClipboard(htmlText);
+			    }
+
+			    let outputModalCopyResetTimer = null;
+			    let outputModalCopyButtonCopied = null;
+
+				    function setOutputModalCopyButtonState(copied) {
+				      if (!outputModalCopy) return;
+			      const copiedFlag = !!copied;
+			      if (outputModalCopyButtonCopied === copiedFlag) return;
+			      outputModalCopyButtonCopied = copiedFlag;
+				      setTextContent(outputModalCopy, copiedFlag ? 'Copied' : 'Copy');
+				      setAttributeValue(outputModalCopy, 'aria-label', copiedFlag ? 'Copied full output' : 'Copy full output');
+				      setTitle(outputModalCopy, copiedFlag ? 'Copied full output' : 'Copy full output');
+				    }
+
+		    function clearOutputModalCopyResetTimer() {
+		      if (!outputModalCopyResetTimer) return;
+		      clearTimeout(outputModalCopyResetTimer);
+		      outputModalCopyResetTimer = null;
 		    }
 
-	    function closeOutputModal() {
-	      if (!outputModal) return;
-	      outputModal.classList.add('hidden');
-	      outputModalText = '';
-	      outputModalTitleText = '';
+		    function closeOutputModal() {
+		      if (!outputModal) return;
+		      const wasOpen = outputModalOpen;
+		      const focusReturnTarget = outputModalFocusReturnTarget;
+		      outputModalFocusReturnTarget = null;
+		      clearOutputModalCopyResetTimer();
+			      setOutputModalCopyButtonState(false);
+		      if (!wasOpen) return;
+		      if (outputModal.classList) {
+		        outputModal.classList.toggle('hidden', true);
+		      }
+				      outputModalOpen = false;
+				      setTitle(outputModalTitle, '');
+				      setAttributeValue(outputModalBody, 'aria-label', 'Full output');
+				      outputModalText = '';
+			      outputModalTitleText = '';
+				      if (focusReturnTarget && typeof focusReturnTarget.focus === 'function') {
+				        focusPopoverTarget(focusReturnTarget);
+				      }
+			    }
+
+	    function getOutputModalTitleDisplayText(title) {
+	      const value = String(title || 'Output');
+	      return value.length <= OUTPUT_MODAL_TITLE_DISPLAY_LIMIT
+	        ? value
+	        : value.slice(0, OUTPUT_MODAL_TITLE_DISPLAY_LIMIT) + '…';
 	    }
 
-	    function openOutputModal(title, text) {
-	      if (!outputModal || !outputModalTitle || !outputModalBody) return;
-	      outputModalTitleText = String(title || 'Output');
-	      outputModalText = String(text || '');
-	      outputModalTitle.textContent = outputModalTitleText;
-	      outputModalBody.textContent = outputModalText;
-	      outputModal.classList.remove('hidden');
+		    function openOutputModal(title, text) {
+		      if (!outputModal || !outputModalTitle || !outputModalBody) return;
+	      const nextTitleText = String(title || 'Output');
+	      const outputModalTitleDisplayText = getOutputModalTitleDisplayText(nextTitleText);
+	      const nextModalText = String(text === undefined || text === null ? '' : text);
+	      const wasOpen = outputModalOpen;
+	      if (wasOpen && nextTitleText === outputModalTitleText && nextModalText === outputModalText) return;
+	      if (wasOpen) {
+	        clearOutputModalCopyResetTimer();
+	        setOutputModalCopyButtonState(false);
+	      }
+	      if (!wasOpen) {
+	        try {
+	          const activeElement = document.activeElement;
+	          outputModalFocusReturnTarget =
+	            activeElement &&
+	            activeElement !== document.body &&
+	            activeElement !== outputModal &&
+	            (!outputModal.contains || !outputModal.contains(activeElement)) &&
+	            typeof activeElement.focus === 'function'
+	              ? activeElement
+	              : null;
+	        } catch {
+		          outputModalFocusReturnTarget = null;
+		        }
+		      }
+		      outputModalTitleText = nextTitleText;
+		      outputModalText = nextModalText;
+		      setTextContent(outputModalTitle, outputModalTitleDisplayText);
+	      setTitle(outputModalTitle, outputModalTitleDisplayText);
+		      setTextContent(outputModalBody, outputModalText);
+		      setAttributeValue(outputModalBody, 'aria-label', outputModalTitleDisplayText + ', full output');
+		      if (!wasOpen) {
+		        if (outputModal.classList) {
+		          outputModal.classList.toggle('hidden', false);
+		        }
+		        outputModalOpen = true;
+		      }
 	      try { outputModalBody.scrollTop = 0; } catch {}
-	      try { (outputModalClose || outputModalCopy || outputModal).focus(); } catch {}
+	      focusPopoverTarget(outputModalClose || outputModalCopy || outputModal);
+    }
+
+	    function isOutputModalOpen() {
+	      return !!outputModal && outputModalOpen;
 	    }
+
+		    function isNodeEventTarget(target) {
+		      if (!target) return false;
+		      if (typeof Node === 'function') return target instanceof Node;
+		      return typeof target.nodeType === 'number';
+		    }
+
+		    function elementContainsTarget(element, target) {
+		      if (!element || !target) return false;
+		      if (element === target) return true;
+		      if (!isNodeEventTarget(target)) return false;
+		      if (typeof element.contains !== 'function') return false;
+		      return !!element.contains(target);
+		    }
+
+		    function isOutputModalEventTarget(target) {
+		      if (!outputModal || !target) return false;
+		      if (target === outputModal) return true;
+		      return elementContainsTarget(outputModal, target);
+		    }
+
+		    function isInsideOpenOutputModal(target) {
+		      return isOutputModalOpen() && isOutputModalEventTarget(target);
+		    }
+
+		    function consumeHandledEvent(event, preventDefault) {
+		      if (!event) return;
+		      if (preventDefault && event.preventDefault) event.preventDefault();
+		      if (event.stopImmediatePropagation) {
+		        event.stopImmediatePropagation();
+		      } else if (event.stopPropagation) {
+		        event.stopPropagation();
+		      }
+		    }
+
+		    function isOutputModalFocusableControl(el) {
+		      if (!el) return false;
+		      if (el.disabled) return false;
+		      if (el.getAttribute && el.getAttribute('aria-hidden') === 'true') return false;
+		      if (typeof el.tabIndex === 'number' && el.tabIndex < 0) return false;
+		      return typeof el.focus === 'function';
+		    }
+
+		    function getFirstOutputModalFocusableControl() {
+		      if (isOutputModalFocusableControl(outputModalCopy)) return outputModalCopy;
+		      if (isOutputModalFocusableControl(outputModalClose)) return outputModalClose;
+		      if (isOutputModalFocusableControl(outputModalBody)) return outputModalBody;
+		      return null;
+		    }
+
+		    function getLastOutputModalFocusableControl() {
+		      if (isOutputModalFocusableControl(outputModalBody)) return outputModalBody;
+		      if (isOutputModalFocusableControl(outputModalClose)) return outputModalClose;
+		      if (isOutputModalFocusableControl(outputModalCopy)) return outputModalCopy;
+		      return null;
+		    }
+
+		    function getNextOutputModalFocusableControl(activeElement, reverse) {
+		      const copyFocusable = isOutputModalFocusableControl(outputModalCopy);
+		      const closeFocusable = isOutputModalFocusableControl(outputModalClose);
+		      const bodyFocusable = isOutputModalFocusableControl(outputModalBody);
+		      if (!copyFocusable && !closeFocusable && !bodyFocusable) return null;
+		      if (reverse) {
+		        if (activeElement === outputModalCopy) return bodyFocusable ? outputModalBody : closeFocusable ? outputModalClose : outputModalCopy;
+		        if (activeElement === outputModalClose) return copyFocusable ? outputModalCopy : bodyFocusable ? outputModalBody : outputModalClose;
+		        if (activeElement === outputModalBody) return closeFocusable ? outputModalClose : copyFocusable ? outputModalCopy : outputModalBody;
+		        return bodyFocusable ? outputModalBody : closeFocusable ? outputModalClose : outputModalCopy;
+		      }
+		      if (activeElement === outputModalCopy) return closeFocusable ? outputModalClose : bodyFocusable ? outputModalBody : outputModalCopy;
+		      if (activeElement === outputModalClose) return bodyFocusable ? outputModalBody : copyFocusable ? outputModalCopy : outputModalClose;
+		      if (activeElement === outputModalBody) return copyFocusable ? outputModalCopy : closeFocusable ? outputModalClose : outputModalBody;
+		      return copyFocusable ? outputModalCopy : closeFocusable ? outputModalClose : outputModalBody;
+		    }
+
+		    function handleOutputModalTabKey(event) {
+		      if (!isOutputModalOpen() || !event || event.key !== 'Tab' || event.altKey || event.ctrlKey || event.metaKey) return false;
+		      if (typeof event.preventDefault === 'function') event.preventDefault();
+		      const firstFocusable = getFirstOutputModalFocusableControl();
+		      const lastFocusable = getLastOutputModalFocusableControl();
+		      if (!firstFocusable || !lastFocusable) {
+			        focusPopoverTarget(outputModal);
+			        return true;
+			      }
+		      const activeElement = document.activeElement;
+		      const nextFocusable = getNextOutputModalFocusableControl(activeElement, !!event.shiftKey) || (event.shiftKey ? lastFocusable : firstFocusable);
+			      focusPopoverTarget(nextFocusable);
+			      return true;
+			    }
 
 	    function getToolModalTitle(toolCall) {
 	      if (!toolCall) return 'Output';
 	      const toolId = toolCall.id || '';
-	      let args = {};
 	      const rawArgsText = typeof toolCall.args === 'string' ? toolCall.args : '';
-	      try { args = JSON.parse(rawArgsText || '{}'); } catch {}
-
-	      if (!args.command && rawArgsText) {
-	        const extracted = extractArgValue(rawArgsText, 'command');
-	        if (extracted) args.command = extracted;
-	      }
-	      if (!args.filePath && rawArgsText) {
-	        const extracted = extractArgValue(rawArgsText, 'filePath');
-	        if (extracted) args.filePath = extracted;
-	      }
-	      if (!args.path && rawArgsText) {
-	        const extracted = extractArgValue(rawArgsText, 'path');
-	        if (extracted) args.path = extracted;
-	      }
-	      if (!args.pattern && rawArgsText) {
-	        const extracted = extractArgValue(rawArgsText, 'pattern');
-	        if (extracted) args.pattern = extracted;
-	      }
-		      if (!args.query && rawArgsText) {
-		        const extracted = extractArgValue(rawArgsText, 'query');
-		        if (extracted) args.query = extracted;
-		      }
+	      const args = getToolCardArgs(toolCall, rawArgsText);
 
 		      const filePath = toolCall.path || args.filePath || args.path || '';
 		      if (toolId === 'task') {
@@ -277,43 +875,77 @@
 		      return toolId || 'Output';
 		    }
 
-	    if (outputModalBackdrop) {
-	      outputModalBackdrop.addEventListener('click', () => closeOutputModal());
-	    }
-	    if (outputModalClose) {
-	      outputModalClose.addEventListener('click', () => closeOutputModal());
-	    }
-	    if (outputModalCopy) {
-	      outputModalCopy.setAttribute('aria-label', 'Copy full output');
-	      outputModalCopy.title = 'Copy full output';
-	      outputModalCopy.addEventListener('click', async () => {
-	        const ok = await writeClipboard(outputModalText);
-	        if (!ok) return;
-	        outputModalCopy.textContent = 'Copied';
-	        outputModalCopy.setAttribute('aria-label', 'Copied full output');
-	        if (typeof announceStatus === 'function') announceStatus('Copied output.');
-	        setTimeout(() => {
-	          outputModalCopy.textContent = 'Copy';
-	          outputModalCopy.setAttribute('aria-label', 'Copy full output');
-	        }, 900);
-	      });
-	    }
+		    if (outputModal) {
+		      outputModal.addEventListener('click', (e) => {
+		        if (e && e.stopPropagation) e.stopPropagation();
+		      });
+		    }
+		    if (outputModalBackdrop) {
+		      outputModalBackdrop.addEventListener('click', (e) => {
+		        consumeHandledEvent(e, true);
+		        closeOutputModal();
+		      });
+		    }
+		    if (outputModalClose) {
+		      outputModalClose.addEventListener('click', (e) => {
+		        consumeHandledEvent(e, true);
+		        closeOutputModal();
+		      });
+		    }
+		    function showOutputModalCopyFeedback() {
+		      if (!outputModalCopy) return;
+		      clearOutputModalCopyResetTimer();
+		      setOutputModalCopyButtonState(true);
+		      if (typeof announceStatus === 'function') announceStatus('Copied output.');
+		      outputModalCopyResetTimer = setTimeout(() => {
+		        setOutputModalCopyButtonState(false);
+		        outputModalCopyResetTimer = null;
+		      }, 900);
+		    }
+
+		    if (outputModalCopy) {
+		      setOutputModalCopyButtonState(false);
+		      outputModalCopy.addEventListener('click', async () => {
+		        const ok = await writeClipboard(outputModalText);
+		        if (!ok) return;
+		        showOutputModalCopyFeedback();
+		      });
+		    }
 
 	    // --- File path linkification (click to open) ---
 	    const fileLinkCache = new Map(); // raw -> { ok, path, checkedAt }
 	    const fileLinkPending = new Set(); // raw
-	    const fileLinkCandidatesByRaw = new Map(); // raw -> Set<HTMLElement>
-	    const linkifyQueue = new Set(); // Set<Element>
-	    const linkifyForceRoots = new WeakSet();
-	    let linkifyTimer = null;
-	    const FILE_LINK_NEGATIVE_CACHE_TTL_MS = 5000;
+		    const fileLinkCandidatesByRaw = new Map(); // raw -> Set<HTMLElement>
+		    const fileLinkCandidatesByRoot = new WeakMap(); // root -> { generation, elements }
+		    const fileLinkRawByElement = new WeakMap();
+			    const fileLinkLocationByElement = new WeakMap();
+			    const fileLinkGateStateByRoot = new WeakMap(); // root -> { generation, checkedLength, hasPathSignal }
+			    const linkifyQueue = new Set(); // Set<Element>
+			    const linkifyForceRootGeneration = new WeakMap(); // root -> fileLinkGeneration
+			    let linkifyTimer = null;
+			    let fileLinkGeneration = 0;
+			    const FILE_LINK_CACHE_MAX_ENTRIES = 500;
+			    const FILE_LINK_NEGATIVE_CACHE_TTL_MS = 5000;
+			    const FILE_LINK_GATE_OVERLAP_CHARS = 256;
+				    const FILE_LINK_TEXT_SIGNAL_RE = /(^|[\s([{<"'`])(?:[A-Za-z0-9_.-]*\.[A-Za-z][A-Za-z0-9_-]{0,15}|Makefile|Dockerfile|LICENSE|README)(?:#L\d+(?:C\d+)?|:\d+(?::\d+)?|:)?(?=$|[\s)\]}>,.;"'`])/i;
+				    const FILE_LINK_TOKEN_RE = /\S+/g;
+				    const EMPTY_FILE_LINK_CANDIDATES = [];
+			    const FILE_LINK_TRAILING_COLON_WITHOUT_LINE_RE = /:\d+$/;
+			    const FILE_LINK_VERSION_NUMBER_RE = /^\d+(?:\.\d+)+$/;
+			    const FILE_LINK_ALPHA_RE = /[a-zA-Z]/;
+			    const FILE_LINK_SPECIAL_BASENAME_RE = /^(Makefile|Dockerfile|LICENSE|README)$/i;
+			    const FILE_LINK_HASH_LOCATION_RE = /^(.*)#L(\d+)(?:C(\d+))?$/;
+			    const FILE_LINK_COLON_LOCATION_RE = /^(.*):(\d+)(?::(\d+))?$/;
+			    const FILE_LINK_COLON_PREFIX_LOCATION_RE = /^(.*):(\d+)(?::(\d+))?:(.+)$/;
+			    const FILE_LINK_LEADING_PUNCTUATION = '([{<"\'`';
+			    const FILE_LINK_TRAILING_PUNCTUATION = ')]}>,.;"\'`';
 
-	    function scheduleFileLinkify(rootEl, opts) {
-	      if (!rootEl || typeof rootEl.querySelectorAll !== 'function') return;
-	      if (opts && opts.force) {
-	        try { linkifyForceRoots.add(rootEl); } catch {}
-	      }
-	      linkifyQueue.add(rootEl);
+		    function scheduleFileLinkify(rootEl, opts) {
+		      if (!rootEl) return;
+		      if (opts && opts.force) {
+		        try { linkifyForceRootGeneration.set(rootEl, fileLinkGeneration); } catch {}
+		      }
+		      linkifyQueue.add(rootEl);
 	      if (linkifyTimer) return;
 	      linkifyTimer = setTimeout(() => {
 	        linkifyTimer = null;
@@ -321,101 +953,238 @@
 	      }, 80);
 	    }
 
-	    function flushFileLinkifyQueue() {
-	      const roots = Array.from(linkifyQueue);
+			    function scheduleFileLinkifyIfNeeded(rootEl, text, opts) {
+			      if (!rootEl) return;
+			      let gateState = fileLinkGateStateByRoot.get(rootEl);
+			      if (!gateState || gateState.generation !== fileLinkGeneration) {
+			        gateState = { generation: fileLinkGeneration, checkedLength: 0, hasPathSignal: false };
+			        fileLinkGateStateByRoot.set(rootEl, gateState);
+			      }
+			      if (opts && opts.force) {
+			        scheduleFileLinkify(rootEl, opts);
+			        return;
+			      }
+			      if (gateState.hasPathSignal && !(opts && opts.appendOnly)) {
+			        scheduleFileLinkify(rootEl, opts);
+			        return;
+			      }
+
+			      const value = String(text === undefined || text === null ? '' : text);
+			      const start = value.length >= gateState.checkedLength
+			        ? Math.max(0, gateState.checkedLength - FILE_LINK_GATE_OVERLAP_CHARS)
+			        : 0;
+			      const checkText = value.slice(start);
+			      gateState.checkedLength = value.length;
+			      if (!looksLikeTextMayContainPath(checkText)) return;
+			      gateState.hasPathSignal = true;
+			      scheduleFileLinkify(rootEl, opts);
+			    }
+
+	    function resetFileLinkState() {
+	      if (linkifyTimer) {
+	        clearTimeout(linkifyTimer);
+	        linkifyTimer = null;
+	      }
 	      linkifyQueue.clear();
-	      if (roots.length === 0) return;
-
-	      const pendingRaw = new Set();
-
-	      roots.forEach((rootEl) => {
-	        try {
-	          const force = linkifyForceRoots.has(rootEl);
-	          if (force) {
-	            try { linkifyForceRoots.delete(rootEl); } catch {}
-	          }
-	          markFileCandidatesInElement(rootEl);
-	          const candidates = Array.from(rootEl.querySelectorAll('.file-link-token.file-link-candidate'));
-	          for (const el of candidates) {
-	            const raw = el && el.dataset ? (el.dataset.fileRaw || '') : '';
-	            if (!raw) continue;
-	            registerFileLinkCandidate(raw, el);
-	            if (!force) {
-	              const cached = fileLinkCache.get(raw);
-	              if (cached && cached.ok) continue;
-	              if (cached && !cached.ok) {
-	                const age = Date.now() - (Number(cached.checkedAt || 0) || 0);
-	                if (age < FILE_LINK_NEGATIVE_CACHE_TTL_MS) continue;
-	                fileLinkCache.delete(raw);
-	              }
-	            }
-	            if (fileLinkPending.has(raw)) continue;
-	            pendingRaw.add(raw);
-	          }
-	        } catch {}
-	      });
-
-	      if (pendingRaw.size === 0) return;
-	      requestResolveFileLinks(Array.from(pendingRaw));
+	      fileLinkCache.clear();
+	      fileLinkPending.clear();
+	      fileLinkCandidatesByRaw.clear();
+	      fileLinkGeneration++;
 	    }
 
-	    function markFileCandidatesInElement(rootEl) {
-	      const walker = document.createTreeWalker(rootEl, NodeFilter.SHOW_TEXT);
-	      const nodes = [];
-	      let n;
-	      while ((n = walker.nextNode())) nodes.push(n);
+		    function pruneFileLinkCache() {
+		      const oldestRaws = fileLinkCache.keys();
+		      while (fileLinkCache.size > FILE_LINK_CACHE_MAX_ENTRIES) {
+		        const next = oldestRaws.next();
+		        if (next.done) return;
+		        const oldestRaw = next.value;
+		        if (oldestRaw === undefined) return;
+		        fileLinkCache.delete(oldestRaw);
+		      }
+		    }
 
-	      for (const textNode of nodes) {
-	        if (!textNode || !textNode.nodeValue) continue;
-	        const parent = textNode.parentElement;
-	        if (!parent) continue;
-	        if (parent.closest && parent.closest('.file-link-token')) continue;
-	        if (shouldSkipFileLinkify(textNode)) continue;
+		    function rememberFileLinkCandidateRaw(el, raw) {
+		      const value = String(raw || '');
+		      if (el && value) fileLinkRawByElement.set(el, value);
+		      return value;
+		    }
 
-	        const text = String(textNode.nodeValue || '');
-	        if (!looksLikeTextMayContainPath(text)) continue;
+		    function getFileLinkCandidateRaw(el) {
+		      if (!el) return '';
+		      const cached = fileLinkRawByElement.get(el);
+		      return cached === undefined ? '' : cached;
+		    }
 
-	        const parts = splitTextIntoFileLinkParts(text);
-	        if (!parts || parts.length === 0) continue;
+		    function normalizeFileLinkLocationCoordinate(value) {
+		      const parsed = Number(value);
+		      return Number.isInteger(parsed) && parsed > 0 ? parsed : 1;
+		    }
 
-	        const frag = document.createDocumentFragment();
-	        let didChange = false;
-	        for (const part of parts) {
+		    function rememberFileLinkCandidateLocation(el, line, character) {
+		      const location = {
+		        line: normalizeFileLinkLocationCoordinate(line),
+		        character: normalizeFileLinkLocationCoordinate(character),
+		      };
+		      if (el) fileLinkLocationByElement.set(el, location);
+		      return location;
+		    }
+
+		    function getFileLinkCandidateLocation(el) {
+		      const cached = el ? fileLinkLocationByElement.get(el) : null;
+		      return cached && cached.line > 0 ? cached : { line: 1, character: 1 };
+		    }
+
+		    function flushFileLinkifyQueue() {
+	      const rootCount = linkifyQueue.size;
+	      if (rootCount === 0) return;
+
+	      const pendingRaw = [];
+	      const pendingRawSet = new Set();
+	      let negativeCacheNow = null;
+	      function getNegativeCacheNow() {
+	        if (negativeCacheNow === null) negativeCacheNow = Date.now();
+	        return negativeCacheNow;
+	      }
+
+	      const roots = linkifyQueue.values();
+	      for (let i = 0; i < rootCount; i++) {
+	        const next = roots.next();
+	        if (next.done) break;
+	        const rootEl = next.value;
+		        if (!rootEl) break;
+		        linkifyQueue.delete(rootEl);
+		        try {
+		          const forceGeneration = linkifyForceRootGeneration.get(rootEl);
+		          const force = forceGeneration === fileLinkGeneration;
+		          if (forceGeneration !== undefined) {
+		            try { linkifyForceRootGeneration.delete(rootEl); } catch {}
+		          }
+		          const markedCandidates = markFileCandidatesInElement(rootEl) || [];
+	          for (let markedIndex = 0; markedIndex < markedCandidates.length; markedIndex++) {
+	            const el = markedCandidates[markedIndex];
+	            collectPendingFileLinkCandidate(el, force, pendingRawSet, pendingRaw, getNegativeCacheNow);
+	          }
+	          if (force || markedCandidates.length === 0) {
+	            collectKnownFileLinkCandidatesForRoot(rootEl, force, pendingRawSet, pendingRaw, getNegativeCacheNow);
+	          }
+	        } catch {}
+	      }
+
+	      if (pendingRaw.length === 0) return;
+	      requestResolveFileLinks(pendingRaw);
+	    }
+
+				    function isFileLinkTokenElement(el) {
+				      if (!el) return false;
+				      if (el.classList && typeof el.classList.contains === 'function') return el.classList.contains('file-link-token');
+				      return (' ' + String(el.className || '') + ' ').indexOf(' file-link-token ') >= 0;
+				    }
+
+				    function createFileLinkCandidateSpan(part, rootEl, markedCandidates) {
+				      const span = document.createElement('span');
+				      span.className = 'file-link-token file-link-candidate';
+				      rememberFileLinkCandidateRaw(span, part.fileRaw);
+				      rememberFileLinkCandidateLocation(span, part.line, part.character);
+				      span.textContent = getFileLinkCandidateDisplayLabel(part.label, part.fileRaw);
+				      registerFileLinkCandidate(part.fileRaw, span, rootEl);
+				      markedCandidates.push(span);
+				      return span;
+				    }
+
+					    function markFileCandidatesInElement(rootEl) {
+					      const walker = document.createTreeWalker(rootEl, NodeFilter.SHOW_TEXT);
+					      let candidates = null;
+				      let n;
+			      while ((n = walker.nextNode())) {
+				        if (!n || !n.nodeValue) continue;
+				        const text = String(n.nodeValue || '');
+				        if (!looksLikeTextMayContainPath(text)) continue;
+				        if (shouldSkipFileLinkify(n)) continue;
+				        if (!candidates) candidates = [];
+				        candidates.push(n);
+				      }
+				      if (!candidates) return EMPTY_FILE_LINK_CANDIDATES;
+
+				      const markedCandidates = [];
+		      for (let candidateIndex = 0; candidateIndex < candidates.length; candidateIndex++) {
+		        const textNode = candidates[candidateIndex];
+		        if (!textNode || !textNode.nodeValue) continue;
+		        const text = String(textNode.nodeValue || '');
+
+		        const parts = splitTextIntoFileLinkParts(text);
+		        if (!parts || parts.length === 0) continue;
+
+		        if (parts.length === 1 && parts[0].kind === 'file' && !parts[0].prefix && !parts[0].suffix) {
+		          const span = createFileLinkCandidateSpan(parts[0], rootEl, markedCandidates);
+		          try { textNode.parentNode.replaceChild(span, textNode); } catch {}
+		          continue;
+		        }
+
+		        const frag = document.createDocumentFragment();
+		        let didChange = false;
+		        for (let partIndex = 0; partIndex < parts.length; partIndex++) {
+	          const part = parts[partIndex];
 	          if (part.kind === 'text') {
 	            frag.appendChild(document.createTextNode(part.text));
 	            continue;
 	          }
 
 	          didChange = true;
-	          if (part.prefix) frag.appendChild(document.createTextNode(part.prefix));
+		          if (part.prefix) frag.appendChild(document.createTextNode(part.prefix));
 
-	          const span = document.createElement('span');
-	          span.className = 'file-link-token file-link-candidate';
-	          span.dataset.fileRaw = part.fileRaw;
-	          span.dataset.line = String(part.line || 1);
-	          span.dataset.character = String(part.character || 1);
-	          span.textContent = part.label || part.fileRaw;
-	          frag.appendChild(span);
-	          registerFileLinkCandidate(part.fileRaw, span);
+		          const span = createFileLinkCandidateSpan(part, rootEl, markedCandidates);
+			          frag.appendChild(span);
 
-	          if (part.suffix) frag.appendChild(document.createTextNode(part.suffix));
-	        }
+			          if (part.suffix) frag.appendChild(document.createTextNode(part.suffix));
+			        }
 
-	        if (didChange) {
-	          try { textNode.parentNode.replaceChild(frag, textNode); } catch {}
+		        if (didChange) {
+		          try { textNode.parentNode.replaceChild(frag, textNode); } catch {}
+		        }
+		      }
+		      return markedCandidates;
+		    }
+
+		    function collectPendingFileLinkCandidate(el, force, pendingRawSet, pendingRaw, getNegativeCacheNow) {
+		      const raw = getFileLinkCandidateRaw(el);
+		      if (!raw) return;
+	      registerFileLinkCandidate(raw, el);
+	      if (!force) {
+	        const cached = fileLinkCache.get(raw);
+	        if (cached && cached.ok) return;
+	        if (cached && !cached.ok) {
+	          const now = typeof getNegativeCacheNow === 'function' ? getNegativeCacheNow() : Date.now();
+	          const age = now - (Number(cached.checkedAt || 0) || 0);
+	          if (age < FILE_LINK_NEGATIVE_CACHE_TTL_MS) return;
+	          fileLinkCache.delete(raw);
 	        }
 	      }
+	      if (fileLinkPending.has(raw)) return;
+	      if (pendingRawSet.has(raw)) return;
+	      pendingRawSet.add(raw);
+	      pendingRaw.push(raw);
 	    }
 
-	    function shouldSkipFileLinkify(textNode) {
-	      let el = textNode && textNode.parentElement ? textNode.parentElement : null;
-	      while (el) {
+				    function shouldSkipFileLinkify(textNode) {
+			      const parentEl = textNode ? textNode.parentElement : null;
+			      let el = parentEl || null;
+		      if (!el) return true;
+		      while (el) {
 	        const tag = String(el.tagName || '').toUpperCase();
-	        if (tag === 'A' || tag === 'BUTTON' || tag === 'TEXTAREA' || tag === 'SCRIPT' || tag === 'STYLE') {
-	          return true;
-	        }
-	        if (
-	          el.classList &&
+		        if (
+		          tag === 'A' ||
+		          tag === 'BUTTON' ||
+		          tag === 'TEXTAREA' ||
+		          tag === 'SCRIPT' ||
+		          tag === 'STYLE' ||
+		          tag === 'PRE' ||
+		          tag === 'CODE'
+		        ) {
+			          return true;
+			        }
+		        if (isFileLinkTokenElement(el)) return true;
+		        if (
+		          el.classList &&
 	          (el.classList.contains('tool-diff-ln') ||
 	            el.classList.contains('copy-btn') ||
 	            el.classList.contains('tool-output') ||
@@ -429,47 +1198,44 @@
 	      return false;
 	    }
 
-	    function looksLikeTextMayContainPath(text) {
-	      if (!text) return false;
-	      return (
-	        text.includes('/') ||
-	        text.includes('\\') ||
-	        text.includes('.') ||
-	        text.includes('file://') ||
-	        text.includes('~/') ||
-	        text.includes(':') ||
-	        /\b(Makefile|Dockerfile|LICENSE|README)\b/.test(text)
-	      );
-	    }
+		    function looksLikeTextMayContainPath(text) {
+		      const value = String(text === undefined || text === null ? '' : text);
+	      if (!value) return false;
+	      if (value.includes('file://') || value.includes('~/') || value.includes('/') || value.includes('\\')) return true;
 
-	    function splitTextIntoFileLinkParts(text) {
-	      const out = [];
-	      const re = /\S+/g;
-	      let lastIndex = 0;
-	      let match;
-	      let changed = false;
+		      return FILE_LINK_TEXT_SIGNAL_RE.test(value);
+			    }
 
-	      while ((match = re.exec(text))) {
-	        const start = match.index;
+			    function splitTextIntoFileLinkParts(text) {
+			      let out = null;
+			      const re = FILE_LINK_TOKEN_RE;
+			      re.lastIndex = 0;
+		      let lastIndex = 0;
+		      let match;
+
+		      while ((match = re.exec(text))) {
+		        const start = match.index;
 	        const end = start + match[0].length;
 	        const word = match[0];
 
-	        const candidate = parseWordAsFileLinkCandidate(word);
-	        if (!candidate) continue;
+		        const candidate = parseWordAsFileLinkCandidate(word);
+		        if (!candidate) continue;
 
-	        if (start > lastIndex) out.push({ kind: 'text', text: text.slice(lastIndex, start) });
-	        out.push(candidate);
-	        lastIndex = end;
-	        changed = true;
-	      }
+		        if (!out) out = [];
+		        if (start > lastIndex) out.push({ kind: 'text', text: text.slice(lastIndex, start) });
+		        out.push(candidate);
+		        lastIndex = end;
+		      }
 
-	      if (!changed) return null;
-	      if (lastIndex < text.length) out.push({ kind: 'text', text: text.slice(lastIndex) });
-	      return out;
-	    }
+		      if (!out) return null;
+		      if (lastIndex < text.length) out.push({ kind: 'text', text: text.slice(lastIndex) });
+		      return out;
+		    }
 
 	    function parseWordAsFileLinkCandidate(word) {
-	      const split = splitWordPunctuation(word);
+	      const raw = String(word || '');
+	      if (!wordMayContainFileLinkSignal(raw)) return null;
+	      const split = splitWordPunctuation(raw);
 	      if (!split || !split.core) return null;
 	      const core = split.core;
 	      if (!isLikelyFilePathToken(core)) return null;
@@ -488,23 +1254,47 @@
 	      };
 	    }
 
+	    function wordMayContainFileLinkSignal(raw) {
+	      if (!raw) return false;
+	      let firstContentCode = 0;
+	      for (let index = 0; index < raw.length; index++) {
+	        const code = raw.charCodeAt(index);
+	        if (code === 47 || code === 92 || code === 46 || code === 35 || code === 126 || code === 58) return true;
+	        if (!firstContentCode && !isFileLinkLeadingPunctuationCode(code)) firstContentCode = code;
+	      }
+	      return isLikelySpecialFileBasenameStartCode(firstContentCode);
+	    }
+
+	    function isFileLinkLeadingPunctuationCode(code) {
+	      return code === 40 || code === 91 || code === 123 || code === 60 ||
+	        code === 34 || code === 39 || code === 96;
+	    }
+
+	    function isLikelySpecialFileBasenameStartCode(code) {
+	      return code === 68 || code === 76 || code === 77 || code === 82 ||
+	        code === 100 || code === 108 || code === 109 || code === 114;
+	    }
+
 	    function splitWordPunctuation(word) {
 	      const raw = String(word || '');
 	      if (!raw) return null;
 
-	      const leading = '([{<"\'`';
-	      const trailing = ')]}>,.;"\'`';
 	      let start = 0;
 	      let end = raw.length;
 
-	      while (start < end && leading.includes(raw[start])) start++;
-	      while (end > start && trailing.includes(raw[end - 1])) end--;
+	      while (start < end && FILE_LINK_LEADING_PUNCTUATION.includes(raw[start])) start++;
+	      while (end > start && FILE_LINK_TRAILING_PUNCTUATION.includes(raw[end - 1])) end--;
 
-	      let prefix = raw.slice(0, start);
-	      let core = raw.slice(start, end);
-	      let suffix = raw.slice(end);
+	      let prefix = '';
+	      let core = raw;
+	      let suffix = '';
+	      if (start > 0 || end < raw.length) {
+	        prefix = start > 0 ? raw.slice(0, start) : '';
+	        core = raw.slice(start, end);
+	        suffix = end < raw.length ? raw.slice(end) : '';
+	      }
 
-	      if (core.endsWith(':') && !/:\d+$/.test(core)) {
+		      if (core.endsWith(':') && !FILE_LINK_TRAILING_COLON_WITHOUT_LINE_RE.test(core)) {
 	        core = core.slice(0, -1);
 	        suffix = ':' + suffix;
 	      }
@@ -517,114 +1307,185 @@
 	      const value = String(token || '').trim();
 	      if (!value) return false;
 	      if (value.length > 260) return false;
-	      const lower = value.toLowerCase();
-	      if (lower.startsWith('http://') || lower.startsWith('https://')) return false;
-	      if (lower.startsWith('www.')) return false;
-	      if (value.includes('@') && value.includes('.')) return false;
-	      if (/^\d+(?:\.\d+)+$/.test(value)) return false;
-	      if (value.startsWith('file://')) return true;
-	      if (value.startsWith('~/') || value.startsWith('~\\')) return true;
-	      if (/^[a-zA-Z]:[\\/]/.test(value)) return true;
-	      if (value.startsWith('/') || value.startsWith('./') || value.startsWith('../')) return true;
-	      if (value.includes('/') || value.includes('\\')) return true;
-	      if (value.includes('.') && /[a-zA-Z]/.test(value)) return true;
-	      if (/^(Makefile|Dockerfile|LICENSE|README)$/i.test(value)) return true;
+	      const firstCode = value.charCodeAt(0);
+	      if (firstCode === 72 || firstCode === 104 || firstCode === 87 || firstCode === 119) {
+	        const lower = value.toLowerCase();
+	        if (lower.startsWith('http://') || lower.startsWith('https://')) return false;
+	        if (lower.startsWith('www.')) return false;
+	      }
+	      const hasDot = value.includes('.');
+	      if (value.includes('@') && hasDot) return false;
+		      if (value.startsWith('file://')) return true;
+		      if (value.startsWith('~/') || value.startsWith('~\\')) return true;
+		      if (value.startsWith('/') || value.startsWith('./') || value.startsWith('../')) return true;
+		      if (value.includes('/') || value.includes('\\')) return true;
+		      if (hasDot && FILE_LINK_VERSION_NUMBER_RE.test(value)) return false;
+		      if (hasDot && FILE_LINK_ALPHA_RE.test(value)) return true;
+		      if (FILE_LINK_SPECIAL_BASENAME_RE.test(value)) return true;
 	      return false;
 	    }
+
+		    function hasPathLocationColon(value) {
+		      let index = value.indexOf(':');
+		      while (index >= 0 && index + 1 < value.length) {
+		        const nextCode = value.charCodeAt(index + 1);
+		        if (nextCode >= 48 && nextCode <= 57) return true;
+		        index = value.indexOf(':', index + 1);
+		      }
+		      return false;
+		    }
 
 	    function parsePathLocation(token) {
 	      const value = String(token || '').trim();
 	      if (!value) return null;
 
-	      const hashMatch = value.match(/^(.*)#L(\d+)(?:C(\d+))?$/);
-	      if (hashMatch) {
-	        return {
-	          path: hashMatch[1] || '',
-	          line: Number(hashMatch[2] || 1) || 1,
-	          character: Number(hashMatch[3] || 1) || 1,
-	          label: value,
-	          trailing: '',
-	        };
+		      if (value.includes('#L')) {
+		        const hashMatch = FILE_LINK_HASH_LOCATION_RE.exec(value);
+	        if (hashMatch) {
+	          return {
+	            path: hashMatch[1] || '',
+	            line: Number(hashMatch[2] || 1) || 1,
+	            character: Number(hashMatch[3] || 1) || 1,
+	            label: value,
+	            trailing: '',
+	          };
+	        }
 	      }
 
-	      const colonMatch = value.match(/^(.*):(\d+)(?::(\d+))?$/);
-	      if (colonMatch) {
-	        const character = Number(colonMatch[3] || 1) || 1;
-	        return {
-	          path: colonMatch[1] || '',
-	          line: Number(colonMatch[2] || 1) || 1,
-	          character,
-	          label: value,
-	          trailing: '',
-	        };
-	      }
+		      if (hasPathLocationColon(value)) {
+		        const colonMatch = FILE_LINK_COLON_LOCATION_RE.exec(value);
+	        if (colonMatch) {
+	          const character = Number(colonMatch[3] || 1) || 1;
+	          return {
+	            path: colonMatch[1] || '',
+	            line: Number(colonMatch[2] || 1) || 1,
+	            character,
+	            label: value,
+	            trailing: '',
+	          };
+	        }
 
-	      const colonPrefixMatch = value.match(/^(.*):(\d+)(?::(\d+))?:(.+)$/);
-	      if (colonPrefixMatch) {
-	        const basePath = colonPrefixMatch[1] || '';
-	        const line = Number(colonPrefixMatch[2] || 1) || 1;
-	        const character = Number(colonPrefixMatch[3] || 1) || 1;
-	        const hasCharacter = !!colonPrefixMatch[3];
-	        const label = basePath + ':' + String(line) + (hasCharacter ? ':' + String(character) : '');
-	        return {
-	          path: basePath,
-	          line,
-	          character,
-	          label,
-	          trailing: ':' + String(colonPrefixMatch[4] || ''),
-	        };
+		        const colonPrefixMatch = FILE_LINK_COLON_PREFIX_LOCATION_RE.exec(value);
+	        if (colonPrefixMatch) {
+	          const basePath = colonPrefixMatch[1] || '';
+	          const line = Number(colonPrefixMatch[2] || 1) || 1;
+	          const character = Number(colonPrefixMatch[3] || 1) || 1;
+	          const hasCharacter = !!colonPrefixMatch[3];
+	          const label = basePath + ':' + String(line) + (hasCharacter ? ':' + String(character) : '');
+	          return {
+	            path: basePath,
+	            line,
+	            character,
+	            label,
+	            trailing: ':' + String(colonPrefixMatch[4] || ''),
+	          };
+	        }
 	      }
 
 	      return { path: value, line: 1, character: 1, label: value, trailing: '' };
 	    }
 
-	    function registerFileLinkCandidate(raw, el) {
+	    function registerFileLinkCandidate(raw, el, rootEl) {
 	      if (!raw || !el) return;
+	      rememberFileLinkCandidateRaw(el, raw);
 	      let set = fileLinkCandidatesByRaw.get(raw);
 	      if (!set) {
 	        set = new Set();
 	        fileLinkCandidatesByRaw.set(raw, set);
 	      }
 	      set.add(el);
+	      registerRootFileLinkCandidate(rootEl, el);
+	    }
+
+	    function registerRootFileLinkCandidate(rootEl, el) {
+	      if (!rootEl || !el) return;
+	      let record = fileLinkCandidatesByRoot.get(rootEl);
+	      if (!record || record.generation !== fileLinkGeneration) {
+	        record = { generation: fileLinkGeneration, elements: new Set() };
+	        fileLinkCandidatesByRoot.set(rootEl, record);
+	      }
+	      record.elements.add(el);
+	    }
+
+	    function getKnownFileLinkCandidatesForRoot(rootEl) {
+	      const record = rootEl ? fileLinkCandidatesByRoot.get(rootEl) : null;
+	      if (!record) return null;
+	      if (record.generation !== fileLinkGeneration) {
+	        fileLinkCandidatesByRoot.delete(rootEl);
+	        return null;
+	      }
+	      return record.elements;
+	    }
+
+	    function collectKnownFileLinkCandidatesForRoot(rootEl, force, pendingRawSet, pendingRaw, getNegativeCacheNow) {
+	      const elements = getKnownFileLinkCandidatesForRoot(rootEl);
+	      if (!elements || elements.size === 0) return;
+	      for (const el of elements) {
+	        if (!el || el.isConnected === false) {
+	          elements.delete(el);
+	          continue;
+	        }
+	        collectPendingFileLinkCandidate(el, force, pendingRawSet, pendingRaw, getNegativeCacheNow);
+	      }
 	    }
 
 	    function requestResolveFileLinks(rawPaths) {
-	      const list = Array.isArray(rawPaths) ? rawPaths.filter(Boolean) : [];
-	      if (list.length === 0) return;
+	      if (!Array.isArray(rawPaths) || rawPaths.length === 0) return;
 
 	      const chunkSize = 150;
-	      for (let i = 0; i < list.length; i += chunkSize) {
-	        const chunk = list.slice(i, i + chunkSize);
-	        if (chunk.length === 0) continue;
-
-	        const requestId = String(Date.now()) + '_' + Math.random().toString(16).slice(2);
-	        chunk.forEach(raw => fileLinkPending.add(raw));
-	        try {
-	          vscode.postMessage({
-	            type: 'resolveFileLinks',
-	            requestId,
-	            candidates: chunk.map(raw => ({ raw })),
-	          });
-	        } catch {
-	          chunk.forEach(raw => fileLinkPending.delete(raw));
+	      let candidates = [];
+	      for (let i = 0; i < rawPaths.length; i++) {
+	        const raw = rawPaths[i];
+	        if (!raw) continue;
+	        candidates.push({ raw });
+	        fileLinkPending.add(raw);
+	        if (candidates.length >= chunkSize) {
+	          postFileLinkResolveChunk(candidates);
+	          candidates = [];
 	        }
 	      }
-	    }
-
-	    function handleResolvedFileLinks(data) {
-	      const payload = data || {};
-	      const results = Array.isArray(payload.results) ? payload.results : [];
-	      for (const r of results) {
-	        if (!r || typeof r !== 'object') continue;
-	        const raw = typeof r.raw === 'string' ? r.raw : '';
-	        if (!raw) continue;
-	        const ok = !!r.ok;
-	        const resolvedPath = ok && typeof r.path === 'string' ? r.path : '';
-	        fileLinkCache.set(raw, { ok, path: resolvedPath, checkedAt: Date.now() });
-	        fileLinkPending.delete(raw);
-	        applyResolvedFileLink(raw);
+	      if (candidates.length > 0) {
+	        postFileLinkResolveChunk(candidates);
 	      }
 	    }
+
+	    function postFileLinkResolveChunk(candidates) {
+	      if (!candidates || candidates.length === 0) return;
+	      const requestId = String(Date.now()) + '_' + Math.random().toString(16).slice(2);
+	      try {
+	        vscode.postMessage({
+	          type: 'resolveFileLinks',
+	          requestId,
+	          candidates,
+	        });
+		      } catch {
+		        for (let candidateIndex = 0; candidateIndex < candidates.length; candidateIndex++) {
+		          const candidate = candidates[candidateIndex];
+		          fileLinkPending.delete(candidate.raw);
+		        }
+		      }
+		    }
+
+		    function handleResolvedFileLinks(data) {
+		      const payload = data || {};
+		      const results = Array.isArray(payload.results) ? payload.results : [];
+		      if (results.length === 0) return;
+		      const checkedAt = Date.now();
+		      let cacheChanged = false;
+		      for (let i = 0; i < results.length; i++) {
+		        const r = results[i];
+		        if (!r || typeof r !== 'object') continue;
+		        const raw = typeof r.raw === 'string' ? r.raw : '';
+		        if (!raw) continue;
+		        const ok = !!r.ok;
+		        const resolvedPath = ok && typeof r.path === 'string' ? r.path : '';
+		        fileLinkCache.set(raw, { ok, path: resolvedPath, checkedAt });
+		        cacheChanged = true;
+		        fileLinkPending.delete(raw);
+		        applyResolvedFileLink(raw);
+		      }
+		      if (cacheChanged) pruneFileLinkCache();
+		    }
 
 	    function applyResolvedFileLink(raw) {
 	      const cached = fileLinkCache.get(raw);
@@ -632,38 +1493,46 @@
 	      const set = fileLinkCandidatesByRaw.get(raw);
 	      if (!set || set.size === 0) return;
 
-	      for (const el of Array.from(set)) {
+	      for (const el of set) {
 	        try {
 	          if (!el || !el.isConnected) {
-	            set.delete(el);
 	            continue;
 	          }
-	          if (cached.ok && cached.path) {
-	            const btn = document.createElement('button');
-	            btn.type = 'button';
-	            btn.className = 'file-link-token file-link';
-	            btn.dataset.action = 'openLocation';
-	            btn.dataset.path = String(cached.path);
-	            btn.dataset.line = el.dataset.line || '1';
-	            btn.dataset.character = el.dataset.character || '1';
-	            btn.textContent = el.textContent || raw;
-	            el.replaceWith(btn);
-	          } else {
-	            el.className = 'file-link-token file-link-candidate file-link-missing';
-	            el.dataset.fileRaw = raw;
-	          }
+		          if (cached.ok && cached.path) {
+		            const btn = document.createElement('button');
+		            btn.type = 'button';
+		            btn.className = 'file-link-token file-link';
+		            rememberRenderedAction(btn, 'openLocation');
+			            const location = getFileLinkCandidateLocation(el);
+			            const line = location.line;
+			            const character = location.character;
+			            rememberOpenLocationPayload(btn, cached.path, line, character);
+				            const displayPath = getFileLinkOpenDisplayPath(cached.path);
+				            const openLabel = formatOpenLocationLabel(displayPath, line, character);
+			            const visibleLabel = el.textContent || raw;
+			            const accessibleLabel = formatOpenLocationAccessibleLabel(visibleLabel, displayPath, line, character);
+		            setAttributeValue(btn, 'title', openLabel);
+		            setAttributeValue(btn, 'aria-label', accessibleLabel);
+		            btn.textContent = visibleLabel;
+		            el.replaceWith(btn);
+			          } else {
+			            el.className = 'file-link-token file-link-candidate file-link-missing';
+			            rememberFileLinkCandidateRaw(el, raw);
+			          }
 	        } catch {}
-	        set.delete(el);
 	      }
 
-	      if (set.size === 0) {
-	        fileLinkCandidatesByRaw.delete(raw);
-	      }
+	      set.clear();
+	      fileLinkCandidatesByRaw.delete(raw);
 	    }
 
-	    function renderContextPopover(ctx) {
-	      if (!contextPopoverBody) return;
-	      contextPopoverBody.innerHTML = '';
+		    function renderContextPopover(ctx, renderKey) {
+		      if (!contextPopoverBody) return;
+			      const nextRenderKey = typeof renderKey === 'string' && renderKey ? renderKey : getContextPopoverRenderKey(ctx);
+			      if (nextRenderKey === contextPopoverRenderKey) return;
+		      contextPopoverRenderKey = nextRenderKey;
+		      let fragment = null;
+		      let singleContextNode = null;
 
 	      const total = ctx && typeof ctx.totalTokens === 'number' ? ctx.totalTokens : undefined;
 	      const contextLimit = ctx && typeof ctx.contextLimitTokens === 'number' ? ctx.contextLimitTokens : undefined;
@@ -673,9 +1542,21 @@
 	      const output = ctx && typeof ctx.outputTokens === 'number' ? ctx.outputTokens : undefined;
 	      const cacheRead = ctx && typeof ctx.cacheReadTokens === 'number' ? ctx.cacheReadTokens : undefined;
 	      const cacheWrite = ctx && typeof ctx.cacheWriteTokens === 'number' ? ctx.cacheWriteTokens : undefined;
-	      const hasTokens = !!total && total > 0;
+		      const hasTokens = !!total && total > 0;
+		      const appendContextNode = (node) => {
+		        if (fragment) {
+		          fragment.appendChild(node);
+		        } else if (singleContextNode) {
+		          fragment = document.createDocumentFragment();
+		          fragment.appendChild(singleContextNode);
+		          fragment.appendChild(node);
+		          singleContextNode = null;
+		        } else {
+		          singleContextNode = node;
+		        }
+		      };
 
-	      const addRow = (key, value) => {
+		      const addRow = (key, value) => {
 	        const row = document.createElement('div');
 	        row.className = 'context-row';
 	        const k = document.createElement('span');
@@ -683,17 +1564,17 @@
 	        k.textContent = key;
 	        const v = document.createElement('span');
 	        v.className = 'context-value';
-	        v.textContent = value;
-	        row.appendChild(k);
-	        row.appendChild(v);
-	        contextPopoverBody.appendChild(row);
-	      };
+		        v.textContent = value;
+		        row.appendChild(k);
+		        row.appendChild(v);
+		        appendContextNode(row);
+		      };
 
-	      const addDivider = () => {
-	        const div = document.createElement('div');
-	        div.className = 'context-divider';
-	        contextPopoverBody.appendChild(div);
-	      };
+		      const addDivider = () => {
+		        const div = document.createElement('div');
+		        div.className = 'context-divider';
+		        appendContextNode(div);
+		      };
 
 	      addRow('Total', total && total > 0 ? formatInt(total) : '—');
 	      if (contextLimit && contextLimit > 0) {
@@ -715,13 +1596,22 @@
 	      if (cacheRead !== undefined && cacheRead > 0) addRow('Cache read', formatInt(cacheRead));
 	      if (cacheWrite !== undefined && cacheWrite > 0) addRow('Cache write', formatInt(cacheWrite));
 
-	      if (!hasTokens) addRow('Note', 'Token usage unavailable');
-	    }
+		      if (!hasTokens) addRow('Note', 'Token usage unavailable');
+		      replaceElementChildren(contextPopoverBody, fragment || singleContextNode);
+		    }
 
-	    function updateContextIndicatorState(ctx) {
-	      if (!contextIndicator) return;
+		    function updateContextIndicatorState(ctx, renderKey) {
+		      if (!contextIndicator) return;
 
-	      latestContext = ctx || {};
+		      latestContext = ctx || {};
+		      const nextStateKey = typeof renderKey === 'string' && renderKey ? renderKey : getContextPopoverRenderKey(latestContext);
+		      if (nextStateKey === contextIndicatorStateKey) {
+		        if (isPopoverOpen(contextPopover)) {
+		          renderContextPopover(latestContext, nextStateKey);
+		        }
+	        return;
+	      }
+	      contextIndicatorStateKey = nextStateKey;
 
 	      const total = ctx && typeof ctx.totalTokens === 'number' ? ctx.totalTokens : undefined;
 	      const contextLimit = ctx && typeof ctx.contextLimitTokens === 'number' ? ctx.contextLimitTokens : undefined;
@@ -734,7 +1624,6 @@
 	        ? (shortPercent ? shortTotal + ' tok ' + shortPercent : shortTotal + ' tok')
 	        : 'Context';
 
-	      const lines = [];
 	      let title = 'Context: ' + (hasTokens ? formatInt(total) : 'token usage unavailable');
 	      if (contextLimit && contextLimit > 0) {
 	        title += hasTokens ? ' / ' + formatInt(contextLimit) : ' · limit ' + formatInt(contextLimit);
@@ -744,41 +1633,53 @@
 	      } else {
 	        title += hasTokens ? ' tokens' : '';
 	      }
-	      lines.push(title);
 	      const input = ctx && typeof ctx.inputTokens === 'number' ? ctx.inputTokens : undefined;
 	      const output = ctx && typeof ctx.outputTokens === 'number' ? ctx.outputTokens : undefined;
 	      if (hasTokens && (input !== undefined || output !== undefined)) {
-	        lines.push('Input: ' + formatInt(input || 0) + '  Output: ' + formatInt(output || 0));
+	        title += '\nInput: ' + formatInt(input || 0) + '  Output: ' + formatInt(output || 0);
 	      } else if (!hasTokens) {
-	        lines.push('Open for memory recall and compaction controls.');
+	        title += '\nOpen for memory recall and compaction controls.';
 	      }
 
-	      contextIndicator.textContent = label;
-	      contextIndicator.classList.remove('hidden');
-	      contextIndicator.classList.remove('warn', 'danger');
-	      if (hasTokens && typeof percent === 'number') {
-	        if (percent >= 95) contextIndicator.classList.add('danger');
-	        else if (percent >= 80) contextIndicator.classList.add('warn');
-	      }
-	      contextIndicator.title = lines.join('\n');
+	      const isDanger = hasTokens && typeof percent === 'number' && percent >= 95;
+	      const isWarn = hasTokens && typeof percent === 'number' && percent >= 80 && percent < 95;
+	      setTextContent(contextIndicator, label);
+	      setContextIndicatorVisible(true);
+	      setClassPresence(contextIndicator, 'danger', isDanger);
+	      setClassPresence(contextIndicator, 'warn', isWarn);
+	      setTitle(contextIndicator, title);
+	      setAttributeValue(contextIndicator, 'aria-label', label + ', context usage');
 
-	      if (contextPopover && !contextPopover.classList.contains('hidden')) {
-	        renderContextPopover(ctx);
-	      }
+		      if (isPopoverOpen(contextPopover)) {
+		        renderContextPopover(ctx, nextStateKey);
+		      }
+		    }
+
+		    function renderEmptyTodoPopover() {
+		      setAttributeValue(todoPopoverBody, 'role', 'note');
+		      setAttributeValue(todoPopoverBody, 'aria-label', 'Todo list status');
+		      const emptyEl = document.createElement('div');
+		      emptyEl.className = 'todo-empty';
+		      emptyEl.textContent = 'No todos yet. The agent can use todowrite to track a plan.';
+		      replaceElementChildren(todoPopoverBody, emptyEl);
 	    }
 
-	    function renderTodoPopover(todos) {
+	    function renderTodoPopover(todos, renderState) {
 	      if (!todoPopoverBody) return;
-	      todoPopoverBody.innerHTML = '';
+	      const todoRenderState = renderState && typeof renderState.key === 'string'
+	        ? renderState
+	        : getTodoRenderState(todos);
+	      const nextRenderKey = todoRenderState.key;
+	      if (nextRenderKey === todoPopoverRenderKey) return;
+	      todoPopoverRenderKey = nextRenderKey;
 
 	      const list = Array.isArray(todos) ? todos : [];
 	      if (list.length === 0) {
-	        const emptyEl = document.createElement('div');
-	        emptyEl.className = 'todo-empty';
-	        emptyEl.textContent = 'No todos yet. The agent can use todowrite to track a plan.';
-	        todoPopoverBody.appendChild(emptyEl);
+	        renderEmptyTodoPopover();
 	        return;
-	      }
+		      }
+		      setAttributeValue(todoPopoverBody, 'role', 'list');
+		      setAttributeValue(todoPopoverBody, 'aria-label', 'Todos');
 
 	      const statusIcon = (status) => {
 	        switch (status) {
@@ -789,38 +1690,45 @@
 	        }
 	      };
 
-	      const normalizeStatus = (value) => {
-	        return value === 'in_progress' || value === 'completed' || value === 'cancelled' ? value : 'pending';
-	      };
-	      const normalizePriority = (value) => {
-	        return value === 'high' || value === 'low' ? value : 'medium';
-	      };
+		      const totalFromState =
+		        typeof todoRenderState.total === 'number' && todoRenderState.total >= 0
+		          ? todoRenderState.total
+		          : null;
+			      let fragment = null;
+			      let singleTodoRow = null;
+			      let renderedCount = 0;
+			      let scannedRenderableCount = 0;
+		      for (let todoIndex = 0; todoIndex < list.length; todoIndex++) {
+		        const t = list[todoIndex];
+		        const content = getTodoRenderContent(t);
+		        if (!content) continue;
+		        scannedRenderableCount++;
+		        if (renderedCount >= TODO_POPOVER_RENDER_LIMIT) {
+		          if (totalFromState !== null) break;
+		          continue;
+		        }
 
-	      for (const t of list) {
-	        if (!t || typeof t !== 'object') continue;
-	        const content = typeof t.content === 'string' ? t.content : '';
-	        if (!content.trim()) continue;
-
-	        const status = normalizeStatus(typeof t.status === 'string' ? t.status : 'pending');
-	        const priority = normalizePriority(typeof t.priority === 'string' ? t.priority : 'medium');
+		        const status = normalizeTodoStatus(typeof t.status === 'string' ? t.status : 'pending');
+		        const priority = normalizeTodoPriority(typeof t.priority === 'string' ? t.priority : 'medium');
 
 	        const row = document.createElement('div');
 	        row.className = 'todo-item ' + status;
-	        if (status === 'completed') row.classList.add('completed');
+	        row.setAttribute('role', 'listitem');
 
 	        const icon = document.createElement('div');
 	        icon.className = 'todo-icon';
+	        icon.setAttribute('aria-hidden', 'true');
 	        icon.textContent = statusIcon(status);
 
 	        const body = document.createElement('div');
 	        body.className = 'todo-content';
-	        body.textContent = content;
+	        body.textContent = getTodoDisplayContent(content);
 
 	        const meta = document.createElement('div');
 	        meta.className = 'todo-meta';
 
 	        const statusPill = document.createElement('div');
-	        statusPill.className = 'todo-pill';
+	        statusPill.className = 'todo-pill ' + status;
 	        statusPill.textContent =
 	          status === 'in_progress'
 	            ? 'in progress'
@@ -835,61 +1743,126 @@
 	        meta.appendChild(statusPill);
 	        meta.appendChild(priorityPill);
 
-	        row.appendChild(icon);
-	        row.appendChild(body);
-	        row.appendChild(meta);
-	        todoPopoverBody.appendChild(row);
-	      }
-	    }
+		        row.appendChild(icon);
+		        row.appendChild(body);
+		        row.appendChild(meta);
+			        if (fragment) {
+			          fragment.appendChild(row);
+			        } else if (singleTodoRow) {
+			          fragment = document.createDocumentFragment();
+			          fragment.appendChild(singleTodoRow);
+			          fragment.appendChild(row);
+			          singleTodoRow = null;
+			        } else {
+			          singleTodoRow = row;
+			        }
+			        renderedCount++;
+			      }
+		      const totalRenderableCount =
+		        totalFromState !== null && totalFromState >= renderedCount
+		          ? totalFromState
+		          : scannedRenderableCount;
+		      if (!totalRenderableCount) {
+		        renderEmptyTodoPopover();
+		        return;
+		      }
+		      const hiddenCount = totalRenderableCount - renderedCount;
+			      if (hiddenCount > 0) {
+				        const overflow = document.createElement('div');
+				        overflow.className = 'todo-popover-overflow';
+				        overflow.setAttribute('role', 'listitem');
+				        const hiddenText = hiddenCount + ' more ' + (hiddenCount === 1 ? 'todo' : 'todos');
+				        overflow.setAttribute('aria-label', hiddenText);
+				        overflow.textContent = '… and ' + hiddenText;
+				        if (!fragment) {
+				          fragment = document.createDocumentFragment();
+				          if (singleTodoRow) {
+				            fragment.appendChild(singleTodoRow);
+				            singleTodoRow = null;
+				          }
+				        }
+			        fragment.appendChild(overflow);
+			      }
+			      replaceElementChildren(todoPopoverBody, fragment || singleTodoRow);
+			    }
 
-	    function updateTodoIndicatorState(todos) {
+	    function updateTodoIndicatorState(todos, renderState) {
 	      if (!todoIndicator) return;
 	      latestTodos = Array.isArray(todos) ? todos : [];
+	      const todoRenderState = renderState && typeof renderState.key === 'string'
+	        ? renderState
+	        : getTodoRenderState(latestTodos);
+	      const nextStateKey = todoRenderState.key;
+	      if (nextStateKey === todoIndicatorStateKey) {
+	        if (isPopoverOpen(todoPopover)) {
+	          const existingTotal = typeof todoRenderState.total === 'number' ? todoRenderState.total : 0;
+	          if (existingTotal > 0) {
+	            renderTodoPopover(latestTodos, todoRenderState);
+	          } else {
+	            closeTodoPopover();
+	          }
+	        }
+	        return;
+	      }
+	      todoIndicatorStateKey = nextStateKey;
 
-	      const openCount = latestTodos.filter(t => t && typeof t === 'object' && t.status !== 'completed').length;
-	      const totalCount = latestTodos.length;
+	      const totalCount = typeof todoRenderState.total === 'number' ? todoRenderState.total : 0;
 	      if (!totalCount) {
-	        todoIndicator.textContent = '';
-	        todoIndicator.classList.add('hidden');
+	        setTextContent(todoIndicator, '');
+	        setAttributeValue(todoIndicator, 'aria-label', 'Todo list');
+	        setTodoIndicatorVisible(false);
 	        closeTodoPopover();
 	        return;
 	      }
 
-	      todoIndicator.classList.remove('hidden');
-	      todoIndicator.textContent = 'Todo · ' + formatCompact(openCount);
+	      setTodoIndicatorVisible(true);
+	      const openCount = typeof todoRenderState.open === 'number' ? todoRenderState.open : 0;
+	      const label = 'Todo · ' + formatCompact(openCount);
+	      setTextContent(todoIndicator, label);
+	      setAttributeValue(todoIndicator, 'aria-label', label + ', todo list');
 
-	      if (todoPopover && !todoPopover.classList.contains('hidden')) {
-	        renderTodoPopover(latestTodos);
+	      if (isPopoverOpen(todoPopover)) {
+	        renderTodoPopover(latestTodos, todoRenderState);
 	      }
 	    }
 
 	    function openTodoPopover() {
 	      if (!todoPopover) return;
+	      const wasOpen = isPopoverOpen(todoPopover);
 	      renderTodoPopover(latestTodos);
-	      todoPopover.classList.remove('hidden');
+	      if (wasOpen) return;
+	      todoPopoverFocusReturnTarget = getPopoverFocusReturnTarget(todoIndicator);
+	      setPopoverOpenState(todoPopover, true);
+	      setAttributeValue(todoIndicator, 'aria-expanded', 'true');
+	      focusPopoverTarget(todoPopoverClose);
 	    }
 
 	    function toggleTodoPopover() {
 	      if (!todoPopover) return;
-	      if (todoPopover.classList.contains('hidden')) {
-	        openTodoPopover();
-	      } else {
+	      if (isPopoverOpen(todoPopover)) {
 	        closeTodoPopover();
+	      } else {
+	        openTodoPopover();
 	      }
 	    }
 
 	    function openContextPopover() {
 	      if (!contextPopover || !latestContext) return;
+	      const wasOpen = isPopoverOpen(contextPopover);
 	      renderContextPopover(latestContext);
-	      contextPopover.classList.remove('hidden');
+	      if (wasOpen) return;
+	      contextPopoverFocusReturnTarget = getPopoverFocusReturnTarget(contextIndicator);
+	      setPopoverOpenState(contextPopover, true);
+	      setAttributeValue(contextIndicator, 'aria-expanded', 'true');
+	      focusPopoverTarget(contextPopoverClose);
 	    }
 
 	    function toggleContextPopover() {
 	      if (!contextPopover) return;
-	      if (contextPopover.classList.contains('hidden')) {
-	        openContextPopover();
-	      } else {
+	      if (isPopoverOpen(contextPopover)) {
 	        closeContextPopover();
+	      } else {
+	        openContextPopover();
 	      }
 	    }
 
@@ -942,24 +1915,25 @@
 	      });
 	    }
 
-	    document.addEventListener('mousedown', (e) => {
-	      if (!contextPopover || contextPopover.classList.contains('hidden')) return;
-	      const target = e.target;
-	      if (contextPopover.contains(target) || (contextIndicator && contextIndicator.contains(target))) return;
-	      closeContextPopover();
-	    }, { capture: true });
+				    document.addEventListener('mousedown', (e) => {
+				      const target = e.target;
+				      if (isInsideOpenOutputModal(target)) return;
+				      dismissPopoverFromOutsidePointer(contextPopover, contextIndicator, closeContextPopover, target);
+				      dismissPopoverFromOutsidePointer(todoPopover, todoIndicator, closeTodoPopover, target);
+				    }, { capture: true });
 
-	    document.addEventListener('mousedown', (e) => {
-	      if (!todoPopover || todoPopover.classList.contains('hidden')) return;
-	      const target = e.target;
-	      if (todoPopover.contains(target) || (todoIndicator && todoIndicator.contains(target))) return;
-	      closeTodoPopover();
-	    }, { capture: true });
-
-	    document.addEventListener('keydown', (e) => {
-	      if (e.key === 'Escape') {
-	        closeContextPopover();
-	        closeTodoPopover();
-	        closeOutputModal();
-	      }
-	    });
+		    document.addEventListener('keydown', (e) => {
+		      if (handleOutputModalTabKey(e)) return;
+		      if (typeof isEscapeKey === 'function' ? isEscapeKey(e) : e.key === 'Escape') {
+		        if (isOutputModalOpen()) {
+		          closeOutputModal();
+		          consumeHandledEvent(e, true);
+		          return;
+		        }
+		        const hadContextPopover = isPopoverOpen(contextPopover);
+		        const hadTodoPopover = isPopoverOpen(todoPopover);
+		        closeContextPopover();
+		        closeTodoPopover();
+		        if (hadContextPopover || hadTodoPopover) consumeHandledEvent(e, true);
+		      }
+		    });

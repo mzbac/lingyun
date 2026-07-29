@@ -78,7 +78,15 @@ export const CODEX_SUBSCRIPTION_FALLBACK_MODELS: ModelInfo[] = [
   },
 ];
 
-const FALLBACK_MODEL_MAP = new Map(CODEX_SUBSCRIPTION_FALLBACK_MODELS.map((model) => [model.id, model]));
+function buildFallbackModelMap(): Map<string, ModelInfo> {
+  const map = new Map<string, ModelInfo>();
+  for (const model of CODEX_SUBSCRIPTION_FALLBACK_MODELS) {
+    map.set(model.id, model);
+  }
+  return map;
+}
+
+const FALLBACK_MODEL_MAP = buildFallbackModelMap();
 
 export type CodexModelRecord = {
   slug?: unknown;
@@ -156,15 +164,20 @@ function resolveMaxInputTokens(record: CodexModelRecord, fallback?: ModelInfo): 
   return fallback?.maxInputTokens;
 }
 
-function sortCodexModels(models: Array<ModelInfo & { priority?: number }>): ModelInfo[] {
-  return [...models]
-    .sort((left, right) => {
-      const leftPriority = typeof left.priority === 'number' ? left.priority : Number.MAX_SAFE_INTEGER;
-      const rightPriority = typeof right.priority === 'number' ? right.priority : Number.MAX_SAFE_INTEGER;
-      if (leftPriority !== rightPriority) return leftPriority - rightPriority;
-      return left.name.localeCompare(right.name);
-    })
-    .map(({ priority: _priority, ...model }) => model);
+function finalizeSortedCodexModels(models: Array<ModelInfo & { priority?: number }>): ModelInfo[] {
+  models.sort((left, right) => {
+    const leftPriority = typeof left.priority === 'number' ? left.priority : Number.MAX_SAFE_INTEGER;
+    const rightPriority = typeof right.priority === 'number' ? right.priority : Number.MAX_SAFE_INTEGER;
+    if (leftPriority !== rightPriority) return leftPriority - rightPriority;
+    return left.name.localeCompare(right.name);
+  });
+
+  const normalized = new Array<ModelInfo>(models.length);
+  for (let index = 0; index < models.length; index++) {
+    const { priority: _priority, ...model } = models[index];
+    normalized[index] = model;
+  }
+  return normalized;
 }
 
 function createCodexDefaultModelInfo(modelId: string): ModelInfo {
@@ -181,15 +194,20 @@ function createCodexDefaultModelInfo(modelId: string): ModelInfo {
 
 function appendDefaultCodexModel(models: ModelInfo[], defaultModelId: string | undefined): ModelInfo[] {
   const normalizedDefault = typeof defaultModelId === 'string' ? defaultModelId.trim() : '';
-  if (!normalizedDefault || models.some((model) => model.id === normalizedDefault)) return models;
-  return [...models, createCodexDefaultModelInfo(normalizedDefault)];
+  if (!normalizedDefault) return models;
+  for (const model of models) {
+    if (model.id === normalizedDefault) return models;
+  }
+  models.push(createCodexDefaultModelInfo(normalizedDefault));
+  return models;
 }
 
 export function createCodexFallbackModels(options?: { defaultModelId?: string }): ModelInfo[] {
-  return appendDefaultCodexModel(
-    CODEX_SUBSCRIPTION_FALLBACK_MODELS.map((model) => ({ ...model })),
-    options?.defaultModelId,
-  );
+  const models = new Array<ModelInfo>(CODEX_SUBSCRIPTION_FALLBACK_MODELS.length);
+  for (let index = 0; index < CODEX_SUBSCRIPTION_FALLBACK_MODELS.length; index++) {
+    models[index] = { ...CODEX_SUBSCRIPTION_FALLBACK_MODELS[index] };
+  }
+  return appendDefaultCodexModel(models, options?.defaultModelId);
 }
 
 function normalizeCodexModelInfo(record: CodexModelRecord): (ModelInfo & { priority?: number }) | undefined {
@@ -225,26 +243,22 @@ export function normalizeCodexModelsResponse(
 ): ModelInfo[] {
   const record = isRecord(payload) ? payload : undefined;
   const rawModels = Array.isArray(record?.models) ? record.models : [];
-  const remoteModels = rawModels
-    .filter(isRecord)
-    .filter((modelRecord) => !modelRecord.visibility || modelRecord.visibility === 'list')
-    .map((modelRecord) => normalizeCodexModelInfo(modelRecord as CodexModelRecord))
-    .filter((model): model is ModelInfo & { priority?: number } => Boolean(model));
+  const remoteModels: Array<ModelInfo & { priority?: number }> = [];
+  const seenModelIds = new Set<string>();
+  for (const rawModel of rawModels) {
+    if (!isRecord(rawModel)) continue;
+    if (rawModel.visibility && rawModel.visibility !== 'list') continue;
+    const normalizedModel = normalizeCodexModelInfo(rawModel as CodexModelRecord);
+    if (!normalizedModel || seenModelIds.has(normalizedModel.id)) continue;
+    seenModelIds.add(normalizedModel.id);
+    remoteModels.push(normalizedModel);
+  }
 
   if (remoteModels.length === 0) {
     return createCodexFallbackModels({ defaultModelId: options?.defaultModelId });
   }
 
-  const normalized = sortCodexModels(remoteModels).map((model) => {
-    const fallback = FALLBACK_MODEL_MAP.get(model.id);
-    return {
-      ...model,
-      vendor: model.vendor || fallback?.vendor || 'chatgpt',
-      family: model.family || fallback?.family || inferCodexModelFamily(model.id),
-      maxInputTokens: model.maxInputTokens ?? fallback?.maxInputTokens,
-      maxOutputTokens: model.maxOutputTokens ?? fallback?.maxOutputTokens,
-    };
-  });
+  const normalized = finalizeSortedCodexModels(remoteModels);
 
   return appendDefaultCodexModel(normalized, options?.defaultModelId);
 }

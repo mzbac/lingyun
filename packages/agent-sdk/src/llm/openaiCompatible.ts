@@ -49,6 +49,44 @@ type OpenAICompatibleModelRecord = {
   metadata?: unknown;
 };
 
+const OPENAI_COMPATIBLE_NESTED_METADATA_KEYS = [
+  'model_info',
+  'modelInfo',
+  'litellm_params',
+  'litellmParams',
+  'top_provider',
+  'topProvider',
+  'metadata',
+] as const;
+
+const OPENAI_COMPATIBLE_MAX_INPUT_TOKEN_KEYS = [
+  'max_input_tokens',
+  'maxInputTokens',
+  'input_token_limit',
+  'inputTokenLimit',
+  'context_length',
+  'contextLength',
+  'context_window',
+  'contextWindow',
+  'max_context_window',
+  'maxContextWindow',
+  'max_model_len',
+  'maxModelLen',
+  'max_tokens',
+  'maxTokens',
+] as const;
+
+const OPENAI_COMPATIBLE_MAX_OUTPUT_TOKEN_KEYS = [
+  'max_output_tokens',
+  'maxOutputTokens',
+  'max_completion_tokens',
+  'maxCompletionTokens',
+  'output_token_limit',
+  'outputTokenLimit',
+  'max_tokens',
+  'maxTokens',
+] as const;
+
 function normalizeBaseURL(input: string): string {
   return input.replace(/\/+$/, '');
 }
@@ -57,13 +95,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-function positiveFiniteNumber(...values: unknown[]): number | undefined {
-  for (const value of values) {
-    if (typeof value === 'number' && Number.isFinite(value) && value > 0) return Math.floor(value);
-    if (typeof value === 'string' && value.trim()) {
-      const parsed = Number(value.trim());
-      if (Number.isFinite(parsed) && parsed > 0) return Math.floor(parsed);
-    }
+function positiveFiniteNumber(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) return Math.floor(value);
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value.trim());
+    if (Number.isFinite(parsed) && parsed > 0) return Math.floor(parsed);
   }
   return undefined;
 }
@@ -72,57 +108,37 @@ function stringMetadata(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
-function nestedMetadataRecords(model: OpenAICompatibleModelRecord): Record<string, unknown>[] {
-  return [model.model_info, model.modelInfo, model.litellm_params, model.litellmParams, model.top_provider, model.topProvider, model.metadata]
-    .filter(isRecord);
+function positiveFiniteRecordMetadataNumber(record: Record<string, unknown>, keys: readonly string[]): number | undefined {
+  for (const key of keys) {
+    const value = positiveFiniteNumber(record[key]);
+    if (value !== undefined) return value;
+  }
+  return undefined;
 }
 
-function metadataValues(
-  model: OpenAICompatibleModelRecord,
-  keys: Array<keyof OpenAICompatibleModelRecord | string>,
-): unknown[] {
-  const values: unknown[] = [];
-  for (const key of keys) values.push(model[key as keyof OpenAICompatibleModelRecord]);
-  for (const nested of nestedMetadataRecords(model)) {
-    for (const key of keys) values.push(nested[key]);
+function positiveFiniteModelMetadataNumber(model: OpenAICompatibleModelRecord, keys: readonly string[]): number | undefined {
+  for (const key of keys) {
+    const value = positiveFiniteNumber(model[key as keyof OpenAICompatibleModelRecord]);
+    if (value !== undefined) return value;
   }
-  return values;
+
+  for (const nestedKey of OPENAI_COMPATIBLE_NESTED_METADATA_KEYS) {
+    const nested = model[nestedKey];
+    if (!isRecord(nested)) continue;
+
+    const value = positiveFiniteRecordMetadataNumber(nested, keys);
+    if (value !== undefined) return value;
+  }
+
+  return undefined;
 }
 
 function getOpenAICompatibleMaxInputTokens(model: OpenAICompatibleModelRecord): number | undefined {
-  return positiveFiniteNumber(
-    ...metadataValues(model, [
-      'max_input_tokens',
-      'maxInputTokens',
-      'input_token_limit',
-      'inputTokenLimit',
-      'context_length',
-      'contextLength',
-      'context_window',
-      'contextWindow',
-      'max_context_window',
-      'maxContextWindow',
-      'max_model_len',
-      'maxModelLen',
-      'max_tokens',
-      'maxTokens',
-    ]),
-  );
+  return positiveFiniteModelMetadataNumber(model, OPENAI_COMPATIBLE_MAX_INPUT_TOKEN_KEYS);
 }
 
 function getOpenAICompatibleMaxOutputTokens(model: OpenAICompatibleModelRecord): number | undefined {
-  return positiveFiniteNumber(
-    ...metadataValues(model, [
-      'max_output_tokens',
-      'maxOutputTokens',
-      'max_completion_tokens',
-      'maxCompletionTokens',
-      'output_token_limit',
-      'outputTokenLimit',
-      'max_tokens',
-      'maxTokens',
-    ]),
-  );
+  return positiveFiniteModelMetadataNumber(model, OPENAI_COMPATIBLE_MAX_OUTPUT_TOKEN_KEYS);
 }
 
 function validOpenAICompatibleModelRecord(value: unknown): (OpenAICompatibleModelRecord & { id: string }) | undefined {
@@ -131,13 +147,16 @@ function validOpenAICompatibleModelRecord(value: unknown): (OpenAICompatibleMode
   return value as OpenAICompatibleModelRecord & { id: string };
 }
 
+const hasOwnHeader = Object.prototype.hasOwnProperty;
+
 function setHeader(headers: Record<string, string>, name: unknown, value: unknown): void {
   if (value === undefined || value === null) return;
   const key = String(name).trim();
   if (!key) return;
 
   const normalized = key.toLowerCase();
-  for (const existing of Object.keys(headers)) {
+  for (const existing in headers) {
+    if (!hasOwnHeader.call(headers, existing)) continue;
     if (existing.toLowerCase() === normalized) delete headers[existing];
   }
 
@@ -146,7 +165,11 @@ function setHeader(headers: Record<string, string>, name: unknown, value: unknow
 
 function hasHeader(headers: Record<string, string>, name: string): boolean {
   const normalized = name.toLowerCase();
-  return Object.keys(headers).some((key) => key.toLowerCase() === normalized);
+  for (const key in headers) {
+    if (!hasOwnHeader.call(headers, key)) continue;
+    if (key.toLowerCase() === normalized) return true;
+  }
+  return false;
 }
 
 function isRequestInput(input: unknown): input is Request {
@@ -211,7 +234,10 @@ function mergeHeaders(headers: Record<string, string>, initHeaders: unknown): vo
   }
 
   if (typeof initHeaders === 'object') {
-    for (const [key, value] of Object.entries(initHeaders as Record<string, unknown>)) {
+    const headerRecord = initHeaders as Record<string, unknown>;
+    for (const key in headerRecord) {
+      if (!hasOwnHeader.call(headerRecord, key)) continue;
+      const value = headerRecord[key];
       setHeader(headers, key, value);
     }
   }
@@ -353,27 +379,31 @@ export class OpenAICompatibleProvider implements LLMProvider {
     const payloadRecord = isRecord(payload) ? payload : undefined;
     const rawModels: unknown[] = Array.isArray(payloadRecord?.data) ? payloadRecord.data : [];
     const seenModelIds = new Set<string>();
-    const models = rawModels
-      .map(validOpenAICompatibleModelRecord)
-      .filter((model): model is OpenAICompatibleModelRecord & { id: string } => Boolean(model))
-      .map((model) => ({ ...model, id: model.id.trim() }))
-      .filter((model) => {
-        if (seenModelIds.has(model.id)) return false;
-        seenModelIds.add(model.id);
-        return true;
-      })
-      .map((model): LLMModelInfo => {
-        const maxInputTokens = getOpenAICompatibleMaxInputTokens(model);
-        const maxOutputTokens = getOpenAICompatibleMaxOutputTokens(model);
-        return {
-          id: model.id,
-          name: stringMetadata(model.display_name) || stringMetadata(model.name) || model.id,
-          vendor: stringMetadata(model.owned_by) || 'openai-compatible',
-          family: 'local',
-          ...(maxInputTokens ? { maxInputTokens } : {}),
-          ...(maxOutputTokens ? { maxOutputTokens } : {}),
-        };
-      });
+    const models: LLMModelInfo[] = [];
+    for (const rawModel of rawModels) {
+      const model = validOpenAICompatibleModelRecord(rawModel);
+      if (!model) continue;
+
+      const modelId = model.id.trim();
+      if (seenModelIds.has(modelId)) continue;
+      seenModelIds.add(modelId);
+
+      const maxInputTokens = getOpenAICompatibleMaxInputTokens(model);
+      const maxOutputTokens = getOpenAICompatibleMaxOutputTokens(model);
+      const info: LLMModelInfo = {
+        id: modelId,
+        name: stringMetadata(model.display_name) || stringMetadata(model.name) || modelId,
+        vendor: stringMetadata(model.owned_by) || 'openai-compatible',
+        family: 'local',
+      };
+      if (maxInputTokens !== undefined) {
+        info.maxInputTokens = maxInputTokens;
+      }
+      if (maxOutputTokens !== undefined) {
+        info.maxOutputTokens = maxOutputTokens;
+      }
+      models.push(info);
+    }
 
     if (this.defaultModelId && !models.some((model) => model.id === this.defaultModelId)) {
       models.push(this.createDefaultModelInfo());

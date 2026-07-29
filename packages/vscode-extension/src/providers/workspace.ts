@@ -111,7 +111,11 @@ export class WorkspaceToolProvider implements ToolProvider {
   }
 
   getTools(): ToolDefinition[] {
-    return Array.from(this.tools.values()).map(tool => this.toToolDefinition(tool));
+    const definitions: ToolDefinition[] = [];
+    for (const tool of this.tools.values()) {
+      definitions.push(this.toToolDefinition(tool));
+    }
+    return definitions;
   }
 
   private toToolDefinition(tool: WorkspaceToolDefinition): ToolDefinition {

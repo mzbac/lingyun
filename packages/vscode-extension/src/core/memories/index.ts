@@ -30,6 +30,7 @@ import {
   type MemorySearchResult,
   type MemoryUpdateResult,
   type PersistedSession,
+  type Stage1Output,
   STAGE1_OUTPUTS_FILE,
   STORAGE_DIR_NAME,
 } from './model';
@@ -105,6 +106,32 @@ function cloneStructuredMemoryCandidate(candidate: SessionMemoryCandidate): Sess
   };
 }
 
+function collectWorkspaceMemoryState(params: {
+  records: readonly MemoryRecord[];
+  outputs: readonly Stage1Output[];
+  workspaceId: string;
+  extraOutputSessionIds?: Iterable<string>;
+}): { records: MemoryRecord[]; outputs: Stage1Output[] } {
+  const records: MemoryRecord[] = [];
+  const sessionIds = new Set<string>();
+  for (const record of params.records) {
+    if (record.workspaceId !== params.workspaceId) continue;
+    records.push(record);
+    sessionIds.add(record.sessionId);
+  }
+  if (params.extraOutputSessionIds) {
+    for (const sessionId of params.extraOutputSessionIds) {
+      if (sessionId) sessionIds.add(sessionId);
+    }
+  }
+
+  const outputs: Stage1Output[] = [];
+  for (const output of params.outputs) {
+    if (sessionIds.has(output.sessionId)) outputs.push(output);
+  }
+  return { records, outputs };
+}
+
 function buildCandidateTemplate(params: {
   durableKey: string;
   anchorRecord: MemoryRecord;
@@ -146,21 +173,26 @@ function buildCandidateTemplate(params: {
   };
 }
 
-function selectAnchorRecord(records: MemoryRecord[], preferredRecordId?: string): MemoryRecord | undefined {
-  if (records.length === 0) return undefined;
-  const preferred = preferredRecordId ? records.find((record) => record.id === preferredRecordId) : undefined;
-  if (preferred) return preferred;
+function compareAnchorRecords(a: MemoryRecord, b: MemoryRecord): number {
+  const aInvalidated = a.staleness === 'invalidated' ? 1 : 0;
+  const bInvalidated = b.staleness === 'invalidated' ? 1 : 0;
+  return (
+    aInvalidated - bInvalidated ||
+    b.lastConfirmedAt - a.lastConfirmedAt ||
+    b.confidence - a.confidence ||
+    a.index - b.index
+  );
+}
 
-  return [...records].sort((a, b) => {
-    const aInvalidated = a.staleness === 'invalidated' ? 1 : 0;
-    const bInvalidated = b.staleness === 'invalidated' ? 1 : 0;
-    return (
-      aInvalidated - bInvalidated ||
-      b.lastConfirmedAt - a.lastConfirmedAt ||
-      b.confidence - a.confidence ||
-      a.index - b.index
-    );
-  })[0];
+function selectAnchorRecord(records: MemoryRecord[], preferredRecordId?: string): MemoryRecord | undefined {
+  let best: MemoryRecord | undefined;
+  for (const record of records) {
+    if (preferredRecordId && record.id === preferredRecordId) return record;
+    if (!best || compareAnchorRecords(record, best) < 0) {
+      best = record;
+    }
+  }
+  return best;
 }
 
 function mutateStructuredMemories(params: {
@@ -825,9 +857,9 @@ export class WorkspaceMemories {
     const state = await readMemoriesState(this.stateUri);
     let records = [...state.records];
     let outputs = [...state.outputs];
-    const workspaceRecords = records.filter((record) => record.workspaceId === workspaceId);
-    const workspaceSessionIds = new Set(workspaceRecords.map((record) => record.sessionId));
-    const workspaceOutputs = outputs.filter((output) => workspaceSessionIds.has(output.sessionId));
+    const workspaceState = collectWorkspaceMemoryState({ records, outputs, workspaceId });
+    const workspaceRecords = workspaceState.records;
+    const workspaceOutputs = workspaceState.outputs;
     const target = recordId ? workspaceRecords.find((record) => record.id === recordId) : undefined;
     if (recordId && !target) {
       throw new Error(`Memory record not found in this workspace: ${recordId}`);
@@ -1087,16 +1119,16 @@ export class WorkspaceMemories {
     await writeMemoriesState(this.memoriesRootUri, this.stateUri, nextState);
 
     if (artifacts) {
-      const workspaceNextRecords = nextState.records.filter((record) => record.workspaceId === workspaceId);
-      const workspaceSessionIds = new Set(workspaceNextRecords.map((record) => record.sessionId));
-      for (const sessionId of outputMatchedSessionIds) {
-        workspaceSessionIds.add(sessionId);
-      }
-      const workspaceOutputs = nextState.outputs.filter((output) => workspaceSessionIds.has(output.sessionId));
-      if (workspaceOutputs.length === 0) {
+      const workspaceNextState = collectWorkspaceMemoryState({
+        records: nextState.records,
+        outputs: nextState.outputs,
+        workspaceId,
+        extraOutputSessionIds: outputMatchedSessionIds,
+      });
+      if (workspaceNextState.outputs.length === 0) {
         await clearMemoryArtifacts(artifacts);
       } else {
-        await rebuildMemoryArtifacts(artifacts, workspaceOutputs, workspaceNextRecords);
+        await rebuildMemoryArtifacts(artifacts, workspaceNextState.outputs, workspaceNextState.records);
       }
     }
 
@@ -1159,9 +1191,13 @@ export class WorkspaceMemories {
         : config.maxResultsPerKind;
     const preferDurableFirst = params.preferDurableFirst === true;
 
-    const workspaceRecords = state.records.filter((record) => record.workspaceId === workspaceId);
-    const workspaceSessionIds = new Set(workspaceRecords.map((record) => record.sessionId));
-    const workspaceOutputs = state.outputs.filter((output) => workspaceSessionIds.has(output.sessionId));
+    const workspaceState = collectWorkspaceMemoryState({
+      records: state.records,
+      outputs: state.outputs,
+      workspaceId,
+    });
+    const workspaceRecords = workspaceState.records;
+    const workspaceOutputs = workspaceState.outputs;
     const durableEntries = buildConsolidatedMemoryEntries({
       outputs: workspaceOutputs,
       records: workspaceRecords,

@@ -11,6 +11,7 @@ import {
   normalizeFileHandlesState,
   normalizeThreadGoal,
   normalizeSystemPromptSnapshot,
+  normalizeCompactionSyntheticContexts,
   resolveThreadGoalStatusAfterBudgetLimit,
   type LingyunThreadGoal,
   type LingyunThreadGoalStatus,
@@ -20,9 +21,7 @@ import type { AgentConfig as SdkAgentConfig } from '@kooka/agent-sdk';
 import type { AgentHistoryMessage, AgentHistoryStats, UserHistoryInput } from '@kooka/core';
 import {
   cloneAgentHistoryMessages,
-  cloneUserHistoryInput,
   createUserHistoryMessage,
-  parseUserHistoryInput,
 } from '@kooka/core';
 
 import type {
@@ -44,6 +43,15 @@ import { VsCodeAgentRuntimePolicy } from './runtimePolicy';
 type SemanticHandlesState = NonNullable<LingyunSession['semanticHandles']>;
 
 const MAX_THREAD_GOAL_OBJECTIVE_CHARS = 4000;
+
+function goalObjectiveExceedsCodePointLimit(value: string, limit: number): boolean {
+  let count = 0;
+  for (const _ch of value) {
+    count++;
+    if (count > limit) return true;
+  }
+  return false;
+}
 
 export type AgentSessionState = {
   history: AgentHistoryMessage[];
@@ -72,6 +80,21 @@ function goalAccountableTokenTotal(stats: AgentHistoryStats): number {
 
 function defaultEditedGoalStatus(status: LingyunThreadGoalStatus | undefined): LingyunThreadGoalStatus {
   return status === 'paused' || status === 'blocked' || status === 'usageLimited' ? status : 'active';
+}
+
+function cloneRequiredThreadGoal(goal: LingyunThreadGoal): LingyunThreadGoal {
+  const cloned = cloneThreadGoal(goal);
+  if (!cloned) {
+    throw new Error('Failed to clone thread goal.');
+  }
+  return cloned;
+}
+
+function hasOwnEnumerableProperty(value: object): boolean {
+  for (const key in value) {
+    if (Object.prototype.hasOwnProperty.call(value, key)) return true;
+  }
+  return false;
 }
 
 function toSdkAgentConfig(config: AgentConfig): SdkAgentConfig {
@@ -169,8 +192,8 @@ export class AgentLoop {
       ...(this.session.threadGoal ? { threadGoal: cloneThreadGoal(this.session.threadGoal) } : {}),
       ...(systemPromptSnapshot ? { systemPromptSnapshot } : {}),
       stats: this.session.getStats(),
-      pendingInputs: this.session.getPendingInputs().map((input) => cloneUserHistoryInput(input)),
-      compactionSyntheticContexts: this.session.compactionSyntheticContexts.map((context) => ({ ...context })),
+      pendingInputs: this.session.getPendingInputs(),
+      compactionSyntheticContexts: normalizeCompactionSyntheticContexts(this.session.compactionSyntheticContexts),
     };
 
   }
@@ -193,26 +216,8 @@ export class AgentLoop {
     this.session.setMentionedSkills(state.mentionedSkills);
     this.session.threadGoal = cloneThreadGoal(normalizeThreadGoal(state.threadGoal));
     this.session.setSystemPromptSnapshot(normalizeSystemPromptSnapshot(state.systemPromptSnapshot));
-    this.session.setPendingInputs(
-      Array.isArray(state.pendingInputs)
-        ? state.pendingInputs
-            .map((input) => parseUserHistoryInput(input))
-            .filter((input): input is UserHistoryInput => input !== undefined)
-        : [],
-    );
-    this.session.compactionSyntheticContexts = Array.isArray(state.compactionSyntheticContexts)
-      ? state.compactionSyntheticContexts
-          .filter(
-            (context): context is LingyunCompactionSyntheticContext =>
-              !!context &&
-              typeof context === 'object' &&
-              ((context as any).transientContext === 'explore' ||
-                (context as any).transientContext === 'memoryRecall' ||
-                (context as any).transientContext === 'goal') &&
-              typeof (context as any).text === 'string',
-          )
-          .map((context) => ({ ...context }))
-      : [];
+    this.session.setPendingInputs(state.pendingInputs);
+    this.session.setCompactionSyntheticContexts(state.compactionSyntheticContexts);
 
     this.session.fileHandles = normalizeFileHandlesState(state.fileHandles) ?? createBlankFileHandlesState();
 
@@ -248,7 +253,7 @@ export class AgentLoop {
     if (!objective) {
       throw new Error('Goal objective must not be empty.');
     }
-    if ([...objective].length > MAX_THREAD_GOAL_OBJECTIVE_CHARS) {
+    if (goalObjectiveExceedsCodePointLimit(objective, MAX_THREAD_GOAL_OBJECTIVE_CHARS)) {
       throw new Error(`Goal objective must be at most ${MAX_THREAD_GOAL_OBJECTIVE_CHARS} characters.`);
     }
 
@@ -290,7 +295,7 @@ export class AgentLoop {
     };
 
     this.session.threadGoal = goal;
-    return cloneThreadGoal(goal)!;
+    return cloneRequiredThreadGoal(goal);
   }
 
   updateThreadGoalStatus(status: LingyunThreadGoalStatus): LingyunThreadGoal {
@@ -305,7 +310,7 @@ export class AgentLoop {
       tokensUsed: goal.tokensUsed,
     });
     goal.updatedAt = Date.now();
-    return cloneThreadGoal(goal)!;
+    return cloneRequiredThreadGoal(goal);
   }
 
   clearThreadGoal(): void {
@@ -332,10 +337,10 @@ export class AgentLoop {
       this.importState(params.state);
     }
 
-    if (params.execution && Object.keys(params.execution).length > 0) {
+    if (params.execution && hasOwnEnumerableProperty(params.execution)) {
       this.updateConfig(params.execution);
     }
-    if (params.session && Object.keys(params.session).length > 0) {
+    if (params.session && hasOwnEnumerableProperty(params.session)) {
       if (params.session.sessionId !== undefined) {
         this.updateConfig({ sessionId: params.session.sessionId });
       }

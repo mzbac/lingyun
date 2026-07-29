@@ -34,7 +34,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "ai": "^6.0.6"
+    "ai": "^6.0.86"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

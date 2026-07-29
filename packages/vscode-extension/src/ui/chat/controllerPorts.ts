@@ -6,7 +6,14 @@ import type { LingyunThreadGoal, LingyunThreadGoalStatus } from '@kooka/agent-sd
 import type { AgentSessionState } from '../../core/agent';
 import type { SessionSignals } from '../../core/sessionSignals';
 import type { AgentApprovalContext, AgentCallbacks, LLMProvider } from '../../core/types';
-import type { ChatMessage, ChatMode, ChatQueuedInput, ChatSessionInfo, ChatUserInput } from './types';
+import type {
+  ChatMessage,
+  ChatMode,
+  ChatQueuedInput,
+  ChatSessionInfo,
+  ChatUserInput,
+  ChatUserMessageOptions,
+} from './types';
 
 export type PendingApprovalEntry = {
   resolve: (approved: boolean) => void;
@@ -18,7 +25,7 @@ export type PendingApprovalEntry = {
 export interface ChatQueueRunnerPort {
   handleUserMessage(
     content: string | ChatUserInput,
-    options?: { fromQueue?: boolean; synthetic?: boolean; displayContent?: string; forceBuild?: boolean }
+    options?: ChatUserMessageOptions
   ): Promise<void>;
 }
 
@@ -52,7 +59,7 @@ export interface RunCoordinatorQueuePort {
     attachmentCount: number;
     attachments: NonNullable<ChatUserInput['attachments']>;
   }): ChatQueuedInput;
-  takeByIdFromActiveSession(id: string): ChatUserInput | undefined;
+  takeByIdFromActiveSession(id: string): { input?: ChatUserInput; queueChanged: boolean };
   scheduleAutosendForSession(sessionId: string, options?: { suppress?: boolean }): void;
   flushAutosendForActiveSession(): Promise<void>;
 }

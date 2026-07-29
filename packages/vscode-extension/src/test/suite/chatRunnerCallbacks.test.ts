@@ -104,6 +104,112 @@ suite('Chat runner callbacks', () => {
     assert.ok(posted.some((message) => (message as any)?.type === 'complete'), 'expected completion event');
   });
 
+  test('iteration end reconciles the latest assistant history message', async () => {
+    const history = [
+      { id: 'user-1', role: 'user', parts: [{ type: 'text', text: 'Original request' }] },
+      { id: 'assistant-old', role: 'assistant', parts: [{ type: 'text', text: 'old answer' }] },
+      { id: 'user-2', role: 'user', parts: [{ type: 'text', text: 'Follow up' }] },
+      { id: 'assistant-new', role: 'assistant', parts: [{ type: 'text', text: 'new answer' }] },
+    ];
+    const controller = createStandaloneChatController({
+      agent: {
+        syncSession() {},
+        exportState() {
+          return {
+            history,
+            fileHandles: { nextId: 1, byId: {} },
+            semanticHandles: { nextMatchId: 1, nextSymbolId: 1, nextLocId: 1, matches: {}, symbols: {}, locations: {} },
+            pendingInputs: [],
+          } as any;
+        },
+        getHistory() {
+          return history as any;
+        },
+      } as any,
+    });
+    const posted: unknown[] = [];
+
+    controller.view = {} as vscode.WebviewView;
+    controller.currentTurnId = 'turn-1';
+    controller.mode = 'build';
+    controller.currentModel = 'mock-model';
+    controller.stepCounter = 0;
+    controller.webviewApi.postMessage = (message: unknown) => {
+      posted.push(message);
+    };
+    controller.sessionApi.isSessionPersistenceEnabled = () => false;
+    controller.sessionApi.getContextForUI = () => ({}) as any;
+
+    const callbacks = controller.runnerCallbacksApi.createAgentCallbacks();
+    await callbacks.onIterationStart?.(1);
+    await callbacks.onIterationEnd?.(1);
+
+    const assistantMsg = controller.messages.find((message) => message.role === 'assistant');
+    assert.ok(assistantMsg, 'expected assistant message to be reconciled from history');
+    assert.strictEqual(assistantMsg?.content, 'new answer');
+    assert.ok(
+      posted.some((message) => (message as any)?.type === 'message' && (message as any)?.message?.content === 'new answer'),
+      'expected latest history assistant to be posted'
+    );
+  });
+
+  test('compaction end surfaces the summary message selected by id', async () => {
+    const history = [
+      { id: 'user-1', role: 'user', parts: [{ type: 'text', text: 'Original request' }] },
+      { id: 'summary-old', role: 'assistant', parts: [{ type: 'text', text: 'old summary' }] },
+      { id: 'summary-new', role: 'assistant', parts: [{ type: 'text', text: 'new summary' }] },
+      { id: 'assistant-1', role: 'assistant', parts: [{ type: 'text', text: 'ordinary answer' }] },
+    ];
+    const controller = createStandaloneChatController({
+      agent: {
+        syncSession() {},
+        exportState() {
+          return {
+            history,
+            fileHandles: { nextId: 1, byId: {} },
+            semanticHandles: { nextMatchId: 1, nextSymbolId: 1, nextLocId: 1, matches: {}, symbols: {}, locations: {} },
+            pendingInputs: [],
+          } as any;
+        },
+        getHistory() {
+          return history as any;
+        },
+      } as any,
+    });
+    const posted: unknown[] = [];
+
+    controller.view = {} as vscode.WebviewView;
+    controller.currentTurnId = 'turn-1';
+    controller.webviewApi.postMessage = (message: unknown) => {
+      posted.push(message);
+    };
+    controller.sessionApi.isSessionPersistenceEnabled = () => false;
+    controller.sessionApi.getContextForUI = () => ({}) as any;
+
+    const callbacks = controller.runnerCallbacksApi.createAgentCallbacks();
+    await callbacks.onCompactionStart?.({ auto: true, markerMessageId: 'marker-1' });
+    await callbacks.onCompactionEnd?.({
+      auto: true,
+      markerMessageId: 'marker-1',
+      summaryMessageId: 'summary-new',
+      status: 'done',
+    });
+
+    const operationMsg = controller.messages.find((message) => message.role === 'operation');
+    assert.ok(operationMsg, 'expected compaction operation message');
+    assert.strictEqual(operationMsg?.operation?.status, 'done');
+    assert.strictEqual(operationMsg?.operation?.summaryText, 'new summary');
+    assert.strictEqual(operationMsg?.operation?.summaryTruncated, false);
+    assert.ok(
+      posted.some(
+        (message) =>
+          (message as any)?.type === 'updateMessage' &&
+          (message as any)?.message?.operation?.summaryText === 'new summary'
+      ),
+      'expected operation update with selected summary'
+    );
+  });
+
   test('planning callbacks flush final debounced plan content on complete', () => {
     const controller = createStandaloneChatController();
     const posted: unknown[] = [];

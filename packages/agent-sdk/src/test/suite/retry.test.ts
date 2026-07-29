@@ -1,4 +1,5 @@
 import * as assert from 'assert';
+import * as fs from 'fs/promises';
 
 import { retryable, sleep } from '../../agent/retry.js';
 
@@ -271,6 +272,24 @@ suite('retryable', () => {
     });
   });
 
+  test('uses mixed-case own retry metadata without inherited header values', () => {
+    const data = Object.create({ code: 'rate_limit_exceeded' });
+    data.errorCode = 'SERVER_IS_OVERLOADED';
+    const headers = Object.create({ 'retry-after': '99' });
+    headers['Retry-After-Ms'] = '1500';
+    const error = Object.assign(new Error('request failed'), {
+      name: 'ProviderHttpError',
+      data,
+      headers,
+    });
+
+    assert.deepStrictEqual(retryable(error), {
+      kind: 'provider_overloaded',
+      message: 'Provider is overloaded',
+      retryAfterMs: 1500,
+    });
+  });
+
   test('classifies structured server error types and no-kv-space codes without message matching', () => {
     const serverErrorType = Object.assign(new Error('request failed'), {
       name: 'ResponsesStreamError',
@@ -375,5 +394,16 @@ suite('retryable', () => {
       message: 'Provider server error',
       retryAfterMs: undefined,
     });
+  });
+
+  test('retry classifier avoids temporary collection builders on hot paths', async () => {
+    const source = await fs.readFile(new URL('../../../src/agent/retry.ts', import.meta.url), 'utf8');
+
+    assert.match(source, /const TRANSIENT_NETWORK_CODES = new Set/);
+    assert.doesNotMatch(source, /new Set\(keys\.map/);
+    assert.doesNotMatch(source, /Object\.entries\(/);
+    assert.doesNotMatch(source, /Object\.keys\(out\)\.length/);
+    assert.doesNotMatch(source, /names\.map\(/);
+    assert.doesNotMatch(source, /const transientCodes = new Set/);
   });
 });

@@ -1,7 +1,7 @@
 import * as os from 'node:os';
 import * as crypto from 'crypto';
 import type { ToolResult } from '../types';
-import { TOOL_ERROR_CODES } from '@kooka/core';
+import { TOOL_ERROR_CODES, isPrivateIpv4Address } from '@kooka/core';
 
 export type DebugRedactionLevel = 'full' | 'secrets-only';
 
@@ -77,26 +77,13 @@ function redactSecrets(text: string): string {
   return out;
 }
 
-function isPrivateIpv4(value: string): boolean {
-  const parts = value.split('.').map((part) => Number.parseInt(part, 10));
-  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return false;
-  const [a, b] = parts;
-  return (
-    a === 10 ||
-    a === 127 ||
-    (a === 172 && b >= 16 && b <= 31) ||
-    (a === 192 && b === 168) ||
-    (a === 169 && b === 254)
-  );
-}
-
 function redactPrivateHosts(text: string): string {
   let out = text;
   out = out.replace(LOCAL_DOMAIN_REGEX, '<local-host>');
   out = out.replace(PRIVATE_DOMAIN_REGEX, '<private-host>');
   out = out.replace(LOCALHOST_REGEX, '<local-host>');
   out = out.replace(BRACKETED_IPV6_REGEX, '<ip>');
-  out = out.replace(IPV4_REGEX, (match) => (isPrivateIpv4(match) ? '<private-ip>' : match));
+  out = out.replace(IPV4_REGEX, (match) => (isPrivateIpv4Address(match) ? '<private-ip>' : match));
   return out;
 }
 

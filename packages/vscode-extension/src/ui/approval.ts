@@ -1,20 +1,33 @@
 import * as vscode from 'vscode';
 import type { AgentApprovalContext, ToolCall, ToolDefinition } from '../core/types';
 
+type BatchApprovalItem = vscode.QuickPickItem & { id: string };
+
+function formatApprovalArgumentsPreview(rawArguments: string): string {
+  try {
+    const args = JSON.parse(rawArguments);
+    if (args === null || args === undefined) return rawArguments;
+    const record = Object(args) as Record<string, unknown>;
+    let preview = '';
+
+    for (const key in record) {
+      if (!Object.prototype.hasOwnProperty.call(record, key)) continue;
+      const line = `  ${key}: ${JSON.stringify(record[key])}`;
+      preview = preview ? `${preview}\n${line}` : line;
+    }
+
+    return preview;
+  } catch {
+    return rawArguments;
+  }
+}
+
 export async function requestApproval(
   toolCall: ToolCall,
   definition: ToolDefinition,
   approvalContext?: AgentApprovalContext
 ): Promise<boolean> {
-  let argsPreview: string;
-  try {
-    const args = JSON.parse(toolCall.function.arguments);
-    argsPreview = Object.entries(args)
-      .map(([k, v]) => `  ${k}: ${JSON.stringify(v)}`)
-      .join('\n');
-  } catch {
-    argsPreview = toolCall.function.arguments;
-  }
+  const argsPreview = formatApprovalArgumentsPreview(toolCall.function.arguments);
 
   const protectedReason =
     approvalContext?.manual && typeof approvalContext.reason === 'string' && approvalContext.reason.trim()
@@ -63,13 +76,17 @@ export async function requestFileApproval(
 export async function requestBatchApproval(
   toolCalls: Array<{ toolCall: ToolCall; definition: ToolDefinition }>
 ): Promise<Set<string>> {
-  const items = toolCalls.map(({ toolCall, definition }) => ({
-    label: definition.name,
-    description: toolCall.function.name,
-    detail: toolCall.function.arguments.substring(0, 100),
-    picked: true,
-    id: toolCall.id,
-  }));
+  const items = new Array<BatchApprovalItem>(toolCalls.length);
+  for (let i = 0; i < toolCalls.length; i++) {
+    const { toolCall, definition } = toolCalls[i];
+    items[i] = {
+      label: definition.name,
+      description: toolCall.function.name,
+      detail: toolCall.function.arguments.substring(0, 100),
+      picked: true,
+      id: toolCall.id,
+    };
+  }
 
   const selected = await vscode.window.showQuickPick(items, {
     canPickMany: true,
@@ -81,7 +98,11 @@ export async function requestBatchApproval(
     return new Set();
   }
 
-  return new Set(selected.map(s => s.id));
+  const selectedIds = new Set<string>();
+  for (const item of selected) {
+    selectedIds.add(item.id);
+  }
+  return selectedIds;
 }
 
 export function showToolResult(

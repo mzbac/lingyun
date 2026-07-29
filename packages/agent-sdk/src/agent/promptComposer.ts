@@ -85,10 +85,11 @@ export class PromptComposer {
       paths: options?.skills?.paths,
       maxPromptSkills: options?.skills?.maxPromptSkills,
     });
-    let system = [
-      [basePrompt, skillsPromptText].filter(Boolean).join('\n'),
-    ].filter(Boolean) as string[];
-    const header = system[0] ?? '';
+    let header = basePrompt;
+    if (skillsPromptText) {
+      header = header ? `${header}\n${skillsPromptText}` : skillsPromptText;
+    }
+    let system = header ? [header] : [];
 
     const out = await this.params.plugins.trigger(
       'experimental.chat.system.transform',
@@ -100,7 +101,12 @@ export class PromptComposer {
       { system },
     );
 
-    system = Array.isArray((out as any).system) ? (out as any).system.filter(Boolean) : system;
+    if (Array.isArray((out as any).system)) {
+      system = [];
+      for (const part of (out as any).system) {
+        if (part) system.push(part);
+      }
+    }
     if (system.length === 0) {
       system = [header];
     }

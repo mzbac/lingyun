@@ -3,12 +3,27 @@
  */
 
 import * as assert from 'assert';
+import * as fs from 'fs';
+import { createRequire } from 'module';
+import * as path from 'path';
 import * as vscode from 'vscode';
 
-import { createAgentConfig, shouldRefreshChatModelStateForConfigChange } from '../../extension';
+import {
+  CHAT_WEBVIEW_VIEW_PROVIDER_OPTIONS,
+  createAgentConfig,
+  shouldRefreshChatModelStateForConfigChange,
+} from '../../extension';
 import { getModelLimit } from '../../core/compaction';
 import { getConfiguredOpenAICompatibleThinking, getConfiguredReasoningEffort } from '../../core/reasoningEffort';
+import { isToolAllowedByFilter, normalizeToolFilterSetting } from '../../core/toolFilter';
 import { WorkspaceToolProvider } from '../../providers/workspace';
+
+type BundleMetafile = {
+  inputs: Record<string, unknown>;
+  outputs?: Record<string, {
+    inputs?: Record<string, { bytesInOutput?: number }>;
+  }>;
+};
 
 suite('Extension Integration', () => {
   
@@ -20,6 +35,66 @@ suite('Extension Integration', () => {
     // In test mode, we load the extension directly
     // This test verifies the test setup works
     assert.ok(true);
+  });
+
+  test('hidden chat views release their renderer context', () => {
+    assert.strictEqual(
+      CHAT_WEBVIEW_VIEW_PROVIDER_OPTIONS.webviewOptions?.retainContextWhenHidden,
+      false
+    );
+  });
+
+  test('production bundle rejects duplicate AI runtime versions', () => {
+    const loadBundleScript = createRequire(__filename);
+    const { assertSingleRuntimeVersions } = loadBundleScript('../../../scripts/bundle.js') as {
+      assertSingleRuntimeVersions: (metafile: BundleMetafile) => void;
+    };
+    const singleVersion = {
+      inputs: {
+        'node_modules/.pnpm/ai@6.0.86_zod@4.3.5/node_modules/ai/dist/index.mjs': {},
+        'node_modules/.pnpm/@ai-sdk+provider-utils@4.0.15_zod@4.3.5/node_modules/@ai-sdk/provider-utils/dist/index.mjs': {},
+      },
+    };
+    assert.doesNotThrow(() => assertSingleRuntimeVersions(singleVersion));
+
+    const duplicateVersion = {
+      inputs: {
+        ...singleVersion.inputs,
+        'node_modules/.pnpm/ai@6.0.33_zod@4.3.5/node_modules/ai/dist/index.mjs': {},
+        'node_modules/.pnpm/@ai-sdk+provider-utils@4.0.5_zod@4.3.5/node_modules/@ai-sdk/provider-utils/dist/index.mjs': {},
+      },
+    };
+    assert.throws(
+      () => assertSingleRuntimeVersions(duplicateVersion),
+      /Duplicate AI runtime versions in extension bundle: ai: 6\.0\.33, 6\.0\.86; @ai-sdk\/provider-utils: 4\.0\.15, 4\.0\.5/
+    );
+  });
+
+  test('production bundle excludes the SDK-only glob runtime', () => {
+    const loadBundleScript = createRequire(__filename);
+    const { assertExcludedRuntimePackages } = loadBundleScript('../../../scripts/bundle.js') as {
+      assertExcludedRuntimePackages: (metafile: BundleMetafile) => void;
+    };
+    const globInput = 'node_modules/.pnpm/glob@13.0.6/node_modules/glob/dist/esm/index.min.js';
+    assert.doesNotThrow(() => assertExcludedRuntimePackages({
+      inputs: { [globInput]: {} },
+      outputs: {
+        'dist/extension.js': {
+          inputs: { [globInput]: { bytesInOutput: 0 } },
+        },
+      },
+    }));
+    assert.throws(
+      () => assertExcludedRuntimePackages({
+        inputs: { [globInput]: {} },
+        outputs: {
+          'dist/extension.js': {
+            inputs: { [globInput]: { bytesInOutput: 1 } },
+          },
+        },
+      }),
+      /Excluded packages in extension bundle: glob: 13\.0\.6/
+    );
   });
 
   test('commands should be registered', async () => {
@@ -65,6 +140,7 @@ suite('Extension Integration', () => {
     assert.strictEqual(config.get('temperature'), 0);
     assert.strictEqual(config.get('maxOutputTokens'), 32000);
     assert.strictEqual(config.get('maxIterations'), 50);
+    assert.strictEqual(config.get('llm.retryWithPartialOutput'), true);
     assert.strictEqual(config.get('llm.timeoutMs'), 0);
     assert.strictEqual(config.get('toolTimeoutMs'), 0);
     assert.strictEqual(config.get('autoApprove'), false);
@@ -110,6 +186,20 @@ suite('Extension Integration', () => {
     }
   });
 
+  test('createAgentConfig enables partial-output recovery by default and preserves opt-out', async () => {
+    const config = vscode.workspace.getConfiguration('lingyun');
+    const previous = config.inspect<boolean>('llm.retryWithPartialOutput')?.globalValue;
+
+    await config.update('llm.retryWithPartialOutput', undefined, vscode.ConfigurationTarget.Global);
+    try {
+      assert.strictEqual(createAgentConfig().retryWithPartialOutput, true);
+      await config.update('llm.retryWithPartialOutput', false, vscode.ConfigurationTarget.Global);
+      assert.strictEqual(createAgentConfig().retryWithPartialOutput, false);
+    } finally {
+      await config.update('llm.retryWithPartialOutput', previous, vscode.ConfigurationTarget.Global);
+    }
+  });
+
   test('createAgentConfig should map maxIterations and preserve -1 as unlimited', async () => {
     const config = vscode.workspace.getConfiguration('lingyun');
     const previous = config.inspect<number>('maxIterations')?.globalValue;
@@ -124,6 +214,24 @@ suite('Extension Integration', () => {
     } finally {
       await config.update('maxIterations', previous, vscode.ConfigurationTarget.Global);
     }
+  });
+
+  test('tool filter normalization deduplicates arrays and separated strings', () => {
+    assert.deepStrictEqual(
+      normalizeToolFilterSetting([' read* ', 'bash', 'read*', '', 'grep']),
+      ['read*', 'bash', 'grep'],
+    );
+    assert.deepStrictEqual(
+      normalizeToolFilterSetting(' read*, bash\nread* ,, grep '),
+      ['read*', 'bash', 'grep'],
+    );
+  });
+
+  test('tool filter wildcard matching escapes regexp syntax', () => {
+    assert.strictEqual(isToolAllowedByFilter('read_file', ['read*']), true);
+    assert.strictEqual(isToolAllowedByFilter('read_file', ['read.*']), false);
+    assert.strictEqual(isToolAllowedByFilter('read_file', ['read_file']), true);
+    assert.strictEqual(isToolAllowedByFilter('read_file_extra', ['read_file']), false);
   });
 
   test('reasoning effort configuration changes should refresh chat model state', () => {
@@ -382,5 +490,17 @@ suite('Workspace Tools Config', () => {
       assert.strictEqual(tool.metadata?.requiresApproval, true);
       assert.strictEqual((tool.metadata as any)?.requiresManualApproval, true);
     }
+
+    const source = fs.readFileSync(path.resolve(__dirname, '../../../src/providers/workspace.ts'), 'utf8');
+    const start = source.indexOf('getTools(): ToolDefinition[]');
+    assert.ok(start >= 0, 'expected workspace tool listing helper');
+    const end = source.indexOf('\n  private toToolDefinition', start);
+    assert.ok(end > start, 'expected tool definition shaper after getTools');
+    const section = source.slice(start, end);
+
+    assert.match(section, /const definitions: ToolDefinition\[\] = \[\];/);
+    assert.match(section, /for \(const tool of this\.tools\.values\(\)\)/);
+    assert.match(section, /definitions\.push\(this\.toToolDefinition\(tool\)\);/);
+    assert.doesNotMatch(section, /Array\.from\(this\.tools\.values\(\)\)\.map/);
   });
 });

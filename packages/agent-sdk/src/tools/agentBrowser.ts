@@ -151,6 +151,15 @@ function safeTruncate(text: string, maxChars: number): string {
   return value.length <= limit ? value : value.slice(0, limit);
 }
 
+function countOwnEnumerableKeys(value: unknown): number {
+  if (!value || typeof value !== 'object') return 0;
+  let count = 0;
+  for (const key in value) {
+    if (Object.prototype.hasOwnProperty.call(value, key)) count++;
+  }
+  return count;
+}
+
 function getCwd(context: ToolContext): string {
   return context.workspaceRoot ? path.resolve(context.workspaceRoot) : process.cwd();
 }
@@ -441,7 +450,13 @@ function toAgentBrowserArgsForAction(params: {
       const load = action.load ? String(action.load).trim() : '';
       const fn = action.fn ? String(action.fn).trim() : '';
 
-      const configured = [ms !== undefined, !!selector, !!text, !!url, !!load, !!fn].filter(Boolean).length;
+      let configured = 0;
+      if (ms !== undefined) configured++;
+      if (selector) configured++;
+      if (text) configured++;
+      if (url) configured++;
+      if (load) configured++;
+      if (fn) configured++;
       if (configured !== 1) {
         return Promise.reject(new Error('wait action must specify exactly one of: ms, selector, text, url, load, fn'));
       }
@@ -765,7 +780,7 @@ export class AgentBrowserToolProvider implements ToolProvider {
 
     const data = snap.data && typeof snap.data === 'object' ? (snap.data as any) : {};
     const snapshot = safeTruncate(typeof data.snapshot === 'string' ? data.snapshot : '', maxChars);
-    const refCount = data.refs && typeof data.refs === 'object' ? Object.keys(data.refs).length : 0;
+    const refCount = countOwnEnumerableKeys(data.refs);
 
     return {
       success: true,

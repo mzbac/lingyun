@@ -17,6 +17,19 @@ async function prepareTestWorkspace(): Promise<string> {
   return tempRoot;
 }
 
+function getGrepArg(argv: readonly string[]): string | undefined {
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === '--grep' || arg === '-g') {
+      return argv[i + 1];
+    }
+    if (arg.startsWith('--grep=')) {
+      return arg.slice('--grep='.length);
+    }
+  }
+  return undefined;
+}
+
 async function main() {
   let tempWorkspaceRoot: string | undefined;
 
@@ -30,15 +43,20 @@ async function main() {
     // Run against a copied fixture workspace so tests can mutate files without touching tracked fixtures.
     tempWorkspaceRoot = await prepareTestWorkspace();
     const testWorkspacePath = path.join(tempWorkspaceRoot, 'workspace');
+    const extensionTestsEnv: NodeJS.ProcessEnv = {
+      ...process.env,
+      LINGYUN_BASH_BACKGROUND_RUNNER: 'spawn',
+    };
+    const grep = getGrepArg(process.argv.slice(2));
+    if (grep) {
+      extensionTestsEnv.LINGYUN_TEST_GREP = grep;
+    }
 
     // Download VS Code, unzip it and run the integration test
     await runTests({
       extensionDevelopmentPath,
       extensionTestsPath,
-      extensionTestsEnv: {
-        ...process.env,
-        LINGYUN_BASH_BACKGROUND_RUNNER: 'spawn',
-      },
+      extensionTestsEnv,
       launchArgs: [
         testWorkspacePath,
         '--disable-extensions', // Disable other extensions

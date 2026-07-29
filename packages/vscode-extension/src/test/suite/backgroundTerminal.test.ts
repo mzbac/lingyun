@@ -2,7 +2,13 @@ import * as fs from 'fs';
 import * as assert from 'assert';
 import * as vscode from 'vscode';
 
-import { TOOL_ERROR_CODES, getBackgroundJob, registerBackgroundJob } from '@kooka/core';
+import {
+  TOOL_ERROR_CODES,
+  getBackgroundJob,
+  listBackgroundJobs,
+  registerBackgroundJob,
+  removeBackgroundJob,
+} from '@kooka/core';
 import { backgroundTerminalManager } from '../../core/terminal/backgroundTerminal';
 import type { ToolContext } from '../../core/types';
 
@@ -18,6 +24,47 @@ function createToolContext(): ToolContext {
 }
 
 suite('Background Terminal', () => {
+  test('lists scoped and all background jobs as snapshots', () => {
+    const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const scopeA = `test-scope-a-${suffix}`;
+    const scopeB = `test-scope-b-${suffix}`;
+    const keyA = `test-key-a-${suffix}`;
+    const keyB = `test-key-b-${suffix}`;
+
+    try {
+      const jobA = registerBackgroundJob({
+        scope: scopeA,
+        key: keyA,
+        command: 'echo a',
+        cwd: process.cwd(),
+        pid: 999_999_991,
+        ttlMs: 0,
+      });
+      const jobB = registerBackgroundJob({
+        scope: scopeB,
+        key: keyB,
+        command: 'echo b',
+        cwd: process.cwd(),
+        pid: 999_999_992,
+        ttlMs: 0,
+      });
+
+      assert.deepStrictEqual(listBackgroundJobs(scopeA), [jobA]);
+      const all = listBackgroundJobs();
+      const allJobA = all.find(job => job.id === jobA.id && job.scope === scopeA);
+      const allJobB = all.find(job => job.id === jobB.id && job.scope === scopeB);
+      assert.ok(allJobA);
+      assert.ok(allJobB);
+      assert.ok(!Object.prototype.hasOwnProperty.call(allJobA, 'ttlTimer'));
+      assert.ok(!Object.prototype.hasOwnProperty.call(allJobA, 'killTimer'));
+      assert.ok(!Object.prototype.hasOwnProperty.call(allJobB, 'ttlTimer'));
+      assert.ok(!Object.prototype.hasOwnProperty.call(allJobB, 'killTimer'));
+    } finally {
+      removeBackgroundJob(scopeA, keyA);
+      removeBackgroundJob(scopeB, keyB);
+    }
+  });
+
   test('sweep disposes dead tracked terminals and removes their background jobs', () => {
     const scope = `test-scope-${Date.now()}`;
     const key = `test-key-${Date.now()}`;

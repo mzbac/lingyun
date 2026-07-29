@@ -71,10 +71,14 @@ export class TaskSubagentRunner {
     const subagentTypeRaw = typeResult.value.trim();
     const subagent = resolveBuiltinSubagent(subagentTypeRaw);
     if (!subagent) {
-      const names = listBuiltinSubagents().map((a: { name: string }) => a.name).join(', ');
+      let names = '';
+      for (const item of listBuiltinSubagents()) {
+        const name = item.name;
+        names = names ? `${names}, ${name}` : name;
+      }
       return {
         success: false,
-        error: `Unknown subagent_type: ${subagentTypeRaw}. Available: ${names || '(none)'}`,
+        error: `Unknown subagent_type: ${subagentTypeRaw}. Available: ${names}`,
         metadata: { errorCode: TOOL_ERROR_CODES.unknown_subagent_type, subagentType: subagentTypeRaw },
       };
     }

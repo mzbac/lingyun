@@ -54,21 +54,18 @@ export const globHandler: ToolHandler = async (args, context) => {
     const rp = new vscode.RelativePattern(base, pattern);
     const uris = await vscode.workspace.findFiles(rp, '**/node_modules/**', 100);
 
-    const entries = await Promise.all(
-      uris.map(async (uri) => {
-        let mtime = 0;
-        try {
-          const stat = await vscode.workspace.fs.stat(uri);
-          mtime = stat.mtime ?? 0;
-        } catch {
-          mtime = 0;
-        }
-        return { uri, mtime };
-      })
-    );
+    const statTasks: Array<Promise<{ uri: vscode.Uri; mtime: number }>> = [];
+    for (const uri of uris) {
+      statTasks.push(statGlobUri(uri));
+    }
+
+    const entries = await Promise.all(statTasks);
 
     entries.sort((a, b) => b.mtime - a.mtime);
-    const files = entries.map(e => formatToolPathForOutput(e.uri.fsPath, context));
+    const files: string[] = [];
+    for (const entry of entries) {
+      files.push(formatToolPathForOutput(entry.uri.fsPath, context));
+    }
     const truncated = files.length >= 100;
 
     return {
@@ -83,3 +80,14 @@ export const globHandler: ToolHandler = async (args, context) => {
     return { success: false, error: error instanceof Error ? error.message : String(error) };
   }
 };
+
+async function statGlobUri(uri: vscode.Uri): Promise<{ uri: vscode.Uri; mtime: number }> {
+  let mtime = 0;
+  try {
+    const stat = await vscode.workspace.fs.stat(uri);
+    mtime = stat.mtime ?? 0;
+  } catch {
+    mtime = 0;
+  }
+  return { uri, mtime };
+}

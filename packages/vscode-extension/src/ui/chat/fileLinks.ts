@@ -1,6 +1,6 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { isSubPath, normalizeFsPath } from '@kooka/core';
+import { normalizeFsPath } from '@kooka/core';
 import { resolveToolPath } from '../../tools/builtin/workspace';
 
 async function canOpenAsFile(uri: vscode.Uri): Promise<boolean> {
@@ -13,15 +13,43 @@ async function canOpenAsFile(uri: vscode.Uri): Promise<boolean> {
 }
 
 export function getWorkspaceFolderUrisByPriority(): vscode.Uri[] {
-  const folders = vscode.workspace.workspaceFolders?.map((f) => f.uri) ?? [];
-  if (folders.length <= 1) return folders;
+  const workspaceFolders = vscode.workspace.workspaceFolders;
+  if (!workspaceFolders || workspaceFolders.length === 0) return [];
+  if (workspaceFolders.length === 1) return [workspaceFolders[0].uri];
 
   const activeUri = vscode.window.activeTextEditor?.document?.uri;
   const activeFolder = activeUri ? vscode.workspace.getWorkspaceFolder(activeUri) : undefined;
-  if (!activeFolder) return folders;
+  if (!activeFolder) {
+    const folders: vscode.Uri[] = [];
+    for (const folder of workspaceFolders) {
+      folders.push(folder.uri);
+    }
+    return folders;
+  }
 
   const activeRoot = normalizeFsPath(activeFolder.uri.fsPath);
-  return [activeFolder.uri, ...folders.filter((uri) => normalizeFsPath(uri.fsPath) !== activeRoot)];
+  const folders: vscode.Uri[] = [activeFolder.uri];
+  for (const folder of workspaceFolders) {
+    const uri = folder.uri;
+    if (normalizeFsPath(uri.fsPath) !== activeRoot) folders.push(uri);
+  }
+  return folders;
+}
+
+function findDeepestContainingWorkspaceFolder(absPath: string, workspaceFolderUris: vscode.Uri[]): vscode.Uri | undefined {
+  const child = normalizeFsPath(absPath);
+  let best: vscode.Uri | undefined;
+  let bestRootLength = -1;
+
+  for (const workspaceFolder of workspaceFolderUris) {
+    const root = normalizeFsPath(workspaceFolder.fsPath);
+    if (child !== root && !child.startsWith(root + path.sep)) continue;
+    if (root.length <= bestRootLength) continue;
+    best = workspaceFolder;
+    bestRootLength = root.length;
+  }
+
+  return best;
 }
 
 export async function resolveExistingFilePath(
@@ -39,10 +67,7 @@ export async function resolveExistingFilePath(
     const absPath = path.resolve(value);
     const uri = vscode.Uri.file(absPath);
 
-    const containingWorkspaceFolder = workspaceFolderUris
-      .map((workspaceFolder) => ({ workspaceFolder, root: normalizeFsPath(workspaceFolder.fsPath) }))
-      .filter(({ workspaceFolder }) => isSubPath(absPath, workspaceFolder.fsPath))
-      .sort((a, b) => b.root.length - a.root.length)[0]?.workspaceFolder;
+    const containingWorkspaceFolder = findDeepestContainingWorkspaceFolder(absPath, workspaceFolderUris);
 
     if (containingWorkspaceFolder) {
       try {

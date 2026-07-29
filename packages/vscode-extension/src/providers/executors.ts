@@ -27,6 +27,8 @@ export interface ShellExecution {
 const DEFAULT_WORKSPACE_SHELL_TIMEOUT_MS = 60_000;
 const DEFAULT_WORKSPACE_HTTP_TIMEOUT_MS = 30_000;
 
+type PrivateIPv4Block = '0' | '10' | '127' | '169.254' | '172' | '192.168';
+
 function getWorkspaceShellTimeoutMs(execution: ShellExecution): number {
   const cfgValue = vscode.workspace.getConfiguration('lingyun').get<number>(
     'tools.workspaceShell.timeoutMs',
@@ -54,18 +56,45 @@ function getWorkspaceHttpTimeoutMs(): number {
   return Math.max(0, Math.floor(cfgValue));
 }
 
-function isPrivateIPv4Address(address: string): boolean {
-  const parts = address.split('.').map(Number);
-  if (parts.length !== 4 || parts.some((n) => Number.isNaN(n) || n < 0 || n > 255)) return true;
+function parseIPv4Octet(address: string, start: number, end: number): number | undefined {
+  if (start >= end) return undefined;
 
-  const [a, b] = parts;
-  if (a === 10) return true;
-  if (a === 127) return true;
-  if (a === 169 && b === 254) return true;
-  if (a === 172 && b >= 16 && b <= 31) return true;
-  if (a === 192 && b === 168) return true;
-  if (a === 0) return true;
-  return false;
+  let value = 0;
+  for (let i = start; i < end; i++) {
+    const digit = address.charCodeAt(i) - 48;
+    if (digit < 0 || digit > 9) return undefined;
+    value = value * 10 + digit;
+    if (value > 255) return undefined;
+  }
+  return value;
+}
+
+function classifyIPv4Address(address: string): PrivateIPv4Block | 'public' | 'invalid' {
+  const firstDot = address.indexOf('.');
+  if (firstDot <= 0) return 'invalid';
+  const secondDot = address.indexOf('.', firstDot + 1);
+  if (secondDot <= firstDot + 1) return 'invalid';
+  const thirdDot = address.indexOf('.', secondDot + 1);
+  if (thirdDot <= secondDot + 1 || thirdDot >= address.length - 1) return 'invalid';
+  if (address.indexOf('.', thirdDot + 1) !== -1) return 'invalid';
+
+  const a = parseIPv4Octet(address, 0, firstDot);
+  const b = parseIPv4Octet(address, firstDot + 1, secondDot);
+  const c = parseIPv4Octet(address, secondDot + 1, thirdDot);
+  const d = parseIPv4Octet(address, thirdDot + 1, address.length);
+  if (a === undefined || b === undefined || c === undefined || d === undefined) return 'invalid';
+
+  if (a === 10) return '10';
+  if (a === 127) return '127';
+  if (a === 169 && b === 254) return '169.254';
+  if (a === 172 && b >= 16 && b <= 31) return '172';
+  if (a === 192 && b === 168) return '192.168';
+  if (a === 0) return '0';
+  return 'public';
+}
+
+function isPrivateIPv4Address(address: string): boolean {
+  return classifyIPv4Address(address) !== 'public';
 }
 
 function isPrivateIPv6Address(address: string): boolean {
@@ -273,46 +302,34 @@ function validateHttpUrl(urlString: string): { valid: boolean; error?: string } 
     return { valid: false, error: 'Invalid URL format' };
   }
 
-  if (!['http:', 'https:'].includes(url.protocol)) {
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     return { valid: false, error: `Protocol '${url.protocol}' not allowed. Only HTTP(S) is supported.` };
   }
 
   const hostname = url.hostname.toLowerCase();
 
-  const localhostPatterns = [
-    'localhost',
-    '127.0.0.1',
-    '::1',
-    '0.0.0.0',
-    '[::1]',
-  ];
-  if (localhostPatterns.includes(hostname)) {
+  if (
+    hostname === 'localhost' ||
+    hostname === '127.0.0.1' ||
+    hostname === '::1' ||
+    hostname === '0.0.0.0' ||
+    hostname === '[::1]'
+  ) {
     return { valid: false, error: 'Requests to localhost are not allowed' };
   }
 
-  const ipv4Match = hostname.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (ipv4Match) {
-    const octets = ipv4Match.slice(1).map(Number);
-    const [a, b] = octets;
-
-    if (a === 10) {
-      return { valid: false, error: 'Requests to private networks (10.x.x.x) are not allowed' };
-    }
-
-    if (a === 172 && b >= 16 && b <= 31) {
-      return { valid: false, error: 'Requests to private networks (172.16-31.x.x) are not allowed' };
-    }
-
-    if (a === 192 && b === 168) {
-      return { valid: false, error: 'Requests to private networks (192.168.x.x) are not allowed' };
-    }
-
-    if (a === 169 && b === 254) {
-      return { valid: false, error: 'Requests to link-local addresses are not allowed' };
-    }
-
-    if (a === 127) {
-      return { valid: false, error: 'Requests to loopback addresses are not allowed' };
+  if (net.isIP(hostname) === 4) {
+    switch (classifyIPv4Address(hostname)) {
+      case '10':
+        return { valid: false, error: 'Requests to private networks (10.x.x.x) are not allowed' };
+      case '172':
+        return { valid: false, error: 'Requests to private networks (172.16-31.x.x) are not allowed' };
+      case '192.168':
+        return { valid: false, error: 'Requests to private networks (192.168.x.x) are not allowed' };
+      case '169.254':
+        return { valid: false, error: 'Requests to link-local addresses are not allowed' };
+      case '127':
+        return { valid: false, error: 'Requests to loopback addresses are not allowed' };
     }
   }
 
@@ -320,12 +337,11 @@ function validateHttpUrl(urlString: string): { valid: boolean; error?: string } 
     return { valid: false, error: 'Requests to .local/.localhost domains are not allowed' };
   }
 
-  const metadataHosts = [
-    '169.254.169.254',
-    'metadata.google.internal',
-    'metadata.gcp.internal',
-  ];
-  if (metadataHosts.includes(hostname)) {
+  if (
+    hostname === '169.254.169.254' ||
+    hostname === 'metadata.google.internal' ||
+    hostname === 'metadata.gcp.internal'
+  ) {
     return { valid: false, error: 'Requests to cloud metadata endpoints are not allowed' };
   }
 

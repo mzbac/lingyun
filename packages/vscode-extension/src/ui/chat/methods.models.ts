@@ -14,6 +14,14 @@ import type { ChatWebviewService } from './methods.webview';
 
 const MAX_RECENT_MODELS = 10;
 const REASONING_EFFORT_VALUES = new Set(['', 'low', 'medium', 'high', 'xhigh']);
+const MODEL_PICKER_NAME_COLLATOR = new Intl.Collator(undefined, { sensitivity: 'base' });
+
+type ModelLoadTask = {
+  provider: LLMProviderWithUi | undefined;
+  promise: Promise<void>;
+};
+
+const modelLoadsInFlight = new WeakMap<ChatModelsDeps, ModelLoadTask>();
 
 type ModelPickerState = {
   currentModel: string;
@@ -25,6 +33,11 @@ type ModelPickerState = {
 type GlobalStateLike = {
   get<T>(key: string): T | undefined;
   update(key: string, value: unknown): Thenable<void>;
+};
+
+type UniqueModelsResult = {
+  models: ModelInfo[];
+  hasCurrentModel: boolean;
 };
 
 export interface ChatModelsService {
@@ -74,6 +87,20 @@ function normalizeModelId(modelId: string): string {
   return modelId.trim();
 }
 
+function normalizeStoredModelIds(ids: unknown): string[] {
+  if (!Array.isArray(ids)) return [];
+  const normalizedIds: string[] = [];
+  const seen = new Set<string>();
+  for (const id of ids) {
+    if (typeof id !== 'string') continue;
+    const normalized = normalizeModelId(id);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    normalizedIds.push(normalized);
+  }
+  return normalizedIds;
+}
+
 function createCustomModelInfo(modelId: string): ModelInfo {
   return createFallbackModelInfo(modelId, { vendor: 'custom' });
 }
@@ -84,22 +111,111 @@ function normalizeReasoningEffortForConfig(reasoningEffort: string): string | un
   return normalized;
 }
 
-function uniqById(models: ModelInfo[]): ModelInfo[] {
+function collectUniqueModels(availableModels: ModelInfo[], currentId: string): UniqueModelsResult {
   const seen = new Set<string>();
-  const out: ModelInfo[] = [];
-  for (const model of models) {
+  const models: ModelInfo[] = [];
+  let hasCurrentModel = false;
+  for (const model of availableModels) {
     if (!model?.id) continue;
     if (seen.has(model.id)) continue;
     seen.add(model.id);
-    out.push(model);
+    if (model.id === currentId) hasCurrentModel = true;
+    models.push(model);
   }
-  return out;
+  return { models, hasCurrentModel };
 }
 
-function sortModelsForPicker(models: ModelInfo[]): ModelInfo[] {
-  return models
-    .slice()
-    .sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id, undefined, { sensitivity: 'base' }));
+function sortModelsForPickerInPlace(models: ModelInfo[]): ModelInfo[] {
+  models.sort((a, b) => MODEL_PICKER_NAME_COLLATOR.compare(a.name || a.id, b.name || b.id));
+  return models;
+}
+
+function getUniqueModelPickerModels(availableModels: ModelInfo[], currentId: string): ModelInfo[] {
+  const uniqueModels = collectUniqueModels(availableModels, currentId);
+  if (!uniqueModels.hasCurrentModel) {
+    const { models } = uniqueModels;
+    models.push(createFallbackModelInfo(currentId, { vendor: 'configured' }));
+  }
+  return uniqueModels.models;
+}
+
+function buildModelLookup(models: ModelInfo[]): Map<string, ModelInfo> {
+  const byId = new Map<string, ModelInfo>();
+  for (const model of models) {
+    byId.set(model.id, model);
+  }
+  return byId;
+}
+
+function collectFavoriteModels(ids: string[], byId: Map<string, ModelInfo>, favoriteSet: Set<string>): ModelInfo[] {
+  const models: ModelInfo[] = [];
+  for (const id of ids) {
+    if (favoriteSet.has(id)) continue;
+    favoriteSet.add(id);
+    const model = byId.get(id);
+    if (model) models.push(model);
+  }
+  return models;
+}
+
+function collectRecentModels(
+  ids: string[],
+  byId: Map<string, ModelInfo>,
+  favoriteSet: Set<string>,
+  recentSet: Set<string>
+): ModelInfo[] {
+  const models: ModelInfo[] = [];
+  for (const id of ids) {
+    if (favoriteSet.has(id)) continue;
+    if (recentSet.has(id)) continue;
+    const model = byId.get(id);
+    if (!model) continue;
+    models.push(model);
+    recentSet.add(model.id);
+  }
+  return models;
+}
+
+function collectRemainingModels(models: ModelInfo[], favoriteSet: Set<string>, recentSet: Set<string>): ModelInfo[] {
+  const remaining: ModelInfo[] = [];
+  for (const model of models) {
+    if (favoriteSet.has(model.id) || recentSet.has(model.id)) continue;
+    remaining.push(model);
+  }
+  return sortModelsForPickerInPlace(remaining);
+}
+
+function prependStoredModelId(id: string, existing: string[], limit?: number): string[] {
+  const next = [id];
+  for (const model of existing) {
+    if (model === id) continue;
+    next.push(model);
+    if (typeof limit === 'number' && next.length >= limit) break;
+  }
+  return next;
+}
+
+function removeStoredModelId(id: string, existing: string[]): string[] {
+  const next: string[] = [];
+  for (const model of existing) {
+    if (model !== id) next.push(model);
+  }
+  return next;
+}
+
+function storedModelIdsEqual(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) return false;
+  for (let i = 0; i < left.length; i++) {
+    if (left[i] !== right[i]) return false;
+  }
+  return true;
+}
+
+function storedModelIdsContain(ids: string[], id: string): boolean {
+  for (const modelId of ids) {
+    if (modelId === id) return true;
+  }
+  return false;
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
@@ -120,54 +236,75 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: s
 export function createChatModelsService(controller: ChatModelsDeps): ChatModelsService {
   const service = bindChatControllerService(controller, {
     async loadModels(this: ChatModelsDeps): Promise<void> {
-      const timeoutMs = 5000;
-      try {
-        if (this.llmProvider?.getModels) {
-          this.availableModels = await withTimeout(
-            this.llmProvider.getModels(),
-            timeoutMs,
-            `Timed out loading models after ${timeoutMs}ms`
-          );
-        } else {
+      const provider = this.llmProvider;
+      const existing = modelLoadsInFlight.get(this);
+      if (existing && existing.provider === provider) {
+        await existing.promise;
+        return;
+      }
+
+      const load = (async () => {
+        const timeoutMs = 5000;
+        let availableModels: ModelInfo[];
+        try {
+          if (provider?.getModels) {
+            availableModels = await withTimeout(
+              provider.getModels(),
+              timeoutMs,
+              `Timed out loading models after ${timeoutMs}ms`
+            );
+          } else {
+            const fallback = this.currentModel || 'gpt-4o';
+            availableModels = [createFallbackModelInfo(fallback)];
+          }
+        } catch (error) {
+          if (this.llmProvider !== provider) return;
+          appendErrorLog(this.outputChannel, 'Failed to load models', error, { tag: 'Models' });
           const fallback = this.currentModel || 'gpt-4o';
-          this.availableModels = [createFallbackModelInfo(fallback)];
+          availableModels = [createFallbackModelInfo(fallback)];
         }
-      } catch (error) {
-        appendErrorLog(this.outputChannel, 'Failed to load models', error, { tag: 'Models' });
-        const fallback = this.currentModel || 'gpt-4o';
-        this.availableModels = [createFallbackModelInfo(fallback)];
+
+        if (this.llmProvider !== provider) return;
+        if (availableModels.length === 0) {
+          const fallback = this.currentModel || 'gpt-4o';
+          availableModels = [createFallbackModelInfo(fallback)];
+        }
+        this.availableModels = availableModels;
+
+        this.currentModel = resolveConfiguredModelId(provider?.id) || this.currentModel;
+
+        const uniqueModels = collectUniqueModels(this.availableModels, this.currentModel);
+        if (uniqueModels.hasCurrentModel) {
+          this.availableModels = uniqueModels.models;
+        } else {
+          const models = new Array<ModelInfo>(uniqueModels.models.length + 1);
+          models[0] = createCustomModelInfo(this.currentModel);
+          for (let index = 0; index < uniqueModels.models.length; index++) {
+            models[index + 1] = uniqueModels.models[index];
+          }
+          this.availableModels = models;
+          this.agent.updateConfig({ model: this.currentModel });
+        }
+
+        await service.postModelState();
+      })();
+      const task = { provider, promise: load };
+      modelLoadsInFlight.set(this, task);
+      try {
+        await load;
+      } finally {
+        if (modelLoadsInFlight.get(this) === task) {
+          modelLoadsInFlight.delete(this);
+        }
       }
-
-      if (this.availableModels.length === 0) {
-        const fallback = this.currentModel || 'gpt-4o';
-        this.availableModels = [createFallbackModelInfo(fallback)];
-      }
-
-      this.currentModel = resolveConfiguredModelId(this.llmProvider?.id) || this.currentModel;
-
-      if (!this.availableModels.some((model) => model.id === this.currentModel)) {
-        this.availableModels = uniqById([
-          createCustomModelInfo(this.currentModel),
-          ...this.availableModels,
-        ]);
-        this.agent.updateConfig({ model: this.currentModel });
-      }
-
-      await service.postModelState();
     },
 
     async getFavoriteModelIds(this: ChatModelsDeps): Promise<string[]> {
-      const ids = this.context.globalState.get<string[]>(favoritesStorageKey(this));
-      return Array.isArray(ids)
-        ? ids.filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
-        : [];
+      return normalizeStoredModelIds(this.context.globalState.get<string[]>(favoritesStorageKey(this)));
     },
 
     async getRecentModelIds(this: ChatModelsDeps): Promise<string[]> {
-      const ids = this.context.globalState.get<string[]>(recentsStorageKey(this));
-      return Array.isArray(ids)
-        ? ids.filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
-        : [];
+      return normalizeStoredModelIds(this.context.globalState.get<string[]>(recentsStorageKey(this)));
     },
 
     async getModelPickerStateForUI(this: ChatModelsDeps): Promise<ModelPickerState> {
@@ -176,23 +313,15 @@ export function createChatModelsService(controller: ChatModelsDeps): ChatModelsS
       }
 
       const currentId = this.currentModel || resolveConfiguredModelId(this.llmProvider?.id) || 'gpt-4o';
-      const models = uniqById([
-        ...this.availableModels,
-        ...(this.availableModels.some((model) => model.id === currentId)
-          ? []
-          : [createFallbackModelInfo(currentId, { vendor: 'configured' })]),
-      ]);
+      const models = getUniqueModelPickerModels(this.availableModels, currentId);
       const favoriteIds = await service.getFavoriteModelIds();
       const recentIds = await service.getRecentModelIds();
-      const favoriteSet = new Set(favoriteIds);
-      const byId = new Map(models.map((model) => [model.id, model] as const));
-      const favorites = favoriteIds.map((id) => byId.get(id)).filter((model): model is ModelInfo => !!model);
-      const recent = recentIds
-        .filter((id) => !favoriteSet.has(id))
-        .map((id) => byId.get(id))
-        .filter((model): model is ModelInfo => !!model);
-      const recentSet = new Set(recent.map((model) => model.id));
-      const all = sortModelsForPicker(models.filter((model) => !favoriteSet.has(model.id) && !recentSet.has(model.id)));
+      const favoriteSet = new Set<string>();
+      const recentSet = new Set<string>();
+      const byId = buildModelLookup(models);
+      const favorites = collectFavoriteModels(favoriteIds, byId, favoriteSet);
+      const recent = collectRecentModels(recentIds, byId, favoriteSet, recentSet);
+      const all = collectRemainingModels(models, favoriteSet, recentSet);
       return { currentModel: currentId, favorites, recent, all };
     },
 
@@ -204,7 +333,10 @@ export function createChatModelsService(controller: ChatModelsDeps): ChatModelsS
       }
 
       try {
-        await this.context.globalState.update(recentsStorageKey(this), []);
+        const existing = await service.getRecentModelIds();
+        if (existing.length > 0) {
+          await this.context.globalState.update(recentsStorageKey(this), []);
+        }
       } catch (error) {
         appendErrorLog(this.outputChannel, 'Failed to clear recent models', error, { tag: 'Models' });
         postInputNotice(this, 'Failed to clear recent models. See logs for details.');
@@ -234,14 +366,16 @@ export function createChatModelsService(controller: ChatModelsDeps): ChatModelsS
       const id = normalizeModelId(modelId);
       if (!id) return false;
       const favorites = await service.getFavoriteModelIds();
-      return favorites.includes(id);
+      return storedModelIdsContain(favorites, id);
     },
 
     getModelLabel(this: ChatModelsDeps, modelId: string): string {
       const id = normalizeModelId(modelId);
       if (!id) return '';
-      const match = this.availableModels.find((model) => model.id === id);
-      return match?.name || id;
+      for (const model of this.availableModels) {
+        if (model?.id === id) return model.name || id;
+      }
+      return id;
     },
 
     async postModelState(this: ChatModelsDeps): Promise<void> {
@@ -269,7 +403,8 @@ export function createChatModelsService(controller: ChatModelsDeps): ChatModelsS
       if (!id) return;
 
       const existing = await service.getRecentModelIds();
-      const next = [id, ...existing.filter((model) => model !== id)].slice(0, MAX_RECENT_MODELS);
+      const next = prependStoredModelId(id, existing, MAX_RECENT_MODELS);
+      if (storedModelIdsEqual(existing, next)) return;
       await this.context.globalState.update(recentsStorageKey(this), next);
     },
 
@@ -290,8 +425,8 @@ export function createChatModelsService(controller: ChatModelsDeps): ChatModelsS
 
       try {
         const existing = await service.getFavoriteModelIds();
-        const isFavorite = existing.includes(id);
-        const next = isFavorite ? existing.filter((model) => model !== id) : [id, ...existing.filter((model) => model !== id)];
+        const isFavorite = storedModelIdsContain(existing, id);
+        const next = isFavorite ? removeStoredModelId(id, existing) : prependStoredModelId(id, existing);
         await this.context.globalState.update(favoritesStorageKey(this), next);
       } catch (error) {
         appendErrorLog(this.outputChannel, 'Failed to update favorite models', error, { tag: 'Models' });
@@ -314,6 +449,10 @@ export function createChatModelsService(controller: ChatModelsDeps): ChatModelsS
       const id = normalizeModelId(modelId);
       if (!id) {
         postInputNotice(this, 'Model ID is required.');
+        await service.postModelState();
+        return;
+      }
+      if (id === this.currentModel) {
         await service.postModelState();
         return;
       }
@@ -356,6 +495,10 @@ export function createChatModelsService(controller: ChatModelsDeps): ChatModelsS
       const normalized = normalizeReasoningEffortForConfig(reasoningEffort);
       if (normalized === undefined) {
         postInputNotice(this, 'Unsupported reasoning effort. Choose off, low, medium, high, or xhigh.');
+        await service.postModelState();
+        return;
+      }
+      if (normalized === getConfiguredReasoningEffort()) {
         await service.postModelState();
         return;
       }

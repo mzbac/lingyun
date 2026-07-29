@@ -48,6 +48,50 @@ function cloneAgentState(state: AgentSessionState): AgentSessionState {
   }
 }
 
+function hasUserMessageBefore(messages: ChatMessage[], endExclusive: number): boolean {
+  const end = Math.min(messages.length, Math.max(0, endExclusive));
+  for (let i = 0; i < end; i++) {
+    if (messages[i]?.role === 'user') return true;
+  }
+  return false;
+}
+
+function countUserMessagesInRange(
+  messages: ChatMessage[],
+  startInclusive: number,
+  endExclusive: number
+): number {
+  const start = Math.min(messages.length, Math.max(0, startInclusive));
+  const end = Math.min(messages.length, Math.max(start, endExclusive));
+  let count = 0;
+  for (let i = start; i < end; i++) {
+    if (messages[i]?.role === 'user') count++;
+  }
+  return count;
+}
+
+function findMessageIndexById(messages: ChatMessage[], messageId: string | undefined): number {
+  if (!messageId) return -1;
+  for (let i = 0; i < messages.length; i++) {
+    if (messages[i]?.id === messageId) return i;
+  }
+  return -1;
+}
+
+function findNthUserHistoryIndex(
+  history: AgentSessionState['history'],
+  userCount: number
+): number | undefined {
+  if (userCount <= 0) return undefined;
+  let seen = 0;
+  for (let i = 0; i < history.length; i++) {
+    if (history[i]?.role !== 'user') continue;
+    seen++;
+    if (seen === userCount) return i;
+  }
+  return undefined;
+}
+
 export interface ChatRevertService {
   getWorkspaceSnapshot(): Promise<WorkspaceSnapshot | undefined>;
   getUndoRedoAvailability(): { canUndo: boolean; canRedo: boolean };
@@ -127,11 +171,9 @@ export function createChatRevertService(controller: ChatRevertDeps): ChatRevertS
     const boundaryId = session.revert?.messageId;
 
     const boundaryIndex = boundaryId
-      ? this.messages.findIndex(m => m.id === boundaryId)
+      ? findMessageIndexById(this.messages, boundaryId)
       : this.messages.length;
-    const canUndo = [...this.messages]
-      .slice(0, Math.max(0, boundaryIndex))
-      .some(m => m.role === 'user');
+    const canUndo = hasUserMessageBefore(this.messages, boundaryIndex);
 
     const canRedo = !!boundaryId && boundaryIndex >= 0 && boundaryIndex < this.messages.length;
     return { canUndo, canRedo };
@@ -142,10 +184,10 @@ export function createChatRevertService(controller: ChatRevertDeps): ChatRevertS
     const boundaryId = session.revert?.messageId;
     if (!boundaryId) return null;
 
-    const boundaryIndex = this.messages.findIndex(m => m.id === boundaryId);
+    const boundaryIndex = findMessageIndexById(this.messages, boundaryId);
     if (boundaryIndex < 0) return null;
 
-    const revertedUsers = this.messages.slice(boundaryIndex).filter(m => m.role === 'user').length;
+    const revertedUsers = countUserMessagesInRange(this.messages, boundaryIndex, this.messages.length);
     const files = Array.isArray(session.revert?.files) ? session.revert.files : [];
 
     return {
@@ -175,7 +217,7 @@ export function createChatRevertService(controller: ChatRevertDeps): ChatRevertS
     const session = this.getActiveSession();
     const boundaryId = session.revert?.messageId;
     const boundaryIndex = boundaryId
-      ? this.messages.findIndex(m => m.id === boundaryId)
+      ? findMessageIndexById(this.messages, boundaryId)
       : this.messages.length;
 
     const userIndex = (() => {
@@ -209,7 +251,7 @@ export function createChatRevertService(controller: ChatRevertDeps): ChatRevertS
       return;
     }
 
-    const boundaryIndex = this.messages.findIndex(m => m.id === session.revert?.messageId);
+    const boundaryIndex = findMessageIndexById(this.messages, session.revert?.messageId);
     if (boundaryIndex === -1) {
       session.revert = undefined;
       await this.sendInit(true);
@@ -301,7 +343,7 @@ export function createChatRevertService(controller: ChatRevertDeps): ChatRevertS
 
     const previousPendingPlan = session.pendingPlan;
 
-    const boundaryIndex = this.messages.findIndex(m => m.id === session.revert?.messageId);
+    const boundaryIndex = findMessageIndexById(this.messages, session.revert?.messageId);
     if (boundaryIndex >= 0) {
       this.messages.splice(boundaryIndex);
     }
@@ -320,7 +362,10 @@ export function createChatRevertService(controller: ChatRevertDeps): ChatRevertS
 
   collectPatchesFromIndex(this: ChatRevertRuntime, startIndex: number): SnapshotPatch[] {
     const patches: SnapshotPatch[] = [];
-    for (const msg of this.messages.slice(Math.max(0, startIndex))) {
+    const start = Math.min(this.messages.length, Math.max(0, startIndex));
+    for (let i = start; i < this.messages.length; i++) {
+      const msg = this.messages[i];
+      if (!msg) continue;
       if (msg.role !== 'step') continue;
       const patch = msg.step?.patch;
       if (!patch?.baseHash || !Array.isArray(patch.files) || patch.files.length === 0) continue;
@@ -350,14 +395,8 @@ export function createChatRevertService(controller: ChatRevertDeps): ChatRevertS
       };
     }
 
-    const chatUserCount = this.messages.slice(0, boundaryIndex + 1).filter(m => m.role === 'user').length;
-
-    const userIndices: number[] = [];
-    for (let i = 0; i < baseline.history.length; i++) {
-      if (baseline.history[i]?.role === 'user') userIndices.push(i);
-    }
-
-    const boundaryHistoryIndex = chatUserCount > 0 ? userIndices[chatUserCount - 1] : undefined;
+    const chatUserCount = countUserMessagesInRange(this.messages, 0, boundaryIndex + 1);
+    const boundaryHistoryIndex = findNthUserHistoryIndex(baseline.history, chatUserCount);
     if (typeof boundaryHistoryIndex === 'number') {
       return {
         ...baseline,
@@ -377,7 +416,7 @@ export function createChatRevertService(controller: ChatRevertDeps): ChatRevertS
     await this.ensureSessionsLoaded();
 
     const session = this.getActiveSession();
-    const boundaryIndex = this.messages.findIndex(m => m.id === boundaryMessageId);
+    const boundaryIndex = findMessageIndexById(this.messages, boundaryMessageId);
     if (boundaryIndex === -1 || this.messages[boundaryIndex]?.role !== 'user') {
       postInputNotice(this, 'Unable to undo—selected message was not found.');
       return;

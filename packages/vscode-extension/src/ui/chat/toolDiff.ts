@@ -48,8 +48,8 @@ export function computeUnifiedDiffStats(diffText: string): DiffStats {
   let additions = 0;
   let deletions = 0;
 
-  for (const line of diff.split(/\r?\n/)) {
-    if (!line) continue;
+  forEachUnifiedDiffLine(diff, line => {
+    if (!line) return;
     if (
       line.startsWith('+++') ||
       line.startsWith('---') ||
@@ -58,11 +58,11 @@ export function computeUnifiedDiffStats(diffText: string): DiffStats {
       line.startsWith('Index:') ||
       line.startsWith('===================================================================')
     ) {
-      continue;
+      return;
     }
     if (line.startsWith('+')) additions += 1;
     else if (line.startsWith('-')) deletions += 1;
-  }
+  });
 
   return { additions, deletions };
 }
@@ -76,12 +76,10 @@ export function trimUnifiedDiff(
   const maxLines = options?.maxLines ?? 400;
 
   if (raw.length <= maxChars) {
-    const lines = raw.split(/\r?\n/);
-    if (lines.length <= maxLines) return { text: raw, truncated: false };
+    if (!hasMoreUnifiedDiffLinesThan(raw, maxLines)) return { text: raw, truncated: false };
   }
 
-  const lines = raw.split(/\r?\n/).slice(0, maxLines);
-  let text = lines.join('\n');
+  let text = collectUnifiedDiffPrefix(raw, maxLines);
   if (text.length > maxChars) {
     text = text.slice(0, maxChars);
   }
@@ -91,14 +89,64 @@ export function trimUnifiedDiff(
   return { text, truncated: true };
 }
 
+function forEachUnifiedDiffLine(diffText: string, visit: (line: string) => void): void {
+  let lineStart = 0;
+  for (let i = 0; i < diffText.length; i++) {
+    if (diffText.charCodeAt(i) !== 10) continue;
+    const lineEnd = i > lineStart && diffText.charCodeAt(i - 1) === 13 ? i - 1 : i;
+    visit(diffText.slice(lineStart, lineEnd));
+    lineStart = i + 1;
+  }
+  visit(diffText.slice(lineStart));
+}
+
+function hasMoreUnifiedDiffLinesThan(diffText: string, maxLines: number): boolean {
+  if (maxLines < 1) return true;
+
+  let lineCount = 1;
+  for (let i = 0; i < diffText.length; i++) {
+    if (diffText.charCodeAt(i) !== 10) continue;
+    lineCount += 1;
+    if (lineCount > maxLines) return true;
+  }
+
+  return false;
+}
+
+function collectUnifiedDiffPrefix(diffText: string, maxLines: number): string {
+  if (maxLines < 1) return '';
+
+  let lineCount = 0;
+  let sawCarriageReturn = false;
+
+  for (let i = 0; i < diffText.length; i++) {
+    const code = diffText.charCodeAt(i);
+    if (code === 13) {
+      sawCarriageReturn = true;
+      continue;
+    }
+    if (code !== 10) continue;
+    lineCount += 1;
+    if (lineCount >= maxLines) {
+      const end = i > 0 && diffText.charCodeAt(i - 1) === 13 ? i - 1 : i;
+      const prefix = diffText.slice(0, end);
+      return sawCarriageReturn ? prefix.replace(/\r\n/g, '\n') : prefix;
+    }
+  }
+
+  return sawCarriageReturn ? diffText.replace(/\r\n/g, '\n') : diffText;
+}
+
+const TRUNCATED_DIFF_MARKER = '... [TRUNCATED]';
+
 function stripTruncationMarker(diffText: string): string {
   const raw = typeof diffText === 'string' ? diffText : '';
-  const marker = '... [TRUNCATED]';
-  if (!raw.includes(marker)) return raw;
-  const index = raw.lastIndexOf(marker);
+  const index = raw.lastIndexOf(TRUNCATED_DIFF_MARKER);
   if (index < 0) return raw;
   return raw.slice(0, index).replace(/\s+$/g, '') + '\n';
 }
+
+const UNIFIED_DIFF_HUNK_HEADER_RE = /^@@\s*-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s+@@/;
 
 export function buildToolDiffView(diffText: string, params: { filePath: string }): ToolDiffView | undefined {
   const filePath = (params.filePath || '').trim();
@@ -107,7 +155,6 @@ export function buildToolDiffView(diffText: string, params: { filePath: string }
   const cleaned = stripTruncationMarker(diffText);
 
   const hunks: ToolDiffHunkView[] = [];
-  const lines = cleaned.split(/\r?\n/);
   let current: ToolDiffHunkView | undefined;
   let oldLine = 0;
   let newLine = 0;
@@ -119,10 +166,10 @@ export function buildToolDiffView(diffText: string, params: { filePath: string }
     current = undefined;
   };
 
-  for (const rawLine of lines) {
-    if (!rawLine) continue;
+  forEachUnifiedDiffLine(cleaned, rawLine => {
+    if (!rawLine) return;
 
-    const headerMatch = rawLine.match(/^@@\s*-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s+@@/);
+    const headerMatch = UNIFIED_DIFF_HUNK_HEADER_RE.exec(rawLine);
     if (headerMatch) {
       flush();
 
@@ -142,33 +189,33 @@ export function buildToolDiffView(diffText: string, params: { filePath: string }
         newLines: newLinesCount,
         lines: [],
       };
-      continue;
+      return;
     }
 
-    if (!current) continue;
+    if (!current) return;
 
     const prefix = rawLine[0];
     if (prefix === ' ') {
       current.lines.push({ kind: 'ctx', text: rawLine.slice(1), oldLine, newLine });
       oldLine += 1;
       newLine += 1;
-      continue;
+      return;
     }
 
     if (prefix === '-') {
       current.lines.push({ kind: 'del', text: rawLine.slice(1), oldLine });
       oldLine += 1;
-      continue;
+      return;
     }
 
     if (prefix === '+') {
       current.lines.push({ kind: 'add', text: rawLine.slice(1), newLine });
       newLine += 1;
-      continue;
+      return;
     }
 
     current.lines.push({ kind: 'meta', text: rawLine });
-  }
+  });
 
   flush();
 

@@ -10,10 +10,12 @@ import Mocha from 'mocha';
 import { glob } from 'glob';
 
 export async function run(): Promise<void> {
+  const grep = process.env.LINGYUN_TEST_GREP;
   const mocha = new Mocha({
     ui: 'tdd',
     color: true,
     timeout: 10000,
+    grep: grep ? new RegExp(grep) : undefined,
   });
 
   const testsRoot = path.resolve(__dirname, '.');

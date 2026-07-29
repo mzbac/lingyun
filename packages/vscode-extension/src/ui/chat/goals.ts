@@ -64,6 +64,12 @@ function tokenizeGoalArgs(input: string): string[] {
   return tokens;
 }
 
+function countGoalObjectiveChars(value: string): number {
+  let count = 0;
+  for (const _ch of value) count++;
+  return count;
+}
+
 export function parseGoalSlashCommand(text: string): GoalSlashCommand | undefined {
   const raw = String(text || '').trim();
   if (!raw) return undefined;
@@ -82,7 +88,8 @@ export function parseGoalSlashCommand(text: string): GoalSlashCommand | undefine
   let tokenBudget: number | undefined;
   const objectiveParts: string[] = [];
   for (let i = 0; i < tokens.length; i++) {
-    const token = tokens[i]!;
+    const token = tokens[i];
+    if (token === undefined) continue;
     const flag = TOKEN_BUDGET_FLAG_PATTERN.exec(token);
     if (!flag) {
       objectiveParts.push(token);
@@ -101,9 +108,10 @@ export function parseGoalSlashCommand(text: string): GoalSlashCommand | undefine
   if (!objective) {
     throw new Error('Goal objective must not be empty.');
   }
-  if ([...objective].length > MAX_GOAL_OBJECTIVE_CHARS) {
+  const objectiveLength = countGoalObjectiveChars(objective);
+  if (objectiveLength > MAX_GOAL_OBJECTIVE_CHARS) {
     throw new Error(
-      `Goal objective is too long: ${[...objective].length} characters. Limit: ${MAX_GOAL_OBJECTIVE_CHARS} characters. Put longer instructions in a file and refer to that file in the goal.`,
+      `Goal objective is too long: ${objectiveLength} characters. Limit: ${MAX_GOAL_OBJECTIVE_CHARS} characters. Put longer instructions in a file and refer to that file in the goal.`,
     );
   }
   return { kind: 'setObjective', objective, ...(tokenBudget ? { tokenBudget } : {}) };

@@ -45,6 +45,33 @@ suite('Chat execution state', () => {
     assert.strictEqual(tokens[0]?.token, 'x'.repeat(25));
   });
 
+  test('flushes all pending thought and assistant token buffers before completion', async () => {
+    const { view, posted } = createView();
+    const state = createChatExecutionState({
+      view,
+      showThinking: true,
+      debugLlm: false,
+      persistSessions: false,
+      debug: () => {},
+    });
+
+    state.pushThought('thinking');
+    state.pushThought(' more');
+    state.pushAssistant('answer');
+    state.markStepDoneIfPosted();
+
+    let tokens = posted.filter(message => message?.type === 'token');
+    assert.strictEqual(tokens.length, 2);
+    assert.deepStrictEqual(
+      tokens.map(message => message?.token),
+      [' more', 'answer'],
+    );
+
+    await new Promise(resolve => setTimeout(resolve, 40));
+    tokens = posted.filter(message => message?.type === 'token');
+    assert.strictEqual(tokens.length, 2);
+  });
+
   test('discards buffered assistant tokens when a retry resets content', async () => {
     const { view, posted } = createView();
     const state = createChatExecutionState({

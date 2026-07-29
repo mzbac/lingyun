@@ -42,27 +42,33 @@ function normalizeImageDataForOpenAICompatible(data: unknown): unknown {
   }
 }
 
+function appendChangedItem<T>(source: T[], changed: T[] | undefined, index: number, item: T): T[] {
+  if (!changed) changed = source.slice(0, index);
+  changed.push(item);
+  return changed;
+}
+
 /**
  * Apply Codex-style image boundaries for Copilot image inputs:
  * - wraps each image file part with `<image>` and `</image>` text parts
  * - keeps data URLs as URL objects so openai-compatible serialization preserves them
  */
 export function applyCopilotImageInputPattern(messages: ModelMessage[]): ModelMessage[] {
-  let anyChanged = false;
-
-  const next = messages.map((message) => {
+  let nextMessages: ModelMessage[] | undefined;
+  for (let messageIndex = 0; messageIndex < messages.length; messageIndex++) {
+    const message = messages[messageIndex]!;
     if (message.role !== 'user' || !Array.isArray(message.content)) {
-      return message;
+      if (nextMessages) nextMessages.push(message);
+      continue;
     }
 
     const content = message.content as unknown[];
-    const transformed: unknown[] = [];
-    let changed = false;
+    let transformed: unknown[] | undefined;
 
     for (let index = 0; index < content.length; index++) {
       const part = content[index];
       if (!isImageFilePart(part)) {
-        transformed.push(part);
+        if (transformed) transformed.push(part);
         continue;
       }
 
@@ -70,36 +76,43 @@ export function applyCopilotImageInputPattern(messages: ModelMessage[]): ModelMe
       const nextOriginal = index + 1 < content.length ? content[index + 1] : undefined;
       const hasOpenBoundary = isTextPart(previousOriginal, IMAGE_OPEN_TAG_TEXT);
       const hasCloseBoundary = isTextPart(nextOriginal, IMAGE_CLOSE_TAG_TEXT);
+      const normalizedData = normalizeImageDataForOpenAICompatible(part.data);
+      const partChanged = normalizedData !== part.data;
+
+      if (hasOpenBoundary && hasCloseBoundary && !partChanged) {
+        if (transformed) transformed.push(part);
+        continue;
+      }
+
+      if (!transformed) transformed = content.slice(0, index);
 
       if (!hasOpenBoundary) {
         transformed.push({ type: 'text', text: IMAGE_OPEN_TAG_TEXT });
-        changed = true;
       }
 
-      const normalizedData = normalizeImageDataForOpenAICompatible(part.data);
-      if (normalizedData !== part.data) {
+      if (partChanged) {
         transformed.push({ ...part, data: normalizedData });
-        changed = true;
       } else {
         transformed.push(part);
       }
 
       if (!hasCloseBoundary) {
         transformed.push({ type: 'text', text: IMAGE_CLOSE_TAG_TEXT });
-        changed = true;
       }
     }
 
-    if (!changed) return message;
+    if (!transformed) {
+      if (nextMessages) nextMessages.push(message);
+      continue;
+    }
 
-    anyChanged = true;
-    return {
+    nextMessages = appendChangedItem(messages, nextMessages, messageIndex, {
       ...message,
       content: transformed as typeof message.content,
-    };
-  });
+    });
+  }
 
-  return anyChanged ? next : messages;
+  return nextMessages ?? messages;
 }
 
 function isString(value: unknown): value is string {
@@ -129,24 +142,81 @@ function getProviderMetadata(part: unknown): UnknownRecord | undefined {
   return asRecord(record.providerMetadata);
 }
 
-function findProviderMetadata(parts: unknown[], type: 'text' | 'reasoning'): UnknownRecord | undefined {
+type AssistantReplayParts = {
+  hasReasoningTextParts: boolean;
+  existingReasoningProviderMetadata?: UnknownRecord;
+  existingTextProviderMetadata?: UnknownRecord;
+  originalReasoning: unknown[];
+  originalText: unknown[];
+  otherParts: unknown[];
+};
+
+function collectAssistantReplayParts(
+  parts: unknown[],
+  options: {
+    includeReasoning: boolean;
+    collectOriginalReasoning: boolean;
+    collectOriginalText: boolean;
+  },
+): AssistantReplayParts {
+  const collected: AssistantReplayParts = {
+    hasReasoningTextParts: false,
+    originalReasoning: [],
+    originalText: [],
+    otherParts: [],
+  };
+
   for (const part of parts) {
     const record = asRecord(part);
-    if (!record || record.type !== type) continue;
-    const meta = getProviderMetadata(part);
-    if (meta) return meta;
+    if (record?.type === 'reasoning') {
+      if (typeof record.text === 'string') {
+        collected.hasReasoningTextParts = true;
+        if (options.collectOriginalReasoning) {
+          collected.originalReasoning.push({ ...(part as any) });
+        }
+      }
+      if (options.includeReasoning && !collected.existingReasoningProviderMetadata) {
+        collected.existingReasoningProviderMetadata = getProviderMetadata(part);
+      }
+      continue;
+    }
+
+    if (record?.type === 'text') {
+      if (options.collectOriginalText && typeof record.text === 'string') {
+        collected.originalText.push({ ...(part as any) });
+      }
+      if (!collected.existingTextProviderMetadata) {
+        collected.existingTextProviderMetadata = getProviderMetadata(part);
+      }
+      continue;
+    }
+
+    collected.otherParts.push(part);
   }
-  return undefined;
+
+  return collected;
 }
 
-function isReasoningPart(part: unknown): part is { type: 'reasoning'; text: string } {
-  const record = asRecord(part);
-  return !!record && record.type === 'reasoning' && typeof record.text === 'string';
-}
+function collectReasoningContentParts(contentParts: unknown[]): {
+  filteredContent: unknown[] | undefined;
+  reasoningText: string;
+} {
+  let filteredContent: unknown[] | undefined;
+  let reasoningText = '';
 
-function isTextHistoryPart(part: unknown): part is { type: 'text'; text: string } {
-  const record = asRecord(part);
-  return !!record && record.type === 'text' && typeof record.text === 'string';
+  for (let i = 0; i < contentParts.length; i++) {
+    const part = contentParts[i];
+    const record = asRecord(part);
+    if (record?.type === 'reasoning') {
+      if (!filteredContent) filteredContent = contentParts.slice(0, i);
+      if (typeof record.text === 'string') reasoningText += record.text;
+      continue;
+    }
+
+    if (filteredContent) filteredContent.push(part);
+  }
+
+  return { filteredContent, reasoningText };
 }
 
 /**
@@ -161,30 +231,39 @@ export function applyAssistantReplayForPrompt(
   options?: { includeReasoning?: boolean },
 ): AgentHistoryMessage[] {
   const includeReasoning = options?.includeReasoning !== false;
-  let anyChanged = false;
+  let nextHistory: AgentHistoryMessage[] | undefined;
 
-  const next = history.map((message) => {
-    if (message.role !== 'assistant' || !Array.isArray(message.parts)) return message;
+  for (let messageIndex = 0; messageIndex < history.length; messageIndex++) {
+    const message = history[messageIndex]!;
+    if (message.role !== 'assistant' || !Array.isArray(message.parts)) {
+      if (nextHistory) nextHistory.push(message);
+      continue;
+    }
 
     const replayText = getReplayField(message, 'text');
     const replayReasoning = includeReasoning ? getReplayField(message, 'reasoning') : undefined;
-    const hasReasoningParts = message.parts.some(isReasoningPart);
-    if (replayText === undefined && replayReasoning === undefined && (includeReasoning || !hasReasoningParts)) {
-      return message;
+    if (replayText === undefined && replayReasoning === undefined && includeReasoning) {
+      if (nextHistory) nextHistory.push(message);
+      continue;
     }
 
-    const existingReasoningProviderMetadata = includeReasoning
-      ? findProviderMetadata(message.parts as unknown[], 'reasoning')
-      : undefined;
-    const existingTextProviderMetadata = findProviderMetadata(message.parts as unknown[], 'text');
+    const collected = collectAssistantReplayParts(message.parts as unknown[], {
+      includeReasoning,
+      collectOriginalReasoning: includeReasoning && replayReasoning === undefined,
+      collectOriginalText: replayText === undefined,
+    });
+    if (replayText === undefined && replayReasoning === undefined && !collected.hasReasoningTextParts) {
+      if (nextHistory) nextHistory.push(message);
+      continue;
+    }
 
     const copilotReasoningOpaque = includeReasoning ? getReplayCopilotField(message, 'reasoningOpaque') : undefined;
     const copilotReasoningEncryptedContent = includeReasoning
       ? getReplayCopilotField(message, 'reasoningEncryptedContent')
       : undefined;
     const reasoningProviderMetadata: UnknownRecord | undefined = (() => {
-      if (!existingReasoningProviderMetadata && !copilotReasoningOpaque && !copilotReasoningEncryptedContent) return undefined;
-      const merged = { ...(existingReasoningProviderMetadata ?? {}) };
+      if (!collected.existingReasoningProviderMetadata && !copilotReasoningOpaque && !copilotReasoningEncryptedContent) return undefined;
+      const merged = { ...(collected.existingReasoningProviderMetadata ?? {}) };
       if (copilotReasoningOpaque || copilotReasoningEncryptedContent) {
         const existingCopilot = asRecord(merged.copilot) ?? {};
         merged.copilot = {
@@ -195,13 +274,7 @@ export function applyAssistantReplayForPrompt(
       }
       return merged;
     })();
-    const textProviderMetadata = existingTextProviderMetadata ? { ...existingTextProviderMetadata } : undefined;
-
-    const otherParts = message.parts.filter((part) => {
-      const record = asRecord(part);
-      if (!record) return true;
-      return record.type !== 'text' && record.type !== 'reasoning';
-    });
+    const textProviderMetadata = collected.existingTextProviderMetadata ? { ...collected.existingTextProviderMetadata } : undefined;
 
     const rebuilt: unknown[] = [];
     if (includeReasoning) {
@@ -215,8 +288,7 @@ export function applyAssistantReplayForPrompt(
           });
         }
       } else {
-        const originalReasoning = message.parts.filter(isReasoningPart);
-        rebuilt.push(...originalReasoning.map((part) => ({ ...(part as any) })));
+        rebuilt.push(...collected.originalReasoning);
       }
     }
 
@@ -230,21 +302,19 @@ export function applyAssistantReplayForPrompt(
         });
       }
     } else {
-      const originalText = message.parts.filter(isTextHistoryPart);
-      rebuilt.push(...originalText.map((part) => ({ ...(part as any) })));
+      rebuilt.push(...collected.originalText);
     }
 
-    const nextParts = [...rebuilt, ...otherParts] as unknown as AgentHistoryMessage['parts'];
+    const nextParts = [...rebuilt, ...collected.otherParts] as unknown as AgentHistoryMessage['parts'];
 
-    anyChanged = true;
-    return {
+    nextHistory = appendChangedItem(history, nextHistory, messageIndex, {
       ...message,
       metadata: message.metadata ? { ...message.metadata } : undefined,
       parts: nextParts,
-    };
-  });
+    });
+  }
 
-  return anyChanged ? next : history;
+  return nextHistory ?? history;
 }
 
 type ReasoningField = 'reasoning_content' | 'reasoning_details';
@@ -265,54 +335,43 @@ export function applyOpenAICompatibleReasoningField(
 ): ModelMessage[] {
   const field: ReasoningField = params?.field ?? 'reasoning_content';
   const includeReasoning = params?.includeReasoning !== false;
-  let anyChanged = false;
+  let nextMessages: ModelMessage[] | undefined;
 
-  const next = messages.map((message) => {
-    if (message.role !== 'assistant' || !Array.isArray(message.content)) return message;
+  for (let messageIndex = 0; messageIndex < messages.length; messageIndex++) {
+    const message = messages[messageIndex]!;
+    if (message.role !== 'assistant' || !Array.isArray(message.content)) {
+      if (nextMessages) nextMessages.push(message);
+      continue;
+    }
 
-    const contentParts = message.content as unknown[];
-    const reasoningText = contentParts
-      .filter((part) => {
-        const record = asRecord(part);
-        return !!record && record.type === 'reasoning' && typeof record.text === 'string';
-      })
-      .map((part) => (part as any).text as string)
-      .join('');
-
-    const hasReasoning = contentParts.some((part) => {
-      const record = asRecord(part);
-      return !!record && record.type === 'reasoning';
-    });
-    if (!hasReasoning) return message;
-
-    const filteredContent = contentParts.filter((part) => {
-      const record = asRecord(part);
-      return !(record && record.type === 'reasoning');
-    });
+    const { filteredContent, reasoningText } = collectReasoningContentParts(message.content as unknown[]);
+    if (!filteredContent) {
+      if (nextMessages) nextMessages.push(message);
+      continue;
+    }
 
     if (!includeReasoning || !reasoningText) {
-      anyChanged = true;
-      return {
+      nextMessages = appendChangedItem(messages, nextMessages, messageIndex, {
         ...message,
         content: filteredContent as any,
-      };
+      });
+      continue;
     }
 
     const existingProviderOptions = getModelMessageProviderOptions(message);
     const openaiCompatibleOptions = asRecord(existingProviderOptions?.openaiCompatible) ?? {};
 
-    anyChanged = true;
-    return {
+    nextMessages = appendChangedItem(messages, nextMessages, messageIndex, {
       ...message,
       content: filteredContent as any,
       providerOptions: {
         ...(existingProviderOptions ?? {}),
         openaiCompatible: { ...openaiCompatibleOptions, [field]: reasoningText },
       } as any,
-    };
-  });
+    });
+  }
 
-  return anyChanged ? next : messages;
+  return nextMessages ?? messages;
 }
 
 /**
@@ -321,40 +380,34 @@ export function applyOpenAICompatibleReasoningField(
  * prompt-cache friendliness we lift reasoning parts onto `providerOptions.openaiCompatible.reasoning_text`.
  */
 export function applyCopilotReasoningFields(messages: ModelMessage[]): ModelMessage[] {
-  let anyChanged = false;
+  let nextMessages: ModelMessage[] | undefined;
 
-  const next = messages.map((message) => {
-    if (message.role !== 'assistant' || !Array.isArray(message.content)) return message;
+  for (let messageIndex = 0; messageIndex < messages.length; messageIndex++) {
+    const message = messages[messageIndex]!;
+    if (message.role !== 'assistant' || !Array.isArray(message.content)) {
+      if (nextMessages) nextMessages.push(message);
+      continue;
+    }
 
-    const contentParts = message.content as unknown[];
-    const reasoningText = contentParts
-      .filter((part) => {
-        const record = asRecord(part);
-        return !!record && record.type === 'reasoning' && typeof record.text === 'string';
-      })
-      .map((part) => (part as any).text as string)
-      .join('');
+    const { filteredContent, reasoningText } = collectReasoningContentParts(message.content as unknown[]);
 
-    if (!reasoningText) return message;
-
-    const filteredContent = contentParts.filter((part) => {
-      const record = asRecord(part);
-      return !(record && record.type === 'reasoning');
-    });
+    if (!reasoningText) {
+      if (nextMessages) nextMessages.push(message);
+      continue;
+    }
 
     const existingProviderOptions = getModelMessageProviderOptions(message);
     const openaiCompatibleOptions = asRecord(existingProviderOptions?.openaiCompatible) ?? {};
 
-    anyChanged = true;
-    return {
+    nextMessages = appendChangedItem(messages, nextMessages, messageIndex, {
       ...message,
       content: filteredContent as any,
       providerOptions: {
         ...(existingProviderOptions ?? {}),
         openaiCompatible: { ...openaiCompatibleOptions, reasoning_text: reasoningText },
       } as any,
-    };
-  });
+    });
+  }
 
-  return anyChanged ? next : messages;
+  return nextMessages ?? messages;
 }

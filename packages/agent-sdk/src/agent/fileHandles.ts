@@ -5,6 +5,7 @@ import type { SemanticHandleRegistry } from './semanticHandles.js';
 import type { FileHandleLike } from './semanticHandles.js';
 import {
   createBlankFileHandlesState,
+  isNormalizedFileHandlesState,
   normalizeFileHandlesState,
   type LingyunFileHandlesState,
 } from './session.js';
@@ -16,6 +17,18 @@ export type FileHandlesState = {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function normalizeNonEmptyStrings(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+
+  const normalized: string[] = [];
+  for (const item of raw) {
+    if (typeof item !== 'string') continue;
+    const value = item.trim();
+    if (value) normalized.push(value);
+  }
+  return normalized;
 }
 
 export class FileHandleRegistry {
@@ -41,6 +54,7 @@ export class FileHandleRegistry {
   }
 
   private ensureState(session: FileHandlesState): NonNullable<FileHandlesState['fileHandles']> {
+    if (isNormalizedFileHandlesState(session.fileHandles)) return session.fileHandles;
     const normalized = normalizeFileHandlesState(session.fileHandles);
     session.fileHandles = normalized ?? createBlankFileHandlesState();
     return session.fileHandles;
@@ -61,7 +75,9 @@ export class FileHandleRegistry {
     }
 
     const handles = this.ensureState(session);
-    for (const [existingId, existingPath] of Object.entries(handles.byId)) {
+    for (const existingId in handles.byId) {
+      if (!Object.prototype.hasOwnProperty.call(handles.byId, existingId)) continue;
+      const existingPath = handles.byId[existingId];
       if (existingPath === normalizedPath) {
         return { id: existingId, filePath: normalizedPath };
       }
@@ -81,18 +97,10 @@ export class FileHandleRegistry {
     const filesRaw = (data as any).files;
     if (!Array.isArray(filesRaw)) return result;
 
-    const files = filesRaw
-      .filter((value: unknown): value is string => typeof value === 'string')
-      .map((value: string) => value.trim())
-      .filter(Boolean);
+    const files = normalizeNonEmptyStrings(filesRaw);
 
     const notesRaw = (data as any).notes;
-    const notes = Array.isArray(notesRaw)
-      ? notesRaw
-          .filter((value: unknown): value is string => typeof value === 'string')
-          .map((value: string) => value.trim())
-          .filter(Boolean)
-      : [];
+    const notes = normalizeNonEmptyStrings(notesRaw);
 
     const truncated = Boolean((data as any).truncated);
 
@@ -138,7 +146,8 @@ export class FileHandleRegistry {
 
     type GrepMatch = { filePath: string; line: number; column?: number; text: string };
 
-    const matches: GrepMatch[] = [];
+    const byFile = new Map<string, GrepMatch[]>();
+    let matchCount = 0;
     for (const item of matchesRaw) {
       if (!isRecord(item)) continue;
 
@@ -147,42 +156,39 @@ export class FileHandleRegistry {
       const columnRaw = (item as any).column;
       const textRaw = (item as any).text;
 
-      if (typeof filePathRaw !== 'string' || !filePathRaw.trim()) continue;
+      if (typeof filePathRaw !== 'string') continue;
+      const filePath = filePathRaw.trim();
+      if (!filePath) continue;
       if (typeof lineRaw !== 'number' || !Number.isFinite(lineRaw)) continue;
       if (typeof textRaw !== 'string') continue;
 
       const column = typeof columnRaw === 'number' && Number.isFinite(columnRaw) ? Math.floor(columnRaw) : undefined;
 
-      matches.push({
-        filePath: filePathRaw.trim(),
+      const match: GrepMatch = {
+        filePath,
         line: Math.max(1, Math.floor(lineRaw)),
-        ...(column && column > 0 ? { column } : {}),
         text: textRaw.trim(),
-      });
+      };
+      if (column && column > 0) match.column = column;
+      let entry = byFile.get(match.filePath);
+      if (!entry) {
+        entry = [];
+        byFile.set(match.filePath, entry);
+      }
+      entry.push(match);
+      matchCount++;
     }
 
     const notesRaw = (data as any).notes;
-    const notes = Array.isArray(notesRaw)
-      ? notesRaw
-          .filter((value: unknown): value is string => typeof value === 'string')
-          .map((value: string) => value.trim())
-          .filter(Boolean)
-      : [];
+    const notes = normalizeNonEmptyStrings(notesRaw);
 
     const truncated = Boolean((data as any).truncated);
-
-    const byFile = new Map<string, GrepMatch[]>();
-    for (const match of matches) {
-      const entry = byFile.get(match.filePath) ?? [];
-      entry.push(match);
-      byFile.set(match.filePath, entry);
-    }
 
     const totalMatchesRaw = (data as any).totalMatches;
     const totalMatches =
       typeof totalMatchesRaw === 'number' && Number.isFinite(totalMatchesRaw)
         ? Math.max(0, Math.floor(totalMatchesRaw))
-        : matches.length;
+        : matchCount;
 
     const MAX_LINE_LENGTH = 2000;
 
@@ -191,7 +197,7 @@ export class FileHandleRegistry {
       lines.push(`Note: ${notes.join(' ')}`, '');
     }
 
-    if (matches.length === 0) {
+    if (matchCount === 0) {
       lines.push('No matches found');
       return {
         ...result,
@@ -214,10 +220,10 @@ export class FileHandleRegistry {
       lines.push('');
       lines.push(`${handle.id}  ${handle.filePath}`);
 
-      const sorted = [...fileMatches].sort((a, b) => a.line - b.line || (a.column ?? 0) - (b.column ?? 0));
+      fileMatches.sort((a, b) => a.line - b.line || (a.column ?? 0) - (b.column ?? 0));
 
       let firstMatchId: string | undefined;
-      for (const match of sorted) {
+      for (const match of fileMatches) {
         const truncatedLine =
           match.text.length > MAX_LINE_LENGTH ? match.text.substring(0, MAX_LINE_LENGTH) + '...' : match.text;
         const character = match.column && match.column > 0 ? match.column : 1;
@@ -227,7 +233,7 @@ export class FileHandleRegistry {
         lines.push(`  ${matchId}  ${pos}: ${truncatedLine}`);
       }
 
-      const first = sorted[0];
+      const first = fileMatches[0];
       if (first) {
         const character = first.column && first.column > 0 ? first.column : 1;
         lines.push(
@@ -251,4 +257,3 @@ export class FileHandleRegistry {
     };
   }
 }
-

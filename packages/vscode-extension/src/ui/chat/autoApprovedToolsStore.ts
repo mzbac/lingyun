@@ -35,8 +35,14 @@ function normalizeAutoApprovedToolIds(values: Iterable<unknown>): string[] {
 
 function replaceAutoApprovedTools(target: Set<string>, values: Iterable<unknown>): boolean {
   const normalized = normalizeAutoApprovedToolIds(values);
-  if (target.size === normalized.length && normalized.every(toolId => target.has(toolId))) {
-    return false;
+  if (target.size === normalized.length) {
+    let matches = true;
+    for (const toolId of normalized) {
+      if (target.has(toolId)) continue;
+      matches = false;
+      break;
+    }
+    if (matches) return false;
   }
 
   target.clear();
@@ -44,6 +50,10 @@ function replaceAutoApprovedTools(target: Set<string>, values: Iterable<unknown>
     target.add(toolId);
   }
   return true;
+}
+
+function normalizeAutoApprovedToolsInPlace(autoApprovedTools: Set<string>): boolean {
+  return replaceAutoApprovedTools(autoApprovedTools, autoApprovedTools);
 }
 
 /**
@@ -61,7 +71,14 @@ export function getAutoApprovedToolIds(autoApprovedTools: Set<string>): string[]
 }
 
 export function rememberAutoApprovedTool(autoApprovedTools: Set<string>, toolId: unknown): boolean {
-  return replaceAutoApprovedTools(autoApprovedTools, [...autoApprovedTools, toolId]);
+  const normalizedExisting = normalizeAutoApprovedToolsInPlace(autoApprovedTools);
+  const normalizedToolId = normalizeAutoApprovedToolId(toolId);
+  if (!normalizedToolId || autoApprovedTools.has(normalizedToolId)) {
+    return normalizedExisting;
+  }
+
+  autoApprovedTools.add(normalizedToolId);
+  return true;
 }
 
 export function forgetAutoApprovedTool(autoApprovedTools: Set<string>, toolId: unknown): boolean {

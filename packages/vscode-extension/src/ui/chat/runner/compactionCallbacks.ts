@@ -1,4 +1,4 @@
-import { getMessageText } from '@kooka/core';
+import { getMessageText, type AgentHistoryMessage } from '@kooka/core';
 
 import type { AgentCallbacks } from '../../../core/types';
 import type { ChatMessage } from '../types';
@@ -8,6 +8,14 @@ const MAX_COMPACTION_SUMMARY_CHARS = 20_000;
 
 type CompactionStartEvent = Parameters<NonNullable<AgentCallbacks['onCompactionStart']>>[0];
 type CompactionEndEvent = Parameters<NonNullable<AgentCallbacks['onCompactionEnd']>>[0];
+
+function findHistoryMessageById(history: readonly AgentHistoryMessage[], messageId: string): AgentHistoryMessage | undefined {
+  for (let i = 0; i < history.length; i++) {
+    const message = history[i];
+    if (message?.id === messageId) return message;
+  }
+  return undefined;
+}
 
 /**
  * Owns chat UI state for compaction lifecycle events.
@@ -98,7 +106,7 @@ export function createCompactionCallbacks(params: {
 
       if (summaryMessageId) {
         const history = view.agent.getHistory();
-        const summary = history.find(message => message.id === summaryMessageId);
+        const summary = findHistoryMessageById(history, summaryMessageId);
         const summaryText = summary ? getMessageText(summary) : '';
         if (summaryText.trim()) {
           const truncated = summaryText.length > MAX_COMPACTION_SUMMARY_CHARS;

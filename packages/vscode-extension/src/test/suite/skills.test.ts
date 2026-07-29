@@ -2,8 +2,15 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import * as vscode from 'vscode';
 
-import { extractSkillMentions, renderSkillsSectionForPrompt, selectSkillsForText } from '@kooka/core';
+import {
+  extractSkillMentions,
+  formatSkillNotFoundError,
+  renderSkillCatalogToolOutput,
+  renderSkillsSectionForPrompt,
+  selectSkillsForText,
+} from '@kooka/core';
 import { getSkillIndex, loadSkillFile } from '../../core/skills';
 
 async function writeFile(filePath: string, content: string): Promise<void> {
@@ -78,6 +85,61 @@ suite('Skills', () => {
     assert.ok(empty.includes('- (none)'));
   });
 
+  test('renderSkillCatalogToolOutput renders catalog and directory diagnostics', () => {
+    const workspaceRoot = path.join(os.tmpdir(), 'lingyun-skill-catalog-workspace');
+    const rendered = renderSkillCatalogToolOutput({
+      skills: [
+        { name: 'alpha', description: 'Alpha skill' },
+        { name: 'beta', description: 'Beta skill' },
+      ],
+      scannedDirs: [
+        { absPath: path.join(workspaceRoot, '.lingyun', 'skills'), status: 'missing' },
+        { absPath: path.join(workspaceRoot, 'bad-skills'), status: 'error', reason: 'Not a directory' },
+      ],
+      workspaceRoot,
+      truncated: true,
+      mentionHint: 'Or: mention `$skill-name` in your message to auto-apply a skill for that turn.',
+    });
+
+    assert.strictEqual(
+      rendered,
+      [
+        'Load a skill to get detailed instructions for a specific task.',
+        'Call: skill { "name": "..." }',
+        'Or: mention `$skill-name` in your message to auto-apply a skill for that turn.',
+        '',
+        '<available_skills>',
+        '  <skill>',
+        '    <name>alpha</name>',
+        '    <description>Alpha skill</description>',
+        '  </skill>',
+        '  <skill>',
+        '    <name>beta</name>',
+        '    <description>Beta skill</description>',
+        '  </skill>',
+        '</available_skills>',
+        '',
+        'Note: Skill list was truncated.',
+        '',
+        'Searched directories:',
+        '- .lingyun/skills (missing)',
+        '- bad-skills (error: Not a directory)',
+      ].join('\n')
+    );
+  });
+
+  test('formatSkillNotFoundError bounds available skill names', () => {
+    const skills = Array.from({ length: 52 }, (_value, index) => ({
+      name: `skill-${String(index).padStart(2, '0')}`,
+      description: 'Skill',
+    }));
+
+    const error = formatSkillNotFoundError('missing', skills);
+    assert.ok(error.startsWith('Skill "missing" not found. Available skills: skill-00, skill-01'));
+    assert.ok(error.includes('skill-49, ...'));
+    assert.ok(!error.includes('skill-50'));
+  });
+
   test('discovers workspace skills from configured dirs', async () => {
     const workspaceRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'lingyun-skills-workspace-'));
 
@@ -116,6 +178,78 @@ suite('Skills', () => {
       assert.strictEqual(index.skills.length, 2);
       assert.deepStrictEqual(index.skills.map(s => s.name), ['skill-one', 'skill-two']);
     } finally {
+      await rmDir(workspaceRoot);
+    }
+  });
+
+  test('deduplicates equivalent skill search paths before scanning', async () => {
+    const workspaceRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'lingyun-skills-workspace-'));
+    const skillRoot = path.join(workspaceRoot, '.lingyun', 'skills');
+
+    try {
+      await writeFile(
+        path.join(skillRoot, 'dedup', 'SKILL.md'),
+        [
+          '---',
+          'name: dedup-skill',
+          'description: Deduped skill',
+          '---',
+          '',
+          'Only one scan should be needed.',
+        ].join('\n')
+      );
+
+      const index = await getSkillIndex({
+        workspaceRoot,
+        searchPaths: ['.lingyun/skills', './.lingyun/skills', ' .lingyun/skills ', skillRoot],
+        allowExternalPaths: false,
+        watchWorkspace: false,
+      });
+
+      assert.deepStrictEqual(index.skills.map(s => s.name), ['dedup-skill']);
+      assert.strictEqual(index.scannedDirs.length, 1);
+      assert.strictEqual(index.scannedDirs[0]?.absPath, path.resolve(skillRoot));
+      assert.strictEqual(index.scannedDirs[0]?.status, 'ok');
+    } finally {
+      await rmDir(workspaceRoot);
+    }
+  });
+
+  test('deduplicates workspace skill watchers and reuses equivalent configs', async () => {
+    const workspaceRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'lingyun-skills-workspace-'));
+    const context = { subscriptions: [] as vscode.Disposable[] } as vscode.ExtensionContext;
+
+    try {
+      await getSkillIndex({
+        extensionContext: context,
+        workspaceRoot,
+        searchPaths: [' .lingyun/skills ', './other/skills', '.lingyun/skills'],
+        allowExternalPaths: false,
+        watchWorkspace: true,
+      });
+
+      assert.strictEqual(context.subscriptions.length, 2);
+
+      await getSkillIndex({
+        extensionContext: context,
+        workspaceRoot,
+        searchPaths: ['other/skills', './.lingyun/skills'],
+        allowExternalPaths: false,
+        watchWorkspace: true,
+      });
+
+      assert.strictEqual(context.subscriptions.length, 2);
+    } finally {
+      await getSkillIndex({
+        extensionContext: { subscriptions: [] as vscode.Disposable[] } as vscode.ExtensionContext,
+        workspaceRoot,
+        searchPaths: [],
+        allowExternalPaths: false,
+        watchWorkspace: true,
+      });
+      for (const disposable of context.subscriptions) {
+        disposable.dispose();
+      }
       await rmDir(workspaceRoot);
     }
   });

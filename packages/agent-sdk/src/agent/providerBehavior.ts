@@ -132,10 +132,24 @@ export function createProviderBehavior(llmId: string): ProviderBehavior {
   }
 
   function omitEmptyProviderOptions(options: Record<string, unknown>): Record<string, unknown> | undefined {
-    const entries = Object.entries(options).filter(([, value]) => {
-      return value && typeof value === 'object' && Object.keys(value as Record<string, unknown>).length > 0;
-    });
-    return entries.length ? Object.fromEntries(entries) : undefined;
+    let next: Record<string, unknown> | undefined;
+    for (const key in options) {
+      if (!Object.prototype.hasOwnProperty.call(options, key)) continue;
+      const value = options[key];
+      if (!value || typeof value !== 'object') continue;
+
+      let hasProviderOption = false;
+      for (const optionKey in value as Record<string, unknown>) {
+        if (!Object.prototype.hasOwnProperty.call(value, optionKey)) continue;
+        hasProviderOption = true;
+        break;
+      }
+      if (!hasProviderOption) continue;
+
+      if (!next) next = {};
+      next[key] = value;
+    }
+    return next;
   }
 
   if (llmId === 'copilot') {
@@ -271,7 +285,12 @@ export function createProviderBehavior(llmId: string): ProviderBehavior {
       },
       normalizeSystemPrompts(system) {
         if (system.length <= 1) return system;
-        return [system.filter(Boolean).join('\n')];
+        let combined = '';
+        for (const part of system) {
+          if (!part) continue;
+          combined = combined ? `${combined}\n${part}` : part;
+        }
+        return [combined];
       },
       getSyntheticResumeUserText(modelId, history) {
         return shouldAppendSyntheticResumeUserTurn(modelId, history)

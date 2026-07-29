@@ -181,12 +181,17 @@ function normalizeTextPartsStream(
     reason: 'finish' | 'eof',
   ) => {
     if (openTextPartIds.size > 0) {
-      const ids = Array.from(openTextPartIds);
-      const sample = ids.slice(0, 5).join(',');
-      const suffix = ids.length > 5 ? ',…' : '';
-      log(`flush openTextParts=${String(ids.length)} reason=${reason} ids=${sample}${suffix}`);
+      let sample = '';
+      let sampled = 0;
+      for (const id of openTextPartIds) {
+        sample += sampled > 0 ? `,${id}` : id;
+        sampled += 1;
+        if (sampled >= 5) break;
+      }
+      const suffix = openTextPartIds.size > 5 ? ',…' : '';
+      log(`flush openTextParts=${String(openTextPartIds.size)} reason=${reason} ids=${sample}${suffix}`);
     }
-    for (const id of Array.from(openTextPartIds)) {
+    for (const id of openTextPartIds) {
       controller.enqueue({ type: 'text-end', id } as LanguageModelV3StreamPart);
       partsOut += 1;
       flushedTextEnds += 1;

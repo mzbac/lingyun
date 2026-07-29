@@ -168,15 +168,21 @@ function formatSafeDiagnostic(key: string, value: string | number | undefined): 
 
 function getProviderDiagnosticsForUser(records: Array<Record<string, unknown> | undefined>): string {
   const retryAfterMs = getNumberField(records, ['retryAfterMs']);
-  const parts = [
-    formatSafeDiagnostic('provider', getStringField(records, ['providerId', 'provider'])),
-    formatSafeDiagnostic('requestId', getStringField(records, ['requestId'])),
-    formatSafeDiagnostic('cfRay', getStringField(records, ['cfRay'])),
-    retryAfterMs && retryAfterMs > 0 ? formatSafeDiagnostic('retryAfterMs', retryAfterMs) : undefined,
-    formatSafeDiagnostic('code', getStringField(records, ['code', 'errorCode'])),
-    formatSafeDiagnostic('type', getStringField(records, ['type', 'errorType'])),
-    formatSafeDiagnostic('param', getStringField(records, ['param'])),
-  ].filter(Boolean);
+  const parts: string[] = [];
+  const provider = formatSafeDiagnostic('provider', getStringField(records, ['providerId', 'provider']));
+  if (provider) parts.push(provider);
+  const requestId = formatSafeDiagnostic('requestId', getStringField(records, ['requestId']));
+  if (requestId) parts.push(requestId);
+  const cfRay = formatSafeDiagnostic('cfRay', getStringField(records, ['cfRay']));
+  if (cfRay) parts.push(cfRay);
+  const retryAfter = retryAfterMs && retryAfterMs > 0 ? formatSafeDiagnostic('retryAfterMs', retryAfterMs) : undefined;
+  if (retryAfter) parts.push(retryAfter);
+  const code = formatSafeDiagnostic('code', getStringField(records, ['code', 'errorCode']));
+  if (code) parts.push(code);
+  const type = formatSafeDiagnostic('type', getStringField(records, ['type', 'errorType']));
+  if (type) parts.push(type);
+  const param = formatSafeDiagnostic('param', getStringField(records, ['param']));
+  if (param) parts.push(param);
   return parts.length ? `\n\nDiagnostics: ${parts.join(' ')}` : '';
 }
 
@@ -204,7 +210,10 @@ export function formatErrorForUser(error: unknown, options?: FormatErrorForUserO
         ? errRecord.cause
         : undefined;
 
-  const meta = [name, code, causeMessage].filter(Boolean).join(' | ');
+  let meta = '';
+  if (name) meta = name;
+  if (code) meta = meta ? `${meta} | ${code}` : code;
+  if (causeMessage) meta = meta ? `${meta} | ${causeMessage}` : causeMessage;
   const message = err.message || String(error);
   const safeMessage = truncateForDebug(redactForUser(message, records), 2000);
   const safeMeta = truncateForDebug(redactForUser(meta, records), 2000);

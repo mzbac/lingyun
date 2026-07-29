@@ -222,21 +222,29 @@ export class ToolRegistry {
     function: { name: string; description: string; parameters: object };
   }>> {
     const tools = await this.getTools();
-    return tools.map((tool) => ({
-      type: 'function' as const,
-      function: {
-        name: tool.id,
-        description: tool.description,
-        parameters: tool.parameters as unknown as object,
-      },
-    }));
+    const out: Array<{
+      type: 'function';
+      function: { name: string; description: string; parameters: object };
+    }> = [];
+    for (const tool of tools) {
+      out.push({
+        type: 'function',
+        function: {
+          name: tool.id,
+          description: tool.description,
+          parameters: tool.parameters as unknown as object,
+        },
+      });
+    }
+    return out;
   }
 
   getProviders(): { id: string; name: string }[] {
-    return [
-      { id: 'builtin', name: 'Built-in Tools' },
-      ...Array.from(this.providers.values()).map((p) => ({ id: p.id, name: p.name })),
-    ];
+    const providers: { id: string; name: string }[] = [{ id: 'builtin', name: 'Built-in Tools' }];
+    for (const provider of this.providers.values()) {
+      providers.push({ id: provider.id, name: provider.name });
+    }
+    return providers;
   }
 
   async getToolCount(): Promise<number> {

@@ -2,7 +2,7 @@
   "name": "lingyun",
   "displayName": "LingYun",
   "description": "Agentic AI assistant for VS Code",
-  "version": "2.5.3",
+  "version": "2.6.0",
   "publisher": "mzbac",
   "icon": "images/icon.png",
   "license": "MIT",
@@ -230,8 +230,8 @@
         },
         "lingyun.llm.retryWithPartialOutput": {
           "type": "boolean",
-          "default": false,
-          "description": "Allow retrying transient streaming failures even after partial assistant output. When enabled, may discard partial output on retry; otherwise the error is shown and you can retry manually."
+          "default": true,
+          "description": "Retry transient streaming failures after partial assistant output by replacing the incomplete response. Disable to stop and show the error instead."
         },
         "lingyun.llm.timeoutMs": {
           "type": "number",
@@ -365,12 +365,12 @@
         },
         "lingyun.compaction.toolOutputMode": {
           "type": "string",
-          "default": "afterToolCall",
+          "default": "onCompaction",
           "enum": [
             "onCompaction",
             "afterToolCall"
           ],
-          "description": "When to compact tool outputs in the model prompt. onCompaction only prunes outputs during session compaction; afterToolCall prunes tool outputs after the model has seen them once."
+          "description": "When to compact tool outputs in the model prompt. onCompaction preserves prior prompt prefixes and only prunes during session compaction; afterToolCall rewrites outputs after the model has seen them once."
         },
         "lingyun.features.memories": {
           "type": "boolean",
@@ -669,8 +669,8 @@
     "zod": "^4.1.8"
   },
   "devDependencies": {
-    "@ai-sdk/provider": "^3.0.2",
-    "@ai-sdk/provider-utils": "^4.0.5",
+    "@ai-sdk/provider": "^3.0.8",
+    "@ai-sdk/provider-utils": "^4.0.15",
     "@eslint/js": "^9.39.2",
     "@types/diff": "^7.0.0",
     "@types/mocha": "^10.0.10",

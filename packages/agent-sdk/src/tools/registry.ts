@@ -44,7 +44,11 @@ class SimpleToolProvider implements ToolProvider {
   }
 
   getTools(): ToolDefinition[] {
-    return Array.from(this.tools.values()).map((t) => t.definition);
+    const definitions: ToolDefinition[] = [];
+    for (const tool of this.tools.values()) {
+      definitions.push(tool.definition);
+    }
+    return definitions;
   }
 
   async executeTool(toolId: string, args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
@@ -152,16 +156,15 @@ export class ToolRegistry {
     }
 
     this.refreshPromise = (async () => {
-      const providerIds = [...this.providers.keys()];
-      await Promise.all(
-        providerIds.map(async (providerId) => {
-          try {
-            await this.refreshProviderTools(providerId);
-          } catch {
+      const refreshTasks: Promise<void>[] = [];
+      for (const providerId of this.providers.keys()) {
+        refreshTasks.push(
+          this.refreshProviderTools(providerId).catch(() => {
             // keep existing snapshot on listing failures
-          }
-        }),
-      );
+          }),
+        );
+      }
+      await Promise.all(refreshTasks);
       this.rebuildToolIndex();
     })();
 

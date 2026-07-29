@@ -48,6 +48,23 @@ export type RetryableKind =
 
 export type RetryableReason = { kind: RetryableKind; message: string; retryAfterMs?: number };
 
+const TRANSIENT_NETWORK_CODES = new Set([
+  'network_error',
+  'request_timeout',
+  'stream_read_error',
+  'econnreset',
+  'etimedout',
+  'epipe',
+  'econnrefused',
+  'enotfound',
+  'und_err_connect_timeout',
+  'und_err_headers_timeout',
+  'und_err_body_timeout',
+  'und_err_socket',
+  'und_err_socket_busy',
+  'und_err_info',
+]);
+
 function getErrorMessage(error: unknown): string {
   if (!error) return '';
   if (typeof error === 'string') return error;
@@ -106,85 +123,110 @@ function recordOrUndefined(value: unknown): Record<string, unknown> | undefined 
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
 }
 
-function getStringKey(record: Record<string, unknown> | undefined, keys: string[]): string | undefined {
+function hasLowercaseKey(key: string, lowercaseKeys: readonly string[]): boolean {
+  const normalized = key.toLowerCase();
+  for (const expected of lowercaseKeys) {
+    if (normalized === expected) return true;
+  }
+  return false;
+}
+
+function getStringKey(record: Record<string, unknown> | undefined, lowercaseKeys: readonly string[]): string | undefined {
   if (!record) return undefined;
-  const normalizedKeys = new Set(keys.map((key) => key.toLowerCase()));
-  for (const [key, value] of Object.entries(record)) {
-    if (!normalizedKeys.has(key.toLowerCase())) continue;
+  for (const key in record) {
+    if (!Object.prototype.hasOwnProperty.call(record, key)) continue;
+    if (!hasLowercaseKey(key, lowercaseKeys)) continue;
+    const value = record[key];
     if (typeof value === 'string' && value.trim()) return value.trim();
   }
   return undefined;
 }
 
-function getErrorStringValue(error: unknown, keys: string[]): string | undefined {
+function getErrorStringValue(error: unknown, lowercaseKeys: readonly string[]): string | undefined {
   for (const item of getErrorChain(error)) {
     const record = recordOrUndefined(item);
     const data = recordOrUndefined(record?.data);
     const nestedError = recordOrUndefined(record?.error);
     const dataError = recordOrUndefined(data?.error);
 
-    for (const source of [record, data, nestedError, dataError]) {
-      const value = getStringKey(source, keys);
-      if (value) return value;
-    }
+    const recordValue = getStringKey(record, lowercaseKeys);
+    if (recordValue) return recordValue;
+    const dataValue = getStringKey(data, lowercaseKeys);
+    if (dataValue) return dataValue;
+    const nestedErrorValue = getStringKey(nestedError, lowercaseKeys);
+    if (nestedErrorValue) return nestedErrorValue;
+    const dataErrorValue = getStringKey(dataError, lowercaseKeys);
+    if (dataErrorValue) return dataErrorValue;
   }
   return undefined;
 }
 
 function getErrorCode(error: unknown): string | undefined {
-  return getErrorStringValue(error, ['code', 'errorCode']);
+  return getErrorStringValue(error, ['code', 'errorcode']);
 }
 
 function getErrorType(error: unknown): string | undefined {
-  return getErrorStringValue(error, ['type', 'errorType']);
+  return getErrorStringValue(error, ['type', 'errortype']);
+}
+
+function parseStatusCodeCandidate(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return undefined;
 }
 
 function getStatusCode(error: unknown): number | undefined {
   for (const item of getErrorChain(error)) {
-    const candidates = [
-      (item as any)?.status,
-      (item as any)?.statusCode,
-      (item as any)?.response?.status,
-    ];
-
-    for (const value of candidates) {
-      if (typeof value === 'number' && Number.isFinite(value)) return value;
-      if (typeof value === 'string') {
-        const parsed = Number(value);
-        if (Number.isFinite(parsed)) return parsed;
-      }
-    }
+    const record = item as any;
+    const status = parseStatusCodeCandidate(record?.status);
+    if (status !== undefined) return status;
+    const statusCode = parseStatusCodeCandidate(record?.statusCode);
+    if (statusCode !== undefined) return statusCode;
+    const responseStatus = parseStatusCodeCandidate(record?.response?.status);
+    if (responseStatus !== undefined) return responseStatus;
   }
 
   return undefined;
 }
 
+function normalizeResponseHeaders(value: unknown): Record<string, string> | undefined {
+  if (!value) return undefined;
+
+  if (value instanceof Headers) {
+    const out: Record<string, string> = {};
+    for (const [key, headerValue] of value.entries()) out[key.toLowerCase()] = headerValue;
+    return out;
+  }
+
+  if (typeof value !== 'object') return undefined;
+
+  const source = value as Record<string, unknown>;
+  const out: Record<string, string> = {};
+  let hasHeader = false;
+  for (const key in source) {
+    if (!Object.prototype.hasOwnProperty.call(source, key)) continue;
+    const headerValue = source[key];
+    if (typeof headerValue !== 'string') continue;
+    out[key.toLowerCase()] = headerValue;
+    hasHeader = true;
+  }
+  return hasHeader ? out : undefined;
+}
+
 function getResponseHeaders(error: unknown): Record<string, string> | undefined {
   for (const item of getErrorChain(error)) {
-    const candidates = [
-      (item as any)?.responseHeaders,
-      (item as any)?.headers,
-      (item as any)?.response?.headers,
-      (item as any)?.data?.responseHeaders,
-    ];
-
-    for (const value of candidates) {
-      if (!value) continue;
-
-      if (value instanceof Headers) {
-        const out: Record<string, string> = {};
-        for (const [k, v] of value.entries()) out[k.toLowerCase()] = v;
-        return out;
-      }
-
-      if (typeof value === 'object') {
-        const out: Record<string, string> = {};
-        for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-          if (typeof v === 'string') out[k.toLowerCase()] = v;
-        }
-        if (Object.keys(out).length > 0) return out;
-      }
-    }
+    const record = item as any;
+    const responseHeaders = normalizeResponseHeaders(record?.responseHeaders);
+    if (responseHeaders) return responseHeaders;
+    const headers = normalizeResponseHeaders(record?.headers);
+    if (headers) return headers;
+    const responseHeadersNested = normalizeResponseHeaders(record?.response?.headers);
+    if (responseHeadersNested) return responseHeadersNested;
+    const dataResponseHeaders = normalizeResponseHeaders(record?.data?.responseHeaders);
+    if (dataResponseHeaders) return dataResponseHeaders;
   }
 
   return undefined;
@@ -262,11 +304,17 @@ export function retryable(error: unknown): RetryableReason | undefined {
   const headers = getResponseHeaders(error);
   const retryAfterMs = getRetryAfterMs(error) ?? parseRetryAfterMs(headers);
 
-  const normalizedNames = names.map((item) => item.toLowerCase());
+  let hasAbortErrorName = false;
+  let hasTimeoutErrorName = false;
+  for (const name of names) {
+    const normalizedName = name.toLowerCase();
+    if (normalizedName === 'aborterror') hasAbortErrorName = true;
+    if (normalizedName === 'timeouterror') hasTimeoutErrorName = true;
+  }
   const normalizedCode = code?.toLowerCase();
   const normalizedType = type?.toLowerCase();
 
-  if (normalizedNames.includes('aborterror') || normalizedCode === 'request_aborted' || normalizedType === 'aborted') {
+  if (hasAbortErrorName || normalizedCode === 'request_aborted' || normalizedType === 'aborted') {
     return undefined;
   }
 
@@ -304,23 +352,7 @@ export function retryable(error: unknown): RetryableReason | undefined {
     return { kind: 'provider_server_error', message: 'Provider server error', retryAfterMs };
   }
 
-  const transientCodes = new Set([
-    'network_error',
-    'request_timeout',
-    'stream_read_error',
-    'econnreset',
-    'etimedout',
-    'epipe',
-    'econnrefused',
-    'enotfound',
-    'und_err_connect_timeout',
-    'und_err_headers_timeout',
-    'und_err_body_timeout',
-    'und_err_socket',
-    'und_err_socket_busy',
-    'und_err_info',
-  ]);
-  if (normalizedCode && transientCodes.has(normalizedCode)) {
+  if (normalizedCode && TRANSIENT_NETWORK_CODES.has(normalizedCode)) {
     return { kind: 'network_error', message: 'Network error', retryAfterMs };
   }
 
@@ -332,7 +364,7 @@ export function retryable(error: unknown): RetryableReason | undefined {
     return { kind: 'responses_stream_parser_error', message: 'Responses stream parser error', retryAfterMs };
   }
 
-  if (normalizedNames.includes('timeouterror')) {
+  if (hasTimeoutErrorName) {
     return { kind: 'network_error', message: 'Network error', retryAfterMs };
   }
 

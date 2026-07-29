@@ -1,4 +1,6 @@
 import * as assert from 'assert';
+import * as fs from 'fs';
+import * as path from 'path';
 import * as vscode from 'vscode';
 
 import { PluginManager } from '../../core/hooks/pluginManager';
@@ -41,6 +43,18 @@ suite('Plugins', () => {
     const tools = provider.getTools();
     assert.strictEqual(tools.length, 1);
     assert.strictEqual(tools[0].id, 'plugin.echo');
+
+    const source = fs.readFileSync(path.resolve(__dirname, '../../../src/core/hooks/pluginToolProvider.ts'), 'utf8');
+    const start = source.indexOf('getTools(): ToolDefinition[]');
+    assert.ok(start >= 0, 'expected plugin tool listing helper');
+    const end = source.indexOf('\n  async executeTool', start);
+    assert.ok(end > start, 'expected executeTool after getTools');
+    const section = source.slice(start, end);
+
+    assert.match(section, /const definitions: ToolDefinition\[\] = \[\];/);
+    assert.match(section, /for \(const tool of this\.tools\.values\(\)\)/);
+    assert.match(section, /definitions\.push\(tool\.definition\);/);
+    assert.doesNotMatch(section, /Array\.from\(this\.tools\.values\(\)\)\.map/);
 
     const tokenSource = new vscode.CancellationTokenSource();
     try {
@@ -119,4 +133,3 @@ function createMockExtensionContext(): vscode.ExtensionContext {
     extensionRuntime: undefined as any,
   } as unknown as vscode.ExtensionContext;
 }
-

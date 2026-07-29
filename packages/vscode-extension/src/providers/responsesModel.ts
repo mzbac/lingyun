@@ -82,7 +82,13 @@ function safeJsonStringify(value: unknown): string {
 }
 
 function omitUndefinedFields(record: Record<string, unknown>): Record<string, unknown> {
-  return Object.fromEntries(Object.entries(record).filter(([, value]) => value !== undefined));
+  const out: Record<string, unknown> = {};
+  for (const key in record) {
+    if (!Object.prototype.hasOwnProperty.call(record, key)) continue;
+    const value = record[key];
+    if (value !== undefined) out[key] = value;
+  }
+  return out;
 }
 
 function usageFromResponses(rawUsage: unknown): LanguageModelV3Usage {
@@ -151,13 +157,13 @@ function serializeToolOutput(output: unknown): string {
   if (kind === 'content') {
     const value = toolOutput?.['value'];
     if (!Array.isArray(value)) return '';
-    const text = value
-      .map((entry) => {
-        const part = asRecord(entry);
-        return asString(part?.['type']) === 'text' ? asString(part?.['text']) ?? '' : '';
-      })
-      .filter(Boolean)
-      .join('\n');
+    let text = '';
+    for (const entry of value) {
+      const part = asRecord(entry);
+      if (asString(part?.['type']) !== 'text') continue;
+      const partText = asString(part?.['text']) ?? '';
+      if (partText) text = text ? `${text}\n${partText}` : partText;
+    }
     return text || safeJsonStringify(output);
   }
 
@@ -171,17 +177,17 @@ function normalizeSystemInstructionContent(content: unknown): string | undefined
   }
 
   if (Array.isArray(content)) {
-    const text = content
-      .map((entry) => {
-        if (typeof entry === 'string') return entry;
+    let text = '';
+    for (const entry of content) {
+      let partText = '';
+      if (typeof entry === 'string') {
+        partText = entry;
+      } else {
         const record = asRecord(entry);
-        if (asString(record?.['type']) === 'text') {
-          return asString(record?.['text']) ?? '';
-        }
-        return '';
-      })
-      .filter(Boolean)
-      .join('\n');
+        if (asString(record?.['type']) === 'text') partText = asString(record?.['text']) ?? '';
+      }
+      if (partText) text = text ? `${text}\n${partText}` : partText;
+    }
     const trimmed = text.trim();
     return trimmed || undefined;
   }
@@ -328,16 +334,19 @@ function toolChoiceToResponses(toolChoice: LanguageModelV3CallOptions['toolChoic
 
 function toolsToResponses(tools: LanguageModelV3CallOptions['tools']): unknown[] | undefined {
   if (!tools || tools.length === 0) return undefined;
-  const functionTools = tools.filter(tool => tool.type === 'function');
-  if (functionTools.length === 0) return undefined;
 
-  return functionTools.map(tool => ({
-    type: 'function',
-    name: tool.name,
-    description: tool.description,
-    parameters: tool.inputSchema,
-    strict: tool.strict ?? false,
-  }));
+  const responseTools: unknown[] = [];
+  for (const tool of tools) {
+    if (tool.type !== 'function') continue;
+    responseTools.push({
+      type: 'function',
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.inputSchema,
+      strict: tool.strict ?? false,
+    });
+  }
+  return responseTools.length > 0 ? responseTools : undefined;
 }
 
 function extractProviderOptionString(
@@ -537,18 +546,23 @@ function formatResponsesErrorMessage(
 ): string {
   const safeDetail = (value: string | undefined) => (value ? sanitizeResponsesDiagnosticText(value, context) : undefined);
   const base = safeDetail(details.message) || sanitizeResponsesDiagnosticText(fallback, context);
-  const suffix = [
-    safeDetail(details.code) ? `code=${safeDetail(details.code)}` : undefined,
-    safeDetail(details.type) ? `type=${safeDetail(details.type)}` : undefined,
-    safeDetail(details.param) ? `param=${safeDetail(details.param)}` : undefined,
-    safeDetail(details.reason) ? `reason=${safeDetail(details.reason)}` : undefined,
-    safeDetail(details.eventType) ? `event=${safeDetail(details.eventType)}` : undefined,
-    safeDetail(details.lastEventType) ? `lastEvent=${safeDetail(details.lastEventType)}` : undefined,
-    safeDetail(details.responseId) ? `response=${safeDetail(details.responseId)}` : undefined,
-    safeDetail(details.responseStatus) ? `status=${safeDetail(details.responseStatus)}` : undefined,
-    details.status !== undefined ? `httpStatus=${details.status}` : undefined,
-  ].filter(Boolean);
-  return suffix.length > 0 ? `${base} (${suffix.join(', ')})` : base;
+  let suffix = '';
+  const appendDetail = (key: string, value: string | undefined) => {
+    const safe = safeDetail(value);
+    if (!safe) return;
+    const part = `${key}=${safe}`;
+    suffix = suffix ? `${suffix}, ${part}` : part;
+  };
+  appendDetail('code', details.code);
+  appendDetail('type', details.type);
+  appendDetail('param', details.param);
+  appendDetail('reason', details.reason);
+  appendDetail('event', details.eventType);
+  appendDetail('lastEvent', details.lastEventType);
+  appendDetail('response', details.responseId);
+  appendDetail('status', details.responseStatus);
+  if (details.status !== undefined) suffix = suffix ? `${suffix}, httpStatus=${details.status}` : `httpStatus=${details.status}`;
+  return suffix ? `${base} (${suffix})` : base;
 }
 
 function extractNestedResponsesError(
@@ -684,12 +698,17 @@ function responsesStreamTerminatedError(context: ResponsesStreamErrorContext & {
     eventType: 'stream.terminated',
     lastEventType: context.lastEventType,
   };
-  const state = [
-    context.openTextCount > 0 ? `openText=${context.openTextCount}` : undefined,
-    context.openReasoningCount > 0 ? `openReasoning=${context.openReasoningCount}` : undefined,
-    context.pendingToolCallCount > 0 ? `pendingToolCalls=${context.pendingToolCallCount}` : undefined,
-  ].filter(Boolean);
-  const error = new Error(`${formatResponsesErrorMessage(details.message, details, context)}${state.length > 0 ? ` (${state.join(', ')})` : ''}`);
+  let state = '';
+  if (context.openTextCount > 0) state = `openText=${context.openTextCount}`;
+  if (context.openReasoningCount > 0) {
+    const part = `openReasoning=${context.openReasoningCount}`;
+    state = state ? `${state}, ${part}` : part;
+  }
+  if (context.pendingToolCallCount > 0) {
+    const part = `pendingToolCalls=${context.pendingToolCallCount}`;
+    state = state ? `${state}, ${part}` : part;
+  }
+  const error = new Error(`${formatResponsesErrorMessage(details.message, details, context)}${state ? ` (${state})` : ''}`);
   error.name = 'ResponsesStreamError';
   Object.assign(error, {
     ...streamErrorBaseMetadata(context),
@@ -857,11 +876,11 @@ function createResponsesStream(
         const finalizedReasoningIds = new Set<string>();
 
         const closeOpenParts = () => {
-          for (const id of Array.from(openTextIds)) {
+          for (const id of openTextIds) {
             controller.enqueue({ type: 'text-end', id });
             openTextIds.delete(id);
           }
-          for (const id of Array.from(openReasoningIds)) {
+          for (const id of openReasoningIds) {
             controller.enqueue({ type: 'reasoning-end', id });
             openReasoningIds.delete(id);
           }
@@ -1182,9 +1201,10 @@ function createResponsesStream(
                     emitFinalText(textIdToClose, '');
                   } else if (messageId) {
                     const content = Array.isArray(item?.['content']) ? item?.['content'] : [];
-                    const textValue = content
-                      .map((entry) => contentPartText(asRecord(entry)))
-                      .join('');
+                    let textValue = '';
+                    for (const entry of content) {
+                      textValue += contentPartText(asRecord(entry));
+                    }
                     emitFinalText(messageId, textValue);
                   }
                 } else if (itemType === 'function_call') {
@@ -1216,7 +1236,7 @@ function createResponsesStream(
                       }
                     }
 
-                    for (const openId of Array.from(openReasoningIds)) {
+                    for (const openId of openReasoningIds) {
                       if (!openId.startsWith(`${reasoningIdBase}:`)) continue;
                       controller.enqueue({ type: 'reasoning-end', id: openId });
                       openReasoningIds.delete(openId);

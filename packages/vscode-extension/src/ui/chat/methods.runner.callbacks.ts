@@ -11,6 +11,7 @@ import type { ChatRunnerCallbacksDeps, ChatRunnerCallbacksService } from './runn
 export type { ChatRunnerCallbacksService } from './runner/callbackContracts';
 import { createCompactionCallbacks } from './runner/compactionCallbacks';
 import { createChatExecutionState } from './runner/executionState';
+import { currentTurnHasExternalMemoryContextAttempt, currentTurnIsMemoryExcluded } from './runner/memoryTurn';
 import { createPlanningCallbacks } from './runner/planningCallbacks';
 import { createStepSnapshotCallbacks } from './runner/stepSnapshotCallbacks';
 import { createToolLifecycleCallbacks } from './runner/toolLifecycleCallbacks';
@@ -24,21 +25,6 @@ import { createChatRunnerCallbacksDepsForController } from './runner/callbackCon
  * compaction, and step snapshot behavior. This module wires them together.
  */
 type ChatRunnerCallbacksRuntime = ChatRunnerCallbacksDeps & ChatRunnerCallbacksService;
-
-function currentTurnHasExternalMemoryContextAttempt(messages: ChatMessage[], currentTurnId?: string): boolean {
-  const turnId = typeof currentTurnId === 'string' && currentTurnId.trim() ? currentTurnId.trim() : undefined;
-  return messages.some((message) => {
-    if (!message.toolCall?.memoryContextSource) return false;
-    if (!turnId) return true;
-    return message.turnId === turnId;
-  });
-}
-
-function currentTurnIsMemoryExcluded(messages: ChatMessage[], currentTurnId?: string): boolean {
-  const turnId = typeof currentTurnId === 'string' && currentTurnId.trim() ? currentTurnId.trim() : undefined;
-  if (!turnId) return false;
-  return messages.some((message) => message.memoryExcluded && (message.id === turnId || message.turnId === turnId));
-}
 
 export function createChatRunnerCallbacksService(controller: ChatRunnerCallbacksDeps): ChatRunnerCallbacksService {
   const runtime = controller as ChatRunnerCallbacksRuntime;

@@ -11,7 +11,7 @@ import {
 import { formatErrorForUser, isCancellationMessage } from '../utils';
 
 import type { RunCoordinatorHost } from '../controllerPorts';
-import type { ChatMessage, ChatUserInput } from '../types';
+import type { ChatMessage, ChatUserInput, ChatUserMessageOptions } from '../types';
 import { createSessionPreview } from '../sessionTitle';
 import { appendTurnErrorMessage, findLatestUserTurnId } from './runCoordinatorMessageState';
 import {
@@ -41,6 +41,31 @@ const ASSUMPTIONS_NOTE =
   '- Proceed without further clarification; make reasonable assumptions for unanswered questions.\n' +
   '- If multiple valid options exist, choose the simplest/lowest-risk default.\n' +
   '- Continue in Build mode; do not block waiting for user input.\n';
+const ASSUMPTIONS_HEADING_LENGTH = ASSUMPTIONS_HEADING.length;
+
+function isHeadingEdgeWhitespace(code: number): boolean {
+  return code === 9 || code === 13 || code === 32;
+}
+
+function lineMatchesAssumptionsHeading(text: string, start: number, end: number): boolean {
+  while (start < end && isHeadingEdgeWhitespace(text.charCodeAt(start))) start++;
+  while (end > start && isHeadingEdgeWhitespace(text.charCodeAt(end - 1))) end--;
+  if (end - start !== ASSUMPTIONS_HEADING_LENGTH) return false;
+  for (let i = 0; i < ASSUMPTIONS_HEADING_LENGTH; i++) {
+    if (text.charCodeAt(start + i) !== ASSUMPTIONS_HEADING.charCodeAt(i)) return false;
+  }
+  return true;
+}
+
+function hasAssumptionsHeadingLine(text: string): boolean {
+  let lineStart = 0;
+  for (let i = 0; i <= text.length; i++) {
+    if (i < text.length && text.charCodeAt(i) !== 10) continue;
+    if (lineMatchesAssumptionsHeading(text, lineStart, i)) return true;
+    lineStart = i + 1;
+  }
+  return false;
+}
 
 function applySessionMemoryModeIntent(signals: RunCoordinatorHost['signals'], text: string): void {
   if (!signals || !text.trim()) return;
@@ -80,13 +105,20 @@ type PreparedPendingPlanTarget =
 type ReadyPendingPlanTarget = Extract<PreparedPendingPlanTarget, { kind: 'ready' }>;
 type PendingPlanDirectAction = 'execute' | 'revise';
 
+function findChatMessageById(messages: readonly ChatMessage[], id: string): ChatMessage | undefined {
+  for (const message of messages) {
+    if (message.id === id) return message;
+  }
+  return undefined;
+}
+
 function normalizeUserInput(content: string | ChatUserInput): NormalizedUserInput {
   const message =
     typeof content === 'string' ? content : typeof content.message === 'string' ? content.message : '';
   const text = message.trim();
 
   const attachmentsRaw = typeof content === 'object' && content ? content.attachments : undefined;
-  const imageParts: UserHistoryInputPart[] = [];
+  const agentInput: UserHistoryInputPart[] = text ? [{ type: 'text', text }] : [];
   const imageAttachments: NonNullable<ChatUserInput['attachments']> = [];
 
   if (Array.isArray(attachmentsRaw)) {
@@ -101,7 +133,7 @@ function normalizeUserInput(content: string | ChatUserInput): NormalizedUserInpu
       if (!dataUrl.startsWith('data:image/')) continue;
       if (dataUrl.length > MAX_USER_IMAGE_DATA_URL_LENGTH) continue;
 
-      imageParts.push({
+      agentInput.push({
         type: 'file',
         mediaType,
         ...(filename ? { filename } : {}),
@@ -113,13 +145,11 @@ function normalizeUserInput(content: string | ChatUserInput): NormalizedUserInpu
         ...(filename ? { filename } : {}),
       });
 
-      if (imageParts.length >= MAX_USER_IMAGE_ATTACHMENTS) break;
+      if (imageAttachments.length >= MAX_USER_IMAGE_ATTACHMENTS) break;
     }
   }
 
-  const textParts: UserHistoryInputPart[] = text ? [{ type: 'text', text }] : [];
-  const agentInput = [...textParts, ...imageParts];
-  const attachmentCount = imageParts.length;
+  const attachmentCount = imageAttachments.length;
   const displayContent =
     text ||
     (attachmentCount === 1 ? '[Image attached]' : attachmentCount > 1 ? `[${attachmentCount} images attached]` : '');
@@ -137,7 +167,7 @@ function normalizeUserInput(content: string | ChatUserInput): NormalizedUserInpu
 function appendAssumptionsToPlan(plan: string): string {
   const text = (plan || '').trimEnd();
   if (!text) return ASSUMPTIONS_NOTE.trimEnd();
-  if (text.includes(ASSUMPTIONS_HEADING)) return text;
+  if (hasAssumptionsHeadingLine(text)) return text;
   return `${text}\n\n${ASSUMPTIONS_NOTE.trimEnd()}`;
 }
 
@@ -316,7 +346,7 @@ export class RunCoordinator {
     clearStale?: boolean;
   }): PendingPlanExecutionTarget | undefined {
     const c = this.controller;
-    const planMsg = c.messages.find(message => message.id === params.pendingPlan.planMessageId);
+    const planMsg = findChatMessageById(c.messages, params.pendingPlan.planMessageId);
     if (!planMsg || planMsg.role !== 'plan') {
       if (params.clearStale) {
         params.activeSession.pendingPlan = undefined;
@@ -352,6 +382,7 @@ export class RunCoordinator {
     activeSession: ActiveSession;
     pendingPlan: ActivePendingPlan;
     normalizedInput: NormalizedUserInput;
+    onAccepted?: () => void;
   }): Promise<boolean> {
     const target = this.resolvePendingPlanMessage({
       activeSession: params.activeSession,
@@ -378,6 +409,7 @@ export class RunCoordinator {
       activeSession: prepared.activeSession,
       target: prepared.target,
       instructions: params.normalizedInput.text,
+      onAccepted: params.onAccepted,
     });
     return true;
   }
@@ -587,6 +619,7 @@ export class RunCoordinator {
     activeSession: ActiveSession;
     target: PendingPlanExecutionTarget;
     instructions: string;
+    onAccepted?: () => void;
   }): Promise<void> {
     const trimmed = (params.instructions || '').trim();
     if (!trimmed) return;
@@ -598,6 +631,7 @@ export class RunCoordinator {
       nextTask: updatedTask,
       followUpText: trimmed,
       warnUnknownSkills: true,
+      onAccepted: params.onAccepted,
     });
   }
 
@@ -607,6 +641,7 @@ export class RunCoordinator {
     nextTask: string;
     followUpText?: string;
     warnUnknownSkills?: boolean;
+    onAccepted?: () => void;
   }): Promise<void> {
     const c = this.controller;
     this.beginPendingPlanUpdateRun();
@@ -623,6 +658,7 @@ export class RunCoordinator {
       if (params.warnUnknownSkills) {
         void c.postUnknownSkillWarnings(params.followUpText, params.target.planMsg.turnId);
       }
+      params.onAccepted?.();
     }
 
     // Ensure the follow-up notice is rendered before the global processing flag so the UI keeps the
@@ -678,22 +714,23 @@ export class RunCoordinator {
     }
   }
 
-  async steerQueuedInput(id: string): Promise<void> {
+  async steerQueuedInput(id: string): Promise<boolean> {
     const c = this.controller;
-    if (!id || typeof id !== 'string') return;
+    if (!id || typeof id !== 'string') return false;
 
     await c.ensureSessionsLoaded();
-    const input = c.queueManager.takeByIdFromActiveSession(id);
-    if (!input) return;
+    const takeResult = c.queueManager.takeByIdFromActiveSession(id);
+    if (!takeResult.input) return takeResult.queueChanged;
 
     if (c.isProcessing) {
-      const normalized = normalizeUserInput(input);
-      if (!normalized.hasContent) return;
+      const normalized = normalizeUserInput(takeResult.input);
+      if (!normalized.hasContent) return takeResult.queueChanged;
       this.steerIntoActiveRun({ normalized });
-      return;
+      return takeResult.queueChanged;
     }
 
-    await this.handleUserMessage(input, { fromQueue: true });
+    await this.handleUserMessage(takeResult.input, { fromQueue: true });
+    return takeResult.queueChanged;
   }
 
   private steerIntoActiveRun(params: {
@@ -902,19 +939,32 @@ export class RunCoordinator {
 
   async handleUserMessage(
     content: string | ChatUserInput,
-    options?: { fromQueue?: boolean; synthetic?: boolean; displayContent?: string; forceBuild?: boolean }
+    options?: ChatUserMessageOptions
   ): Promise<void> {
     const c = this.controller;
     if (!c.view) return;
 
     const normalizedInput = normalizeUserInput(content);
     if (!normalizedInput.hasContent) return;
+    let inputAccepted = false;
+    const acceptInput = () => {
+      if (inputAccepted) return;
+      inputAccepted = true;
+      try {
+        options?.onAccepted?.();
+      } catch {
+        // Submission acknowledgement must not break a committed run.
+      }
+    };
 
     await c.ensureSessionsLoaded();
 
     if (normalizedInput.text && !options?.fromQueue && !options?.synthetic) {
       const handledGoal = await this.handleGoalSlashCommand(normalizedInput.text);
-      if (handledGoal) return;
+      if (handledGoal) {
+        acceptInput();
+        return;
+      }
     }
 
     if (normalizedInput.text && !options?.synthetic) {
@@ -931,6 +981,7 @@ export class RunCoordinator {
       }
 
       this.enqueueQueuedInput({ normalized: normalizedInput });
+      acceptInput();
       return;
     }
 
@@ -942,6 +993,7 @@ export class RunCoordinator {
         activeSession,
         pendingPlan,
         normalizedInput,
+        onAccepted: acceptInput,
       });
       if (handledPendingPlanInput) {
         return;
@@ -965,6 +1017,7 @@ export class RunCoordinator {
       synthetic: options?.synthetic,
       displayContent: options?.displayContent,
     });
+    acceptInput();
 
     let wasCanceled = false;
     let failed = false;
@@ -1088,7 +1141,7 @@ export class RunCoordinator {
       return;
     }
 
-    const planMsg = c.messages.find(m => m.id === planMessageId);
+    const planMsg = findChatMessageById(c.messages, planMessageId);
     if (planMsg?.role === 'plan' && planMsg.plan) {
       planMsg.plan.status = 'canceled';
       c.postMessage({ type: 'updateMessage', message: planMsg });

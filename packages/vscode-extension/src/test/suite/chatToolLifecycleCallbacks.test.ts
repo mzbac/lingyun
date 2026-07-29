@@ -146,6 +146,37 @@ suite('Chat tool lifecycle callbacks', () => {
     assert.ok(posted.some(message => (message as any)?.type === 'updateTool'), 'expected tool update');
   });
 
+  test('list results keep a bounded preview and count additional files', async () => {
+    const { controller, callbacks } = createToolLifecycleHarness();
+    await callbacks.onIterationStart?.(1);
+
+    const tc: ToolCall = {
+      id: 'call-list-1',
+      type: 'function',
+      function: { name: 'list', arguments: JSON.stringify({ path: 'src' }) },
+    };
+    await callbacks.onToolCall?.(tc, {
+      id: 'list',
+      name: 'List',
+      description: 'List files',
+      parameters: { type: 'object', properties: { path: { type: 'string' } } },
+      execution: { type: 'function', handler: 'test.list' },
+    });
+
+    const files = Array.from({ length: 12 }, (_value, index) => `src/file-${index + 1}.ts`);
+    const resultText = [' ', ...files.slice(0, 6), '', ...files.slice(6), ''].join('\r\n');
+    callbacks.onToolResult?.(tc, {
+      success: true,
+      data: resultText,
+      metadata: { outputText: resultText },
+    });
+
+    const toolMsg = controller.messages.find(message => message.toolCall?.approvalId === 'call-list-1');
+    assert.ok(toolMsg?.toolCall, 'expected tool message');
+    assert.deepStrictEqual(toolMsg.toolCall.batchFiles, files.slice(0, 10));
+    assert.strictEqual(toolMsg.toolCall.additionalCount, 2);
+  });
+
   test('failed tool results record failed-attempt structured memory', async () => {
     const { controller, callbacks } = createToolLifecycleHarness();
     await callbacks.onIterationStart?.(1);
@@ -205,6 +236,50 @@ suite('Chat tool lifecycle callbacks', () => {
       controller.signals.assistantOutcomes.some((item) => item.includes('external deployment runbook')),
       false,
       'assistant outcome should not be captured after external context enters the turn',
+    );
+  });
+
+  test('external metadata tags mark context without durable memory capture', async () => {
+    const { controller, callbacks } = createToolLifecycleHarness();
+    await callbacks.onIterationStart?.(1);
+
+    const taggedExternalToolDefinition: ToolDefinition = {
+      id: 'workspace_cached_search',
+      name: 'Cached Knowledge Search',
+      description: 'Search cached external knowledge',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string' },
+        },
+      },
+      execution: { type: 'function', handler: 'test.cachedSearch' },
+      metadata: {
+        tags: ['External'],
+        requiresApproval: false,
+      },
+    };
+    const tc: ToolCall = {
+      id: 'call-tagged-external-context',
+      type: 'function',
+      function: { name: 'workspace_cached_search', arguments: JSON.stringify({ query: 'incident runbook' }) },
+    };
+
+    await callbacks.onToolCall?.(tc, taggedExternalToolDefinition);
+    callbacks.onToolResult?.(tc, {
+      success: true,
+      data: 'External incident runbook content should stay out of durable memory.',
+      metadata: {},
+    });
+    callbacks.onComplete?.('Use the external incident runbook.');
+
+    const contextAfterResult = controller.signals.memoryContext;
+    assert.strictEqual(contextAfterResult?.external, true);
+    assert.ok(contextAfterResult?.sources.includes('workspace_cached_search:external'));
+    assert.strictEqual(
+      controller.signals.structuredMemories.some((item) => item.text.includes('External incident runbook')),
+      false,
+      'tagged external tool text should not become structured memory',
     );
   });
 

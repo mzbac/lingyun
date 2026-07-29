@@ -44,11 +44,14 @@ function buildSandboxedTerminalEnv(): Record<string, string | null> {
   const allow = buildSafeChildProcessEnv({ baseEnv: process.env });
   const out: Record<string, string | null> = {};
 
-  for (const key of Object.keys(process.env)) {
+  for (const key in process.env) {
+    if (!Object.prototype.hasOwnProperty.call(process.env, key)) continue;
     out[key] = null;
   }
 
-  for (const [key, value] of Object.entries(allow)) {
+  for (const key in allow) {
+    if (!Object.prototype.hasOwnProperty.call(allow, key)) continue;
+    const value = allow[key];
     if (typeof value === 'string') {
       out[key] = value;
     }

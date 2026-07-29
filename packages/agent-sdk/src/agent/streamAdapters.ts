@@ -42,6 +42,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
+function hasOwnEnumerableKey(value: Record<string, unknown>): boolean {
+  for (const key in value) {
+    if (Object.prototype.hasOwnProperty.call(value, key)) return true;
+  }
+  return false;
+}
+
+function getAdapterDisplayName(adapter: StreamAdapter): string {
+  return adapter.constructor?.name || '(anonymous)';
+}
+
 export function buildStreamReplay(params: {
   text: string;
   reasoning: string;
@@ -74,7 +85,7 @@ export function buildStreamReplay(params: {
       claimedNamespaces.add(namespace);
 
       const update = (entry as any).update;
-      if (!isRecord(update) || Object.keys(update).length === 0) {
+      if (!isRecord(update) || !hasOwnEnumerableKey(update)) {
         throw new Error(
           `[StreamReplay] Replay update for namespace "${namespace}" must be a non-empty object.`,
         );
@@ -87,8 +98,61 @@ export function buildStreamReplay(params: {
   return replay;
 }
 
+function normalizeAdapterReplayUpdate(
+  adapter: StreamAdapter,
+  updates: StreamReplayUpdate[],
+): StreamReplayUpdate | undefined {
+  if (!Array.isArray(updates) || updates.length === 0) return undefined;
+
+  const adapterName = getAdapterDisplayName(adapter);
+  if (updates.length !== 1) {
+    throw new Error(
+      `[StreamAdapters] Adapter ${adapterName} returned ${updates.length} replay updates. ` +
+        `Adapters must own exactly one namespace to avoid silent replay metadata collisions.`,
+    );
+  }
+
+  const update = updates[0];
+  const namespace = String((update as any)?.namespace || '').trim();
+  if (!namespace) {
+    throw new Error(
+      `[StreamAdapters] Adapter ${adapterName} returned a replay update with an empty namespace.`,
+    );
+  }
+
+  if (namespace === 'text' || namespace === 'reasoning') {
+    throw new Error(`[StreamAdapters] Namespace "${namespace}" is reserved and cannot be updated.`);
+  }
+
+  const value = (update as any).update;
+  if (!isRecord(value) || !hasOwnEnumerableKey(value)) {
+    throw new Error(
+      `[StreamAdapters] Adapter ${adapterName} returned an empty replay update for namespace "${namespace}". ` +
+        `Return [] instead of claiming a namespace with no data.`,
+    );
+  }
+
+  return { namespace: namespace as StreamReplayNamespace, update: { ...value } };
+}
+
+function wrapSingleStreamAdapter(adapter: StreamAdapter): StreamAdapter {
+  return {
+    onPart(part) {
+      adapter.onPart(part);
+    },
+    shouldIgnoreError(error, stream) {
+      return adapter.shouldIgnoreError(error, stream);
+    },
+    getReplayUpdates() {
+      const update = normalizeAdapterReplayUpdate(adapter, adapter.getReplayUpdates());
+      return update ? [update] : [];
+    },
+  };
+}
+
 function composeStreamAdapters(adapters: StreamAdapter[]): StreamAdapter {
   if (adapters.length === 0) return NOOP_STREAM_ADAPTER;
+  if (adapters.length === 1) return wrapSingleStreamAdapter(adapters[0]!);
 
   return {
     onPart(part) {
@@ -105,27 +169,10 @@ function composeStreamAdapters(adapters: StreamAdapter[]): StreamAdapter {
       const claimedNamespaces = new Set<string>();
 
       for (const adapter of adapters) {
-        const updates = adapter.getReplayUpdates();
-        if (!Array.isArray(updates) || updates.length === 0) continue;
-        if (updates.length !== 1) {
-          throw new Error(
-            `[StreamAdapters] Adapter ${adapter.constructor?.name || '(anonymous)'} returned ${updates.length} replay updates. ` +
-              `Adapters must own exactly one namespace to avoid silent replay metadata collisions.`,
-          );
-        }
+        const update = normalizeAdapterReplayUpdate(adapter, adapter.getReplayUpdates());
+        if (!update) continue;
 
-        const update = updates[0];
-        const namespace = String((update as any)?.namespace || '').trim();
-        if (!namespace) {
-          throw new Error(
-            `[StreamAdapters] Adapter ${adapter.constructor?.name || '(anonymous)'} returned a replay update with an empty namespace.`,
-          );
-        }
-
-        if (namespace === 'text' || namespace === 'reasoning') {
-          throw new Error(`[StreamAdapters] Namespace "${namespace}" is reserved and cannot be updated.`);
-        }
-
+        const namespace = update.namespace;
         if (claimedNamespaces.has(namespace)) {
           throw new Error(
             `[StreamAdapters] Multiple stream adapters returned replay updates for namespace "${namespace}". ` +
@@ -134,15 +181,7 @@ function composeStreamAdapters(adapters: StreamAdapter[]): StreamAdapter {
         }
         claimedNamespaces.add(namespace);
 
-        const value = (update as any).update;
-        if (!isRecord(value) || Object.keys(value).length === 0) {
-          throw new Error(
-            `[StreamAdapters] Adapter ${adapter.constructor?.name || '(anonymous)'} returned an empty replay update for namespace "${namespace}". ` +
-              `Return [] instead of claiming a namespace with no data.`,
-          );
-        }
-
-        merged.push({ namespace: namespace as StreamReplayNamespace, update: { ...value } });
+        merged.push(update);
       }
 
       return merged;

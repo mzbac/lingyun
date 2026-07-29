@@ -268,36 +268,43 @@ export function markPrunableToolOutputs(history: AgentHistoryMessage[], config: 
 }
 
 export function createHistoryForModel(history: AgentHistoryMessage[]): AgentHistoryMessage[] {
-  return history.map((msg) => {
-    const copied: AgentHistoryMessage = {
+  const prepared: AgentHistoryMessage[] = [];
+  for (const msg of history) {
+    const parts: AgentHistoryMessage['parts'] = [];
+    for (const part of msg.parts) {
+      if (!isDynamicToolPart(part)) {
+        parts.push(part);
+        continue;
+      }
+
+      const anyPart = repairDynamicToolPartForModel(part);
+      if (!anyPart) continue;
+
+      if (!anyPart.compactedAt || anyPart.output === undefined) {
+        parts.push(anyPart as any);
+        continue;
+      }
+
+      const output = anyPart.output;
+      const replacement =
+        output && typeof output === 'object' && typeof (output as any).success === 'boolean'
+          ? {
+              ...(output as any),
+              data: COMPACTED_TOOL_PLACEHOLDER,
+              metadata: { ...((output as any).metadata || {}), compacted: true },
+            }
+          : COMPACTED_TOOL_PLACEHOLDER;
+
+      parts.push({ ...anyPart, output: replacement } as any);
+    }
+
+    prepared.push({
       ...msg,
       metadata: msg.metadata ? { ...msg.metadata } : undefined,
-      parts: msg.parts.flatMap((part) => {
-        if (!isDynamicToolPart(part)) return [part];
-
-        const anyPart = repairDynamicToolPartForModel(part);
-        if (!anyPart) return [];
-
-        if (!anyPart.compactedAt) return [anyPart as any];
-
-        if (anyPart.output === undefined) return [anyPart as any];
-
-        const output = anyPart.output;
-        const replacement =
-          output && typeof output === 'object' && typeof (output as any).success === 'boolean'
-            ? {
-                ...(output as any),
-                data: COMPACTED_TOOL_PLACEHOLDER,
-                metadata: { ...((output as any).metadata || {}), compacted: true },
-              }
-            : COMPACTED_TOOL_PLACEHOLDER;
-
-        return [{ ...anyPart, output: replacement }];
-      }),
-    };
-
-    return copied;
-  });
+      parts,
+    });
+  }
+  return prepared;
 }
 
 export function createHistoryForCompactionPrompt(history: AgentHistoryMessage[], config: CompactionConfig): AgentHistoryMessage[] {
@@ -305,11 +312,18 @@ export function createHistoryForCompactionPrompt(history: AgentHistoryMessage[],
     return createHistoryForModel(history);
   }
 
-  const cloned: AgentHistoryMessage[] = history.map((msg) => ({
-    ...msg,
-    metadata: msg.metadata ? { ...msg.metadata } : undefined,
-    parts: msg.parts.map((part) => ({ ...(part as any) })),
-  }));
+  const cloned: AgentHistoryMessage[] = [];
+  for (const msg of history) {
+    const parts: AgentHistoryMessage['parts'] = [];
+    for (const part of msg.parts) {
+      parts.push({ ...(part as any) } as any);
+    }
+    cloned.push({
+      ...msg,
+      metadata: msg.metadata ? { ...msg.metadata } : undefined,
+      parts,
+    });
+  }
 
   markPrunableToolOutputs(cloned, config);
   return createHistoryForModel(cloned);

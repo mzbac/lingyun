@@ -2,11 +2,11 @@ import * as vscode from 'vscode';
 
 import { bindChatControllerService } from './controllerService';
 import type { RunCoordinator } from './runner/runCoordinator';
-import type { ChatUserInput } from './types';
+import type { ChatUserInput, ChatUserMessageOptions } from './types';
 
 export interface ChatRunnerInputService {
   sendMessage(content: string): void;
-  handleUserMessage(content: string | ChatUserInput): Promise<void>;
+  handleUserMessage(content: string | ChatUserInput, options?: ChatUserMessageOptions): Promise<void>;
   retryToolCall(approvalId: string): Promise<void>;
   isPlanFirstEnabled(): boolean;
   classifyPlanStatus(plan: string): 'draft' | 'needs_input';
@@ -17,6 +17,33 @@ export interface ChatRunnerInputDeps {
   runner: Pick<RunCoordinator, 'handleUserMessage' | 'retryToolCall'>;
 }
 
+function hasWhitespacePrefixSeparator(value: string, index: number): boolean {
+  const char = value[index];
+  return typeof char === 'string' && /\s/.test(char);
+}
+
+function extractPlanStepText(rawLine: string): string {
+  const line = rawLine.trim();
+  if (!line) return '';
+
+  const first = line[0];
+  if ((first === '-' || first === '*' || first === '•') && hasWhitespacePrefixSeparator(line, 1)) {
+    return line.slice(2).trim();
+  }
+
+  let digitIndex = 0;
+  while (digitIndex < line.length) {
+    const charCode = line.charCodeAt(digitIndex);
+    if (charCode < 48 || charCode > 57) break;
+    digitIndex++;
+  }
+  if (digitIndex > 0 && line[digitIndex] === '.' && hasWhitespacePrefixSeparator(line, digitIndex + 1)) {
+    return line.slice(digitIndex + 2).trim();
+  }
+
+  return '';
+}
+
 export function createChatRunnerInputService(controller: ChatRunnerInputDeps): ChatRunnerInputService {
   return bindChatControllerService(controller, {
     sendMessage(this: ChatRunnerInputDeps, content: string): void {
@@ -24,8 +51,12 @@ export function createChatRunnerInputService(controller: ChatRunnerInputDeps): C
       void this.runner.handleUserMessage(content);
     },
 
-    async handleUserMessage(this: ChatRunnerInputDeps, content: string | ChatUserInput): Promise<void> {
-      await this.runner.handleUserMessage(content);
+    async handleUserMessage(
+      this: ChatRunnerInputDeps,
+      content: string | ChatUserInput,
+      options?: ChatUserMessageOptions
+    ): Promise<void> {
+      await this.runner.handleUserMessage(content, options);
     },
 
     async retryToolCall(this: ChatRunnerInputDeps, approvalId: string): Promise<void> {
@@ -40,18 +71,21 @@ export function createChatRunnerInputService(controller: ChatRunnerInputDeps): C
       const text = (plan || '').trim();
       if (!text) return 'needs_input';
 
-      const steps = text
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter(Boolean)
-        .filter((line) => /^\d+\.\s+/.test(line) || /^[-*•]\s+/.test(line))
-        .map((line) => line.replace(/^\d+\.\s+/, '').replace(/^[-*•]\s+/, '').trim())
-        .filter(Boolean);
+      let steps = 0;
+      let questionSteps = 0;
+      let lineStart = 0;
+      for (let i = 0; i <= text.length; i++) {
+        if (i < text.length && text.charCodeAt(i) !== 10) continue;
+        const step = extractPlanStepText(text.slice(lineStart, i));
+        if (step) {
+          steps++;
+          if (step.endsWith('?')) questionSteps++;
+        }
+        lineStart = i + 1;
+      }
 
-      if (steps.length === 0) return 'needs_input';
-
-      const questionSteps = steps.filter((step) => /\?\s*$/.test(step));
-      if (questionSteps.length >= Math.ceil(steps.length / 2)) return 'needs_input';
+      if (steps === 0) return 'needs_input';
+      if (questionSteps >= Math.ceil(steps / 2)) return 'needs_input';
 
       return 'draft';
     },

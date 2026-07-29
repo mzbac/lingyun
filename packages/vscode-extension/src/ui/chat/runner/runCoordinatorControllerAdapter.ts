@@ -1,9 +1,22 @@
 import type { ChatController } from '../controller';
 import type { ChatMessage } from '../types';
-import type { RunCoordinatorHost } from '../controllerPorts';
+import type { ChatAgentPort, RunCoordinatorHost } from '../controllerPorts';
 import { recordUserIntent } from '../../../core/sessionSignals';
 import { isDefaultSessionTitle } from '../sessionTitle';
 import { RunCoordinator, createRunCoordinator } from './runCoordinator';
+
+type GoalAgentMethods = Pick<
+  ChatAgentPort,
+  'getThreadGoal' | 'setThreadGoalObjective' | 'updateThreadGoalStatus' | 'clearThreadGoal'
+>;
+
+function getGoalAgentMethod<K extends keyof GoalAgentMethods>(
+  agent: unknown,
+  methodName: K,
+): GoalAgentMethods[K] | undefined {
+  const method = (agent as Partial<GoalAgentMethods>)[methodName];
+  return typeof method === 'function' ? method.bind(agent) as GoalAgentMethods[K] : undefined;
+}
 
 /**
  * Adapts the chat controller to the run-coordinator dependency contract.
@@ -27,26 +40,20 @@ export function createRunCoordinatorHostForController(controller: ChatController
           ? controller.agent.getHistory()
           : controller.agent.exportState().history,
       exportState: () => controller.agent.exportState(),
-      getThreadGoal: () =>
-        typeof (controller.agent as any).getThreadGoal === 'function'
-          ? (controller.agent as any).getThreadGoal()
-          : undefined,
+      getThreadGoal: () => getGoalAgentMethod(controller.agent, 'getThreadGoal')?.(),
       setThreadGoalObjective: (params) => {
-        if (typeof (controller.agent as any).setThreadGoalObjective === 'function') {
-          return (controller.agent as any).setThreadGoalObjective(params);
-        }
+        const setThreadGoalObjective = getGoalAgentMethod(controller.agent, 'setThreadGoalObjective');
+        if (setThreadGoalObjective) return setThreadGoalObjective(params);
         throw new Error('Goal support is not available for this agent.');
       },
       updateThreadGoalStatus: (status) => {
-        if (typeof (controller.agent as any).updateThreadGoalStatus === 'function') {
-          return (controller.agent as any).updateThreadGoalStatus(status);
-        }
+        const updateThreadGoalStatus = getGoalAgentMethod(controller.agent, 'updateThreadGoalStatus');
+        if (updateThreadGoalStatus) return updateThreadGoalStatus(status);
         throw new Error('Goal support is not available for this agent.');
       },
       clearThreadGoal: () => {
-        if (typeof (controller.agent as any).clearThreadGoal === 'function') {
-          (controller.agent as any).clearThreadGoal();
-        }
+        const clearThreadGoal = getGoalAgentMethod(controller.agent, 'clearThreadGoal');
+        if (clearThreadGoal) clearThreadGoal();
       },
       clear: () => controller.agent.clear(),
       steer: (input) => controller.agent.steer(input),

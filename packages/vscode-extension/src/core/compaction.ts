@@ -40,7 +40,7 @@ export function getCompactionConfig(): CompactionConfig {
   const pruneProtectTokens = Math.max(0, cfg.get<number>('compaction.pruneProtectTokens') ?? 40_000);
   const pruneMinimumTokens = Math.max(0, cfg.get<number>('compaction.pruneMinimumTokens') ?? 20_000);
   const toolOutputModeRaw = cfg.get<unknown>('compaction.toolOutputMode');
-  const toolOutputMode = toolOutputModeRaw === 'onCompaction' ? 'onCompaction' : 'afterToolCall';
+  const toolOutputMode = toolOutputModeRaw === 'afterToolCall' ? 'afterToolCall' : 'onCompaction';
 
   return { auto, prune, pruneProtectTokens, pruneMinimumTokens, toolOutputMode };
 }

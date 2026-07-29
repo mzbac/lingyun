@@ -1,6 +1,11 @@
 import * as assert from 'assert';
 
-import { evaluateShellCommand, TOOL_ERROR_CODES } from '@kooka/core';
+import {
+  evaluateShellCommand,
+  looksLikeGitPushCommand,
+  looksLikeLongRunningServerCommand,
+  TOOL_ERROR_CODES,
+} from '@kooka/core';
 import { getBuiltinTools, type ToolContext } from '../../index.js';
 
 function isPidAlive(pid: number): boolean {
@@ -69,6 +74,19 @@ suite('Bash Tool', () => {
 
   test('evaluateShellCommand still denies format executable', () => {
     assert.strictEqual(evaluateShellCommand('format C:').verdict, 'deny');
+  });
+
+  test('core bash heuristics detect direct git push segments without matching echo arguments', () => {
+    assert.strictEqual(looksLikeGitPushCommand('git push origin main'), true);
+    assert.strictEqual(looksLikeGitPushCommand('git -C /tmp/project push origin main'), true);
+    assert.strictEqual(looksLikeGitPushCommand('echo ok && GIT_SSH=ssh git push'), true);
+    assert.strictEqual(looksLikeGitPushCommand('echo git push'), false);
+  });
+
+  test('core bash heuristics keep server command detection conservative', () => {
+    assert.strictEqual(looksLikeLongRunningServerCommand('python -m http.server'), true);
+    assert.strictEqual(looksLikeLongRunningServerCommand('npm run dev'), true);
+    assert.strictEqual(looksLikeLongRunningServerCommand('npm run build'), false);
   });
 
   test('rejects likely long-running server commands without background or timeout', async () => {

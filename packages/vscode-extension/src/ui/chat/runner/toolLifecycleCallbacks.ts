@@ -26,6 +26,7 @@ import {
   upsertTaskChildSession,
 } from './callbackUtils';
 import { findToolMessageByApprovalId } from '../toolMessageLookup';
+import { currentTurnIsMemoryExcluded } from './memoryTurn';
 
 const MAX_TOOL_DIFF_FILE_BYTES = 400_000;
 const TOOL_DIFF_CONTEXT_LINES = 3;
@@ -43,14 +44,24 @@ function textLooksLikeNetworkAccess(text: unknown): boolean {
   return typeof text === 'string' && /\b(curl|wget|httpie|Invoke-WebRequest|Invoke-RestMethod|iwr|irm|fetch)\b|https?:\/\//i.test(text);
 }
 
+function hasExternalMemoryContextTag(tags: unknown): boolean {
+  if (!Array.isArray(tags)) return false;
+  for (const tag of tags) {
+    const normalized = String(tag || '').toLowerCase();
+    if (normalized === 'external' || normalized === 'web' || normalized === 'mcp') {
+      return true;
+    }
+  }
+  return false;
+}
+
 function externalMemoryContextSource(def: ToolDefinition, tc: ToolCall): string | undefined {
   const execution = def.execution as { type?: string; script?: string; handler?: string };
   const id = String(def.id || '').toLowerCase();
   const category = String(def.metadata?.category || '').toLowerCase();
-  const tags = Array.isArray(def.metadata?.tags) ? def.metadata.tags.map((tag) => String(tag || '').toLowerCase()) : [];
 
   if (execution.type === 'http') return `${def.id}:http`;
-  if (category === 'browser' || category === 'web' || category === 'mcp' || tags.some((tag) => tag === 'external' || tag === 'web' || tag === 'mcp')) {
+  if (category === 'browser' || category === 'web' || category === 'mcp' || hasExternalMemoryContextTag(def.metadata?.tags)) {
     return `${def.id}:${category || 'external'}`;
   }
   if (/^(browser_|web_|mcp_)/.test(id)) return `${def.id}:external`;
@@ -71,6 +82,34 @@ function externalMemoryContextSource(def: ToolDefinition, tc: ToolCall): string 
 
 function isMemoryScaffoldingToolResult(toolId: string, resultText: string): boolean {
   return toolId === 'skill' || hasSkillInstructionPayload(resultText);
+}
+
+function collectResultFilePreview(resultText: string, previewCount: number): { files: string[]; additionalCount: number } {
+  const files: string[] = [];
+  let total = 0;
+  let lineStart = 0;
+
+  const addLine = (line: string): void => {
+    const file = line.trim();
+    if (!file) return;
+    total += 1;
+    if (files.length < previewCount) {
+      files.push(file);
+    }
+  };
+
+  for (let i = 0; i < resultText.length; i++) {
+    if (resultText.charCodeAt(i) !== 10) continue;
+    const lineEnd = i > lineStart && resultText.charCodeAt(i - 1) === 13 ? i - 1 : i;
+    addLine(resultText.slice(lineStart, lineEnd));
+    lineStart = i + 1;
+  }
+  addLine(resultText.slice(lineStart));
+
+  return {
+    files,
+    additionalCount: Math.max(0, total - previewCount),
+  };
 }
 
 /**
@@ -111,19 +150,13 @@ export function createToolLifecycleCallbacks(params: {
     }
   }
 
-  function isCurrentTurnMemoryExcluded(): boolean {
-    const turnId = typeof view.currentTurnId === 'string' && view.currentTurnId.trim() ? view.currentTurnId.trim() : undefined;
-    if (!turnId) return false;
-    return view.messages.some((message) => message.memoryExcluded && (message.id === turnId || message.turnId === turnId));
-  }
-
   async function onToolCall(tc: ToolCall, def: ToolDefinition): Promise<void> {
     executionState.postStepMsgIfNeeded();
     executionState.reconcileAssistantForToolCall();
 
     const { path, filePathRaw } = resolveToolCallUiPath(view, tc, def);
     const externalContext = externalMemoryContextSource(def, tc);
-    const memoryExcluded = isCurrentTurnMemoryExcluded();
+    const memoryExcluded = currentTurnIsMemoryExcluded(view.messages, view.currentTurnId);
     if (!externalContext && !memoryExcluded && def.id !== 'skill') {
       recordToolUse(view.signals, def.id);
       if (path) recordFileTouch(view.signals, path);
@@ -255,16 +288,12 @@ export function createToolLifecycleCallbacks(params: {
     if (toolId === 'glob' || toolId === 'list') {
       const trimmed = resultStr.trim();
       if (trimmed && trimmed !== 'No files found matching the criteria' && trimmed !== 'No files found') {
-        const files = trimmed
-          .split(/\r?\n/)
-          .map(line => line.trim())
-          .filter(Boolean);
-
         const previewCount = 10;
         const toolCall = toolMsg.toolCall;
         if (!toolCall) return;
-        toolCall.batchFiles = files.slice(0, previewCount);
-        toolCall.additionalCount = Math.max(0, files.length - previewCount);
+        const preview = collectResultFilePreview(resultStr, previewCount);
+        toolCall.batchFiles = preview.files;
+        toolCall.additionalCount = preview.additionalCount;
       }
     }
   }
@@ -331,7 +360,7 @@ export function createToolLifecycleCallbacks(params: {
     const { resultStr, isTaskTool, hasDiff, maybeTodos } = applyCommonToolResultFields(toolCall, result);
     const toolId = toolCall.id;
     const externalContext = toolCall.memoryContextSource;
-    const memoryExcluded = isCurrentTurnMemoryExcluded();
+    const memoryExcluded = currentTurnIsMemoryExcluded(view.messages, view.currentTurnId);
     const memoryScaffolding = isMemoryScaffoldingToolResult(toolId, resultStr);
     if (result.success && externalContext) {
       markExternalMemoryContext(view.signals, externalContext);

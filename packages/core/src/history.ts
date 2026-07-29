@@ -141,7 +141,11 @@ export function cloneAgentHistoryMessage(message: AgentHistoryMessage): AgentHis
 
 export function cloneAgentHistoryMessages(history: readonly AgentHistoryMessage[]): AgentHistoryMessage[] {
   if (!Array.isArray(history) || history.length === 0) return [];
-  return history.map((message) => cloneAgentHistoryMessage(message));
+  const cloned: AgentHistoryMessage[] = [];
+  for (const message of history) {
+    cloned.push(cloneAgentHistoryMessage(message));
+  }
+  return cloned;
 }
 
 export function parseUserHistoryInput(input: unknown): UserHistoryInput | undefined {
@@ -156,10 +160,12 @@ export function parseUserHistoryInput(input: unknown): UserHistoryInput | undefi
 }
 
 export function getUserHistoryInputText(input: UserHistoryInput): string {
-  return normalizeUserHistoryInputParts(input)
-    .filter((part): part is UserHistoryTextPart => part.type === 'text')
-    .map((part) => part.text)
-    .join('');
+  if (typeof input === 'string') return input;
+  let text = '';
+  for (const part of input) {
+    if (isUserTextPart(part)) text += part.text;
+  }
+  return text;
 }
 
 export function getAgentHistoryStats(history: readonly AgentHistoryMessage[]): AgentHistoryStats {
@@ -219,17 +225,21 @@ export function createUserHistoryMessage(
   options?: { synthetic?: boolean; skill?: boolean; compaction?: { auto: boolean } }
 ): AgentHistoryMessage {
   const metadata: AgentHistoryMetadata = {};
+  let hasMetadata = false;
 
   if (options?.synthetic) {
     metadata.synthetic = true;
+    hasMetadata = true;
   }
 
   if (options?.skill) {
     metadata.skill = true;
+    hasMetadata = true;
   }
 
   if (options?.compaction) {
     metadata.compaction = options.compaction;
+    hasMetadata = true;
   }
 
   const normalizedParts = normalizeUserHistoryInputParts(input);
@@ -241,7 +251,7 @@ export function createUserHistoryMessage(
   return {
     id: crypto.randomUUID(),
     role: 'user',
-    ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
+    ...(hasMetadata ? { metadata } : {}),
     parts,
   };
 }
@@ -254,9 +264,11 @@ export function createSystemHistoryMessage(
   },
 ): AgentHistoryMessage {
   const metadata: AgentHistoryMetadata = {};
+  let hasMetadata = false;
 
   if (options?.synthetic) {
     metadata.synthetic = true;
+    hasMetadata = true;
   }
 
   if (options?.modeReminder) {
@@ -264,12 +276,13 @@ export function createSystemHistoryMessage(
       mode: options.modeReminder.mode,
       kind: options.modeReminder.kind,
     };
+    hasMetadata = true;
   }
 
   return {
     id: crypto.randomUUID(),
     role: 'system',
-    ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
+    ...(hasMetadata ? { metadata } : {}),
     parts: [{ type: 'text', text: String(text || '') }] as AgentHistoryMessage['parts'],
   };
 }
@@ -280,7 +293,11 @@ export function isSkillInjectedMessage(message: AgentHistoryMessage): boolean {
 
 export function stripSkillInjectedMessages(history: readonly AgentHistoryMessage[]): AgentHistoryMessage[] {
   if (!Array.isArray(history) || history.length === 0) return [];
-  return history.filter((msg) => !isSkillInjectedMessage(msg));
+  const stripped: AgentHistoryMessage[] = [];
+  for (const message of history) {
+    if (!isSkillInjectedMessage(message)) stripped.push(message);
+  }
+  return stripped;
 }
 
 export function createAssistantHistoryMessage(): AgentHistoryMessage {
@@ -292,10 +309,11 @@ export function createAssistantHistoryMessage(): AgentHistoryMessage {
 }
 
 export function getMessageText(message: AgentHistoryMessage): string {
-  return message.parts
-    .filter((part): part is TextUIPart => part.type === 'text')
-    .map((part) => part.text)
-    .join('');
+  let text = '';
+  for (const part of message.parts) {
+    if (part.type === 'text') text += part.text;
+  }
+  return text;
 }
 
 export function appendText(message: AgentHistoryMessage, delta: string): void {

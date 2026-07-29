@@ -7,6 +7,9 @@ export { evaluatePermission, mergeRulesets, wildcardMatch } from './permission';
 
 export { isCopilotResponsesModelId, isGpt5FamilyModelId, normalizeTemperatureForModel, shouldUseResponsesApiForModelId } from './copilot';
 
+export type { RenderFileTreeOptions } from './fileTree';
+export { createFileTreeIgnoreDirs, renderFileTreeOutput } from './fileTree';
+
 export {
   THINK_BLOCK_REGEX,
   TOOL_BLOCK_REGEX,
@@ -48,6 +51,14 @@ export { extractSkillMentions, renderSkillsSectionForPrompt, selectSkillsForText
 export type { SkillInfo, SkillIndex } from './skillIndex';
 export { getSkillIndex, invalidateSkillIndexCache, loadSkillFile, parseSkillMarkdown } from './skillIndex';
 
+export type { RenderSkillCatalogToolOutputOptions, SkillCatalogEntry, SkillCatalogScannedDir } from './skillToolOutput';
+export {
+  formatAvailableSkillNames,
+  formatAvailableSkills,
+  formatSkillNotFoundError,
+  renderSkillCatalogToolOutput,
+} from './skillToolOutput';
+
 export type { ToolPathErrorCode } from './toolPaths';
 export { BINARY_EXTENSIONS, containsBinaryData, isToolPathError, resolveToolPath, ToolPathError, toPosixPath } from './toolPaths';
 
@@ -55,7 +66,7 @@ export type { ToolErrorCode } from './toolErrors';
 export { TOOL_ERROR_CODES } from './toolErrors';
 
 export type { SubagentDefinition, SubagentName } from './subagents';
-export { listBuiltinSubagents, resolveBuiltinSubagent } from './subagents';
+export { formatBuiltinSubagentsForToolDescription, listBuiltinSubagents, resolveBuiltinSubagent } from './subagents';
 
 export type { ValidationResult, ShellCommandDecision } from './validation';
 export {
@@ -82,6 +93,8 @@ export {
   isToolAllowedInPlanMode,
   normalizePermissionPath,
 } from './toolPolicy';
+
+export { createToolFilterMatcher, isToolAllowedByFilter, normalizeToolFilterSetting } from './toolFilter';
 
 export type {
   ToolDefinitionRiskLike,
@@ -175,3 +188,4 @@ export {
 
 export type { ChatModelErrorContext } from './providerModelErrors';
 export { attachChatModelErrorMetadata, wrapChatModelErrors } from './providerModelErrors';
+export { isPrivateIpv4Address } from './ip';

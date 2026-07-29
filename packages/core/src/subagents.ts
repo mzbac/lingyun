@@ -67,8 +67,18 @@ export function listBuiltinSubagents(): SubagentDefinition[] {
   return Object.values(BUILTIN_SUBAGENTS);
 }
 
+export function formatBuiltinSubagentsForToolDescription(): string {
+  let lines = '';
+  for (const name in BUILTIN_SUBAGENTS) {
+    if (!Object.prototype.hasOwnProperty.call(BUILTIN_SUBAGENTS, name)) continue;
+    const subagent = BUILTIN_SUBAGENTS[name as SubagentName];
+    const line = `- ${subagent.name}: ${subagent.description}`;
+    lines = lines ? `${lines}\n${line}` : line;
+  }
+  return lines;
+}
+
 export function resolveBuiltinSubagent(name: string): SubagentDefinition | undefined {
   const key = String(name || '').trim().toLowerCase() as SubagentName;
   return BUILTIN_SUBAGENTS[key];
 }
-

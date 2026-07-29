@@ -76,6 +76,37 @@ suite('Chat queue manager', () => {
     };
   }
 
+  function createWebviewMessageHarness(provider: ChatController) {
+    let receiveMessage: ((message: unknown) => unknown) | undefined;
+    const view = {
+      visible: true,
+      webview: {
+        options: {},
+        html: '',
+        cspSource: 'test-csp',
+        asWebviewUri: (uri: vscode.Uri) => uri,
+        postMessage: () => Promise.resolve(true),
+        onDidReceiveMessage: (listener: (message: unknown) => unknown) => {
+          receiveMessage = listener;
+          return { dispose() {} };
+        },
+      },
+      onDidChangeVisibility: () => ({ dispose() {} }),
+      onDidDispose: () => ({ dispose() {} }),
+    } as unknown as vscode.WebviewView;
+
+    provider.initInFlight = true;
+    provider.webviewApi.resolveWebviewView(view);
+    if (provider.initInterval) {
+      clearInterval(provider.initInterval);
+      provider.initInterval = undefined;
+    }
+    provider.initInFlight = false;
+
+    assert.ok(receiveMessage, 'expected webview message listener to be registered');
+    return receiveMessage;
+  }
+
   test('clearCurrentSession clears queued inputs and attachment blobs', async () => {
     const { provider, posted, getPersisted } = createProvider();
 
@@ -85,6 +116,10 @@ suite('Chat queue manager', () => {
       attachmentCount: 1,
       attachments: [{ mediaType: 'image/png', dataUrl: 'data:image/png;base64,abc', filename: 'a.png' }],
     });
+    assert.strictEqual(
+      provider.queueManager.getRuntimeAttachmentBytes(),
+      'image/png'.length + 'data:image/png;base64,abc'.length + 'a.png'.length,
+    );
 
     posted.length = 0;
     await provider.sessionApi.clearCurrentSession();
@@ -97,44 +132,193 @@ suite('Chat queue manager', () => {
     assert.ok(getPersisted() >= 1);
   });
 
-  test('enqueueActiveInput prunes older image entries when attachment budget is exceeded', async () => {
+  test('clearQueue webview action posts a single queue state update', async () => {
+    const { provider, posted } = createProvider();
+    provider.queueManager.enqueueActiveInput({
+      message: 'queued',
+      displayContent: 'queued',
+      attachmentCount: 0,
+      attachments: [],
+    });
+    const receiveMessage = createWebviewMessageHarness(provider);
+
+    posted.length = 0;
+    await receiveMessage({ type: 'clearQueue' });
+
+    const queueStates = posted.filter((message) => message && (message as any).type === 'queueState');
+    assert.strictEqual(queueStates.length, 1);
+    assert.deepStrictEqual((queueStates[0] as any).queuedInputs, []);
+    assert.deepStrictEqual(provider.sessionApi.getActiveSession().queuedInputs, []);
+  });
+
+  test('clearActiveSession skips already-empty queue state writes', () => {
+    const { provider, posted, getPersisted } = createProvider();
+    const session = provider.sessionApi.getActiveSession();
+    session.queuedInputs = [];
+
+    provider.queueManager.clearActiveSession();
+
+    assert.deepStrictEqual(session.queuedInputs, []);
+    assert.ok(!posted.some((message) => message && (message as any).type === 'queueState'));
+    assert.strictEqual(getPersisted(), 0);
+  });
+
+  test('steerQueuedInput webview action posts one queue state update after removal', async () => {
+    const { provider, posted } = createProvider();
+    provider.queueManager.enqueueActiveInput({
+      message: 'first',
+      displayContent: 'first',
+      attachmentCount: 0,
+      attachments: [],
+    });
+    const target = provider.queueManager.enqueueActiveInput({
+      message: 'target',
+      displayContent: 'target',
+      attachmentCount: 0,
+      attachments: [],
+    });
+    provider.runner = {
+      ...provider.runner,
+      steerQueuedInput: async (id: string) => {
+        return provider.queueManager.takeByIdFromActiveSession(id).queueChanged;
+      },
+    } as any;
+    const receiveMessage = createWebviewMessageHarness(provider);
+
+    posted.length = 0;
+    await receiveMessage({ type: 'steerQueuedInput', id: target.id });
+
+    let queueStates = posted.filter((message) => message && (message as any).type === 'queueState');
+    assert.strictEqual(queueStates.length, 1);
+    assert.deepStrictEqual(
+      ((queueStates[0] as any).queuedInputs || []).map((item: any) => item.message),
+      ['first'],
+    );
+
+    posted.length = 0;
+    await receiveMessage({ type: 'steerQueuedInput', id: 'missing-queued-id' });
+
+    queueStates = posted.filter((message) => message && (message as any).type === 'queueState');
+    assert.strictEqual(queueStates.length, 1);
+    assert.deepStrictEqual(
+      ((queueStates[0] as any).queuedInputs || []).map((item: any) => item.message),
+      ['first'],
+    );
+  });
+
+  test('enqueueActiveInput prunes oldest image entries when attachment budget is exceeded', async () => {
     const cfg = vscode.workspace.getConfiguration('lingyun');
     const previousLimit = cfg.get('chat.queue.maxAttachmentBytes');
 
     try {
-      await cfg.update('chat.queue.maxAttachmentBytes', 100, true);
-      const { provider } = createProvider();
+      await cfg.update('chat.queue.maxAttachmentBytes', 150, true);
+      const { provider, getPersisted } = createProvider();
 
       provider.queueManager.enqueueActiveInput({
         message: 'first',
         displayContent: 'first',
         attachmentCount: 1,
-        attachments: [{ mediaType: 'image/png', dataUrl: 'a'.repeat(80), filename: 'a.png' }],
+        attachments: [{ mediaType: 'image/png', dataUrl: 'a'.repeat(46), filename: 'a.png' }],
+      });
+      provider.queueManager.enqueueActiveInput({
+        message: 'plain',
+        displayContent: 'plain',
+        attachmentCount: 0,
+        attachments: [],
       });
       provider.queueManager.enqueueActiveInput({
         message: 'second',
         displayContent: 'second',
         attachmentCount: 1,
-        attachments: [{ mediaType: 'image/png', dataUrl: 'b'.repeat(80), filename: 'b.png' }],
+        attachments: [{ mediaType: 'image/png', dataUrl: 'b'.repeat(46), filename: 'b.png' }],
+      });
+      provider.queueManager.enqueueActiveInput({
+        message: 'third',
+        displayContent: 'third',
+        attachmentCount: 1,
+        attachments: [{ mediaType: 'image/png', dataUrl: 'c'.repeat(86), filename: 'c.png' }],
       });
 
       const session = provider.sessionApi.getActiveSession();
-      assert.strictEqual(session.queuedInputs?.length, 1);
-      assert.strictEqual(session.queuedInputs?.[0]?.message, 'second');
+      assert.deepStrictEqual(
+        (session.queuedInputs || []).map(item => item.message),
+        ['plain', 'third'],
+      );
       assert.strictEqual(provider.queueManager.getRuntimeAttachmentCount(), 1);
-      assert.ok(provider.queueManager.getRuntimeAttachmentBytes() <= 100);
+      assert.ok(provider.queueManager.getRuntimeAttachmentBytes() <= 150);
       assert.ok(
         provider.messages.some(message =>
-          message.role === 'warning' && message.content.includes('runtime attachment memory bounded')
+          message.role === 'warning' && message.content.includes('Removed 2 older queued image messages')
         ),
       );
+      assert.strictEqual(getPersisted(), 4);
     } finally {
       await cfg.update('chat.queue.maxAttachmentBytes', previousLimit as any, true);
     }
   });
 
-  test('takeNextRunnableFromActiveSession drops broken image-only items and continues FIFO', () => {
+  test('enqueueActiveInput prunes oversized restored queue in one bounded prefix', () => {
     const { provider, posted } = createProvider();
+    const session = provider.sessionApi.getActiveSession();
+    session.queuedInputs = Array.from({ length: 75 }, (_unused, index) => ({
+      id: `existing-${index}`,
+      createdAt: Date.now() + index,
+      message: `existing ${index}`,
+      displayContent: `existing ${index}`,
+      attachmentCount: 0,
+    }));
+
+    posted.length = 0;
+    provider.queueManager.enqueueActiveInput({
+      message: 'newest',
+      displayContent: 'newest',
+      attachmentCount: 0,
+      attachments: [],
+    });
+
+    const queue = session.queuedInputs || [];
+    assert.strictEqual(queue.length, 50);
+    assert.strictEqual(queue[0]?.message, 'existing 26');
+    assert.strictEqual(queue[48]?.message, 'existing 74');
+    assert.strictEqual(queue[49]?.message, 'newest');
+
+    const queueStates = posted.filter((message) => message && (message as any).type === 'queueState');
+    assert.strictEqual(queueStates.length, 1);
+    assert.strictEqual(((queueStates[0] as any).queuedInputs || []).length, 50);
+  });
+
+  test('takeByIdFromActiveSession removes a specific queued input with attachments', () => {
+    const { provider, posted } = createProvider();
+    const image = { mediaType: 'image/png', dataUrl: 'data:image/png;base64,target', filename: 'target.png' };
+
+    provider.queueManager.enqueueActiveInput({
+      message: 'first',
+      displayContent: 'first',
+      attachmentCount: 0,
+      attachments: [],
+    });
+    const target = provider.queueManager.enqueueActiveInput({
+      message: 'target',
+      displayContent: 'target',
+      attachmentCount: 1,
+      attachments: [image],
+    });
+
+    posted.length = 0;
+    const taken = provider.queueManager.takeByIdFromActiveSession(target.id);
+    const session = provider.sessionApi.getActiveSession();
+
+    assert.deepStrictEqual(taken, { input: { message: 'target', attachments: [image] }, queueChanged: true });
+    assert.deepStrictEqual(
+      (session.queuedInputs || []).map(item => item.message),
+      ['first'],
+    );
+    assert.strictEqual(provider.queueManager.getRuntimeAttachmentCount(), 0);
+    assert.ok(posted.some((message) => message && (message as any).type === 'queueState'));
+  });
+
+  test('takeNextRunnableFromActiveSession drops broken image-only items and continues FIFO', () => {
+    const { provider, posted, getPersisted } = createProvider();
     const session = provider.sessionApi.getActiveSession();
 
     session.queuedInputs = [
@@ -161,6 +345,79 @@ suite('Chat queue manager', () => {
     assert.deepStrictEqual(session.queuedInputs, []);
     assert.ok(provider.messages.some((message) => message.role === 'warning' && message.content.includes('Removed a queued message because its image attachments are no longer available')));
     assert.ok(posted.some((message) => message && (message as any).type === 'queueState'));
+    assert.strictEqual(getPersisted(), 1);
+  });
+
+  test('takeNextRunnableFromActiveSession batches invalid prefix cleanup', () => {
+    const { provider, posted, getPersisted } = createProvider();
+    const session = provider.sessionApi.getActiveSession();
+
+    session.queuedInputs = [
+      {
+        id: 'broken-a',
+        createdAt: Date.now(),
+        message: '',
+        displayContent: '[Image attached]',
+        attachmentCount: 1,
+      },
+      undefined as any,
+      {
+        id: 'broken-b',
+        createdAt: Date.now() + 1,
+        message: '',
+        displayContent: '[Image attached]',
+        attachmentCount: 1,
+      },
+      {
+        id: 'next',
+        createdAt: Date.now() + 2,
+        message: 'run me',
+        displayContent: 'run me',
+        attachmentCount: 0,
+      },
+    ];
+
+    const next = provider.queueManager.takeNextRunnableFromActiveSession();
+
+    assert.ok(next);
+    assert.strictEqual(next?.message, 'run me');
+    assert.deepStrictEqual(session.queuedInputs, []);
+    const queueStates = posted.filter((message) => message && (message as any).type === 'queueState');
+    assert.strictEqual(queueStates.length, 1);
+    assert.ok(provider.messages.some((message) => message.role === 'warning' && message.content.includes('Removed 2 queued messages because their image attachments are no longer available')));
+    assert.strictEqual(getPersisted(), 1);
+  });
+
+  test('takeByIdFromActiveSession drops broken image-only item with one persist', () => {
+    const { provider, posted, getPersisted } = createProvider();
+    const session = provider.sessionApi.getActiveSession();
+    session.queuedInputs = [
+      {
+        id: 'broken-target',
+        createdAt: Date.now(),
+        message: '',
+        displayContent: '[Image attached]',
+        attachmentCount: 1,
+      },
+      {
+        id: 'next',
+        createdAt: Date.now() + 1,
+        message: 'next',
+        displayContent: 'next',
+        attachmentCount: 0,
+      },
+    ];
+
+    const taken = provider.queueManager.takeByIdFromActiveSession('broken-target');
+
+    assert.deepStrictEqual(taken, { input: undefined, queueChanged: true });
+    assert.deepStrictEqual(
+      (session.queuedInputs || []).map(item => item.message),
+      ['next'],
+    );
+    assert.ok(provider.messages.some((message) => message.role === 'warning' && message.content.includes('Removed a queued message because its image attachments are no longer available')));
+    assert.ok(posted.some((message) => message && (message as any).type === 'queueState'));
+    assert.strictEqual(getPersisted(), 1);
   });
 
   test('session-scoped autosend waits for the originating session to become active again', async () => {

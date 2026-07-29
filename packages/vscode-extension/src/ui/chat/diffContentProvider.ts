@@ -19,12 +19,22 @@ export function createLingyunDiffUri(params: {
 
 export function parseLingyunDiffUri(uri: vscode.Uri): { toolCallId: string; side: LingyunDiffSide } | null {
   if (uri.scheme !== LINGYUN_DIFF_SCHEME) return null;
-  const parts = uri.path.split('/').filter(Boolean);
-  if (parts.length < 2) return null;
-  const side = parts[0] === 'before' || parts[0] === 'after' ? (parts[0] as LingyunDiffSide) : null;
+  const path = uri.path;
+  let index = 0;
+  while (index < path.length && path.charCodeAt(index) === 47) index++;
+
+  const sideStart = index;
+  while (index < path.length && path.charCodeAt(index) !== 47) index++;
+  const sidePart = path.slice(sideStart, index);
+  const side = sidePart === 'before' || sidePart === 'after' ? (sidePart as LingyunDiffSide) : null;
   if (!side) return null;
 
-  const toolCallId = decodeURIComponent(parts[1] || '');
+  while (index < path.length && path.charCodeAt(index) === 47) index++;
+  const toolCallIdStart = index;
+  while (index < path.length && path.charCodeAt(index) !== 47) index++;
+  if (toolCallIdStart === index) return null;
+
+  const toolCallId = decodeURIComponent(path.slice(toolCallIdStart, index));
   if (!toolCallId) return null;
   return { toolCallId, side };
 }
@@ -50,7 +60,15 @@ export class LingyunDiffContentProvider implements vscode.TextDocumentContentPro
 
 function sanitizeFileName(fileName: string): string {
   const raw = typeof fileName === 'string' ? fileName.trim() : '';
-  const base = raw.replace(/\\/g, '/').split('/').pop() || 'file';
+  let baseStart = raw.length;
+  for (let i = raw.length - 1; i >= 0; i--) {
+    const code = raw.charCodeAt(i);
+    if (code === 47 || code === 92) {
+      baseStart = i + 1;
+      break;
+    }
+  }
+  const base = raw.slice(baseStart) || 'file';
 
   // Normalize to a filename-safe subset without relying on control-character regex ranges.
   const withoutReserved = base.replace(/[<>:"|?*]/g, '_');

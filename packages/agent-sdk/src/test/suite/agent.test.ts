@@ -12,7 +12,22 @@ import type {
   LanguageModelV3Usage,
 } from '@ai-sdk/provider';
 
-import { createHistoryForModel, MISSING_TOOL_RESULT_PLACEHOLDER, TOOL_ERROR_CODES } from '@kooka/core';
+import {
+  applyAssistantReplayForPrompt,
+  applyCopilotImageInputPattern,
+  applyCopilotReasoningFields,
+  applyOpenAICompatibleReasoningField,
+  cloneAgentHistoryMessages,
+  createHistoryForModel,
+  extractPlanFromReasoning,
+  formatBuiltinSubagentsForToolDescription,
+  getMessageText as getCoreMessageText,
+  getUserHistoryInputText,
+  MISSING_TOOL_RESULT_PLACEHOLDER,
+  stripSkillInjectedMessages,
+  TOOL_ERROR_CODES,
+  validateToolArgs,
+} from '@kooka/core';
 import {
   FileHandleRegistry,
   createLingyunAgent,
@@ -32,6 +47,15 @@ import {
   type ToolResult,
 } from '../../index.js';
 import { TaskSubagentRunner } from '../../agent/taskSubagentRunner.js';
+import { SemanticHandleRegistry } from '../../agent/semanticHandles.js';
+import { createProviderBehavior } from '../../agent/providerBehavior.js';
+import { PromptComposer } from '../../agent/promptComposer.js';
+import {
+  normalizeSyntheticContextMessageRoles,
+  snapshotSyntheticContextsForCompaction,
+  stripCompactionRestoredSyntheticMessages,
+  stripTransientSyntheticMessages,
+} from '../../agent/transientSyntheticContext.js';
 
 function getMessageText(message: AgentHistoryMessage): string {
   return message.parts
@@ -674,6 +698,12 @@ suite('LingYun Agent SDK', () => {
     assert.strictEqual(toolPart.state, 'output-available');
     assert.strictEqual(toolPart.output?.success, true);
     assert.ok(String(toolPart.output?.data).includes('Echo: hi'));
+    assert.strictEqual(toolPart.compactedAt, undefined, 'default mode must not rewrite a consumed tool result');
+
+    const preparedToolPart = createHistoryForModel(history)
+      .flatMap((message) => message.parts as any[])
+      .find((part) => part.type === 'dynamic-tool' && part.toolCallId === 'call_1');
+    assert.strictEqual(preparedToolPart?.output?.data, toolPart.output?.data);
 
     const finalAssistant = [...history].reverse().find((m) => m.role === 'assistant' && getMessageText(m).trim())!;
     assert.strictEqual(getMessageText(finalAssistant).trim(), 'done');
@@ -1218,6 +1248,272 @@ suite('LingYun Agent SDK', () => {
     assert.strictEqual(session.modelId, 'mock-model');
   });
 
+  test('LingyunSession normalizes restored runtime queues without leaking source objects', () => {
+    const pendingInputParts: any[] = [
+      { type: 'text', text: 'with image' },
+      { type: 'file', mediaType: 'image/png', filename: 'shot.png', url: 'file:///shot.png' },
+      { type: 'file', mediaType: '', url: 42 },
+    ];
+    const compactionContexts: any[] = [
+      { transientContext: 'memoryRecall', text: 'remember me', extra: 'drop' },
+      { transientContext: 'goal', text: 'finish the goal' },
+      { transientContext: 'bad', text: 'drop' },
+      { transientContext: 'explore' },
+    ];
+    const session = new LingyunSession({
+      pendingInputs: ['queued', pendingInputParts, [], null] as any,
+      compactionSyntheticContexts: compactionContexts as any,
+      systemPromptSnapshot: ['  Base system prompt  ', '', 42, 'Plugin context'] as any,
+    });
+
+    pendingInputParts[0] = { type: 'text', text: 'mutated' };
+    compactionContexts[0] = { transientContext: 'memoryRecall', text: 'mutated' };
+
+    assert.deepStrictEqual(session.getPendingInputs(), [
+      'queued',
+      [
+        { type: 'text', text: 'with image' },
+        { type: 'file', mediaType: 'image/png', filename: 'shot.png', url: 'file:///shot.png' },
+      ],
+    ]);
+    assert.deepStrictEqual(session.compactionSyntheticContexts, [
+      { transientContext: 'memoryRecall', text: 'remember me' },
+      { transientContext: 'goal', text: 'finish the goal' },
+    ]);
+    assert.deepStrictEqual(session.getSystemPromptSnapshot(), ['Base system prompt', 'Plugin context']);
+  });
+
+  test('LingyunSession system prompt snapshot normalization avoids chained arrays', async () => {
+    const source = await fs.readFile(new URL('../../../src/agent/session.ts', import.meta.url), 'utf8');
+    const start = source.indexOf('export function normalizeSystemPromptSnapshot');
+    assert.ok(start >= 0, 'expected system prompt snapshot normalizer');
+    const end = source.indexOf('\nexport function normalizeOptionalMentionedSkills', start);
+    assert.ok(end > start, 'expected optional mentioned skills helper after system prompt snapshot normalizer');
+    const section = source.slice(start, end);
+
+    assert.match(section, /const parts: string\[\] = \[\];/);
+    assert.match(section, /for \(const part of value\)/);
+    assert.doesNotMatch(section, /\.map\(/);
+    assert.doesNotMatch(section, /\.filter\(/);
+  });
+
+  test('core history text helpers scan parts without filter-map arrays', async () => {
+    const input = [
+      { type: 'text', text: 'first ' },
+      { type: 'file', mediaType: 'image/png', filename: 'shot.png', url: 'file:///shot.png' },
+      { type: 'text', text: 'second' },
+    ] as any;
+    const message = {
+      id: 'm1',
+      role: 'assistant',
+      parts: [
+        { type: 'text', text: 'visible ' },
+        { type: 'reasoning', text: 'hidden' },
+        { type: 'text', text: 'text' },
+      ],
+    } as AgentHistoryMessage;
+
+    assert.strictEqual(getUserHistoryInputText(input), 'first second');
+    assert.strictEqual(getCoreMessageText(message), 'visible text');
+    const historyWithSkillMessage = [
+      { id: 'u1', role: 'user', metadata: { skill: true }, parts: [{ type: 'text', text: 'skill' }] },
+      { id: 'u2', role: 'user', parts: [{ type: 'text', text: 'real user' }] },
+    ] as AgentHistoryMessage[];
+    assert.deepStrictEqual(stripSkillInjectedMessages(historyWithSkillMessage), [historyWithSkillMessage[1]]);
+
+    const cloned = cloneAgentHistoryMessages([message]);
+    assert.deepStrictEqual(cloned, [message]);
+    assert.notStrictEqual(cloned[0], message);
+
+    const source = await fs.readFile(new URL('../../../../core/src/history.ts', import.meta.url), 'utf8');
+    const cloneStart = source.indexOf('export function cloneAgentHistoryMessages');
+    assert.ok(cloneStart >= 0, 'expected history clone helper');
+    const cloneEnd = source.indexOf('\nexport function parseUserHistoryInput', cloneStart);
+    assert.ok(cloneEnd > cloneStart, 'expected parser after history clone helper');
+    const cloneSection = source.slice(cloneStart, cloneEnd);
+
+    const inputTextStart = source.indexOf('export function getUserHistoryInputText');
+    assert.ok(inputTextStart >= 0, 'expected user input text helper');
+    const inputTextEnd = source.indexOf('\nexport function getAgentHistoryStats', inputTextStart);
+    assert.ok(inputTextEnd > inputTextStart, 'expected stats helper after user input text helper');
+    const inputTextSection = source.slice(inputTextStart, inputTextEnd);
+
+    const messageTextStart = source.indexOf('export function getMessageText');
+    assert.ok(messageTextStart >= 0, 'expected message text helper');
+    const messageTextEnd = source.indexOf('\nexport function appendText', messageTextStart);
+    assert.ok(messageTextEnd > messageTextStart, 'expected appendText after message text helper');
+    const messageTextSection = source.slice(messageTextStart, messageTextEnd);
+
+    const stripStart = source.indexOf('export function stripSkillInjectedMessages');
+    assert.ok(stripStart >= 0, 'expected skill message stripping helper');
+    const stripEnd = source.indexOf('\nexport function createAssistantHistoryMessage', stripStart);
+    assert.ok(stripEnd > stripStart, 'expected assistant history factory after skill message stripper');
+    const stripSection = source.slice(stripStart, stripEnd);
+
+    assert.match(cloneSection, /const cloned: AgentHistoryMessage\[\] = \[\];/);
+    assert.match(cloneSection, /for \(const message of history\)/);
+    assert.match(inputTextSection, /if \(typeof input === 'string'\) return input;/);
+    assert.match(inputTextSection, /for \(const part of input\)/);
+    assert.match(inputTextSection, /if \(isUserTextPart\(part\)\) text \+= part\.text;/);
+    assert.doesNotMatch(inputTextSection, /normalizeUserHistoryInputParts\(input\)/);
+    assert.match(stripSection, /const stripped: AgentHistoryMessage\[\] = \[\];/);
+    assert.match(stripSection, /for \(const message of history\)/);
+    assert.match(stripSection, /if \(!isSkillInjectedMessage\(message\)\) stripped\.push\(message\);/);
+    assert.match(stripSection, /return stripped;/);
+    assert.match(messageTextSection, /for \(const part of message\.parts\)/);
+    assert.match(messageTextSection, /if \(part\.type === 'text'\) text \+= part\.text;/);
+    for (const section of [cloneSection, inputTextSection, stripSection, messageTextSection]) {
+      assert.doesNotMatch(section, /\.map\(/);
+      assert.doesNotMatch(section, /\.filter\(/);
+    }
+  });
+
+  test('core tool arg validation scans schema properties without entry arrays', async () => {
+    const result = validateToolArgs(
+      {
+        name: 'build',
+        count: '3',
+        nested: { enabled: 'yes' },
+      },
+      {
+        required: ['name'],
+        properties: {
+          name: { type: 'string' },
+          count: { type: 'integer' },
+          mode: { type: 'string', default: 'safe' },
+          nested: {
+            type: 'object',
+            properties: {
+              enabled: { type: 'boolean' },
+            },
+          },
+        },
+      },
+    );
+
+    assert.deepStrictEqual(result, {
+      valid: true,
+      errors: [],
+      data: {
+        name: 'build',
+        count: 3,
+        mode: 'safe',
+        nested: { enabled: true },
+      },
+    });
+
+    const source = await fs.readFile(new URL('../../../../core/src/validation.ts', import.meta.url), 'utf8');
+    const start = source.indexOf('export function validateToolArgs');
+    assert.ok(start >= 0, 'expected tool argument validator');
+    const end = source.indexOf('\nfunction validateType', start);
+    assert.ok(end > start, 'expected type validator after argument validator');
+    const section = source.slice(start, end);
+
+    assert.match(section, /const properties = schema\.properties;/);
+    assert.match(section, /for \(const key in properties\)/);
+    assert.match(section, /Object\.prototype\.hasOwnProperty\.call\(properties, key\)/);
+    assert.match(section, /const propSchema = properties\[key\]!;/);
+    assert.doesNotMatch(section, /Object\.entries/);
+  });
+
+  test('LingyunSession semantic handle cloning avoids entries and map arrays', async () => {
+    const source = await fs.readFile(new URL('../../../src/agent/session.ts', import.meta.url), 'utf8');
+    const start = source.indexOf('function cloneSemanticHandleEntries');
+    assert.ok(start >= 0, 'expected semantic handle entry cloner');
+    const end = source.indexOf('\nexport function cloneSemanticHandlesState', start);
+    assert.ok(end > start, 'expected semantic handle state cloner after entry cloner');
+    const section = source.slice(start, end);
+
+    assert.match(section, /const cloned: Record<string, T> = \{\};/);
+    assert.match(section, /for \(const id in entries\)/);
+    assert.match(section, /Object\.prototype\.hasOwnProperty\.call\(entries, id\)/);
+    assert.match(section, /cloneSemanticHandleRange\(entry\.range\)/);
+    assert.doesNotMatch(section, /Object\.fromEntries/);
+    assert.doesNotMatch(section, /Object\.entries/);
+    assert.doesNotMatch(section, /\.map\(/);
+  });
+
+  test('semantic handle registry imports and exports without entry arrays', async () => {
+    const registry = new SemanticHandleRegistry();
+    registry.importState({
+      nextMatchId: 3,
+      nextSymbolId: 4,
+      nextLocId: 5,
+      matches: {
+        M1: {
+          fileId: 'F1',
+          range: { start: { line: 2.9, character: 3.8 }, end: { line: 2, character: 4 } },
+          preview: 'match preview',
+        },
+        bad: { fileId: 'F1', range: { start: { line: 1, character: 1 }, end: { line: 1, character: 2 } } },
+      },
+      symbols: {
+        S1: {
+          fileId: 'F1',
+          name: 'main',
+          kind: 'function',
+          range: { start: { line: 10, character: 1 }, end: { line: 12, character: 2 } },
+          containerName: 'App',
+        },
+      },
+      locations: {
+        L1: {
+          fileId: 'F1',
+          label: 'definition',
+          range: { start: { line: 20, character: 4 }, end: { line: 20, character: 8 } },
+        },
+      },
+    });
+
+    assert.deepStrictEqual(registry.exportState(), {
+      nextMatchId: 3,
+      nextSymbolId: 4,
+      nextLocId: 5,
+      matches: {
+        M1: {
+          fileId: 'F1',
+          range: { start: { line: 2, character: 3 }, end: { line: 2, character: 4 } },
+          preview: 'match preview',
+        },
+      },
+      symbols: {
+        S1: {
+          fileId: 'F1',
+          name: 'main',
+          kind: 'function',
+          range: { start: { line: 10, character: 1 }, end: { line: 12, character: 2 } },
+          containerName: 'App',
+        },
+      },
+      locations: {
+        L1: {
+          fileId: 'F1',
+          label: 'definition',
+          range: { start: { line: 20, character: 4 }, end: { line: 20, character: 8 } },
+        },
+      },
+    });
+
+    const source = await fs.readFile(new URL('../../../src/agent/semanticHandles.ts', import.meta.url), 'utf8');
+    const exportStart = source.indexOf('function exportHandleMap');
+    assert.ok(exportStart >= 0, 'expected handle map exporter');
+    const importStart = source.indexOf('importState(raw: unknown)', exportStart);
+    assert.ok(importStart > exportStart, 'expected importState after handle map exporter');
+    const importEnd = source.indexOf('\n  createMatchHandle', importStart);
+    assert.ok(importEnd > importStart, 'expected match handle creator after importState');
+    const section = source.slice(exportStart, importEnd);
+
+    assert.match(section, /const out: Record<string, T> = \{\};/);
+    assert.match(section, /for \(const \[id, value\] of map\)/);
+    assert.match(section, /matches: exportHandleMap\(this\.matches\)/);
+    assert.match(section, /for \(const id in matchesRaw\)/);
+    assert.match(section, /Object\.prototype\.hasOwnProperty\.call\(matchesRaw, id\)/);
+    assert.match(section, /for \(const id in symbolsRaw\)/);
+    assert.match(section, /for \(const id in locationsRaw\)/);
+    assert.doesNotMatch(section, /Object\.fromEntries/);
+    assert.doesNotMatch(section, /Object\.entries/);
+  });
+
   test('snapshotSession clones mutable session state', () => {
     const session = new LingyunSession({
       sessionId: 's1',
@@ -1228,8 +1524,21 @@ suite('LingYun Agent SDK', () => {
         nextSymbolId: 2,
         nextLocId: 2,
         matches: { M1: { fileId: 'F1', range: { start: { line: 1, character: 1 }, end: { line: 1, character: 2 } }, preview: 'x' } },
-        symbols: {},
-        locations: {},
+        symbols: {
+          S1: {
+            fileId: 'F1',
+            name: 'main',
+            kind: 'function',
+            range: { start: { line: 3, character: 1 }, end: { line: 5, character: 2 } },
+          },
+        },
+        locations: {
+          L1: {
+            fileId: 'F1',
+            label: 'definition',
+            range: { start: { line: 8, character: 4 }, end: { line: 8, character: 10 } },
+          },
+        },
       },
     });
 
@@ -1237,6 +1546,8 @@ suite('LingYun Agent SDK', () => {
     session.history[0]!.parts[0] = { type: 'text', text: 'mutated', state: 'done' } as any;
     session.fileHandles!.byId.F1 = 'mutated.ts';
     session.semanticHandles!.matches.M1!.preview = 'mutated';
+    session.semanticHandles!.symbols.S1!.range.start.line = 99;
+    session.semanticHandles!.locations.L1!.range.end.character = 99;
 
     assert.deepStrictEqual(snapshot.history, [{ id: 'm1', role: 'assistant', parts: [{ type: 'text', text: 'hello', state: 'done' }] }]);
     assert.deepStrictEqual(snapshot.fileHandles, { nextId: 2, byId: { F1: 'src/index.ts' } });
@@ -1245,8 +1556,21 @@ suite('LingYun Agent SDK', () => {
       nextSymbolId: 2,
       nextLocId: 2,
       matches: { M1: { fileId: 'F1', range: { start: { line: 1, character: 1 }, end: { line: 1, character: 2 } }, preview: 'x' } },
-      symbols: {},
-      locations: {},
+      symbols: {
+        S1: {
+          fileId: 'F1',
+          name: 'main',
+          kind: 'function',
+          range: { start: { line: 3, character: 1 }, end: { line: 5, character: 2 } },
+        },
+      },
+      locations: {
+        L1: {
+          fileId: 'F1',
+          label: 'definition',
+          range: { start: { line: 8, character: 4 }, end: { line: 8, character: 10 } },
+        },
+      },
     });
   });
 
@@ -1396,6 +1720,35 @@ suite('LingYun Agent SDK', () => {
 
     const originalMissing = (original.parts as any[]).find((part) => part.toolCallId === 'call_missing_result');
     assert.strictEqual(originalMissing.output, undefined, 'model preparation must not mutate session history');
+  });
+
+  test('core compaction history preparation scans messages without map flatMap arrays', async () => {
+    const source = await fs.readFile(new URL('../../../../core/src/compaction.ts', import.meta.url), 'utf8');
+    const modelStart = source.indexOf('export function createHistoryForModel');
+    assert.ok(modelStart >= 0, 'expected model history preparation helper');
+    const modelEnd = source.indexOf('\nexport function createHistoryForCompactionPrompt', modelStart);
+    assert.ok(modelEnd > modelStart, 'expected compaction prompt helper after model preparation helper');
+    const modelSection = source.slice(modelStart, modelEnd);
+
+    const compactionStart = modelEnd;
+    const compactionEnd = source.indexOf('\nexport function isOverflow', compactionStart);
+    assert.ok(compactionEnd > compactionStart, 'expected overflow helper after compaction prompt helper');
+    const compactionSection = source.slice(compactionStart, compactionEnd);
+
+    assert.match(modelSection, /const prepared: AgentHistoryMessage\[\] = \[\];/);
+    assert.match(modelSection, /for \(const msg of history\)/);
+    assert.match(modelSection, /const parts: AgentHistoryMessage\['parts'\] = \[\];/);
+    assert.match(modelSection, /for \(const part of msg\.parts\)/);
+    assert.match(modelSection, /parts\.push\(part\);/);
+    assert.match(modelSection, /parts\.push\(\{ \.\.\.anyPart, output: replacement \} as any\);/);
+    assert.match(modelSection, /prepared\.push\(\{/);
+    assert.match(compactionSection, /const cloned: AgentHistoryMessage\[\] = \[\];/);
+    assert.match(compactionSection, /for \(const msg of history\)/);
+    assert.match(compactionSection, /for \(const part of msg\.parts\)/);
+    assert.match(compactionSection, /parts\.push\(\{ \.\.\.\(part as any\) \} as any\);/);
+    assert.match(compactionSection, /cloned\.push\(\{/);
+    assert.doesNotMatch(modelSection + compactionSection, /\.map\(/);
+    assert.doesNotMatch(modelSection + compactionSection, /\.flatMap\(/);
   });
 
   test('drains steered input after assistant completion and continues with a follow-up iteration', async () => {
@@ -1676,6 +2029,160 @@ suite('LingYun Agent SDK', () => {
     );
   });
 
+  test('synthetic context role normalization keeps unchanged history as a mutable copy', () => {
+    const systemMessage: AgentHistoryMessage = {
+      id: 'system-synthetic',
+      role: 'system',
+      metadata: { synthetic: true, transientContext: 'memoryRecall' },
+      parts: [{ type: 'text', text: 'already system' }] as any,
+    };
+    const userMessage: AgentHistoryMessage = {
+      id: 'user',
+      role: 'user',
+      parts: [{ type: 'text', text: 'hi' }] as any,
+    };
+    const history = [systemMessage, userMessage];
+
+    const normalized = normalizeSyntheticContextMessageRoles(history);
+
+    assert.notStrictEqual(normalized, history);
+    assert.strictEqual(normalized[0], systemMessage);
+    assert.strictEqual(normalized[1], userMessage);
+    normalized.push({
+      id: 'extra',
+      role: 'system',
+      parts: [{ type: 'text', text: 'extra' }] as any,
+    });
+    assert.strictEqual(history.length, 2);
+  });
+
+  test('synthetic context strip helpers preserve copy semantics and drop matching messages', () => {
+    const userMessage: AgentHistoryMessage = {
+      id: 'user',
+      role: 'user',
+      parts: [{ type: 'text', text: 'hi' }] as any,
+    };
+    const transientMessage: AgentHistoryMessage = {
+      id: 'transient',
+      role: 'system',
+      metadata: { synthetic: true, transientContext: 'memoryRecall' },
+      parts: [{ type: 'text', text: 'transient context' }] as any,
+    };
+    const restoredMessage: AgentHistoryMessage = {
+      id: 'restored',
+      role: 'system',
+      metadata: { synthetic: true, compactionRestore: { source: 'sessionState' } },
+      parts: [{ type: 'text', text: 'restored context' }] as any,
+    };
+
+    const unchangedHistory = [userMessage, restoredMessage];
+    const unchanged = stripTransientSyntheticMessages(unchangedHistory);
+    assert.notStrictEqual(unchanged, unchangedHistory);
+    assert.deepStrictEqual(unchanged, [userMessage, restoredMessage]);
+    unchanged.push({
+      id: 'extra',
+      role: 'system',
+      parts: [{ type: 'text', text: 'extra' }] as any,
+    });
+    assert.strictEqual(unchanged.length, 3);
+    assert.strictEqual(unchangedHistory.length, 2);
+
+    const withoutTransient = stripTransientSyntheticMessages([userMessage, transientMessage]);
+    assert.deepStrictEqual(withoutTransient, [userMessage]);
+    assert.strictEqual(withoutTransient[0], userMessage);
+
+    const withoutRestored = stripCompactionRestoredSyntheticMessages([userMessage, restoredMessage]);
+    assert.deepStrictEqual(withoutRestored, [userMessage]);
+    assert.strictEqual(withoutRestored[0], userMessage);
+  });
+
+  test('synthetic context role normalization clones converted legacy messages only', () => {
+    const userMessage: AgentHistoryMessage = {
+      id: 'user',
+      role: 'user',
+      parts: [{ type: 'text', text: 'hi' }] as any,
+    };
+    const legacyMessage: AgentHistoryMessage = {
+      id: 'legacy-synthetic',
+      role: 'assistant',
+      metadata: { synthetic: true, transientContext: 'memoryRecall' },
+      parts: [{ type: 'text', text: 'legacy assistant context', state: 'done' }] as any,
+    };
+    const history = [userMessage, legacyMessage];
+
+    const normalized = normalizeSyntheticContextMessageRoles(history);
+
+    assert.notStrictEqual(normalized, history);
+    assert.strictEqual(normalized[0], userMessage);
+    assert.notStrictEqual(normalized[1], legacyMessage);
+    assert.strictEqual(normalized[1]?.role, 'system');
+    assert.notStrictEqual(normalized[1]?.metadata, legacyMessage.metadata);
+    assert.notStrictEqual(normalized[1]?.parts, legacyMessage.parts);
+
+    (normalized[1]?.parts[0] as any).text = 'mutated prompt text';
+    assert.strictEqual((legacyMessage.parts[0] as any).text, 'legacy assistant context');
+  });
+
+  test('synthetic context role normalization avoids eager map allocations', async () => {
+    const source = await fs.readFile(new URL('../../../src/agent/transientSyntheticContext.ts', import.meta.url), 'utf8');
+    const start = source.indexOf('export function normalizeSyntheticContextMessageRoles');
+    assert.ok(start >= 0, 'expected synthetic context role normalizer');
+    const end = source.indexOf('\nexport function appendSyntheticContextMessage', start);
+    assert.ok(end > start, 'expected append helper after synthetic context role normalizer');
+    const section = source.slice(start, end);
+
+    assert.match(section, /let normalized: AgentHistoryMessage\[\] \| undefined;/);
+    assert.match(section, /history\.slice\(0, i\)/);
+    assert.match(section, /return normalized \?\? \[\.\.\.history\];/);
+    assert.doesNotMatch(section, /history\.map/);
+    assert.doesNotMatch(section, /message\.parts\.map/);
+  });
+
+  test('synthetic context compaction snapshots update duplicate kinds without map spreads', async () => {
+    const longText = `${'x'.repeat(260)} tail`;
+
+    assert.deepStrictEqual(
+      snapshotSyntheticContextsForCompaction([
+        { transientContext: 'memoryRecall', text: 'first memory', persistAfterCompaction: true },
+        { transientContext: 'goal', text: 'goal context', persistAfterCompaction: true },
+        { transientContext: 'memoryRecall', text: longText, persistAfterCompaction: true, maxCharsAfterCompaction: 150 },
+        { transientContext: 'explore', text: 'skip explore' },
+      ]),
+      [
+        {
+          transientContext: 'memoryRecall',
+          text: `${'x'.repeat(200 - '\n\n... [TRUNCATED]'.length)}\n\n... [TRUNCATED]`,
+        },
+        { transientContext: 'goal', text: 'goal context' },
+      ],
+    );
+
+    const source = await fs.readFile(new URL('../../../src/agent/transientSyntheticContext.ts', import.meta.url), 'utf8');
+    const start = source.indexOf('export function snapshotSyntheticContextsForCompaction');
+    assert.ok(start >= 0, 'expected compaction snapshot helper');
+    const section = source.slice(start);
+
+    assert.match(section, /const snapshots: LingyunCompactionSyntheticContext\[\] = \[\];/);
+    assert.match(section, /for \(let i = 0; i < snapshots\.length; i\+\+\)/);
+    assert.match(section, /snapshots\[i\] = \{ transientContext: context\.transientContext, text \};/);
+    assert.doesNotMatch(section, /new Map/);
+    assert.doesNotMatch(section, /\[\.\.\.byKind\.values\(\)\]/);
+  });
+
+  test('synthetic context strip helpers avoid eager filter allocations', async () => {
+    const source = await fs.readFile(new URL('../../../src/agent/transientSyntheticContext.ts', import.meta.url), 'utf8');
+    const start = source.indexOf('function stripSyntheticMessages');
+    assert.ok(start >= 0, 'expected shared synthetic strip helper');
+    const end = source.indexOf('\nexport function normalizeSyntheticContextMessageRoles', start);
+    assert.ok(end > start, 'expected normalizer after synthetic strip helper');
+    const section = source.slice(start, end);
+
+    assert.match(section, /let stripped: AgentHistoryMessage\[\] \| undefined;/);
+    assert.match(section, /history\.slice\(0, i\)/);
+    assert.match(section, /return stripped \?\? \[\.\.\.history\];/);
+    assert.doesNotMatch(section, /\.filter\(/);
+  });
+
   test('prompt cache - restored sessions preserve prepared synthetic contexts and cacheable prefixes', async () => {
     const llm = new CacheAwareMockLLMProvider();
     const registry = new ToolRegistry();
@@ -1827,6 +2334,48 @@ suite('LingYun Agent SDK', () => {
       currentTokens.cacheRead,
       previousFootprint,
       'assistant token accounting should record the restored synthetic-context cache read',
+    );
+  });
+
+  test('plan extraction uses numbered, bullet, and question fallbacks from reasoning', () => {
+    assert.strictEqual(
+      extractPlanFromReasoning([
+        'Thinking through the task.',
+        '2. Preserve the existing harness.',
+        '3. Run focused verification.',
+        '- This bullet should not win when numbered steps exist.',
+      ].join('\n')),
+      '2. Preserve the existing harness.\n3. Run focused verification.',
+    );
+
+    assert.strictEqual(
+      extractPlanFromReasoning([
+        '<think>private notes</think>',
+        '- [ ] Inspect the current code path.',
+        '* [x] Replace repeated scans.',
+        '• Verify plan-first behavior.',
+      ].join('\n')),
+      '1. Inspect the current code path.\n2. Replace repeated scans.\n3. Verify plan-first behavior.',
+    );
+
+    assert.strictEqual(
+      extractPlanFromReasoning([
+        '1) Which provider should be used?',
+        '2) Which tests should run?',
+        '<tool_call>{"ignored":true}</tool_call>',
+        'Does the user want a release note?',
+      ].join('\n')),
+      '1. Which provider should be used?\n2. Which tests should run?',
+    );
+
+    assert.strictEqual(
+      extractPlanFromReasoning([
+        'We need clarification before editing.',
+        'Which workspace should be used?',
+        'Should UI snapshots be updated?',
+        'Proceed without running browser checks?',
+      ].join('\n')),
+      '1. Which workspace should be used?\n2. Should UI snapshots be updated?\n3. Proceed without running browser checks?',
     );
   });
 
@@ -2232,6 +2781,58 @@ suite('LingYun Agent SDK', () => {
     });
   });
 
+  test('toolFilter wildcard matching escapes regexp syntax before exposing tools', async () => {
+    const llm = new MockLLMProvider();
+    const registry = new ToolRegistry();
+    const session = new LingyunSession();
+
+    registry.registerTool(
+      {
+        id: 'a_tool',
+        name: 'A tool',
+        description: 'matches a literal wildcard pattern only',
+        parameters: { type: 'object', properties: {} },
+        execution: { type: 'function', handler: 'test.a_tool' },
+      },
+      async () => ({ success: true, data: 'a' }),
+    );
+    registry.registerTool(
+      {
+        id: 'ab_tool',
+        name: 'AB tool',
+        description: 'would match an unescaped regexp dot',
+        parameters: { type: 'object', properties: {} },
+        execution: { type: 'function', handler: 'test.ab_tool' },
+      },
+      async () => ({ success: true, data: 'ab' }),
+    );
+
+    llm.queueResponse({ kind: 'text', content: 'first' });
+    const wildcardAgent = new LingyunAgent(
+      llm,
+      { model: 'mock-model', toolFilter: ['a_*'] },
+      registry,
+      { allowExternalPaths: false, skills: { enabled: false } },
+    );
+    for await (const _event of wildcardAgent.run({ session, input: 'hello' }).events) {
+      // drain
+    }
+
+    llm.queueResponse({ kind: 'text', content: 'second' });
+    const escapedAgent = new LingyunAgent(
+      llm,
+      { model: 'mock-model', toolFilter: ['a.*'] },
+      registry,
+      { allowExternalPaths: false, skills: { enabled: false } },
+    );
+    for await (const _event of escapedAgent.run({ session, input: 'follow up' }).events) {
+      // drain
+    }
+
+    assert.deepStrictEqual(llm.toolNameHistory[0], ['a_tool']);
+    assert.deepStrictEqual(llm.toolNameHistory[1], []);
+  });
+
   test('prompt cache - restoring a previous toolFilter can reuse an older cached baseline', async () => {
     const llm = new CacheAwareMockLLMProvider();
     const registry = new ToolRegistry();
@@ -2528,6 +3129,140 @@ suite('LingYun Agent SDK', () => {
     }
   });
 
+  test('skill injection assembles bounded prompt text without temporary arrays', async () => {
+    const source = await fs.readFile(new URL('../../../src/agent/agent.ts', import.meta.url), 'utf8');
+    const start = source.indexOf('private async injectSkillsForUserText');
+    assert.ok(start >= 0, 'expected skill injection helper');
+    const end = source.indexOf('\n  run(params:', start);
+    assert.ok(end > start, 'expected run method after skill injection helper');
+    const section = source.slice(start, end);
+
+    assert.match(section, /let activeLabel = '';/);
+    assert.match(section, /let blocksText = '';/);
+    assert.match(section, /if \(blocksText\) blocksText \+= '\\n\\n';/);
+    assert.doesNotMatch(section, /selected\.slice\(0,\s*maxSkills\)/);
+    assert.doesNotMatch(section, /selectedForInject/);
+    assert.doesNotMatch(section, /\.filter\(Boolean\)/);
+    assert.doesNotMatch(section, /\.\.\.blocks/);
+    assert.doesNotMatch(section, /\.map\(\(s: SkillInfo\)/);
+  });
+
+  test('runOnce prompt assembly avoids copy reverse and spread-map arrays', async () => {
+    const source = await fs.readFile(new URL('../../../src/agent/runOnce.ts', import.meta.url), 'utf8');
+    const messageStart = source.indexOf('message: getLastUserMessageText(session)');
+    assert.ok(messageStart >= 0, 'expected chat params to use reverse scanner helper');
+
+    const promptStart = source.indexOf('const promptMessages: ModelMessage[] = [];');
+    assert.ok(promptStart >= 0, 'expected prompt message assembly');
+    const promptEnd = source.indexOf('let assistantMessage = createAssistantHistoryMessage();', promptStart);
+    assert.ok(promptEnd > promptStart, 'expected assistant message setup after prompt assembly');
+    const promptSection = source.slice(promptStart, promptEnd);
+
+    const cleanupStart = source.indexOf('let keptPartCount = 0;');
+    assert.ok(cleanupStart >= 0, 'expected in-place assistant part cleanup');
+    const cleanupEnd = source.indexOf('let finalText = cleanedText;', cleanupStart);
+    assert.ok(cleanupEnd > cleanupStart, 'expected finalText after cleanup');
+    const cleanupSection = source.slice(cleanupStart, cleanupEnd);
+
+    assert.doesNotMatch(source, /\[\.\.\.session\.history\]\.reverse\(\)\.find/);
+    assert.doesNotMatch(promptSection, /systemParts\.map/);
+    assert.doesNotMatch(promptSection, /\.\.\.modelMessages/);
+    assert.match(promptSection, /for \(const text of systemParts\)/);
+    assert.match(promptSection, /for \(const message of modelMessages\)/);
+    assert.doesNotMatch(cleanupSection, /assistantMessage\.parts\.filter/);
+    assert.match(cleanupSection, /assistantMessage\.parts\.length = keptPartCount;/);
+  });
+
+  test('compaction session state keeps latest file handles without entries-map arrays', async () => {
+    const llm = new CacheAwareMockLLMProvider();
+    const registry = new ToolRegistry();
+    const session = new LingyunSession();
+    session.history.push({
+      id: 'seed-user',
+      role: 'user',
+      parts: [{ type: 'text', text: 'seed before compaction' }],
+    } as AgentHistoryMessage);
+    session.fileHandles = { nextId: 13, byId: {} };
+    for (let index = 1; index <= 12; index++) {
+      session.fileHandles.byId[`F${index}`] = `src/file${index}.ts`;
+    }
+
+    const agent = new LingyunAgent(llm, { model: 'mock-model' }, registry, {
+      allowExternalPaths: false,
+      skills: { enabled: false },
+    });
+
+    llm.queueResponse({ kind: 'text', content: 'summary after compaction' });
+    await agent.compactSession(session);
+
+    const restoredState = session
+      .getHistory()
+      .find((message) => message.role === 'system' && message.metadata?.compactionRestore?.source === 'sessionState');
+    assert.ok(restoredState, 'compaction should restore file handle session state');
+    const restoredText = getMessageText(restoredState);
+
+    assert.doesNotMatch(restoredText, /- F1: src\/file1\.ts/);
+    assert.doesNotMatch(restoredText, /- F2: src\/file2\.ts/);
+    assert.match(restoredText, /- F3: src\/file3\.ts/);
+    assert.match(restoredText, /- F12: src\/file12\.ts/);
+    assert.strictEqual((restoredText.match(/- F\d+: src\/file\d+\.ts/g) || []).length, 10);
+
+    const source = await fs.readFile(new URL('../../../src/agent/compaction.ts', import.meta.url), 'utf8');
+    const helperStart = source.indexOf('function buildLatestFileHandleSection');
+    assert.ok(helperStart >= 0, 'expected latest file handle section helper');
+    const helperEnd = source.indexOf('function buildSessionStateRestoreText', helperStart);
+    assert.ok(helperEnd > helperStart, 'expected session state restore helper after file handle helper');
+    const helperSection = source.slice(helperStart, helperEnd);
+    const promptStart = source.indexOf('function buildCompactionPromptText');
+    assert.ok(promptStart >= 0, 'expected compaction prompt text helper');
+    const promptEnd = source.indexOf('function appendHistoryWithoutIds', promptStart);
+    assert.ok(promptEnd > promptStart, 'expected ID stripping helper after prompt text helper');
+    const promptSection = source.slice(promptStart, promptEnd);
+    const appendEnd = source.indexOf('function buildSessionStateRestoreText', promptEnd);
+    assert.ok(appendEnd > promptEnd, 'expected session state restore helper after ID stripping helper');
+    const appendSection = source.slice(promptEnd, appendEnd);
+    const restoreStart = helperEnd;
+    const restoreEnd = source.indexOf('export async function compactSessionInternal', restoreStart);
+    assert.ok(restoreEnd > restoreStart, 'expected compaction entrypoint after session state restore helper');
+    const restoreSection = source.slice(restoreStart, restoreEnd);
+    const compactStart = restoreEnd;
+    const compactEnd = source.indexOf('const rawModel = await params.llm.getModel', compactStart);
+    assert.ok(compactEnd > compactStart, 'expected model setup after compaction prompt assembly');
+    const compactPromptSection = source.slice(compactStart, compactEnd);
+    const preparedStart = source.indexOf('const effective = normalizeSyntheticContextMessageRoles', compactStart);
+    assert.ok(preparedStart > compactStart, 'expected effective history setup in compaction');
+    const preparedEnd = source.indexOf('const compactionModelMessages = params.providerBehavior.transformModelMessages', preparedStart);
+    assert.ok(preparedEnd > preparedStart, 'expected provider transform after compaction history conversion');
+    const preparedSection = source.slice(preparedStart, preparedEnd);
+
+    assert.match(helperSection, /for \(const id in byId\)/);
+    assert.match(helperSection, /Object\.prototype\.hasOwnProperty\.call\(byId, id\)/);
+    assert.match(helperSection, /fileHandleCount % MAX_FILE_HANDLES/);
+    assert.match(helperSection, /Math\.min\(fileHandleCount, MAX_FILE_HANDLES\)/);
+    assert.match(promptSection, /let promptText = COMPACTION_PROMPT_TEXT;/);
+    assert.match(promptSection, /for \(const item of context\)/);
+    assert.match(promptSection, /promptText \+= `\\n\\n\$\{item\}`;/);
+    assert.match(appendSection, /for \(const message of history\)/);
+    assert.match(appendSection, /const \{ id: _id, \.\.\.rest \} = message;/);
+    assert.match(appendSection, /target\.push\(rest\);/);
+    assert.match(restoreSection, /const fileHandleSection = buildLatestFileHandleSection\(session\.fileHandles\);/);
+    assert.match(compactPromptSection, /const promptText = buildCompactionPromptText\(compacting\);/);
+    assert.match(preparedSection, /const compactionHistoryInput: any\[\] = \[\];/);
+    assert.match(preparedSection, /appendHistoryWithoutIds\(compactionHistoryInput, prepared\);/);
+    assert.match(preparedSection, /compactionHistoryInput\.push\(compactionUser as any\);/);
+    assert.doesNotMatch(helperSection, /Object\.entries/);
+    assert.doesNotMatch(helperSection, /\.slice\(/);
+    assert.doesNotMatch(helperSection, /\.map\(/);
+    assert.doesNotMatch(promptSection, /\.filter\(Boolean\)/);
+    assert.doesNotMatch(promptSection, /\.\.\.extraContext/);
+    assert.doesNotMatch(appendSection, /\.map\(/);
+    assert.doesNotMatch(restoreSection, /Object\.entries\(session\.fileHandles/);
+    assert.doesNotMatch(restoreSection, /fileEntries\.map/);
+    assert.doesNotMatch(compactPromptSection, /\.filter\(Boolean\)/);
+    assert.doesNotMatch(preparedSection, /prepared\.map/);
+    assert.doesNotMatch(preparedSection, /\[\.\.\.withoutIds/);
+  });
+
   test('prompt cache - a new baseline is cacheable again after compaction', async () => {
     const llm = new CacheAwareMockLLMProvider();
     const registry = new ToolRegistry();
@@ -2663,6 +3398,335 @@ suite('LingYun Agent SDK', () => {
       .map((part) => part.text)
       .join('');
     assert.strictEqual(assistantText, ' Hello<tool_call>{}</tool_call>World');
+  });
+
+  test('prompt helpers preserve replay metadata while removing reasoning from provider payloads', () => {
+    const toolPart = { type: 'tool-call', toolCallId: 'call-1', toolName: 'read', input: {} };
+    const history = [{
+      role: 'assistant',
+      parts: [
+        { type: 'reasoning', text: 'display reasoning', providerMetadata: { openai: { id: 'reasoning-meta' } } },
+        { type: 'text', text: 'display text', providerMetadata: { openai: { id: 'text-meta' } } },
+        toolPart,
+      ],
+      metadata: {
+        replay: {
+          text: 'raw text',
+          reasoning: 'raw reasoning',
+          copilot: { reasoningOpaque: 'opaque-token' },
+        },
+      },
+    }] as AgentHistoryMessage[];
+
+    const replayed = applyAssistantReplayForPrompt(history);
+    assert.notStrictEqual(replayed, history);
+    assert.deepStrictEqual(replayed[0]!.parts, [
+      {
+        type: 'reasoning',
+        text: 'raw reasoning',
+        state: 'done',
+        providerMetadata: {
+          openai: { id: 'reasoning-meta' },
+          copilot: { reasoningOpaque: 'opaque-token' },
+        },
+      },
+      {
+        type: 'text',
+        text: 'raw text',
+        state: 'done',
+        providerMetadata: { openai: { id: 'text-meta' } },
+      },
+      toolPart,
+    ]);
+    assert.strictEqual((history[0]!.parts[0] as any).text, 'display reasoning');
+
+    const unchangedHistory = [{
+      role: 'assistant',
+      parts: [{ type: 'text', text: 'already prompt-ready' }],
+    }] as AgentHistoryMessage[];
+    assert.strictEqual(applyAssistantReplayForPrompt(unchangedHistory), unchangedHistory);
+
+    const noReasoningReplay = applyAssistantReplayForPrompt([{
+      role: 'assistant',
+      parts: [
+        { type: 'reasoning', text: 'hidden' },
+        { type: 'text', text: 'visible' },
+        toolPart,
+      ],
+    } as AgentHistoryMessage], { includeReasoning: false });
+    assert.deepStrictEqual(noReasoningReplay[0]!.parts, [
+      { type: 'text', text: 'visible' },
+      toolPart,
+    ]);
+
+    const modelMessages = [{
+      role: 'assistant',
+      content: [
+        { type: 'text', text: 'shown before' },
+        { type: 'reasoning', text: 'hidden ' },
+        toolPart,
+        { type: 'reasoning', text: 'chain' },
+      ],
+      providerOptions: { openaiCompatible: { keep: true }, custom: { stable: true } },
+    }] as any[];
+    const openaiMessages = applyOpenAICompatibleReasoningField(modelMessages as any);
+    assert.deepStrictEqual(openaiMessages[0]!.content, [
+      { type: 'text', text: 'shown before' },
+      toolPart,
+    ]);
+    assert.deepStrictEqual(openaiMessages[0]!.providerOptions, {
+      openaiCompatible: { keep: true, reasoning_content: 'hidden chain' },
+      custom: { stable: true },
+    });
+
+    const copilotNoTextReasoning = [{
+      role: 'assistant',
+      content: [{ type: 'reasoning' }, { type: 'text', text: 'visible' }],
+    }] as any[];
+    assert.strictEqual(applyCopilotReasoningFields(copilotNoTextReasoning as any), copilotNoTextReasoning);
+  });
+
+  test('prompt helpers avoid mapped message arrays on no-op paths', async () => {
+    const modelMessages = [
+      { role: 'user', content: [{ type: 'text', text: 'hello' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'ready' }] },
+    ] as any[];
+    const history = [
+      { id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hello' }] },
+      { id: 'm2', role: 'assistant', parts: [{ type: 'text', text: 'ready' }] },
+    ] as AgentHistoryMessage[];
+
+    assert.strictEqual(applyCopilotImageInputPattern(modelMessages as any), modelMessages);
+    assert.strictEqual(applyOpenAICompatibleReasoningField(modelMessages as any), modelMessages);
+    assert.strictEqual(applyCopilotReasoningFields(modelMessages as any), modelMessages);
+    assert.strictEqual(applyAssistantReplayForPrompt(history), history);
+
+    const source = await fs.readFile(new URL('../../../../core/src/modelMessages.ts', import.meta.url), 'utf8');
+    const helperStart = source.indexOf('function appendChangedItem');
+    assert.ok(helperStart >= 0, 'expected changed-item append helper');
+    const helperEnd = source.indexOf('/**\n * Apply Codex-style image boundaries', helperStart);
+    assert.ok(helperEnd > helperStart, 'expected image helper after changed-item helper');
+    const helperSection = source.slice(helperStart, helperEnd);
+
+    const imageStart = source.indexOf('export function applyCopilotImageInputPattern');
+    assert.ok(imageStart >= 0, 'expected image input helper');
+    const imageEnd = source.indexOf('function isString', imageStart);
+    assert.ok(imageEnd > imageStart, 'expected string helper after image input helper');
+    const imageSection = source.slice(imageStart, imageEnd);
+
+    const replayStart = source.indexOf('export function applyAssistantReplayForPrompt');
+    assert.ok(replayStart >= 0, 'expected assistant replay helper');
+    const replayEnd = source.indexOf('type ReasoningField', replayStart);
+    assert.ok(replayEnd > replayStart, 'expected reasoning field type after replay helper');
+    const replaySection = source.slice(replayStart, replayEnd);
+
+    const openaiStart = source.indexOf('export function applyOpenAICompatibleReasoningField');
+    assert.ok(openaiStart >= 0, 'expected OpenAI-compatible reasoning helper');
+    const openaiEnd = source.indexOf("/**\n * Copilot's chat-completions backend", openaiStart);
+    assert.ok(openaiEnd > openaiStart, 'expected Copilot helper after OpenAI-compatible helper');
+    const openaiSection = source.slice(openaiStart, openaiEnd);
+
+    const copilotStart = source.indexOf('export function applyCopilotReasoningFields');
+    assert.ok(copilotStart >= 0, 'expected Copilot reasoning helper');
+    const copilotSection = source.slice(copilotStart);
+
+    assert.match(helperSection, /if \(!changed\) changed = source\.slice\(0, index\);/);
+    assert.match(imageSection, /let nextMessages: ModelMessage\[\] \| undefined;/);
+    assert.match(imageSection, /let transformed: unknown\[\] \| undefined;/);
+    assert.match(imageSection, /transformed = content\.slice\(0, index\);/);
+    assert.match(replaySection, /let nextHistory: AgentHistoryMessage\[\] \| undefined;/);
+    assert.match(openaiSection, /let nextMessages: ModelMessage\[\] \| undefined;/);
+    assert.match(copilotSection, /let nextMessages: ModelMessage\[\] \| undefined;/);
+    for (const section of [imageSection, replaySection, openaiSection, copilotSection]) {
+      assert.match(section, /appendChangedItem/);
+      assert.doesNotMatch(section, /\.map\(\(message\)/);
+      assert.doesNotMatch(section, /\.map\(\(msg\)/);
+    }
+  });
+
+  test('provider option shaping drops empty namespaces without entries arrays', async () => {
+    const emptyParams = { reasoningEffort: '', textVerbosity: '', openaiCompatibleThinking: '' };
+    const gpt5Params = { reasoningEffort: 'high', textVerbosity: 'medium', openaiCompatibleThinking: '' };
+
+    const copilot = createProviderBehavior('copilot');
+    assert.strictEqual(copilot.getChatProviderOptions('gpt-4o', emptyParams), undefined);
+    assert.deepStrictEqual(copilot.getChatProviderOptions('gpt-5.3-codex', gpt5Params), {
+      copilot: { reasoningEffort: 'high', textVerbosity: 'medium' },
+      openai: { reasoningEffort: 'high', textVerbosity: 'medium' },
+    });
+
+    const openaiCompatible = createProviderBehavior('openaiCompatible');
+    assert.strictEqual(openaiCompatible.getChatProviderOptions('gpt-4o', emptyParams), undefined);
+    assert.deepStrictEqual(
+      openaiCompatible.getChatProviderOptions('deepseek-chat', {
+        ...emptyParams,
+        openaiCompatibleThinking: 'disabled',
+      }),
+      { openaiCompatible: { think: false } },
+    );
+    assert.deepStrictEqual(openaiCompatible.normalizeSystemPrompts(['System A', '', 'System B']), ['System A\nSystem B']);
+    assert.deepStrictEqual(openaiCompatible.normalizeSystemPrompts(['']), ['']);
+    assert.deepStrictEqual(openaiCompatible.normalizeSystemPrompts(['', '']), ['']);
+
+    const source = await fs.readFile(new URL('../../../src/agent/providerBehavior.ts', import.meta.url), 'utf8');
+    const start = source.indexOf('function omitEmptyProviderOptions');
+    assert.ok(start >= 0, 'expected provider option sanitizer');
+    const end = source.indexOf('\n\n  if (llmId ===', start);
+    assert.ok(end > start, 'expected provider branches after option sanitizer');
+    const section = source.slice(start, end);
+
+    assert.match(section, /let next: Record<string, unknown> \| undefined;/);
+    assert.match(section, /for \(const key in options\)/);
+    assert.match(section, /Object\.prototype\.hasOwnProperty\.call\(options, key\)/);
+    assert.match(section, /for \(const optionKey in value as Record<string, unknown>\)/);
+    assert.match(section, /Object\.prototype\.hasOwnProperty\.call\(value, optionKey\)/);
+    assert.doesNotMatch(section, /Object\.entries/);
+    assert.doesNotMatch(section, /Object\.fromEntries/);
+    assert.doesNotMatch(section, /Object\.keys/);
+    assert.doesNotMatch(section, /\.filter\(/);
+
+    const openaiCompatibleStart = source.indexOf("if (llmId === 'openaiCompatible')", end);
+    assert.ok(openaiCompatibleStart >= 0, 'expected OpenAI-compatible provider branch');
+    const normalizeStart = source.indexOf('normalizeSystemPrompts(system) {', openaiCompatibleStart);
+    assert.ok(normalizeStart >= 0, 'expected OpenAI-compatible system prompt normalizer');
+    const normalizeEnd = source.indexOf('\n      },\n      getSyntheticResumeUserText', normalizeStart);
+    assert.ok(normalizeEnd > normalizeStart, 'expected synthetic resume helper after system prompt normalizer');
+    const normalizeSection = source.slice(normalizeStart, normalizeEnd);
+
+    assert.match(normalizeSection, /let combined = '';/);
+    assert.match(normalizeSection, /for \(const part of system\)/);
+    assert.match(normalizeSection, /combined = combined \? `\$\{combined\}\\n\$\{part\}` : part;/);
+    assert.doesNotMatch(normalizeSection, /\.filter\(Boolean\)/);
+    assert.doesNotMatch(normalizeSection, /\.join\('\\n'\)/);
+  });
+
+  test('prompt composer assembles system prompts without filter chains', async () => {
+    const triggerCalls: any[] = [];
+    const composer = new PromptComposer({
+      plugins: {
+        async trigger(name: unknown, input: unknown, output: any) {
+          triggerCalls.push({ name, input, output });
+          return { system: [output.system[0], '', 'Plugin guidance', null, 'Final guard'] };
+        },
+      } as any,
+      providerBehavior: {
+        normalizeSystemPrompts(system: string[]) {
+          return system;
+        },
+      } as any,
+      skills: {
+        async getSkillsPromptText() {
+          return 'Skills block';
+        },
+      } as any,
+    });
+
+    const system = await composer.composeSystemPrompts('mock-model', {
+      basePrompt: 'Base prompt',
+      sessionId: 'session-1',
+      mode: 'plan',
+    });
+
+    assert.deepStrictEqual(system, ['Base prompt\nSkills block', 'Plugin guidance\nFinal guard']);
+    assert.deepStrictEqual(triggerCalls[0], {
+      name: 'experimental.chat.system.transform',
+      input: { sessionId: 'session-1', mode: 'plan', modelId: 'mock-model' },
+      output: { system: ['Base prompt\nSkills block'] },
+    });
+
+    const emptyComposer = new PromptComposer({
+      plugins: {
+        async trigger() {
+          return { system: [] };
+        },
+      } as any,
+      providerBehavior: {
+        normalizeSystemPrompts(system: string[]) {
+          return system;
+        },
+      } as any,
+      skills: {
+        async getSkillsPromptText() {
+          return undefined;
+        },
+      } as any,
+    });
+    assert.deepStrictEqual(await emptyComposer.composeSystemPrompts('mock-model'), ['']);
+
+    const source = await fs.readFile(new URL('../../../src/agent/promptComposer.ts', import.meta.url), 'utf8');
+    const start = source.indexOf('async composeSystemPrompts');
+    assert.ok(start >= 0, 'expected system prompt composer');
+    const returnStart = source.indexOf('return this.params.providerBehavior.normalizeSystemPrompts(system);', start);
+    assert.ok(returnStart > start, 'expected provider normalization at end of composer');
+    const end = source.indexOf('\n  }\n}', returnStart);
+    assert.ok(end > returnStart, 'expected end of prompt composer class');
+    const section = source.slice(start, end);
+
+    assert.match(section, /let header = basePrompt;/);
+    assert.match(section, /if \(skillsPromptText\)/);
+    assert.match(section, /for \(const part of \(out as any\)\.system\)/);
+    assert.match(section, /if \(part\) system\.push\(part\);/);
+    assert.doesNotMatch(section, /\[basePrompt, skillsPromptText\]/);
+    assert.doesNotMatch(section, /\.filter\(Boolean\)/);
+  });
+
+  test('model message transform receives id-stripped history without map-spread assembly', async () => {
+    const llm = new MockLLMProvider();
+    const registry = new ToolRegistry();
+    const session = new LingyunSession();
+    let transformedMessages: any[] | undefined;
+
+    const agent = new LingyunAgent(llm, { model: 'mock-model' }, registry, {
+      allowExternalPaths: false,
+      skills: { enabled: false },
+      plugins: {
+        async trigger(name: unknown, _input: unknown, output: any) {
+          if (name === 'experimental.chat.messages.transform') {
+            transformedMessages = output.messages;
+          }
+          return output;
+        },
+      },
+    });
+
+    llm.queueResponse({ kind: 'text', content: 'ok' });
+    for await (const _event of agent.run({ session, input: 'hello' }).events) {
+      // drain
+    }
+
+    assert.ok(Array.isArray(transformedMessages), 'expected messages transform to receive history');
+    assert.ok(transformedMessages.length > 0, 'expected non-empty model history');
+    assert.strictEqual(
+      transformedMessages.some((message) => message && typeof message === 'object' && 'id' in message),
+      false,
+      'model messages transform should not receive UI message ids',
+    );
+
+    const source = await fs.readFile(new URL('../../../src/agent/agent.ts', import.meta.url), 'utf8');
+    const helperStart = source.indexOf('function appendHistoryWithoutIds');
+    assert.ok(helperStart >= 0, 'expected ID stripping helper');
+    const helperEnd = source.indexOf('\nexport type LingyunAgentSkillsRuntimeOptions', helperStart);
+    assert.ok(helperEnd > helperStart, 'expected runtime options after ID stripping helper');
+    const helperSection = source.slice(helperStart, helperEnd);
+    const start = source.indexOf('private async toModelMessages');
+    assert.ok(start >= 0, 'expected toModelMessages helper');
+    const end = source.indexOf('\n  private createToolContext', start);
+    assert.ok(end > start, 'expected tool context after toModelMessages');
+    const section = source.slice(start, end);
+
+    assert.match(helperSection, /for \(const message of history\)/);
+    assert.match(helperSection, /const \{ id: _id, \.\.\.rest \} = message;/);
+    assert.match(helperSection, /target\.push\(rest\);/);
+    assert.match(section, /const modelHistoryInput: any\[\] = \[\];/);
+    assert.match(section, /appendHistoryWithoutIds\(modelHistoryInput, prepared\);/);
+    assert.match(section, /const pluginMessagesInput: any\[\] = \[\];/);
+    assert.match(section, /for \(const message of modelHistoryInput\)/);
+    assert.match(section, /\{ messages: pluginMessagesInput \}/);
+    assert.match(section, /: modelHistoryInput;/);
+    assert.doesNotMatch(helperSection, /\.map\(/);
+    assert.doesNotMatch(section, /prepared\.map/);
+    assert.doesNotMatch(section, /const withoutIds/);
+    assert.doesNotMatch(section, /\[\.\.\.withoutIds/);
   });
 
   test('prompt - treats DeepSeek reasoning_content as text when thinking is disabled', async () => {
@@ -2924,6 +3988,7 @@ suite('LingYun Agent SDK', () => {
         nextId: 2.9,
         byId: {
           F1: ' src/foo.ts ',
+          F7: 'src/bar.ts',
           bad: 'drop-me.ts',
           F2: '   ',
         },
@@ -2932,9 +3997,206 @@ suite('LingYun Agent SDK', () => {
 
     assert.strictEqual(registry.resolveFileId(session, 'F1'), 'src/foo.ts');
     assert.deepStrictEqual(session.fileHandles, {
-      nextId: 2,
-      byId: { F1: 'src/foo.ts' },
+      nextId: 8,
+      byId: { F1: 'src/foo.ts', F7: 'src/bar.ts' },
     });
+    assert.deepStrictEqual(registry.getOrCreate(session, 'src/new.ts'), {
+      id: 'F8',
+      filePath: 'src/new.ts',
+    });
+    assert.deepStrictEqual(session.fileHandles, {
+      nextId: 9,
+      byId: { F1: 'src/foo.ts', F7: 'src/bar.ts', F8: 'src/new.ts' },
+    });
+  });
+
+  test('file handles - glob decoration trims files and notes without empty rows', () => {
+    const registry = new FileHandleRegistry({});
+    const session: any = {};
+
+    const result = registry.decorateGlobResult(session, {
+      success: true,
+      data: {
+        files: [' src/foo.ts ', '', 42, 'src/bar.ts'],
+        notes: [' first note ', null, ' ', 'second note'],
+        truncated: false,
+      },
+    } as ToolResult);
+
+    const outputText = result.metadata?.outputText || '';
+    assert.match(outputText, /^Note: first note second note\n\n/);
+    assert.match(outputText, /F1  src\/foo\.ts/);
+    assert.match(outputText, /F2  src\/bar\.ts/);
+    assert.doesNotMatch(outputText, /42/);
+    assert.deepStrictEqual(session.fileHandles?.byId, {
+      F1: 'src/foo.ts',
+      F2: 'src/bar.ts',
+    });
+  });
+
+  test('file handles - glob and grep string list normalization scans once', async () => {
+    const source = await fs.readFile(new URL('../../../src/agent/fileHandles.ts', import.meta.url), 'utf8');
+    const helperStart = source.indexOf('function normalizeNonEmptyStrings');
+    assert.ok(helperStart >= 0, 'expected string normalizer helper');
+    const helperEnd = source.indexOf('export class FileHandleRegistry', helperStart);
+    assert.ok(helperEnd > helperStart, 'expected file handle registry after string normalizer');
+    const helperSection = source.slice(helperStart, helperEnd);
+    const globStart = source.indexOf('decorateGlobResult');
+    assert.ok(globStart >= 0, 'expected glob decoration helper');
+    const globEnd = source.indexOf('decorateGrepResult', globStart);
+    assert.ok(globEnd > globStart, 'expected grep decoration helper after glob decoration');
+    const globSection = source.slice(globStart, globEnd);
+    const grepNotesStart = source.indexOf('const notesRaw = (data as any).notes;', globEnd);
+    assert.ok(grepNotesStart > globEnd, 'expected grep notes normalization');
+    const grepNotesEnd = source.indexOf('const truncated = Boolean((data as any).truncated);', grepNotesStart);
+    assert.ok(grepNotesEnd > grepNotesStart, 'expected grep truncated flag after notes normalization');
+    const grepNotesSection = source.slice(grepNotesStart, grepNotesEnd);
+
+    assert.match(helperSection, /for \(const item of raw\)/);
+    assert.match(helperSection, /const value = item\.trim\(\);/);
+    assert.match(globSection, /const files = normalizeNonEmptyStrings\(filesRaw\);/);
+    assert.match(globSection, /const notes = normalizeNonEmptyStrings\(notesRaw\);/);
+    assert.match(grepNotesSection, /const notes = normalizeNonEmptyStrings\(notesRaw\);/);
+    assert.doesNotMatch(helperSection, /\.filter\(/);
+    assert.doesNotMatch(helperSection, /\.map\(/);
+    assert.doesNotMatch(globSection, /\.filter\(/);
+    assert.doesNotMatch(globSection, /\.map\(/);
+    assert.doesNotMatch(grepNotesSection, /\.filter\(/);
+    assert.doesNotMatch(grepNotesSection, /\.map\(/);
+  });
+
+  test('file handles - registry scans handle maps without entries arrays', async () => {
+    const registry = new FileHandleRegistry({});
+    const session: any = {
+      fileHandles: {
+        nextId: 8,
+        byId: {
+          F1: 'src/existing.ts',
+          F7: 'src/other.ts',
+        },
+      },
+    };
+    const originalState = session.fileHandles;
+
+    assert.strictEqual(registry.resolveFileId(session, 'F1'), 'src/existing.ts');
+    assert.strictEqual(session.fileHandles, originalState, 'expected normalized file handle state to be reused');
+
+    assert.deepStrictEqual(registry.getOrCreate(session, 'src/existing.ts'), {
+      id: 'F1',
+      filePath: 'src/existing.ts',
+    });
+    assert.deepStrictEqual(registry.getOrCreate(session, 'src/new.ts'), {
+      id: 'F8',
+      filePath: 'src/new.ts',
+    });
+    assert.strictEqual(session.fileHandles, originalState, 'expected getOrCreate to append without replacing state');
+
+    const fileHandlesSource = await fs.readFile(new URL('../../../src/agent/fileHandles.ts', import.meta.url), 'utf8');
+    const ensureStart = fileHandlesSource.indexOf('private ensureState');
+    assert.ok(ensureStart >= 0, 'expected file handle state helper');
+    const ensureEnd = fileHandlesSource.indexOf('resolveFileId', ensureStart);
+    assert.ok(ensureEnd > ensureStart, 'expected resolver after state helper');
+    const ensureSection = fileHandlesSource.slice(ensureStart, ensureEnd);
+    const getOrCreateStart = fileHandlesSource.indexOf('getOrCreate(session: FileHandlesState');
+    assert.ok(getOrCreateStart >= 0, 'expected getOrCreate helper');
+    const getOrCreateEnd = fileHandlesSource.indexOf('decorateGlobResult', getOrCreateStart);
+    assert.ok(getOrCreateEnd > getOrCreateStart, 'expected glob decoration after getOrCreate');
+    const getOrCreateSection = fileHandlesSource.slice(getOrCreateStart, getOrCreateEnd);
+
+    const sessionSource = await fs.readFile(new URL('../../../src/agent/session.ts', import.meta.url), 'utf8');
+    const normalizedCheckStart = sessionSource.indexOf('export function isNormalizedFileHandlesState');
+    assert.ok(normalizedCheckStart >= 0, 'expected normalized file handle state guard');
+    const normalizedCheckEnd = sessionSource.indexOf('export function normalizeFileHandlesState', normalizedCheckStart);
+    assert.ok(normalizedCheckEnd > normalizedCheckStart, 'expected file handle normalizer after normalized guard');
+    const normalizedCheckSection = sessionSource.slice(normalizedCheckStart, normalizedCheckEnd);
+
+    const normalizeStart = normalizedCheckEnd;
+    assert.ok(normalizeStart >= 0, 'expected file handle state normalizer');
+    const normalizeEnd = sessionSource.indexOf('export function createBlankSemanticHandlesState', normalizeStart);
+    assert.ok(normalizeEnd > normalizeStart, 'expected semantic handle state helper after file handle normalizer');
+    const normalizeSection = sessionSource.slice(normalizeStart, normalizeEnd);
+
+    assert.match(ensureSection, /if \(isNormalizedFileHandlesState\(session\.fileHandles\)\) return session\.fileHandles;/);
+    assert.match(ensureSection, /normalizeFileHandlesState\(session\.fileHandles\)/);
+    assert.ok(
+      ensureSection.indexOf('isNormalizedFileHandlesState(session.fileHandles)') <
+        ensureSection.indexOf('normalizeFileHandlesState(session.fileHandles)'),
+      'expected normalized state fast path before repair normalization',
+    );
+    assert.match(getOrCreateSection, /for \(const existingId in handles\.byId\)/);
+    assert.match(getOrCreateSection, /Object\.prototype\.hasOwnProperty\.call\(handles\.byId, existingId\)/);
+    assert.match(normalizedCheckSection, /let minimumNextId = 1;/);
+    assert.match(normalizedCheckSection, /const fileHandleNumber = parseFileHandleNumber\(id\);/);
+    assert.match(normalizedCheckSection, /return value\.nextId >= minimumNextId;/);
+    assert.match(normalizeSection, /for \(const id in byIdRaw\)/);
+    assert.match(normalizeSection, /Object\.prototype\.hasOwnProperty\.call\(byIdRaw, id\)/);
+    assert.match(normalizeSection, /let minimumNextId = 1;/);
+    assert.match(normalizeSection, /const fileHandleNumber = parseFileHandleNumber\(id\);/);
+    assert.match(normalizeSection, /Math\.max\(minimumNextId, Math\.floor\(nextId\)\)/);
+    assert.doesNotMatch(getOrCreateSection, /Object\.entries/);
+    assert.doesNotMatch(normalizedCheckSection, /Object\.entries/);
+    assert.doesNotMatch(normalizeSection, /Object\.entries/);
+  });
+
+  test('file handles - grep decoration groups and sorts buckets without extra match arrays', async () => {
+    const registry = new FileHandleRegistry({});
+    const semanticHandles = new SemanticHandleRegistry();
+    const session: any = {};
+
+    const result = registry.decorateGrepResult(
+      session,
+      {
+        success: true,
+        data: {
+          matches: [
+            { filePath: 'src/app.ts', line: 9, column: 3, text: 'third' },
+            { filePath: 'src/app.ts', line: 2, column: 8, text: 'second' },
+            { filePath: 'src/app.ts', line: 2, column: 2, text: 'first' },
+          ],
+          totalMatches: 3,
+        },
+      } as ToolResult,
+      semanticHandles,
+    );
+
+    const outputText = result.metadata?.outputText || '';
+    assert.ok(
+      outputText.indexOf('M1  Line 2, Character 2: first') <
+        outputText.indexOf('M2  Line 2, Character 8: second'),
+      'expected same-line matches to be sorted by character',
+    );
+    assert.ok(
+      outputText.indexOf('M2  Line 2, Character 8: second') <
+        outputText.indexOf('M3  Line 9, Character 3: third'),
+      'expected later-line matches after earlier-line matches',
+    );
+    assert.match(outputText, /Next: symbols_peek \{ matchId: M1 \}.*line=2 character=2/);
+    assert.deepStrictEqual(session.fileHandles?.byId, { F1: 'src/app.ts' });
+
+    const source = await fs.readFile(new URL('../../../src/agent/fileHandles.ts', import.meta.url), 'utf8');
+    const start = source.indexOf('decorateGrepResult');
+    assert.ok(start >= 0, 'expected grep decoration helper');
+    const end = source.indexOf('\n  }\n}', start);
+    assert.ok(end > start, 'expected end of grep decoration helper');
+    const section = source.slice(start, end);
+
+    assert.match(section, /const byFile = new Map<string, GrepMatch\[\]>\(\);/);
+    assert.match(section, /let matchCount = 0;/);
+    assert.match(section, /let entry = byFile\.get\(match\.filePath\);/);
+    assert.match(section, /byFile\.set\(match\.filePath, entry\);/);
+    assert.match(section, /matchCount\+\+;/);
+    assert.match(section, /: matchCount;/);
+    assert.match(section, /if \(matchCount === 0\)/);
+    assert.match(section, /fileMatches\.sort\(/);
+    assert.match(section, /for \(const match of fileMatches\)/);
+    assert.match(section, /const first = fileMatches\[0\];/);
+    assert.doesNotMatch(section, /const matches: GrepMatch\[\] = \[\];/);
+    assert.doesNotMatch(section, /matches\.push/);
+    assert.doesNotMatch(section, /for \(const match of matches\)/);
+    assert.doesNotMatch(section, /matches\.length/);
+    assert.doesNotMatch(section, /\[\.\.\.fileMatches\]/);
+    assert.doesNotMatch(section, /const sorted =/);
+    assert.doesNotMatch(section, /byFile\.get\(match\.filePath\) \?\? \[\]/);
   });
 
   test('file handles - glob assigns fileId and read resolves it', async () => {
@@ -3261,6 +4523,76 @@ suite('LingYun Agent SDK', () => {
     }
   });
 
+  test('plugin discovery lists plugin files without chained array transforms', async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'lingyun-sdk-test-plugin-scan-'));
+    try {
+      const pluginDir = path.join(tmp, '.lingyun', 'plugin');
+      await fs.mkdir(path.join(pluginDir, 'directory.js'), { recursive: true });
+      await fs.writeFile(path.join(pluginDir, 'notes.txt'), 'ignored\n');
+      await fs.writeFile(
+        path.join(pluginDir, 'tool.mjs'),
+        [
+          "export default {",
+          "  tool: {",
+          "    discovered_scan: {",
+          "      description: 'scan tool',",
+          "      parameters: { type: 'object', properties: {}, required: [] },",
+          "      execute: async () => ({ success: true, data: 'ok' }),",
+          "    }",
+          "  }",
+          "};",
+          "",
+        ].join('\n')
+      );
+
+      const plugins = new PluginManager({ workspaceRoot: tmp, autoDiscover: true });
+      const tools = await plugins.getPluginTools();
+      assert.deepStrictEqual(
+        tools.map((tool) => tool.toolId),
+        ['discovered_scan'],
+      );
+
+      const source = await fs.readFile(new URL('../../../src/plugins/pluginManager.ts', import.meta.url), 'utf8');
+      const start = source.indexOf('async function listPluginFiles');
+      assert.ok(start >= 0, 'expected plugin file listing helper');
+      const end = source.indexOf('\nasync function resolveWorkspacePluginPaths', start);
+      assert.ok(end > start, 'expected workspace plugin resolver after file listing helper');
+      const section = source.slice(start, end);
+
+      assert.match(section, /const files: string\[\] = \[\];/);
+      assert.match(section, /for \(const ent of entries\)/);
+      assert.match(section, /ent\.isFile\(\)/);
+      assert.match(section, /files\.push\(path\.join\(dir, ent\.name\)\);/);
+      assert.doesNotMatch(section, /\.filter\(/);
+      assert.doesNotMatch(section, /\.map\(/);
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('plugin discovery avoids pre-stat probes for missing plugin directories', async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'lingyun-sdk-test-plugin-missing-'));
+    try {
+      const plugins = new PluginManager({ workspaceRoot: tmp, autoDiscover: true });
+      const tools = await plugins.getPluginTools();
+      assert.deepStrictEqual(tools, []);
+
+      const source = await fs.readFile(new URL('../../../src/plugins/pluginManager.ts', import.meta.url), 'utf8');
+      const start = source.indexOf('async function resolveWorkspacePluginPaths');
+      assert.ok(start >= 0, 'expected workspace plugin resolver');
+      const end = source.indexOf('\nasync function importPluginModule', start);
+      assert.ok(end > start, 'expected plugin module importer after workspace plugin resolver');
+      const section = source.slice(start, end);
+
+      assert.match(section, /return uniqueStrings\(await listPluginFiles\(pluginDir\)\);/);
+      assert.doesNotMatch(source, /async function exists/);
+      assert.doesNotMatch(section, /fs\.stat/);
+      assert.doesNotMatch(section, /await exists/);
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
   test('plugin module specifiers resolve from workspaceRoot node_modules', async () => {
     const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'lingyun-sdk-test-plugin-module-'));
     try {
@@ -3331,6 +4663,57 @@ suite('LingYun Agent SDK', () => {
     }
   });
 
+  test('plugin tool registration builds existing lookup without pair arrays', async () => {
+    const source = await fs.readFile(new URL('../../../src/agent/agent.ts', import.meta.url), 'utf8');
+    const start = source.indexOf('private async ensurePluginToolsRegistered');
+    assert.ok(start >= 0, 'expected plugin tool registration helper');
+    const end = source.indexOf('\n  private async toModelMessages', start);
+    assert.ok(end > start, 'expected model-message helper after plugin registration');
+    const section = source.slice(start, end);
+
+    assert.match(section, /const existingById = new Map<string, ToolDefinition>\(\);/);
+    assert.match(section, /for \(const tool of existing\)/);
+    assert.match(section, /existingById\.set\(tool\.id, tool\);/);
+    assert.doesNotMatch(section, /existing\.map/);
+  });
+
+  test('plugin manager scans exports and tool maps without entry arrays', async () => {
+    const inheritedToolMap = {
+      inherited_tool: {
+        description: 'inherited tool',
+        parameters: { type: 'object', properties: {}, required: [] },
+        execute: async () => ({ success: true, data: 'inherited' }),
+      },
+    };
+    const toolMap = Object.assign(Object.create(inheritedToolMap), {
+      own_tool: {
+        description: 'own tool',
+        parameters: { type: 'object', properties: {}, required: [] },
+        execute: async () => ({ success: true, data: 'own' }),
+      },
+    });
+    const plugins = new PluginManager();
+    plugins.registerHooks('manual', { tool: toolMap as any });
+
+    const tools = await plugins.getPluginTools();
+    assert.deepStrictEqual(
+      tools.map((tool) => ({ pluginId: tool.pluginId, toolId: tool.toolId })),
+      [{ pluginId: 'manual', toolId: 'own_tool' }],
+    );
+
+    const source = await fs.readFile(new URL('../../../src/plugins/pluginManager.ts', import.meta.url), 'utf8');
+    const start = source.indexOf('function extractHooksFromModule');
+    assert.ok(start >= 0, 'expected module hook extraction helper');
+    const end = source.indexOf('export class PluginManager', start);
+    assert.ok(end > start, 'expected plugin manager class after helpers');
+    const section = source.slice(start, end);
+
+    assert.match(section, /for \(const name in moduleExports as Record<string, unknown>\)/);
+    assert.match(section, /for \(const toolId in toolMap\)/);
+    assert.match(section, /Object\.prototype\.hasOwnProperty\.call/);
+    assert.doesNotMatch(section, /Object\.entries/);
+  });
+
   test('discovers skills under ~/.codex/skills when allowExternalPaths=true', async () => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'lingyun-sdk-test-skills-'));
     const skillBase = `lingyun-sdk-test-skill-${Date.now()}`;
@@ -3366,6 +4749,37 @@ suite('LingYun Agent SDK', () => {
     } finally {
       await fs.rm(workspaceRoot, { recursive: true, force: true });
       await fs.rm(skillDir, { recursive: true, force: true });
+    }
+  });
+
+  test('skill index stops scanning search paths after maxSkills is reached', async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'lingyun-sdk-test-skills-max-'));
+    const firstRoot = path.join(workspaceRoot, 'first-skills');
+    const secondRoot = path.join(workspaceRoot, 'second-skills');
+    try {
+      await fs.mkdir(path.join(firstRoot, 'one'), { recursive: true });
+      await fs.mkdir(path.join(secondRoot, 'two'), { recursive: true });
+      await fs.writeFile(
+        path.join(firstRoot, 'one', 'SKILL.md'),
+        ['---', 'name: skill-one', 'description: first skill', '---', '', '# One'].join('\n'),
+      );
+      await fs.writeFile(
+        path.join(secondRoot, 'two', 'SKILL.md'),
+        ['---', 'name: skill-two', 'description: second skill', '---', '', '# Two'].join('\n'),
+      );
+
+      const index = await getSkillIndex({
+        workspaceRoot,
+        searchPaths: ['first-skills', 'second-skills'],
+        allowExternalPaths: false,
+        maxSkills: 1,
+      });
+
+      assert.deepStrictEqual(index.skills.map((skill) => skill.name), ['skill-one']);
+      assert.strictEqual(index.truncated, true);
+      assert.deepStrictEqual(index.scannedDirs.map((dir) => path.relative(workspaceRoot, dir.absPath)), ['first-skills']);
+    } finally {
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
     }
   });
 
@@ -3483,6 +4897,61 @@ suite('LingYun Agent SDK', () => {
 
     const toolNames = llm.lastToolNames.filter((name) => name === 'a_tool' || name === 'z_tool');
     assert.deepStrictEqual(toolNames, ['a_tool', 'z_tool']);
+  });
+
+  test('tool registry assembles provider snapshots without mapped arrays', async () => {
+    const registry = new ToolRegistry();
+    registry.registerTool(
+      {
+        id: 'first_tool',
+        name: 'First tool',
+        description: 'first',
+        parameters: { type: 'object', properties: {} },
+        execution: { type: 'function', handler: 'test.first_tool' },
+      },
+      async () => ({ success: true }),
+    );
+    registry.registerTool(
+      {
+        id: 'second_tool',
+        name: 'Second tool',
+        description: 'second',
+        parameters: { type: 'object', properties: {} },
+        execution: { type: 'function', handler: 'test.second_tool' },
+      },
+      async () => ({ success: true }),
+    );
+
+    const tools = await registry.getTools();
+    assert.deepStrictEqual(
+      tools.map((tool) => tool.id),
+      ['first_tool', 'second_tool'],
+    );
+
+    const source = await fs.readFile(new URL('../../../src/tools/registry.ts', import.meta.url), 'utf8');
+    const simpleStart = source.indexOf('class SimpleToolProvider');
+    assert.ok(simpleStart >= 0, 'expected simple tool provider');
+    const simpleEnd = source.indexOf('\nexport class ToolRegistry', simpleStart);
+    assert.ok(simpleEnd > simpleStart, 'expected registry class after simple provider');
+    const simpleSection = source.slice(simpleStart, simpleEnd);
+
+    const refreshStart = source.indexOf('private async refreshAllTools');
+    assert.ok(refreshStart >= 0, 'expected refreshAllTools');
+    const refreshEnd = source.indexOf('\n  registerTool', refreshStart);
+    assert.ok(refreshEnd > refreshStart, 'expected registerTool after refreshAllTools');
+    const refreshSection = source.slice(refreshStart, refreshEnd);
+
+    assert.match(simpleSection, /const definitions: ToolDefinition\[\] = \[\];/);
+    assert.match(simpleSection, /for \(const tool of this\.tools\.values\(\)\)/);
+    assert.match(simpleSection, /definitions\.push\(tool\.definition\);/);
+    assert.doesNotMatch(simpleSection, /Array\.from\(this\.tools\.values\(\)\)\.map/);
+
+    assert.match(refreshSection, /const refreshTasks: Promise<void>\[\] = \[\];/);
+    assert.match(refreshSection, /for \(const providerId of this\.providers\.keys\(\)\)/);
+    assert.match(refreshSection, /this\.refreshProviderTools\(providerId\)\.catch/);
+    assert.match(refreshSection, /await Promise\.all\(refreshTasks\);/);
+    assert.doesNotMatch(refreshSection, /providerIds\.map/);
+    assert.doesNotMatch(refreshSection, /\[\.\.\.this\.providers\.keys\(\)\]/);
   });
 
   test('requires approval for curl-like bash commands by default', async () => {
@@ -3699,6 +5168,36 @@ suite('LingYun Agent SDK', () => {
     }
   });
 
+  test('task tool description uses shared subagent list without map arrays', async () => {
+    const expectedList = [
+      '- general: General-purpose agent for complex, multi-step tasks. Use when you want the agent to execute a longer workflow.',
+      '- explore: Fast, read-only agent specialized for exploring a workspace: list files, grep, read small snippets, and summarize findings.',
+    ].join('\n');
+    const task = getBuiltinTools({ skills: { enabled: false } }).find((item) => item.tool.id === 'task')?.tool;
+
+    assert.strictEqual(formatBuiltinSubagentsForToolDescription(), expectedList);
+    assert.ok(task, 'expected builtin task tool');
+    assert.ok(
+      task.description.includes(`Available subagent types:\n${expectedList}\n\nUsage:`),
+      'expected task tool description to include shared subagent list',
+    );
+
+    const source = await fs.readFile(new URL('../../../../core/src/subagents.ts', import.meta.url), 'utf8');
+    const start = source.indexOf('export function formatBuiltinSubagentsForToolDescription');
+    assert.ok(start >= 0, 'expected shared subagent formatter');
+    const end = source.indexOf('\nexport function resolveBuiltinSubagent', start);
+    assert.ok(end > start, 'expected resolver after shared subagent formatter');
+    const section = source.slice(start, end);
+
+    assert.match(section, /let lines = '';/);
+    assert.match(section, /for \(const name in BUILTIN_SUBAGENTS\)/);
+    assert.match(section, /Object\.prototype\.hasOwnProperty\.call\(BUILTIN_SUBAGENTS, name\)/);
+    assert.match(section, /lines = lines \? `\$\{lines\}\\n\$\{line\}` : line;/);
+    assert.doesNotMatch(section, /\.map\(/);
+    assert.doesNotMatch(section, /\.join\(/);
+    assert.doesNotMatch(section, /Object\.values/);
+  });
+
   test('task tool spawns a subagent and returns child session metadata (without persisting it in parent history)', async () => {
     const llm = new MockLLMProvider();
     const registry = new ToolRegistry();
@@ -3764,6 +5263,58 @@ suite('LingYun Agent SDK', () => {
     assert.ok(toolPart.output?.metadata, 'expected persisted tool output metadata');
     assert.ok(!('childSession' in toolPart.output.metadata), 'childSession should not be persisted in parent history');
     assert.ok(!('task' in toolPart.output.metadata), 'task metadata should not be persisted in parent history');
+  });
+
+  test('task tool unknown subagent error formats available names without map arrays', async () => {
+    const runner = new TaskSubagentRunner({
+      taskSessions: new Map(),
+      maxTaskSessions: 4,
+      createSubagentAgent: () => {
+        throw new Error('subagent should not be created for invalid subagent_type');
+      },
+    });
+    const taskDef: ToolDefinition = {
+      id: 'task',
+      name: 'Task',
+      description: 'Task tool',
+      parameters: { type: 'object', properties: {} },
+      execution: { type: 'function', handler: 'test.task' },
+    };
+
+    const result = await runner.executeTaskTool({
+      mode: 'build',
+      def: taskDef,
+      session: new LingyunSession(),
+      callbacks: undefined,
+      args: {
+        description: 'Unknown task',
+        prompt: 'noop',
+        subagent_type: 'missing-subagent',
+      },
+      options: { toolCallId: 'call_unknown' } as any,
+      prepareSubagentExecution: async () => {
+        throw new Error('subagent should not be prepared for invalid subagent_type');
+      },
+    });
+
+    assert.deepStrictEqual(result, {
+      success: false,
+      error: 'Unknown subagent_type: missing-subagent. Available: general, explore',
+      metadata: { errorCode: TOOL_ERROR_CODES.unknown_subagent_type, subagentType: 'missing-subagent' },
+    });
+
+    const source = await fs.readFile(new URL('../../../src/agent/taskSubagentRunner.ts', import.meta.url), 'utf8');
+    const start = source.indexOf('private resolveTaskToolSpec');
+    assert.ok(start >= 0, 'expected task tool spec resolver');
+    const end = source.indexOf('\n  private getOrCreateTaskChildSession', start);
+    assert.ok(end > start, 'expected child session helper after task spec resolver');
+    const section = source.slice(start, end);
+
+    assert.match(section, /let names = '';/);
+    assert.match(section, /for \(const item of listBuiltinSubagents\(\)\)/);
+    assert.match(section, /names = names \? `\$\{names\}, \$\{name\}` : name;/);
+    assert.doesNotMatch(section, /\.map\(/);
+    assert.doesNotMatch(section, /\.join\(/);
   });
 
   test('task tool ignores invalid session_id and generates a safe id', async () => {

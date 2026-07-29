@@ -9,7 +9,7 @@ import { getDebugRedactionLevel } from '../../core/debugSettings';
 import { appendErrorLog, appendLog } from '../../core/logger';
 import { getConfiguredReasoningEffort } from '../../core/reasoningEffort';
 import { resolveConfiguredModelId } from '../../core/modelSelection';
-import { isToolAllowedByFilter } from '../../core/toolFilter';
+import { createToolFilterMatcher, isToolAllowedByFilter, normalizeToolFilterSetting } from '../../core/toolFilter';
 import { WorkspaceMemories } from '../../core/memories';
 import { createSampleToolsConfig } from '../../providers/workspace';
 import type { ModelInfo } from '../../providers/modelCatalog';
@@ -19,7 +19,12 @@ import { formatErrorForUser, getNonce } from './utils';
 import { getWorkspaceFolderUrisByPriority, resolveExistingFilePath } from './fileLinks';
 import { buildApprovalStateForUI } from './approvalState';
 import type { PendingApprovalEntry } from './controllerPorts';
-import type { ChatImageAttachment, ChatUserInput } from './types';
+import type {
+  ChatComposerSubmissionState,
+  ChatImageAttachment,
+  ChatUserInput,
+  ChatUserMessageOptions,
+} from './types';
 import { bindChatControllerService } from './controllerService';
 import { createLingyunDiffUri } from './diffContentProvider';
 import type { ChatRevertService } from './methods.revert';
@@ -33,13 +38,21 @@ import {
   parseWebviewErrorMessage,
   parseWebviewInitAckMessage,
   parseWebviewReadyMessage,
+  parseWebviewTranscriptHistoryRequest,
+  type WebviewTranscriptHistoryRequest,
   WEBVIEW_MESSAGE_ERROR,
   WEBVIEW_MESSAGE_INIT_ACK,
   WEBVIEW_MESSAGE_READY,
+  WEBVIEW_MESSAGE_TRANSCRIPT_HISTORY_PAGE,
+  WEBVIEW_MESSAGE_TRANSCRIPT_HISTORY_REQUEST,
 } from './webviewProtocol';
 import { handleWebviewInitAckMessage, handleWebviewReadyMessage } from './webviewHandshake';
 import { handleWebviewCrashMessage, resetWebviewCrashToastState } from './webviewCrash';
 import { postInputNotice } from './inputNotice';
+import {
+  createEarlierTranscriptPage,
+  createInitialTranscriptPage,
+} from './transcriptPaging';
 
 function stripWrappingQuotes(value: string): string {
   const trimmed = value.trim();
@@ -74,9 +87,33 @@ function normalizeCandidatePath(raw: string): string {
 
 const MAX_WEBVIEW_IMAGE_ATTACHMENTS = 8;
 const MAX_WEBVIEW_IMAGE_DATA_URL_LENGTH = 12_000_000;
+const MAX_WEBVIEW_IMAGE_FILENAME_LENGTH = 512;
+const MAX_WEBVIEW_COMPOSER_SUBMISSION_ID_LENGTH = 160;
 const LLM_PROVIDER_IDS = new Set(['copilot', 'codexSubscription', 'openaiCompatible']);
+const TOOL_CATALOG_ID_COLLATOR = new Intl.Collator();
+const CHAT_WEBVIEW_SCRIPT_PARTS = [
+  ['chat', 'bootstrap.js'],
+  ['chat', 'render-utils.js'],
+  ['chat', 'render-messages.js'],
+  ['chat', 'context.js'],
+  ['chat', 'main.js'],
+] as const;
 
 type LlmProviderId = 'copilot' | 'codexSubscription' | 'openaiCompatible';
+
+function hasOwnEnumerableKey(value: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function countOwnEnumerableKeys(value: object, limit?: number): number {
+  let count = 0;
+  for (const key in value) {
+    if (!hasOwnEnumerableKey(value, key)) continue;
+    count++;
+    if (typeof limit === 'number' && count >= limit) return count;
+  }
+  return count;
+}
 
 function normalizeLlmProviderId(providerId: string): LlmProviderId | undefined {
   const normalized = String(providerId || '').trim();
@@ -125,23 +162,41 @@ type SkillsBudget = {
 
 type SkillSearchPaths = string[];
 
-function normalizeSkillSearchPaths(input: unknown): SkillSearchPaths {
-  const values = Array.isArray(input)
-    ? input
-    : typeof input === 'string'
-      ? input.split(/[\n,]/)
-      : [];
+function appendNormalizedStringListItem(value: unknown, seen: Set<string>, normalized: string[], maxItems: number): boolean {
+  if (typeof value !== 'string') return true;
+  const normalizedValue = value.trim();
+  if (!normalizedValue || seen.has(normalizedValue)) return true;
+  seen.add(normalizedValue);
+  normalized.push(normalizedValue);
+  return normalized.length < maxItems;
+}
+
+function normalizeSeparatedStringList(input: unknown, maxItems = 100): string[] {
   const seen = new Set<string>();
   const normalized: string[] = [];
-  for (const value of values) {
-    if (typeof value !== 'string') continue;
-    const pathValue = value.trim();
-    if (!pathValue || seen.has(pathValue)) continue;
-    seen.add(pathValue);
-    normalized.push(pathValue);
-    if (normalized.length >= 100) break;
+
+  if (Array.isArray(input)) {
+    for (let i = 0; i < input.length; i++) {
+      if (!appendNormalizedStringListItem(input[i], seen, normalized, maxItems)) break;
+    }
+    return normalized;
+  }
+
+  if (typeof input !== 'string') return normalized;
+  let itemStart = 0;
+  for (let i = 0; i <= input.length; i++) {
+    if (i < input.length) {
+      const charCode = input.charCodeAt(i);
+      if (charCode !== 10 && charCode !== 44) continue;
+    }
+    if (!appendNormalizedStringListItem(input.slice(itemStart, i), seen, normalized, maxItems)) break;
+    itemStart = i + 1;
   }
   return normalized;
+}
+
+function normalizeSkillSearchPaths(input: unknown): SkillSearchPaths {
+  return normalizeSeparatedStringList(input);
 }
 
 function getSkillSearchPaths(): SkillSearchPaths {
@@ -154,6 +209,12 @@ function getSkillsBudget(): SkillsBudget {
     maxInjectSkills: getNumberSetting('skills.maxInjectSkills', 5, 1),
     maxInjectChars: getNumberSetting('skills.maxInjectChars', 20000, 1),
   };
+}
+
+function skillsBudgetEqual(left: SkillsBudget, right: SkillsBudget): boolean {
+  return left.maxPromptSkills === right.maxPromptSkills &&
+    left.maxInjectSkills === right.maxInjectSkills &&
+    left.maxInjectChars === right.maxInjectChars;
 }
 
 function getSubagentModelOverride(): string {
@@ -185,6 +246,13 @@ type SessionRetentionLimits = {
   maxSessions: number;
   maxSessionBytes: number;
 };
+
+function getSessionRetentionLimits(): SessionRetentionLimits {
+  return {
+    maxSessions: getSessionsMaxSessions(),
+    maxSessionBytes: getSessionsMaxSessionBytes(),
+  };
+}
 
 type ToolRuntimeLimits = {
   toolTimeoutMs: number;
@@ -252,56 +320,94 @@ type ModelLimitEntry = {
 type ModelLimits = Record<string, ModelLimitEntry>;
 
 function normalizeToolFilter(input: unknown): ToolFilter {
-  const values = Array.isArray(input)
-    ? input
-    : typeof input === 'string'
-      ? input.split(/[\n,]/)
-      : [];
-  const seen = new Set<string>();
-  const normalized: string[] = [];
-  for (const value of values) {
-    if (typeof value !== 'string') continue;
-    const pattern = value.trim();
-    if (!pattern || seen.has(pattern)) continue;
-    seen.add(pattern);
-    normalized.push(pattern);
-    if (normalized.length >= 100) break;
-  }
-  return normalized;
+  return normalizeToolFilterSetting(input);
 }
 
 function getToolFilter(): ToolFilter {
   return normalizeToolFilter(vscode.workspace.getConfiguration('lingyun').get<unknown>('toolFilter', []));
 }
 
-async function buildToolCatalogForUI(): Promise<{ total: number; shown: number; filter: ToolFilter; tools: ToolCatalogItem[] }> {
+function stringListsEqual(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) return false;
+  for (let i = 0; i < left.length; i++) {
+    if (left[i] !== right[i]) return false;
+  }
+  return true;
+}
+
+function hasListItemLongerThan(values: readonly string[], maxLength: number): boolean {
+  for (let i = 0; i < values.length; i++) {
+    if (values[i].length > maxLength) return true;
+  }
+  return false;
+}
+
+function collectRequiredParameterNames(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const required: string[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    const value = raw[i];
+    if (typeof value === 'string') required.push(value);
+  }
+  return required;
+}
+
+function collectManualToolConfirmationReasons(tool: { metadata?: { readOnly?: boolean; requiresApproval?: boolean } }): string[] {
+  const reasons: string[] = [];
+  if (tool.metadata?.readOnly !== true) {
+    reasons.push('it may change workspace/editor state');
+  }
+  if (tool.metadata?.requiresApproval === true) {
+    reasons.push('it normally requires approval during agent runs');
+  }
+  return reasons;
+}
+
+function compareToolCatalogItemsById(left: ToolCatalogItem, right: ToolCatalogItem): number {
+  return TOOL_CATALOG_ID_COLLATOR.compare(left.id, right.id);
+}
+
+type ToolCatalogState = {
+  total: number;
+  shown: number;
+  filter: ToolFilter;
+  tools: ToolCatalogItem[];
+};
+
+async function buildToolCatalogForUI(): Promise<ToolCatalogState> {
   const filter = getToolFilter();
+  const allowTool = createToolFilterMatcher(filter);
   const allTools = await toolRegistry.getTools();
-  const filteredTools = allTools.filter((tool) => isToolAllowedByFilter(tool.id, filter));
-  const tools = filteredTools
-    .map((tool): ToolCatalogItem => ({
+  const tools: ToolCatalogItem[] = [];
+  for (const tool of allTools) {
+    if (!allowTool(tool.id)) continue;
+    const parameters = tool.parameters || { type: 'object', properties: {} };
+    tools.push({
       id: tool.id,
       name: tool.name || tool.id,
       description: tool.description || '',
       readOnly: tool.metadata?.readOnly === true,
       requiresApproval: tool.metadata?.requiresApproval === true,
       category: tool.metadata?.category || tool.metadata?.permission || 'tool',
-      parameters: tool.parameters || { type: 'object', properties: {} },
-      required: Array.isArray(tool.parameters?.required) ? tool.parameters.required.filter((value): value is string => typeof value === 'string') : [],
-    }))
-    .sort((a, b) => a.id.localeCompare(b.id));
+      parameters,
+      required: collectRequiredParameterNames(parameters.required),
+    });
+  }
+  if (tools.length > 1) tools.sort(compareToolCatalogItemsById);
   return { total: allTools.length, shown: tools.length, filter, tools };
 }
 
 function formatManualToolResultData(data: unknown): { text: string; truncated: boolean } {
   let raw: string;
-  if (typeof data === 'string') {
+  if (data === undefined) {
+    raw = '';
+  } else if (typeof data === 'string') {
     raw = data;
   } else {
     try {
-      raw = JSON.stringify(data ?? null, null, 2) ?? String(data ?? null);
+      raw = JSON.stringify(data, null, 2) ?? String(data);
     } catch {
-      raw = String(data ?? null);
+      raw = String(data);
     }
   }
   if (raw.length <= MAX_MANUAL_TOOL_RESULT_CHARS) return { text: raw, truncated: false };
@@ -322,22 +428,7 @@ function formatMemoryDropMessage(result: MemoryDropResult): string {
 }
 
 function normalizeInstructionPatterns(input: unknown): InstructionPatterns {
-  const values = Array.isArray(input)
-    ? input
-    : typeof input === 'string'
-      ? input.split(/[\n,]/)
-      : [];
-  const seen = new Set<string>();
-  const normalized: string[] = [];
-  for (const value of values) {
-    if (typeof value !== 'string') continue;
-    const pattern = value.trim();
-    if (!pattern || seen.has(pattern)) continue;
-    seen.add(pattern);
-    normalized.push(pattern);
-    if (normalized.length >= 100) break;
-  }
-  return normalized;
+  return normalizeSeparatedStringList(input);
 }
 
 function getInstructionPatterns(): InstructionPatterns {
@@ -352,15 +443,25 @@ function getInstructionFileSettings(): InstructionFileSettings {
   };
 }
 
+function instructionFileSettingsEqual(left: InstructionFileSettings, right: InstructionFileSettings): boolean {
+  return left.includeGlobal === right.includeGlobal &&
+    left.maxCharsPerFile === right.maxCharsPerFile &&
+    left.maxTotalChars === right.maxTotalChars;
+}
+
 function normalizeWorkspaceEnv(input: unknown): WorkspaceEnv {
   const source = input && typeof input === 'object' && !Array.isArray(input) ? input as Record<string, unknown> : {};
   const normalized: WorkspaceEnv = {};
-  for (const [rawKey, rawValue] of Object.entries(source)) {
+  let count = 0;
+  for (const rawKey in source) {
+    if (!hasOwnEnumerableKey(source, rawKey)) continue;
+    const rawValue = source[rawKey];
     const key = rawKey.trim().slice(0, 120);
     if (!key || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
     if (typeof rawValue !== 'string') continue;
+    if (!hasOwnEnumerableKey(normalized, key)) count++;
     normalized[key] = rawValue.slice(0, 10000);
-    if (Object.keys(normalized).length >= 100) break;
+    if (count >= 100) break;
   }
   return normalized;
 }
@@ -369,9 +470,11 @@ function getWorkspaceEnvValidationError(input: unknown): string | undefined {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     return 'Workspace environment must be an object.';
   }
-  const entries = Object.entries(input as Record<string, unknown>);
-  if (entries.length > 100) return 'At most 100 workspace environment variables can be configured.';
-  for (const [rawKey, rawValue] of entries) {
+  const source = input as Record<string, unknown>;
+  if (countOwnEnumerableKeys(source, 101) > 100) return 'At most 100 workspace environment variables can be configured.';
+  for (const rawKey in source) {
+    if (!hasOwnEnumerableKey(source, rawKey)) continue;
+    const rawValue = source[rawKey];
     const key = rawKey.trim();
     if (!key) return 'Workspace environment variable names cannot be empty.';
     if (key.length > 120) return 'Workspace environment variable names must be 120 characters or shorter.';
@@ -386,6 +489,15 @@ function getWorkspaceEnvValidationError(input: unknown): string | undefined {
 
 function getWorkspaceEnv(): WorkspaceEnv {
   return normalizeWorkspaceEnv(vscode.workspace.getConfiguration('lingyun').get<unknown>('env', {}));
+}
+
+function workspaceEnvEqual(left: WorkspaceEnv, right: WorkspaceEnv): boolean {
+  if (countOwnEnumerableKeys(left) !== countOwnEnumerableKeys(right)) return false;
+  for (const key in left) {
+    if (!hasOwnEnumerableKey(left, key)) continue;
+    if (!hasOwnEnumerableKey(right, key) || left[key] !== right[key]) return false;
+  }
+  return true;
 }
 
 function getDebugSettingsForUi(): DebugSettingsUi {
@@ -422,23 +534,15 @@ function normalizeDebugSettings(input: Partial<DebugSettingsUi>, current = getDe
   };
 }
 
+function debugSettingsEqual(left: DebugSettingsUi, right: DebugSettingsUi): boolean {
+  return left.details === right.details &&
+    left.llm === right.llm &&
+    left.tools === right.tools &&
+    left.plugins === right.plugins;
+}
+
 function normalizePluginSpecs(input: unknown): string[] {
-  const values = Array.isArray(input)
-    ? input
-    : typeof input === 'string'
-      ? input.split(/[\n,]/)
-      : [];
-  const seen = new Set<string>();
-  const normalized: string[] = [];
-  for (const value of values) {
-    if (typeof value !== 'string') continue;
-    const spec = value.trim();
-    if (!spec || seen.has(spec)) continue;
-    seen.add(spec);
-    normalized.push(spec);
-    if (normalized.length >= 100) break;
-  }
-  return normalized;
+  return normalizeSeparatedStringList(input);
 }
 
 function normalizePluginWorkspaceDir(input: unknown): string {
@@ -455,6 +559,12 @@ function getPluginSettings(): PluginSettings {
   };
 }
 
+function pluginSettingsEqual(left: PluginSettings, right: PluginSettings): boolean {
+  return left.autoDiscover === right.autoDiscover &&
+    left.workspaceDir === right.workspaceDir &&
+    stringListsEqual(left.plugins, right.plugins);
+}
+
 function normalizeOpenAICompatibleText(input: unknown, maxLength: number): string {
   const raw = typeof input === 'string' ? input.trim() : '';
   return raw.slice(0, maxLength);
@@ -463,12 +573,16 @@ function normalizeOpenAICompatibleText(input: unknown, maxLength: number): strin
 function normalizeOpenAICompatibleModelDisplayNames(input: unknown): Record<string, string> {
   const source = input && typeof input === 'object' && !Array.isArray(input) ? input as Record<string, unknown> : {};
   const normalized: Record<string, string> = {};
-  for (const [rawKey, rawValue] of Object.entries(source)) {
+  let count = 0;
+  for (const rawKey in source) {
+    if (!hasOwnEnumerableKey(source, rawKey)) continue;
+    const rawValue = source[rawKey];
     const key = rawKey.trim().slice(0, 200);
     const value = typeof rawValue === 'string' ? rawValue.trim().slice(0, 200) : '';
     if (!key || !value) continue;
+    if (!hasOwnEnumerableKey(normalized, key)) count++;
     normalized[key] = value;
-    if (Object.keys(normalized).length >= 100) break;
+    if (count >= 100) break;
   }
   return normalized;
 }
@@ -478,11 +592,13 @@ function getOpenAICompatibleModelDisplayNamesValidationError(input: unknown): st
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     return 'OpenAI-compatible model display names must be an object.';
   }
-  const entries = Object.entries(input as Record<string, unknown>);
-  if (entries.length > 100) {
+  const source = input as Record<string, unknown>;
+  if (countOwnEnumerableKeys(source, 101) > 100) {
     return 'OpenAI-compatible model display names must include 100 aliases or fewer.';
   }
-  for (const [rawKey, rawValue] of entries) {
+  for (const rawKey in source) {
+    if (!hasOwnEnumerableKey(source, rawKey)) continue;
+    const rawValue = source[rawKey];
     const key = rawKey.trim();
     if (!key) return 'OpenAI-compatible model display name aliases must include a model ID.';
     if (key.length > 200) return 'OpenAI-compatible model IDs must be 200 characters or fewer.';
@@ -505,6 +621,23 @@ function getOpenAICompatibleSettings(): OpenAICompatibleSettings {
   };
 }
 
+function stringRecordEqual(left: Record<string, string>, right: Record<string, string>): boolean {
+  if (countOwnEnumerableKeys(left) !== countOwnEnumerableKeys(right)) return false;
+  for (const key in left) {
+    if (!hasOwnEnumerableKey(left, key)) continue;
+    if (!hasOwnEnumerableKey(right, key) || left[key] !== right[key]) return false;
+  }
+  return true;
+}
+
+function openAICompatibleSettingsEqual(left: OpenAICompatibleSettings, right: OpenAICompatibleSettings): boolean {
+  return left.baseURL === right.baseURL &&
+    left.defaultModelId === right.defaultModelId &&
+    left.apiKeyEnv === right.apiKeyEnv &&
+    left.allowInsecureTLS === right.allowInsecureTLS &&
+    stringRecordEqual(left.modelDisplayNames, right.modelDisplayNames);
+}
+
 function getCodexSubscriptionSettings(): CodexSubscriptionSettings {
   return {
     defaultModelId: normalizeOpenAICompatibleText(
@@ -522,15 +655,21 @@ function parsePositiveInteger(value: unknown): number | undefined {
 function normalizeModelLimits(input: unknown): ModelLimits {
   const source = input && typeof input === 'object' && !Array.isArray(input) ? input as Record<string, unknown> : {};
   const normalized: ModelLimits = {};
-  for (const [rawKey, rawValue] of Object.entries(source)) {
+  let count = 0;
+  for (const rawKey in source) {
+    if (!hasOwnEnumerableKey(source, rawKey)) continue;
+    const rawValue = source[rawKey];
     const key = rawKey.trim().slice(0, 240);
     if (!key || !rawValue || typeof rawValue !== 'object' || Array.isArray(rawValue)) continue;
     const entry = rawValue as Record<string, unknown>;
     const context = parsePositiveInteger(entry.context);
     if (!context) continue;
     const output = parsePositiveInteger(entry.output);
-    normalized[key] = { context, ...(output ? { output } : {}) };
-    if (Object.keys(normalized).length >= 100) break;
+    if (!hasOwnEnumerableKey(normalized, key)) count++;
+    const normalizedEntry: ModelLimitEntry = { context };
+    if (output) normalizedEntry.output = output;
+    normalized[key] = normalizedEntry;
+    if (count >= 100) break;
   }
   return normalized;
 }
@@ -539,9 +678,11 @@ function getModelLimitsValidationError(input: unknown): string | undefined {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     return 'Model limits must be an object.';
   }
-  const entries = Object.entries(input as Record<string, unknown>);
-  if (entries.length > 100) return 'At most 100 model limit entries can be configured.';
-  for (const [rawKey, rawValue] of entries) {
+  const source = input as Record<string, unknown>;
+  if (countOwnEnumerableKeys(source, 101) > 100) return 'At most 100 model limit entries can be configured.';
+  for (const rawKey in source) {
+    if (!hasOwnEnumerableKey(source, rawKey)) continue;
+    const rawValue = source[rawKey];
     const key = rawKey.trim();
     if (!key) return 'Model limit keys cannot be empty.';
     if (key.length > 240) return 'Model limit keys must be 240 characters or shorter.';
@@ -563,6 +704,17 @@ function getModelLimits(): ModelLimits {
   return normalizeModelLimits(vscode.workspace.getConfiguration('lingyun').get<unknown>('modelLimits', {}));
 }
 
+function modelLimitsEqual(left: ModelLimits, right: ModelLimits): boolean {
+  if (countOwnEnumerableKeys(left) !== countOwnEnumerableKeys(right)) return false;
+  for (const key in left) {
+    if (!hasOwnEnumerableKey(left, key) || !hasOwnEnumerableKey(right, key)) return false;
+    const leftEntry = left[key];
+    const rightEntry = right[key];
+    if (leftEntry.context !== rightEntry.context || leftEntry.output !== rightEntry.output) return false;
+  }
+  return true;
+}
+
 function getNumberSetting(path: string, fallback: number, minimum: number): number {
   const raw = vscode.workspace.getConfiguration('lingyun').get<unknown>(path);
   const parsed = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : undefined;
@@ -579,6 +731,16 @@ function getToolRuntimeLimits(): ToolRuntimeLimits {
     workspaceShellTimeoutMs: getNumberSetting('tools.workspaceShell.timeoutMs', 60000, 0),
     httpTimeoutMs: getNumberSetting('tools.http.timeoutMs', 30000, 0),
   };
+}
+
+function toolRuntimeLimitsEqual(left: ToolRuntimeLimits, right: ToolRuntimeLimits): boolean {
+  return left.toolTimeoutMs === right.toolTimeoutMs
+    && left.readMaxLines === right.readMaxLines
+    && left.bashBackgroundTtlMs === right.bashBackgroundTtlMs
+    && left.bashBackgroundCaptureMs === right.bashBackgroundCaptureMs
+    && left.bashBackgroundCaptureLines === right.bashBackgroundCaptureLines
+    && left.workspaceShellTimeoutMs === right.workspaceShellTimeoutMs
+    && left.httpTimeoutMs === right.httpTimeoutMs;
 }
 
 type CompactionToolOutputMode = 'afterToolCall' | 'onCompaction';
@@ -643,7 +805,7 @@ function getConfiguredRetryWithPartialOutput(): boolean {
   const raw = vscode.workspace.getConfiguration('lingyun').get<unknown>('llm.retryWithPartialOutput');
   if (typeof raw === 'boolean') return raw;
   if (typeof raw === 'string') return raw.toLowerCase() === 'true';
-  return false;
+  return true;
 }
 
 function getConfiguredLlmTimeoutMs(): number {
@@ -671,6 +833,18 @@ function getGenerationSettings(): GenerationSettings {
     timeoutMs: getConfiguredLlmTimeoutMs(),
     textVerbosity: getConfiguredTextVerbosity(),
   };
+}
+
+function generationSettingsEqual(left: GenerationSettings, right: GenerationSettings): boolean {
+  return left.temperature === right.temperature
+    && left.topP === right.topP
+    && left.topK === right.topK
+    && left.maxOutputTokens === right.maxOutputTokens
+    && left.maxIterations === right.maxIterations
+    && left.maxRetries === right.maxRetries
+    && left.retryWithPartialOutput === right.retryWithPartialOutput
+    && left.timeoutMs === right.timeoutMs
+    && left.textVerbosity === right.textVerbosity;
 }
 
 function getMemoryAutoRecallEnabled(): boolean {
@@ -712,11 +886,26 @@ type MemoryAutoRecallBudget = {
   maxTokens: number;
 };
 
+function getMemoryAutoRecallBudget(): MemoryAutoRecallBudget {
+  return {
+    maxResults: getMemoryAutoRecallMaxResults(),
+    maxTokens: getMemoryAutoRecallMaxTokens(),
+  };
+}
+
 type MemoryAutoRecallFilters = {
   minScore: number;
   minScoreGap: number;
   maxAgeDays: number;
 };
+
+function getMemoryAutoRecallFilters(): MemoryAutoRecallFilters {
+  return {
+    minScore: getMemoryAutoRecallMinScore(),
+    minScoreGap: getMemoryAutoRecallMinScoreGap(),
+    maxAgeDays: getMemoryAutoRecallMaxAgeDays(),
+  };
+}
 
 type MemoryAdvancedLimits = {
   maxRawMemoriesForGlobal: number;
@@ -742,6 +931,18 @@ function getMemoryAdvancedLimits(): MemoryAdvancedLimits {
     maxResultsPerKind: Math.min(20, getNumberSetting('memories.maxResultsPerKind', 3, 1)),
     searchNeighborWindow: Math.min(5, getNumberSetting('memories.searchNeighborWindow', 1, 0)),
   };
+}
+
+function memoryAdvancedLimitsEqual(left: MemoryAdvancedLimits, right: MemoryAdvancedLimits): boolean {
+  return left.maxRawMemoriesForGlobal === right.maxRawMemoriesForGlobal
+    && left.maxRolloutAgeDays === right.maxRolloutAgeDays
+    && left.maxRolloutsPerStartup === right.maxRolloutsPerStartup
+    && left.minRolloutIdleHours === right.minRolloutIdleHours
+    && left.maxStateOutputs === right.maxStateOutputs
+    && left.maxRecords === right.maxRecords
+    && left.maxSearchResults === right.maxSearchResults
+    && left.maxResultsPerKind === right.maxResultsPerKind
+    && left.searchNeighborWindow === right.searchNeighborWindow;
 }
 
 function getExplorePrepassEnabled(): boolean {
@@ -786,9 +987,23 @@ type CompactionPruneSettings = {
   pruneMinimumTokens: number;
 };
 
+function getCompactionPruneSettings(): CompactionPruneSettings {
+  return {
+    prune: getCompactionPruneEnabled(),
+    pruneProtectTokens: getCompactionPruneProtectTokens(),
+    pruneMinimumTokens: getCompactionPruneMinimumTokens(),
+  };
+}
+
+function compactionPruneSettingsEqual(left: CompactionPruneSettings, right: CompactionPruneSettings): boolean {
+  return left.prune === right.prune &&
+    left.pruneProtectTokens === right.pruneProtectTokens &&
+    left.pruneMinimumTokens === right.pruneMinimumTokens;
+}
+
 function getCompactionToolOutputMode(): CompactionToolOutputMode {
   const configured = vscode.workspace.getConfiguration('lingyun').get<unknown>('compaction.toolOutputMode');
-  return configured === 'onCompaction' ? 'onCompaction' : 'afterToolCall';
+  return configured === 'afterToolCall' ? 'afterToolCall' : 'onCompaction';
 }
 
 function normalizeCompactionToolOutputMode(mode: string): CompactionToolOutputMode | undefined {
@@ -805,7 +1020,9 @@ function parseWebviewImageAttachments(raw: unknown): ChatImageAttachment[] {
     const record = item as Record<string, unknown>;
     const mediaType = typeof record.mediaType === 'string' ? record.mediaType.trim() : '';
     const dataUrl = typeof record.dataUrl === 'string' ? record.dataUrl.trim() : '';
-    const filenameRaw = typeof record.filename === 'string' ? record.filename.trim() : '';
+    const filenameRaw = typeof record.filename === 'string'
+      ? record.filename.trim().slice(0, MAX_WEBVIEW_IMAGE_FILENAME_LENGTH)
+      : '';
 
     if (!mediaType.toLowerCase().startsWith('image/')) continue;
     if (!dataUrl.startsWith('data:image/')) continue;
@@ -823,19 +1040,34 @@ function parseWebviewImageAttachments(raw: unknown): ChatImageAttachment[] {
   return normalized;
 }
 
+function parseComposerSubmissionId(raw: unknown): string {
+  if (typeof raw !== 'string') return '';
+  const id = raw.trim();
+  return id && id.length <= MAX_WEBVIEW_COMPOSER_SUBMISSION_ID_LENGTH ? id : '';
+}
+
 function getToastErrorMessage(error: unknown, llmProviderId?: string): string {
   const formatted = formatErrorForUser(error, { llmProviderId });
-  const firstLine = formatted
-    .split('\n')
-    .map(line => line.trim())
-    .find(Boolean);
+  const firstLine = getFirstNonEmptyTrimmedLine(formatted);
   return firstLine || 'Unknown error';
+}
+
+function getFirstNonEmptyTrimmedLine(value: string): string | undefined {
+  let lineStart = 0;
+  for (let i = 0; i <= value.length; i++) {
+    if (i < value.length && value.charCodeAt(i) !== 10) continue;
+    const line = value.slice(lineStart, i).trim();
+    if (line) return line;
+    lineStart = i + 1;
+  }
+  return undefined;
 }
 
 export interface ChatWebviewService {
   resolveWebviewView(webviewView: vscode.WebviewView): void;
   startInitPusher(): void;
   sendInit(force?: boolean): Promise<void>;
+  loadEarlierTranscriptMessages(request: WebviewTranscriptHistoryRequest): void;
   refreshSettingsState(): Promise<void>;
   getProviderAuthStateForUI(): Promise<ProviderAuthUiState>;
   postProviderState(): Promise<void>;
@@ -907,6 +1139,8 @@ export interface ChatWebviewDeps {
   initInFlight: boolean;
   webviewClientInstanceId?: string;
   webviewCrashToastClientId?: string;
+  pendingComposerAttachments: ChatImageAttachment[];
+  composerSubmissionState?: ChatComposerSubmissionState;
   llmProvider?: Pick<
     LLMProviderWithUi,
     'id' | 'name' | 'getAuthStatus' | 'authenticate' | 'disconnect' | 'clearModelCache'
@@ -944,7 +1178,7 @@ export interface ChatWebviewDeps {
   viewRevertDiff(): Promise<void>;
   switchToSession(sessionId: string): Promise<void>;
   postSessions(): void;
-  handleUserMessage(content: string | ChatUserInput): Promise<void>;
+  handleUserMessage(content: string | ChatUserInput, options?: ChatUserMessageOptions): Promise<void>;
   approveAllPendingApprovals(options?: { includeManual?: boolean }): void;
   postApprovalState(): void;
   handleAlwaysAllowApproval(approvalId: string): Promise<void>;
@@ -991,6 +1225,8 @@ type BrowserChatProtocol = {
   ready: typeof WEBVIEW_MESSAGE_READY;
   initAck: typeof WEBVIEW_MESSAGE_INIT_ACK;
   webviewError: typeof WEBVIEW_MESSAGE_ERROR;
+  transcriptHistoryRequest: typeof WEBVIEW_MESSAGE_TRANSCRIPT_HISTORY_REQUEST;
+  transcriptHistoryPage: typeof WEBVIEW_MESSAGE_TRANSCRIPT_HISTORY_PAGE;
 };
 
 type MemoryActionStatus = {
@@ -1022,7 +1258,7 @@ type ChatWebviewSettingsStateMessage = {
   toolRuntimeLimits: ToolRuntimeLimits;
   toolFilter: ToolFilter;
   autoApprovedTools: string[];
-  toolsCatalog: { total: number; shown: number; filter: ToolFilter; tools: ToolCatalogItem[] };
+  toolsCatalog?: ToolCatalogState;
   workspaceEnv: WorkspaceEnv;
   pluginSettings: PluginSettings;
   instructionPatterns: InstructionPatterns;
@@ -1063,6 +1299,11 @@ type ChatWebviewInitMessage = ChatWebviewSettingsStateMessage & {
   sessions: ReturnType<ChatSessionsService['getSessionsForUI']>;
   activeSessionId: string;
   messages: ReturnType<ChatSessionsService['getRenderableMessages']>;
+  transcriptHistory: {
+    mode: 'paged';
+    hasEarlierMessages: boolean;
+    cursor: string;
+  };
   inputHistory: string[];
   revertState: ReturnType<ChatRevertService['getRevertBarStateForUI']>;
   context: ReturnType<ChatSessionsService['getContextForUI']>;
@@ -1071,6 +1312,8 @@ type ChatWebviewInitMessage = ChatWebviewSettingsStateMessage & {
   activePlanMessageId: string;
   processing: boolean;
   queuedInputs: ReturnType<ChatQueueManager['getQueuedInputs']>;
+  composerAttachments: ChatImageAttachment[];
+  composerSubmissionState?: ChatComposerSubmissionState;
   pendingApprovals: number;
   manualApprovals: number;
   autoApproveThisRun: boolean;
@@ -1081,6 +1324,8 @@ function createBrowserChatProtocol(): BrowserChatProtocol {
     ready: WEBVIEW_MESSAGE_READY,
     initAck: WEBVIEW_MESSAGE_INIT_ACK,
     webviewError: WEBVIEW_MESSAGE_ERROR,
+    transcriptHistoryRequest: WEBVIEW_MESSAGE_TRANSCRIPT_HISTORY_REQUEST,
+    transcriptHistoryPage: WEBVIEW_MESSAGE_TRANSCRIPT_HISTORY_PAGE,
   };
 }
 
@@ -1091,15 +1336,40 @@ function renderBrowserChatProtocolBootstrapScript(nonce: string): string {
 
 async function buildWebviewSettingsStateMessage(
   runtime: ChatWebviewRuntime,
-  params?: { type?: 'settingsState' | 'init'; modelLabel?: string; currentModelIsFavorite?: boolean }
+  params?: {
+    type?: 'settingsState' | 'init';
+    modelLabel?: string;
+    currentModelIsFavorite?: boolean;
+    deferOptional?: boolean;
+  }
 ): Promise<ChatWebviewSettingsStateMessage> {
   const nextModel = resolveConfiguredModelId(runtime.llmProvider?.id) || runtime.currentModel;
   runtime.currentModel = nextModel;
-  const skills = await runtime.getSkillNamesForUI();
-  const providerAuth = await runtime.getProviderAuthStateForUI();
-  const currentModelIsFavorite = typeof params?.currentModelIsFavorite === 'boolean'
-    ? params.currentModelIsFavorite
-    : await runtime.isModelFavorite(runtime.currentModel);
+  const deferOptional = params?.deferOptional === true;
+  const currentModelIsFavoritePromise = typeof params?.currentModelIsFavorite === 'boolean'
+    ? Promise.resolve(params.currentModelIsFavorite)
+    : runtime.isModelFavorite(runtime.currentModel);
+  let skills: string[];
+  let providerAuth: ProviderAuthUiState;
+  let currentModelIsFavorite: boolean;
+  if (deferOptional) {
+    skills = [];
+    providerAuth = {
+      providerId: typeof runtime.llmProvider?.id === 'string' ? runtime.llmProvider.id : '',
+      providerName: typeof runtime.llmProvider?.name === 'string' ? runtime.llmProvider.name : '',
+      supported: false,
+      authenticated: false,
+      status: 'hidden',
+      label: '',
+    };
+    currentModelIsFavorite = await currentModelIsFavoritePromise;
+  } else {
+    [skills, providerAuth, currentModelIsFavorite] = await Promise.all([
+      runtime.getSkillNamesForUI(),
+      runtime.getProviderAuthStateForUI(),
+      currentModelIsFavoritePromise,
+    ]);
+  }
   const modelLabel = params?.modelLabel || runtime.getModelLabel(runtime.currentModel) || runtime.currentModel;
 
   return {
@@ -1120,7 +1390,6 @@ async function buildWebviewSettingsStateMessage(
     toolRuntimeLimits: getToolRuntimeLimits(),
     toolFilter: getToolFilter(),
     autoApprovedTools: runtime.getAutoApprovedToolsForUI(),
-    toolsCatalog: await buildToolCatalogForUI(),
     workspaceEnv: getWorkspaceEnv(),
     pluginSettings: getPluginSettings(),
     instructionPatterns: getInstructionPatterns(),
@@ -1161,7 +1430,6 @@ async function buildWebviewInitMessage(
   runtime: ChatWebviewRuntime,
   params: { modelLabel: string; currentModelIsFavorite: boolean }
 ): Promise<ChatWebviewInitMessage> {
-  const todos = await readTodos(runtime.context, runtime.activeSessionId);
   const pendingPlan = runtime.getActiveSession().pendingPlan;
   const approvalState = buildApprovalStateForUI({
     pendingApprovals: runtime.pendingApprovals,
@@ -1171,27 +1439,145 @@ async function buildWebviewInitMessage(
     type: 'init',
     modelLabel: params.modelLabel,
     currentModelIsFavorite: params.currentModelIsFavorite,
+    deferOptional: true,
   });
+  const transcriptPage = createInitialTranscriptPage(runtime.getRenderableMessages());
 
   return {
     ...settingsState,
     type: 'init',
     sessions: runtime.getSessionsForUI(),
     activeSessionId: runtime.activeSessionId,
-    messages: runtime.getRenderableMessages(),
+    messages: transcriptPage.messages,
+    transcriptHistory: {
+      mode: 'paged',
+      hasEarlierMessages: transcriptPage.hasEarlierMessages,
+      cursor: transcriptPage.cursor ?? '',
+    },
     inputHistory: runtime.inputHistoryEntries,
     revertState: runtime.getRevertBarStateForUI(),
     context: runtime.getContextForUI(),
-    todos,
+    todos: [],
     planPending: !!pendingPlan,
     activePlanMessageId: pendingPlan?.planMessageId ?? '',
     processing: runtime.isProcessing,
     queuedInputs: runtime.queueManager.getQueuedInputs(),
+    composerAttachments: runtime.pendingComposerAttachments,
+    ...(runtime.composerSubmissionState
+      ? { composerSubmissionState: runtime.composerSubmissionState }
+      : {}),
     pendingApprovals: approvalState.count,
     manualApprovals: approvalState.manualCount,
     autoApproveThisRun: approvalState.autoApproveThisRun,
     ...runtime.getUndoRedoAvailability(),
   };
+}
+
+type DeferredWebviewTask = {
+  view: vscode.WebviewView;
+  provider: ChatWebviewRuntime['llmProvider'];
+  promise: Promise<void>;
+};
+
+type DeferredTodoTask = {
+  view: vscode.WebviewView;
+  sessionId: string;
+  promise: Promise<void>;
+};
+
+const deferredWebviewTasks = new WeakMap<ChatWebviewRuntime, DeferredWebviewTask>();
+const deferredTodoTasks = new WeakMap<ChatWebviewRuntime, DeferredTodoTask>();
+
+function logDeferredWebviewTaskFailure(
+  runtime: ChatWebviewRuntime,
+  label: string,
+  error: unknown
+): void {
+  appendErrorLog(runtime.outputChannel, `Failed to refresh deferred chat ${label}`, error, {
+    tag: 'Webview',
+  });
+}
+
+async function refreshDeferredWebviewState(
+  runtime: ChatWebviewRuntime,
+  view: vscode.WebviewView
+): Promise<void> {
+  const provider = runtime.llmProvider;
+  const tasks: Array<{ label: string; promise: Promise<void> }> = [];
+
+  if (runtime.availableModels.length === 0) {
+    tasks.push({
+      label: 'models',
+      promise: runtime.loadModels(),
+    });
+  }
+
+  tasks.push({
+    label: 'provider state',
+    promise: runtime.getProviderAuthStateForUI().then((providerAuth) => {
+      if (runtime.view !== view || runtime.llmProvider !== provider) return;
+      runtime.postMessage({
+        type: 'providerState',
+        currentProviderId: getConfiguredLlmProviderId(),
+        providerAuth,
+      });
+    }),
+  });
+
+  tasks.push({
+    label: 'skills',
+    promise: runtime.getSkillNamesForUI().then((skills) => {
+      if (runtime.view !== view) return;
+      runtime.postMessage({
+        type: 'skillsEnabledState',
+        skillsEnabled: getSkillsEnabled(),
+        skills,
+      });
+    }),
+  });
+
+  const results = await Promise.allSettled(tasks.map((task) => task.promise));
+  for (let index = 0; index < results.length; index++) {
+    const result = results[index];
+    if (result.status === 'rejected') {
+      logDeferredWebviewTaskFailure(runtime, tasks[index].label, result.reason);
+    }
+  }
+}
+
+function scheduleDeferredWebviewState(runtime: ChatWebviewRuntime): void {
+  const view = runtime.view;
+  if (!view) return;
+
+  const provider = runtime.llmProvider;
+  const current = deferredWebviewTasks.get(runtime);
+  if (current?.view === view && current.provider === provider) return;
+
+  const promise = refreshDeferredWebviewState(runtime, view).catch((error) => {
+    logDeferredWebviewTaskFailure(runtime, 'state', error);
+  });
+  const task = { view, provider, promise };
+  deferredWebviewTasks.set(runtime, task);
+}
+
+function scheduleDeferredTodos(runtime: ChatWebviewRuntime): void {
+  const view = runtime.view;
+  if (!view) return;
+
+  const sessionId = runtime.activeSessionId;
+  const current = deferredTodoTasks.get(runtime);
+  if (current?.view === view && current.sessionId === sessionId) return;
+
+  const promise = readTodos(runtime.context, sessionId)
+    .then((todos) => {
+      if (runtime.view !== view || runtime.activeSessionId !== sessionId) return;
+      runtime.postMessage({ type: 'todos', todos });
+    })
+    .catch((error) => {
+      logDeferredWebviewTaskFailure(runtime, 'TODO state', error);
+    });
+  const task = { view, sessionId, promise };
+  deferredTodoTasks.set(runtime, task);
 }
 
 export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebviewService {
@@ -1339,8 +1725,9 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
               vscode.workspace.getConfiguration('lingyun').get<boolean>('security.allowExternalPaths', false) ??
               false;
 
-            const deduped: string[] = [];
+            const results: Array<{ raw: string; ok: boolean; path?: string }> = [];
             const seen = new Set<string>();
+            let uniqueCount = 0;
             for (const item of candidatesRaw) {
               const raw =
                 item && typeof item === 'object' && typeof (item as any).raw === 'string'
@@ -1348,34 +1735,31 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
                   : '';
               if (!raw) continue;
               if (seen.has(raw)) continue;
+              if (uniqueCount >= 200) break;
               seen.add(raw);
-              deduped.push(raw);
-              if (deduped.length >= 200) break;
-            }
+              uniqueCount++;
 
-            const results: Array<{ raw: string; ok: boolean; path?: string }> = [];
-
-            for (const raw of deduped) {
               const normalized = normalizeCandidatePath(raw);
               if (!normalized) {
                 results.push({ raw, ok: false });
                 continue;
               }
-              const candidates: string[] = [];
-              if ((normalized.startsWith('a/') || normalized.startsWith('b/')) && normalized.length > 2) {
-                candidates.push(normalized.slice(2));
-              }
-              candidates.push(normalized);
-
               let resolved:
                 | { uri: vscode.Uri; absPath: string; relPath: string; isExternal: boolean }
                 | undefined;
 
-              for (const candidate of candidates) {
-                const attempt = await resolveExistingFilePath(candidate, workspaceFolderUris, allowExternalPaths);
+              if ((normalized.startsWith('a/') || normalized.startsWith('b/')) && normalized.length > 2) {
+                const stripped = normalized.slice(2);
+                const attempt = await resolveExistingFilePath(stripped, workspaceFolderUris, allowExternalPaths);
                 if (attempt.resolved) {
                   resolved = attempt.resolved;
-                  break;
+                }
+              }
+
+              if (!resolved) {
+                const attempt = await resolveExistingFilePath(normalized, workspaceFolderUris, allowExternalPaths);
+                if (attempt.resolved) {
+                  resolved = attempt.resolved;
                 }
               }
 
@@ -1503,16 +1887,97 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
           case 'send':
             {
               const payload = data as Record<string, unknown>;
-              const input: ChatUserInput = {
-                message: typeof payload.message === 'string' ? payload.message : '',
-                attachments: parseWebviewImageAttachments(payload.attachments),
+              const submissionId = parseComposerSubmissionId(payload.submissionId);
+              if (!submissionId) {
+                postInputNotice(this, 'Message could not be accepted. Your draft was kept.');
+                break;
+              }
+              const attachments = parseWebviewImageAttachments(payload.attachments);
+              const message = typeof payload.message === 'string' ? payload.message : '';
+              const draft = typeof payload.draft === 'string' ? payload.draft : message;
+              this.pendingComposerAttachments = attachments;
+              this.composerSubmissionState = {
+                id: submissionId,
+                status: 'pending',
+                draft,
               };
-              await this.handleUserMessage(input);
+              this.postMessage({
+                type: 'sendState',
+                submissionId,
+                status: 'pending',
+                draft,
+              });
+
+              let accepted = false;
+              const onAccepted = () => {
+                if (accepted) return;
+                accepted = true;
+                if (this.composerSubmissionState?.id === submissionId) {
+                  this.pendingComposerAttachments = [];
+                  this.composerSubmissionState = {
+                    id: submissionId,
+                    status: 'accepted',
+                    draft,
+                  };
+                }
+                this.postMessage({
+                  type: 'sendState',
+                  submissionId,
+                  status: 'accepted',
+                  draft,
+                });
+              };
+              const input: ChatUserInput = {
+                message,
+                attachments,
+              };
+              try {
+                await this.handleUserMessage(input, { onAccepted });
+              } catch (error) {
+                if (accepted) throw error;
+                appendErrorLog(this.outputChannel, 'Failed to accept composer submission', error, {
+                  tag: 'Webview',
+                });
+              }
+
+              if (!accepted) {
+                if (this.composerSubmissionState?.id === submissionId) {
+                  this.composerSubmissionState = {
+                    id: submissionId,
+                    status: 'rejected',
+                    draft,
+                  };
+                }
+                this.postMessage({
+                  type: 'sendState',
+                  submissionId,
+                  status: 'rejected',
+                  draft,
+                  message: 'Message was not accepted. Your draft was restored.',
+                });
+              }
             }
             break;
+          case 'composerSubmissionSettled': {
+            const payload = data as Record<string, unknown>;
+            const submissionId = parseComposerSubmissionId(payload.submissionId);
+            if (
+              submissionId &&
+              this.composerSubmissionState?.id === submissionId &&
+              this.composerSubmissionState.status !== 'pending'
+            ) {
+              this.composerSubmissionState = undefined;
+            }
+            break;
+          }
+          case 'composerAttachmentsState': {
+            const payload = data as Record<string, unknown>;
+            this.pendingComposerAttachments = parseWebviewImageAttachments(payload.attachments);
+            break;
+          }
           case 'clearQueue': {
             try {
-              this.queueManager.clearActiveSession();
+              this.queueManager.clearActiveSession({ notify: false });
               this.queueManager.flushAutosendForActiveSession().catch(() => {});
             } finally {
               this.queueManager.postState();
@@ -1521,12 +1986,15 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
           }
           case 'steerQueuedInput': {
             const id = typeof (data as any).id === 'string' ? String((data as any).id) : '';
+            let queueStateAlreadyPosted = false;
             try {
               if (id) {
-                await this.runner.steerQueuedInput(id);
+                queueStateAlreadyPosted = await this.runner.steerQueuedInput(id);
               }
             } finally {
-              this.queueManager.postState();
+              if (!queueStateAlreadyPosted) {
+                this.queueManager.postState();
+              }
             }
             break;
           }
@@ -1550,6 +2018,13 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
               return;
             }
             break;
+          case WEBVIEW_MESSAGE_TRANSCRIPT_HISTORY_REQUEST: {
+            const request = parseWebviewTranscriptHistoryRequest(data);
+            if (request) {
+              service.loadEarlierTranscriptMessages(request);
+            }
+            break;
+          }
           case 'refreshSettingsState':
             await service.refreshSettingsState();
             break;
@@ -2002,11 +2477,9 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
     if (this.initInFlight) return;
 
     this.initInFlight = true;
+    let initPosted = false;
     try {
       await this.ensureSessionsLoaded();
-      if (this.availableModels.length === 0) {
-        await this.loadModels();
-      }
 
       const modelLabel = this.getModelLabel(this.currentModel) || this.currentModel;
       const currentModelIsFavorite = await this.isModelFavorite(this.currentModel);
@@ -2016,6 +2489,7 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
           currentModelIsFavorite,
         })
       );
+      initPosted = true;
     } catch (error) {
       appendErrorLog(this.outputChannel, 'Failed to send init', error, { tag: 'Webview' });
 
@@ -2035,6 +2509,7 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
             currentModelIsFavorite,
           })
         );
+        initPosted = true;
       } catch (postError) {
         appendErrorLog(this.outputChannel, 'Failed to post init fallback', postError, {
           tag: 'Webview',
@@ -2042,8 +2517,54 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
       }
     } finally {
       this.initInFlight = false;
+      if (initPosted) {
+        scheduleDeferredWebviewState(this);
+        scheduleDeferredTodos(this);
+      }
       void this.queueManager.flushAutosendForActiveSession();
     }
+  },
+
+  loadEarlierTranscriptMessages(
+    this: ChatWebviewRuntime,
+    request: WebviewTranscriptHistoryRequest
+  ): void {
+    const responseBase = {
+      type: WEBVIEW_MESSAGE_TRANSCRIPT_HISTORY_PAGE,
+      requestId: request.requestId,
+      sessionId: request.sessionId,
+      requestCursor: request.cursor,
+    };
+
+    if (request.sessionId !== this.activeSessionId) {
+      this.postMessage({
+        ...responseBase,
+        messages: [],
+        hasEarlierMessages: false,
+        cursor: '',
+        error: 'staleSession',
+      });
+      return;
+    }
+
+    const page = createEarlierTranscriptPage(this.getRenderableMessages(), request.cursor);
+    if (!page) {
+      this.postMessage({
+        ...responseBase,
+        messages: [],
+        hasEarlierMessages: false,
+        cursor: '',
+        error: 'staleCursor',
+      });
+      return;
+    }
+
+    this.postMessage({
+      ...responseBase,
+      messages: page.messages,
+      hasEarlierMessages: page.hasEarlierMessages,
+      cursor: page.cursor ?? '',
+    });
   },
 
   async refreshSettingsState(this: ChatWebviewRuntime): Promise<void> {
@@ -2188,6 +2709,15 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
       await postCurrentState();
       return;
     }
+    if (openAICompatibleSettingsEqual(next, current)) {
+      this.postMessage({
+        type: 'openAICompatibleSettingsState',
+        openAICompatibleSettings: current,
+        currentProviderId: getConfiguredLlmProviderId(),
+        providerAuth: await service.getProviderAuthStateForUI(),
+      });
+      return;
+    }
 
     try {
       const config = vscode.workspace.getConfiguration('lingyun');
@@ -2238,6 +2768,15 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
         ? (normalizeOpenAICompatibleText(raw.defaultModelId, 200) || 'gpt-5.3-codex')
         : current.defaultModelId,
     };
+    if (next.defaultModelId === current.defaultModelId) {
+      this.postMessage({
+        type: 'codexSubscriptionSettingsState',
+        codexSubscriptionSettings: current,
+        currentProviderId: getConfiguredLlmProviderId(),
+        providerAuth: await service.getProviderAuthStateForUI(),
+      });
+      return;
+    }
 
     try {
       await vscode.workspace.getConfiguration('lingyun').update('codexSubscription.defaultModelId', next.defaultModelId, true);
@@ -2261,9 +2800,16 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
       return;
     }
 
+    const next = !!enabled;
+    const current = getPlanFirstEnabled();
+    if (next === current) {
+      this.postMessage({ type: 'planFirstState', planFirst: current });
+      return;
+    }
+
     try {
-      await vscode.workspace.getConfiguration('lingyun').update('planFirst', !!enabled, true);
-      this.postMessage({ type: 'planFirstState', planFirst: !!enabled });
+      await vscode.workspace.getConfiguration('lingyun').update('planFirst', next, true);
+      this.postMessage({ type: 'planFirstState', planFirst: next });
     } catch (error) {
       appendErrorLog(this.outputChannel, 'Failed to persist plan-first setting', error, { tag: 'Webview' });
       postInputNotice(this, 'Failed to update plan-first behavior. See logs for details.');
@@ -2278,9 +2824,16 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
       return;
     }
 
+    const next = !!enabled;
+    const current = getAutoApproveEnabled();
+    if (next === current) {
+      this.postMessage({ type: 'autoApproveState', autoApprove: current });
+      return;
+    }
+
     try {
-      await vscode.workspace.getConfiguration('lingyun').update('autoApprove', !!enabled, true);
-      this.postMessage({ type: 'autoApproveState', autoApprove: !!enabled });
+      await vscode.workspace.getConfiguration('lingyun').update('autoApprove', next, true);
+      this.postMessage({ type: 'autoApproveState', autoApprove: next });
     } catch (error) {
       appendErrorLog(this.outputChannel, 'Failed to persist auto-approve setting', error, { tag: 'Webview' });
       postInputNotice(this, 'Failed to update tool safety behavior. See logs for details.');
@@ -2295,9 +2848,16 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
       return;
     }
 
+    const next = !!enabled;
+    const current = getAllowExternalPathsEnabled();
+    if (next === current) {
+      this.postMessage({ type: 'allowExternalPathsState', allowExternalPaths: current });
+      return;
+    }
+
     try {
-      await vscode.workspace.getConfiguration('lingyun').update('security.allowExternalPaths', !!enabled, true);
-      this.postMessage({ type: 'allowExternalPathsState', allowExternalPaths: !!enabled });
+      await vscode.workspace.getConfiguration('lingyun').update('security.allowExternalPaths', next, true);
+      this.postMessage({ type: 'allowExternalPathsState', allowExternalPaths: next });
     } catch (error) {
       appendErrorLog(this.outputChannel, 'Failed to persist external path access setting', error, { tag: 'Webview' });
       postInputNotice(this, 'Failed to update external path access. See logs for details.');
@@ -2312,9 +2872,16 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
       return;
     }
 
+    const next = !!enabled;
+    const current = getBlockGitPushEnabled();
+    if (next === current) {
+      this.postMessage({ type: 'blockGitPushState', blockGitPush: current });
+      return;
+    }
+
     try {
-      await vscode.workspace.getConfiguration('lingyun').update('security.blockGitPush', !!enabled, true);
-      this.postMessage({ type: 'blockGitPushState', blockGitPush: !!enabled });
+      await vscode.workspace.getConfiguration('lingyun').update('security.blockGitPush', next, true);
+      this.postMessage({ type: 'blockGitPushState', blockGitPush: next });
     } catch (error) {
       appendErrorLog(this.outputChannel, 'Failed to persist git push protection setting', error, { tag: 'Webview' });
       postInputNotice(this, 'Failed to update git push protection. See logs for details.');
@@ -2331,7 +2898,13 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
       return;
     }
 
-    const normalized = normalizeDebugSettings(settings);
+    const current = getDebugSettingsForUi();
+    const normalized = normalizeDebugSettings(settings, current);
+    if (debugSettingsEqual(normalized, current)) {
+      this.postMessage({ type: 'debugSettingsState', debugSettings: current });
+      return;
+    }
+
     try {
       const config = vscode.workspace.getConfiguration('lingyun');
       await config.update('debug.details', normalized.details, true);
@@ -2367,7 +2940,7 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
         : current.workspaceDir,
     };
 
-    if (next.plugins.some(spec => spec.length > 240)) {
+    if (hasListItemLongerThan(next.plugins, 240)) {
       postInputNotice(this, 'Plugin module specs must be 240 characters or shorter.');
       postCurrentState();
       return;
@@ -2375,6 +2948,10 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
     if (next.workspaceDir.length > 120) {
       postInputNotice(this, 'Plugin workspace directory must be 120 characters or shorter.');
       postCurrentState();
+      return;
+    }
+    if (pluginSettingsEqual(next, current)) {
+      this.postMessage({ type: 'pluginSettingsState', pluginSettings: current });
       return;
     }
 
@@ -2433,6 +3010,10 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
       workspaceShellTimeoutMs: Math.floor(next.workspaceShellTimeoutMs),
       httpTimeoutMs: Math.floor(next.httpTimeoutMs),
     };
+    if (toolRuntimeLimitsEqual(normalized, current)) {
+      this.postMessage({ type: 'toolRuntimeLimitsState', toolRuntimeLimits: current });
+      return;
+    }
 
     try {
       const config = vscode.workspace.getConfiguration('lingyun');
@@ -2461,9 +3042,15 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
     }
 
     const normalized = normalizeToolFilter(patterns);
-    if (normalized.some(pattern => pattern.length > 120)) {
+    if (hasListItemLongerThan(normalized, 120)) {
       postInputNotice(this, 'Tool filter patterns must be 120 characters or shorter.');
       postCurrentState();
+      return;
+    }
+
+    const current = getToolFilter();
+    if (stringListsEqual(normalized, current)) {
+      this.postMessage({ type: 'toolFilterState', toolFilter: current });
       return;
     }
 
@@ -2544,6 +3131,12 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
     }
 
     const normalized = normalizeWorkspaceEnv(env);
+    const current = getWorkspaceEnv();
+    if (workspaceEnvEqual(normalized, current)) {
+      this.postMessage({ type: 'workspaceEnvState', workspaceEnv: current });
+      return;
+    }
+
     try {
       await vscode.workspace.getConfiguration('lingyun').update('env', normalized, true);
       this.postMessage({ type: 'workspaceEnvState', workspaceEnv: normalized });
@@ -2564,9 +3157,15 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
     }
 
     const normalized = normalizeInstructionPatterns(patterns);
-    if (normalized.some(pattern => pattern.length > 240)) {
+    if (hasListItemLongerThan(normalized, 240)) {
       postInputNotice(this, 'Instruction paths and glob patterns must be 240 characters or shorter.');
       postCurrentState();
+      return;
+    }
+
+    const current = getInstructionPatterns();
+    if (stringListsEqual(normalized, current)) {
+      this.postMessage({ type: 'instructionPatternsState', instructionPatterns: current });
       return;
     }
 
@@ -2608,6 +3207,10 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
       maxCharsPerFile: Math.floor(maxCharsPerFile),
       maxTotalChars: Math.floor(maxTotalChars),
     };
+    if (instructionFileSettingsEqual(normalized, current)) {
+      this.postMessage({ type: 'instructionFileSettingsState', instructionFileSettings: current });
+      return;
+    }
 
     try {
       const config = vscode.workspace.getConfiguration('lingyun');
@@ -2633,12 +3236,23 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
       return;
     }
 
+    const next = !!enabled;
+    const current = getSkillsEnabled();
+    if (next === current) {
+      this.postMessage({
+        type: 'skillsEnabledState',
+        skillsEnabled: current,
+        skills: await this.getSkillNamesForUI(),
+      });
+      return;
+    }
+
     try {
-      await vscode.workspace.getConfiguration('lingyun').update('skills.enabled', !!enabled, true);
+      await vscode.workspace.getConfiguration('lingyun').update('skills.enabled', next, true);
       this.skillNamesForUiPromise = undefined;
       this.postMessage({
         type: 'skillsEnabledState',
-        skillsEnabled: !!enabled,
+        skillsEnabled: next,
         skills: await this.getSkillNamesForUI(),
       });
     } catch (error) {
@@ -2667,9 +3281,19 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
     }
 
     const normalized = normalizeSkillSearchPaths(paths);
-    if (normalized.some(pathValue => pathValue.length > 240)) {
+    if (hasListItemLongerThan(normalized, 240)) {
       postInputNotice(this, 'Skill search paths must be 240 characters or shorter.');
       await postCurrentState();
+      return;
+    }
+
+    const current = getSkillSearchPaths();
+    if (stringListsEqual(normalized, current)) {
+      this.postMessage({
+        type: 'skillSearchPathsState',
+        skillSearchPaths: current,
+        skills: await this.getSkillNamesForUI(),
+      });
       return;
     }
 
@@ -2714,6 +3338,10 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
       maxInjectSkills: Math.floor(next.maxInjectSkills),
       maxInjectChars: Math.floor(next.maxInjectChars),
     };
+    if (skillsBudgetEqual(normalized, current)) {
+      this.postMessage({ type: 'skillsBudgetState', skillsBudget: current });
+      return;
+    }
 
     try {
       const config = vscode.workspace.getConfiguration('lingyun');
@@ -2736,8 +3364,15 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
       return;
     }
 
+    const next = !!enabled;
+    const current = getSessionsPersistEnabled();
+    if (next === current) {
+      this.postMessage({ type: 'sessionsPersistState', sessionsPersist: current });
+      return;
+    }
+
     try {
-      await vscode.workspace.getConfiguration('lingyun').update('sessions.persist', !!enabled, true);
+      await vscode.workspace.getConfiguration('lingyun').update('sessions.persist', next, true);
       await this.onSessionPersistenceConfigChanged();
       this.postMessage({ type: 'sessionsPersistState', sessionsPersist: getSessionsPersistEnabled() });
     } catch (error) {
@@ -2748,11 +3383,14 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
   },
 
   async setSessionRetentionLimits(this: ChatWebviewRuntime, limits: Partial<SessionRetentionLimits>): Promise<void> {
-    const postCurrentState = () => this.postMessage({
-      type: 'sessionRetentionState',
-      sessionsMaxSessions: getSessionsMaxSessions(),
-      sessionsMaxSessionBytes: getSessionsMaxSessionBytes(),
-    });
+    const postCurrentState = () => {
+      const current = getSessionRetentionLimits();
+      this.postMessage({
+        type: 'sessionRetentionState',
+        sessionsMaxSessions: current.maxSessions,
+        sessionsMaxSessionBytes: current.maxSessionBytes,
+      });
+    };
 
     if (this.isProcessing) {
       postInputNotice(this, 'Stop the current task before changing session retention.');
@@ -2760,25 +3398,37 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
       return;
     }
 
-    const nextMaxSessions = Number(limits.maxSessions ?? getSessionsMaxSessions());
-    const nextMaxSessionBytes = Number(limits.maxSessionBytes ?? getSessionsMaxSessionBytes());
+    const current = getSessionRetentionLimits();
+    const nextMaxSessions = Number(limits.maxSessions ?? current.maxSessions);
+    const nextMaxSessionBytes = Number(limits.maxSessionBytes ?? current.maxSessionBytes);
     if (!Number.isFinite(nextMaxSessions) || nextMaxSessions < 1 || !Number.isFinite(nextMaxSessionBytes) || nextMaxSessionBytes < 1000) {
       postInputNotice(this, 'Session retention must keep at least 1 session and 1000 bytes per session.');
       postCurrentState();
       return;
     }
 
-    const normalizedMaxSessions = Math.floor(nextMaxSessions);
-    const normalizedMaxSessionBytes = Math.floor(nextMaxSessionBytes);
+    const normalized: SessionRetentionLimits = {
+      maxSessions: Math.floor(nextMaxSessions),
+      maxSessionBytes: Math.floor(nextMaxSessionBytes),
+    };
+    if (normalized.maxSessions === current.maxSessions && normalized.maxSessionBytes === current.maxSessionBytes) {
+      this.postMessage({
+        type: 'sessionRetentionState',
+        sessionsMaxSessions: current.maxSessions,
+        sessionsMaxSessionBytes: current.maxSessionBytes,
+      });
+      return;
+    }
+
     try {
       const config = vscode.workspace.getConfiguration('lingyun');
-      await config.update('sessions.maxSessions', normalizedMaxSessions, true);
-      await config.update('sessions.maxSessionBytes', normalizedMaxSessionBytes, true);
+      await config.update('sessions.maxSessions', normalized.maxSessions, true);
+      await config.update('sessions.maxSessionBytes', normalized.maxSessionBytes, true);
       await this.onSessionPersistenceConfigChanged();
       this.postMessage({
         type: 'sessionRetentionState',
-        sessionsMaxSessions: normalizedMaxSessions,
-        sessionsMaxSessionBytes: normalizedMaxSessionBytes,
+        sessionsMaxSessions: normalized.maxSessions,
+        sessionsMaxSessionBytes: normalized.maxSessionBytes,
       });
     } catch (error) {
       appendErrorLog(this.outputChannel, 'Failed to persist session retention settings', error, { tag: 'Webview' });
@@ -2794,9 +3444,16 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
       return;
     }
 
+    const next = !!enabled;
+    const current = getShowThinkingEnabled();
+    if (next === current) {
+      this.postMessage({ type: 'showThinkingState', showThinking: current });
+      return;
+    }
+
     try {
-      await vscode.workspace.getConfiguration('lingyun').update('showThinking', !!enabled, true);
-      this.postMessage({ type: 'showThinkingState', showThinking: !!enabled });
+      await vscode.workspace.getConfiguration('lingyun').update('showThinking', next, true);
+      this.postMessage({ type: 'showThinkingState', showThinking: next });
     } catch (error) {
       appendErrorLog(this.outputChannel, 'Failed to persist show-thinking setting', error, { tag: 'Webview' });
       postInputNotice(this, 'Failed to update thinking display. See logs for details.');
@@ -2816,9 +3473,16 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
       return;
     }
 
+    const next = !!enabled;
+    const current = getMemoriesFeatureEnabled();
+    if (next === current) {
+      this.postMessage({ type: 'memoriesFeatureState', memoriesFeatureEnabled: current });
+      return;
+    }
+
     try {
-      await vscode.workspace.getConfiguration('lingyun').update('features.memories', !!enabled, true);
-      this.postMessage({ type: 'memoriesFeatureState', memoriesFeatureEnabled: !!enabled });
+      await vscode.workspace.getConfiguration('lingyun').update('features.memories', next, true);
+      this.postMessage({ type: 'memoriesFeatureState', memoriesFeatureEnabled: next });
     } catch (error) {
       appendErrorLog(this.outputChannel, 'Failed to persist memories feature setting', error, { tag: 'Webview' });
       postInputNotice(this, 'Failed to update memory features. See logs for details.');
@@ -2833,9 +3497,16 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
       return;
     }
 
+    const next = !!enabled;
+    const current = getMemoryAutoRecallEnabled();
+    if (next === current) {
+      this.postMessage({ type: 'memoryAutoRecallState', memoryAutoRecall: current });
+      return;
+    }
+
     try {
-      await vscode.workspace.getConfiguration('lingyun').update('memories.autoRecall', !!enabled, true);
-      this.postMessage({ type: 'memoryAutoRecallState', memoryAutoRecall: !!enabled });
+      await vscode.workspace.getConfiguration('lingyun').update('memories.autoRecall', next, true);
+      this.postMessage({ type: 'memoryAutoRecallState', memoryAutoRecall: next });
     } catch (error) {
       appendErrorLog(this.outputChannel, 'Failed to persist memory auto-recall setting', error, { tag: 'Webview' });
       postInputNotice(this, 'Failed to update memory recall behavior. See logs for details.');
@@ -2844,35 +3515,50 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
   },
 
   async setMemoryAutoRecallBudget(this: ChatWebviewRuntime, budget: Partial<MemoryAutoRecallBudget>): Promise<void> {
-    const postCurrentState = () => this.postMessage({
-      type: 'memoryAutoRecallBudgetState',
-      memoryAutoRecallMaxResults: getMemoryAutoRecallMaxResults(),
-      memoryAutoRecallMaxTokens: getMemoryAutoRecallMaxTokens(),
-    });
+    const postCurrentState = () => {
+      const current = getMemoryAutoRecallBudget();
+      this.postMessage({
+        type: 'memoryAutoRecallBudgetState',
+        memoryAutoRecallMaxResults: current.maxResults,
+        memoryAutoRecallMaxTokens: current.maxTokens,
+      });
+    };
     if (this.isProcessing) {
       postInputNotice(this, 'Stop the current task before changing memory recall budget.');
       postCurrentState();
       return;
     }
 
-    const nextMaxResults = Number(budget.maxResults ?? getMemoryAutoRecallMaxResults());
-    const nextMaxTokens = Number(budget.maxTokens ?? getMemoryAutoRecallMaxTokens());
+    const current = getMemoryAutoRecallBudget();
+    const nextMaxResults = Number(budget.maxResults ?? current.maxResults);
+    const nextMaxTokens = Number(budget.maxTokens ?? current.maxTokens);
     if (!Number.isFinite(nextMaxResults) || nextMaxResults < 1 || !Number.isFinite(nextMaxTokens) || nextMaxTokens < 100) {
       postInputNotice(this, 'Memory recall budget must allow at least 1 result and 100 tokens.');
       postCurrentState();
       return;
     }
 
-    const normalizedMaxResults = Math.floor(nextMaxResults);
-    const normalizedMaxTokens = Math.floor(nextMaxTokens);
-    try {
-      const config = vscode.workspace.getConfiguration('lingyun');
-      await config.update('memories.maxAutoRecallResults', normalizedMaxResults, true);
-      await config.update('memories.maxAutoRecallTokens', normalizedMaxTokens, true);
+    const normalized: MemoryAutoRecallBudget = {
+      maxResults: Math.floor(nextMaxResults),
+      maxTokens: Math.floor(nextMaxTokens),
+    };
+    if (normalized.maxResults === current.maxResults && normalized.maxTokens === current.maxTokens) {
       this.postMessage({
         type: 'memoryAutoRecallBudgetState',
-        memoryAutoRecallMaxResults: normalizedMaxResults,
-        memoryAutoRecallMaxTokens: normalizedMaxTokens,
+        memoryAutoRecallMaxResults: current.maxResults,
+        memoryAutoRecallMaxTokens: current.maxTokens,
+      });
+      return;
+    }
+
+    try {
+      const config = vscode.workspace.getConfiguration('lingyun');
+      await config.update('memories.maxAutoRecallResults', normalized.maxResults, true);
+      await config.update('memories.maxAutoRecallTokens', normalized.maxTokens, true);
+      this.postMessage({
+        type: 'memoryAutoRecallBudgetState',
+        memoryAutoRecallMaxResults: normalized.maxResults,
+        memoryAutoRecallMaxTokens: normalized.maxTokens,
       });
     } catch (error) {
       appendErrorLog(this.outputChannel, 'Failed to persist memory auto-recall budget', error, { tag: 'Webview' });
@@ -2882,40 +3568,60 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
   },
 
   async setMemoryAutoRecallFilters(this: ChatWebviewRuntime, filters: Partial<MemoryAutoRecallFilters>): Promise<void> {
-    const postCurrentState = () => this.postMessage({
-      type: 'memoryAutoRecallFiltersState',
-      memoryAutoRecallMinScore: getMemoryAutoRecallMinScore(),
-      memoryAutoRecallMinScoreGap: getMemoryAutoRecallMinScoreGap(),
-      memoryAutoRecallMaxAgeDays: getMemoryAutoRecallMaxAgeDays(),
-    });
+    const postCurrentState = () => {
+      const current = getMemoryAutoRecallFilters();
+      this.postMessage({
+        type: 'memoryAutoRecallFiltersState',
+        memoryAutoRecallMinScore: current.minScore,
+        memoryAutoRecallMinScoreGap: current.minScoreGap,
+        memoryAutoRecallMaxAgeDays: current.maxAgeDays,
+      });
+    };
     if (this.isProcessing) {
       postInputNotice(this, 'Stop the current task before changing memory recall filters.');
       postCurrentState();
       return;
     }
 
-    const nextMinScore = Number(filters.minScore ?? getMemoryAutoRecallMinScore());
-    const nextMinScoreGap = Number(filters.minScoreGap ?? getMemoryAutoRecallMinScoreGap());
-    const nextMaxAgeDays = Number(filters.maxAgeDays ?? getMemoryAutoRecallMaxAgeDays());
+    const current = getMemoryAutoRecallFilters();
+    const nextMinScore = Number(filters.minScore ?? current.minScore);
+    const nextMinScoreGap = Number(filters.minScoreGap ?? current.minScoreGap);
+    const nextMaxAgeDays = Number(filters.maxAgeDays ?? current.maxAgeDays);
     if (!Number.isFinite(nextMinScore) || nextMinScore < 0 || !Number.isFinite(nextMinScoreGap) || nextMinScoreGap < 0 || !Number.isFinite(nextMaxAgeDays) || nextMaxAgeDays < 1) {
       postInputNotice(this, 'Memory recall filters must use non-negative scores and at least 1 max-age day.');
       postCurrentState();
       return;
     }
 
-    const normalizedMinScore = Math.min(100, nextMinScore);
-    const normalizedMinScoreGap = Math.min(50, nextMinScoreGap);
-    const normalizedMaxAgeDays = Math.min(3650, Math.floor(nextMaxAgeDays));
-    try {
-      const config = vscode.workspace.getConfiguration('lingyun');
-      await config.update('memories.autoRecallMinScore', normalizedMinScore, true);
-      await config.update('memories.autoRecallMinScoreGap', normalizedMinScoreGap, true);
-      await config.update('memories.autoRecallMaxAgeDays', normalizedMaxAgeDays, true);
+    const normalized: MemoryAutoRecallFilters = {
+      minScore: Math.min(100, nextMinScore),
+      minScoreGap: Math.min(50, nextMinScoreGap),
+      maxAgeDays: Math.min(3650, Math.floor(nextMaxAgeDays)),
+    };
+    if (
+      normalized.minScore === current.minScore
+      && normalized.minScoreGap === current.minScoreGap
+      && normalized.maxAgeDays === current.maxAgeDays
+    ) {
       this.postMessage({
         type: 'memoryAutoRecallFiltersState',
-        memoryAutoRecallMinScore: normalizedMinScore,
-        memoryAutoRecallMinScoreGap: normalizedMinScoreGap,
-        memoryAutoRecallMaxAgeDays: normalizedMaxAgeDays,
+        memoryAutoRecallMinScore: current.minScore,
+        memoryAutoRecallMinScoreGap: current.minScoreGap,
+        memoryAutoRecallMaxAgeDays: current.maxAgeDays,
+      });
+      return;
+    }
+
+    try {
+      const config = vscode.workspace.getConfiguration('lingyun');
+      await config.update('memories.autoRecallMinScore', normalized.minScore, true);
+      await config.update('memories.autoRecallMinScoreGap', normalized.minScoreGap, true);
+      await config.update('memories.autoRecallMaxAgeDays', normalized.maxAgeDays, true);
+      this.postMessage({
+        type: 'memoryAutoRecallFiltersState',
+        memoryAutoRecallMinScore: normalized.minScore,
+        memoryAutoRecallMinScoreGap: normalized.minScoreGap,
+        memoryAutoRecallMaxAgeDays: normalized.maxAgeDays,
       });
     } catch (error) {
       appendErrorLog(this.outputChannel, 'Failed to persist memory auto-recall filters', error, { tag: 'Webview' });
@@ -3036,7 +3742,13 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
     }
 
     const allTools = await toolRegistry.getTools();
-    const tool = allTools.find((candidate) => candidate.id === id);
+    let tool: (typeof allTools)[number] | undefined;
+    for (const candidate of allTools) {
+      if (candidate.id === id) {
+        tool = candidate;
+        break;
+      }
+    }
     if (!tool) {
       postInputNotice(this, `Tool "${id}" is not registered.`);
       this.postMessage({
@@ -3067,10 +3779,7 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
         type: 'manualToolConfirmationRequired',
         toolId: tool.id,
         toolName: tool.name || tool.id,
-        reasons: [
-          tool.metadata?.readOnly !== true ? 'it may change workspace/editor state' : '',
-          tool.metadata?.requiresApproval === true ? 'it normally requires approval during agent runs' : '',
-        ].filter(Boolean),
+        reasons: collectManualToolConfirmationReasons(tool),
       });
       return;
     }
@@ -3191,6 +3900,10 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
       maxResultsPerKind: Math.min(20, Math.floor(numeric.maxResultsPerKind)),
       searchNeighborWindow: Math.min(5, Math.floor(numeric.searchNeighborWindow)),
     };
+    if (memoryAdvancedLimitsEqual(normalized, current)) {
+      this.postMessage({ type: 'memoryAdvancedLimitsState', memoryAdvancedLimits: current });
+      return;
+    }
 
     try {
       const config = vscode.workspace.getConfiguration('lingyun');
@@ -3218,9 +3931,16 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
       return;
     }
 
+    const next = !!enabled;
+    const current = getExplorePrepassEnabled();
+    if (next === current) {
+      this.postMessage({ type: 'explorePrepassState', explorePrepass: current, explorePrepassMaxChars: getExplorePrepassMaxChars() });
+      return;
+    }
+
     try {
-      await vscode.workspace.getConfiguration('lingyun').update('subagents.explorePrepass.enabled', !!enabled, true);
-      this.postMessage({ type: 'explorePrepassState', explorePrepass: !!enabled, explorePrepassMaxChars: getExplorePrepassMaxChars() });
+      await vscode.workspace.getConfiguration('lingyun').update('subagents.explorePrepass.enabled', next, true);
+      this.postMessage({ type: 'explorePrepassState', explorePrepass: next, explorePrepassMaxChars: getExplorePrepassMaxChars() });
     } catch (error) {
       appendErrorLog(this.outputChannel, 'Failed to persist explore prepass setting', error, { tag: 'Webview' });
       postInputNotice(this, 'Failed to update explore prepass behavior. See logs for details.');
@@ -3242,6 +3962,12 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
     }
 
     const normalized = Math.floor(maxChars);
+    const current = getExplorePrepassMaxChars();
+    if (normalized === current) {
+      this.postMessage({ type: 'explorePrepassState', explorePrepass: getExplorePrepassEnabled(), explorePrepassMaxChars: current });
+      return;
+    }
+
     try {
       await vscode.workspace.getConfiguration('lingyun').update('subagents.explorePrepass.maxChars', normalized, true);
       this.postMessage({ type: 'explorePrepassState', explorePrepass: getExplorePrepassEnabled(), explorePrepassMaxChars: normalized });
@@ -3264,6 +3990,12 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
     }
 
     const normalized = normalizeSubagentModelOverride(model);
+    const current = getSubagentModelOverride();
+    if (normalized === current) {
+      this.postMessage({ type: 'subagentModelOverrideState', subagentModelOverride: current });
+      return;
+    }
+
     try {
       await vscode.workspace.getConfiguration('lingyun').update('subagents.model', normalized, true);
       this.postMessage({ type: 'subagentModelOverrideState', subagentModelOverride: normalized });
@@ -3289,6 +4021,12 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
     }
 
     const normalized = Math.floor(maxChars);
+    const current = getSubagentTaskMaxOutputChars();
+    if (normalized === current) {
+      this.postMessage({ type: 'subagentTaskMaxOutputCharsState', subagentTaskMaxOutputChars: current });
+      return;
+    }
+
     try {
       await vscode.workspace.getConfiguration('lingyun').update('subagents.task.maxOutputChars', normalized, true);
       this.postMessage({ type: 'subagentTaskMaxOutputCharsState', subagentTaskMaxOutputChars: normalized });
@@ -3306,9 +4044,16 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
       return;
     }
 
+    const next = !!enabled;
+    const current = getAutoCompactionEnabled();
+    if (next === current) {
+      this.postMessage({ type: 'autoCompactionState', autoCompaction: current });
+      return;
+    }
+
     try {
-      await vscode.workspace.getConfiguration('lingyun').update('compaction.auto', !!enabled, true);
-      this.postMessage({ type: 'autoCompactionState', autoCompaction: !!enabled });
+      await vscode.workspace.getConfiguration('lingyun').update('compaction.auto', next, true);
+      this.postMessage({ type: 'autoCompactionState', autoCompaction: next });
     } catch (error) {
       appendErrorLog(this.outputChannel, 'Failed to persist auto-compaction setting', error, { tag: 'Webview' });
       postInputNotice(this, 'Failed to update auto-compaction behavior. See logs for details.');
@@ -3317,12 +4062,15 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
   },
 
   async setCompactionPruneSettings(this: ChatWebviewRuntime, settings: Partial<CompactionPruneSettings>): Promise<void> {
-    const postCurrentState = () => this.postMessage({
-      type: 'compactionPruneState',
-      compactionPrune: getCompactionPruneEnabled(),
-      compactionPruneProtectTokens: getCompactionPruneProtectTokens(),
-      compactionPruneMinimumTokens: getCompactionPruneMinimumTokens(),
-    });
+    const postCurrentState = () => {
+      const current = getCompactionPruneSettings();
+      this.postMessage({
+        type: 'compactionPruneState',
+        compactionPrune: current.prune,
+        compactionPruneProtectTokens: current.pruneProtectTokens,
+        compactionPruneMinimumTokens: current.pruneMinimumTokens,
+      });
+    };
 
     if (this.isProcessing) {
       postInputNotice(this, 'Stop the current task before changing compaction prune behavior.');
@@ -3330,9 +4078,10 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
       return;
     }
 
-    const nextPrune = settings.prune ?? getCompactionPruneEnabled();
-    const nextProtectTokens = Number(settings.pruneProtectTokens ?? getCompactionPruneProtectTokens());
-    const nextMinimumTokens = Number(settings.pruneMinimumTokens ?? getCompactionPruneMinimumTokens());
+    const current = getCompactionPruneSettings();
+    const nextPrune = settings.prune ?? current.prune;
+    const nextProtectTokens = Number(settings.pruneProtectTokens ?? current.pruneProtectTokens);
+    const nextMinimumTokens = Number(settings.pruneMinimumTokens ?? current.pruneMinimumTokens);
     if (typeof nextPrune !== 'boolean' || !Number.isFinite(nextProtectTokens) || nextProtectTokens < 0 || !Number.isFinite(nextMinimumTokens) || nextMinimumTokens < 0) {
       postInputNotice(this, 'Compaction prune token limits must be zero or greater.');
       postCurrentState();
@@ -3341,16 +4090,31 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
 
     const normalizedProtectTokens = Math.floor(nextProtectTokens);
     const normalizedMinimumTokens = Math.floor(nextMinimumTokens);
-    try {
-      const config = vscode.workspace.getConfiguration('lingyun');
-      await config.update('compaction.prune', nextPrune, true);
-      await config.update('compaction.pruneProtectTokens', normalizedProtectTokens, true);
-      await config.update('compaction.pruneMinimumTokens', normalizedMinimumTokens, true);
+    const normalized: CompactionPruneSettings = {
+      prune: nextPrune,
+      pruneProtectTokens: normalizedProtectTokens,
+      pruneMinimumTokens: normalizedMinimumTokens,
+    };
+    if (compactionPruneSettingsEqual(normalized, current)) {
       this.postMessage({
         type: 'compactionPruneState',
-        compactionPrune: nextPrune,
-        compactionPruneProtectTokens: normalizedProtectTokens,
-        compactionPruneMinimumTokens: normalizedMinimumTokens,
+        compactionPrune: current.prune,
+        compactionPruneProtectTokens: current.pruneProtectTokens,
+        compactionPruneMinimumTokens: current.pruneMinimumTokens,
+      });
+      return;
+    }
+
+    try {
+      const config = vscode.workspace.getConfiguration('lingyun');
+      await config.update('compaction.prune', normalized.prune, true);
+      await config.update('compaction.pruneProtectTokens', normalized.pruneProtectTokens, true);
+      await config.update('compaction.pruneMinimumTokens', normalized.pruneMinimumTokens, true);
+      this.postMessage({
+        type: 'compactionPruneState',
+        compactionPrune: normalized.prune,
+        compactionPruneProtectTokens: normalized.pruneProtectTokens,
+        compactionPruneMinimumTokens: normalized.pruneMinimumTokens,
       });
     } catch (error) {
       appendErrorLog(this.outputChannel, 'Failed to persist compaction prune settings', error, { tag: 'Webview' });
@@ -3369,6 +4133,12 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
     if (this.isProcessing) {
       postInputNotice(this, 'Stop the current task before changing tool-output compaction behavior.');
       this.postMessage({ type: 'compactionToolOutputModeState', compactionToolOutputMode: getCompactionToolOutputMode() });
+      return;
+    }
+
+    const current = getCompactionToolOutputMode();
+    if (normalized === current) {
+      this.postMessage({ type: 'compactionToolOutputModeState', compactionToolOutputMode: current });
       return;
     }
 
@@ -3398,7 +4168,13 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
       return;
     }
 
+    const current = getModelLimits();
     const next = normalizeModelLimits(limits);
+    if (modelLimitsEqual(next, current)) {
+      this.postMessage({ type: 'modelLimitsState', modelLimits: current });
+      return;
+    }
+
     try {
       await vscode.workspace.getConfiguration('lingyun').update('modelLimits', next, true);
       this.postMessage({ type: 'modelLimitsState', modelLimits: next });
@@ -3478,31 +4254,36 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
     const normalizedMaxIterations = nextMaxIterations === -1 ? -1 : Math.floor(nextMaxIterations);
     const normalizedMaxRetries = Math.floor(nextMaxRetries);
     const normalizedTimeoutMs = Math.floor(nextTimeoutMs);
+    const normalizedSettings: GenerationSettings = {
+      temperature: normalizedTemperature,
+      topP: normalizedTopP,
+      topK: normalizedTopK,
+      maxOutputTokens: normalizedMaxOutputTokens,
+      maxIterations: normalizedMaxIterations,
+      maxRetries: normalizedMaxRetries,
+      retryWithPartialOutput: nextRetryWithPartialOutput,
+      timeoutMs: normalizedTimeoutMs,
+      textVerbosity: nextTextVerbosity,
+    };
+    if (generationSettingsEqual(normalizedSettings, currentSettings)) {
+      this.postMessage({ type: 'generationSettingsState', generationSettings: currentSettings });
+      return;
+    }
 
     try {
       const config = vscode.workspace.getConfiguration('lingyun');
-      await config.update('temperature', normalizedTemperature, true);
-      await config.update('topP', normalizedTopP, true);
-      await config.update('topK', normalizedTopK, true);
-      await config.update('maxOutputTokens', normalizedMaxOutputTokens, true);
-      await config.update('maxIterations', normalizedMaxIterations, true);
-      await config.update('llm.maxRetries', normalizedMaxRetries, true);
-      await config.update('llm.retryWithPartialOutput', nextRetryWithPartialOutput, true);
-      await config.update('llm.timeoutMs', normalizedTimeoutMs, true);
-      await config.update('llm.textVerbosity', nextTextVerbosity, true);
+      await config.update('temperature', normalizedSettings.temperature, true);
+      await config.update('topP', normalizedSettings.topP, true);
+      await config.update('topK', normalizedSettings.topK, true);
+      await config.update('maxOutputTokens', normalizedSettings.maxOutputTokens, true);
+      await config.update('maxIterations', normalizedSettings.maxIterations, true);
+      await config.update('llm.maxRetries', normalizedSettings.maxRetries, true);
+      await config.update('llm.retryWithPartialOutput', normalizedSettings.retryWithPartialOutput, true);
+      await config.update('llm.timeoutMs', normalizedSettings.timeoutMs, true);
+      await config.update('llm.textVerbosity', normalizedSettings.textVerbosity, true);
       this.postMessage({
         type: 'generationSettingsState',
-        generationSettings: {
-          temperature: normalizedTemperature,
-          topP: normalizedTopP,
-          topK: normalizedTopK,
-          maxOutputTokens: normalizedMaxOutputTokens,
-          maxIterations: normalizedMaxIterations,
-          maxRetries: normalizedMaxRetries,
-          retryWithPartialOutput: nextRetryWithPartialOutput,
-          timeoutMs: normalizedTimeoutMs,
-          textVerbosity: nextTextVerbosity,
-        },
+        generationSettings: normalizedSettings,
       });
     } catch (error) {
       appendErrorLog(this.outputChannel, 'Failed to persist generation settings', error, { tag: 'Webview' });
@@ -3570,22 +4351,13 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
     const version = String((this.context as any)?.extension?.packageJSON?.version || '');
     const versionSuffix = version ? `(${version})` : '';
 
-    const scriptFiles = [
-      ['chat', 'bootstrap.js'],
-      ['chat', 'render-utils.js'],
-      ['chat', 'render-messages.js'],
-      ['chat', 'context.js'],
-      ['chat', 'main.js'],
-    ];
-    const scripts = [
-      renderBrowserChatProtocolBootstrapScript(nonce),
-      ...scriptFiles.map(parts => {
-        const uri = webview.asWebviewUri(
-          vscode.Uri.joinPath(this.context.extensionUri, 'media', ...parts)
-        );
-        return `<script nonce="${nonce}" src="${String(uri)}"></script>`;
-      }),
-    ].join('\n');
+    let scripts = renderBrowserChatProtocolBootstrapScript(nonce);
+    for (const parts of CHAT_WEBVIEW_SCRIPT_PARTS) {
+      const uri = webview.asWebviewUri(
+        vscode.Uri.joinPath(this.context.extensionUri, 'media', ...parts)
+      );
+      scripts += `\n<script nonce="${nonce}" src="${String(uri)}"></script>`;
+    }
     const logoUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this.context.extensionUri, 'images', 'icon.png')
     );
@@ -3692,6 +4464,18 @@ function createChatWebviewDepsForController(controller: ChatController): ChatWeb
     set webviewCrashToastClientId(value) {
       controller.webviewCrashToastClientId = value;
     },
+    get pendingComposerAttachments() {
+      return controller.pendingComposerAttachments;
+    },
+    set pendingComposerAttachments(value) {
+      controller.pendingComposerAttachments = value;
+    },
+    get composerSubmissionState() {
+      return controller.composerSubmissionState;
+    },
+    set composerSubmissionState(value) {
+      controller.composerSubmissionState = value;
+    },
     get llmProvider() {
       return controller.llmProvider;
     },
@@ -3717,7 +4501,8 @@ function createChatWebviewDepsForController(controller: ChatController): ChatWeb
     viewRevertDiff: () => controller.revertApi.viewRevertDiff(),
     switchToSession: (sessionId: string) => controller.sessionApi.switchToSession(sessionId),
     postSessions: () => controller.sessionApi.postSessions(),
-    handleUserMessage: (content: string | ChatUserInput) => controller.runnerInputApi.handleUserMessage(content),
+    handleUserMessage: (content: string | ChatUserInput, options?: ChatUserMessageOptions) =>
+      controller.runnerInputApi.handleUserMessage(content, options),
     approveAllPendingApprovals: (options?: { includeManual?: boolean }) =>
       controller.approvalsApi.approveAllPendingApprovals(options),
     postApprovalState: () => controller.approvalsApi.postApprovalState(),

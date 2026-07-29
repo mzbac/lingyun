@@ -3,6 +3,7 @@
  */
 
 import * as assert from 'assert';
+import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -151,6 +152,59 @@ suite('ToolRegistry', () => {
     assert.throws(() => {
       registry.registerProvider(provider2);
     }, /already registered/);
+  });
+
+  test('registry LLM tools and provider lists avoid mapped snapshots', async () => {
+    const definition: ToolDefinition = {
+      id: 'llm_tool',
+      name: 'LLM Tool',
+      description: 'Tool for LLM shaping',
+      parameters: { type: 'object', properties: { value: { type: 'string' } } },
+      execution: { type: 'function', handler: 'llm_tool' },
+    };
+    registry.registerTool(definition, async () => ({ success: true }));
+    registry.registerProvider({
+      id: 'source_provider',
+      name: 'Source Provider',
+      getTools: () => [],
+      executeTool: async () => ({ success: true }),
+    });
+
+    assert.deepStrictEqual(await registry.getToolsForLLM(), [
+      {
+        type: 'function',
+        function: {
+          name: 'llm_tool',
+          description: 'Tool for LLM shaping',
+          parameters: { type: 'object', properties: { value: { type: 'string' } } },
+        },
+      },
+    ]);
+    assert.deepStrictEqual(registry.getProviders(), [
+      { id: 'builtin', name: 'Built-in Tools' },
+      { id: 'source_provider', name: 'Source Provider' },
+    ]);
+
+    const source = fs.readFileSync(path.resolve(__dirname, '../../../src/core/registry.ts'), 'utf8');
+    const llmStart = source.indexOf('async getToolsForLLM');
+    assert.ok(llmStart >= 0, 'expected getToolsForLLM');
+    const providersStart = source.indexOf('\n  getProviders', llmStart);
+    assert.ok(providersStart > llmStart, 'expected getProviders after getToolsForLLM');
+    const llmSection = source.slice(llmStart, providersStart);
+    const providersEnd = source.indexOf('\n  async getToolCount', providersStart);
+    assert.ok(providersEnd > providersStart, 'expected getToolCount after getProviders');
+    const providersSection = source.slice(providersStart, providersEnd);
+
+    assert.match(llmSection, /const out: Array</);
+    assert.match(llmSection, /for \(const tool of tools\)/);
+    assert.match(llmSection, /out\.push\(\{/);
+    assert.match(llmSection, /return out;/);
+    assert.doesNotMatch(llmSection, /tools\.map/);
+
+    assert.match(providersSection, /const providers: \{ id: string; name: string \}\[\] = \[\{ id: 'builtin', name: 'Built-in Tools' \}\];/);
+    assert.match(providersSection, /for \(const provider of this\.providers\.values\(\)\)/);
+    assert.match(providersSection, /providers\.push\(\{ id: provider\.id, name: provider\.name \}\);/);
+    assert.doesNotMatch(providersSection, /Array\.from\(this\.providers\.values\(\)\)\.map/);
   });
 
   // ===========================================================================

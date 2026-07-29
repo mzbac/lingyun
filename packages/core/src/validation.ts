@@ -22,7 +22,10 @@ export function validateToolArgs(
     }
   }
 
-  for (const [key, propSchema] of Object.entries(schema.properties)) {
+  const properties = schema.properties;
+  for (const key in properties) {
+    if (!Object.prototype.hasOwnProperty.call(properties, key)) continue;
+    const propSchema = properties[key]!;
     const value = args[key];
 
     if (value === undefined || value === null) {
@@ -297,6 +300,12 @@ type ShellMetaHit =
 
 type QuoteState = 'none' | 'single' | 'double';
 
+const SHELL_ENV_ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
+function isShellCommandWhitespace(code: number): boolean {
+  return code <= 32 || code === 160;
+}
+
 function findFirstShellMeta(command: string): ShellMetaHit | undefined {
   let quote: QuoteState = 'none';
   let escaped = false;
@@ -373,18 +382,32 @@ function findFirstShellMeta(command: string): ShellMetaHit | undefined {
   return undefined;
 }
 
-function stripLeadingEnvAssignments(command: string): string {
-  const words = command.trim().split(/\s+/);
-  let i = 0;
-  while (i < words.length) {
-    const word = words[i] || '';
-    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(word)) {
-      i++;
+function getFirstCommandToken(command: string): string {
+  let tokenStart = -1;
+  for (let i = 0; i <= command.length; i++) {
+    const atEnd = i === command.length;
+    if (!atEnd && !isShellCommandWhitespace(command.charCodeAt(i))) {
+      if (tokenStart < 0) tokenStart = i;
       continue;
     }
-    break;
+    if (tokenStart < 0) continue;
+    const token = command.slice(tokenStart, i);
+    if (!SHELL_ENV_ASSIGNMENT_RE.test(token)) return token;
+    tokenStart = -1;
   }
-  return words.slice(i).join(' ');
+  return '';
+}
+
+function getShellTokenBasename(token: string): string {
+  let lastSeparator = -1;
+  for (let i = token.length - 1; i >= 0; i--) {
+    const ch = token.charCodeAt(i);
+    if (ch === 47 || ch === 92) {
+      lastSeparator = i;
+      break;
+    }
+  }
+  return token.slice(lastSeparator + 1).toLowerCase();
 }
 
 export function evaluateShellCommand(command: string): ShellCommandDecision {
@@ -425,9 +448,7 @@ export function evaluateShellCommand(command: string): ShellCommandDecision {
 }
 
 export function getShellCommandBase(command: string): string {
-  const normalized = stripLeadingEnvAssignments(command);
-  const firstToken = normalized.trim().split(/\s+/)[0] || '';
-  return firstToken.split(/[\\/]/).pop()?.toLowerCase() || '';
+  return getShellTokenBasename(getFirstCommandToken(command));
 }
 
 export function isUnsandboxableShellCommand(command: string): boolean {

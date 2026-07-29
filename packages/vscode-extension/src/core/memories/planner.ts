@@ -3,6 +3,7 @@ import {
   isExplicitMemoryCandidate,
   isSessionMemoryDisabled,
   normalizeSessionSignals,
+  type SessionSignals,
 } from '../sessionSignals';
 
 import {
@@ -33,10 +34,11 @@ type SessionEligibility = 'eligible' | 'recent' | 'explicit_recent' | 'expired' 
 
 function getSessionEligibility(
   session: PersistedSession,
+  signals: SessionSignals,
   now: number,
   config: MemoriesConfig,
 ): SessionEligibility {
-  if (isSessionMemoryDisabled(normalizeSessionSignals(session.signals, now))) {
+  if (isSessionMemoryDisabled(signals)) {
     return 'memory_disabled';
   }
 
@@ -44,7 +46,7 @@ function getSessionEligibility(
     return 'plan_or_subagent';
   }
 
-  const hasExplicitMemory = normalizeSessionSignals(session.signals, now).structuredMemories.some(isExplicitMemoryCandidate);
+  const hasExplicitMemory = signals.structuredMemories.some(isExplicitMemoryCandidate);
   if (session.runtime?.wasRunning) {
     return hasExplicitMemory ? 'explicit_recent' : 'recent';
   }
@@ -127,71 +129,77 @@ export function planMemoryUpdate(params: {
   workspaceRootPath: string;
   now: number;
 }): PlannedMemoryUpdate {
-  const knownSessionIds = new Set(params.sessions.map((session) => session.id));
-  const externalContextSessionIds = new Set(
-    params.sessions
-      .filter((session) => hasExternalMemoryContext(normalizeSessionSignals(session.signals, params.now)))
-      .map((session) => session.id),
-  );
-  const memoryDisabledSessionIds = new Set(
-    params.sessions
-      .filter((session) => isSessionMemoryDisabled(normalizeSessionSignals(session.signals, params.now)))
-      .map((session) => session.id),
-  );
-  const prevOutputs = params.prev.outputs.filter(
-    (output) =>
-      knownSessionIds.has(output.sessionId) &&
-      !externalContextSessionIds.has(output.sessionId) &&
-      !memoryDisabledSessionIds.has(output.sessionId),
-  );
-  const prevRecords = params.prev.records.filter(
-    (record) =>
-      knownSessionIds.has(record.sessionId) &&
-      !externalContextSessionIds.has(record.sessionId) &&
-      !memoryDisabledSessionIds.has(record.sessionId),
-  );
-  const prevBySession = new Map(prevOutputs.map((output) => [output.sessionId, output]));
-  const prevRecordCountBySession = new Map<string, number>();
-  for (const record of prevRecords) {
-    prevRecordCountBySession.set(record.sessionId, (prevRecordCountBySession.get(record.sessionId) || 0) + 1);
-  }
-
+  const knownSessionIds = new Set<string>();
+  const externalContextSessionIds = new Set<string>();
+  const memoryDisabledSessionIds = new Set<string>();
   let skippedRecentSessions = 0;
   let skippedExpiredSessions = 0;
   let skippedPlanOrSubagentSessions = 0;
   let skippedNoSignalSessions = 0;
-  const skippedExternalContextSessions = externalContextSessionIds.size;
   let skippedMemoryDisabledSessions = 0;
+  const eligible: Array<{ session: PersistedSession; explicitOnly: boolean }> = [];
 
-  const eligible = params.sessions
-    .flatMap((session): Array<{ session: PersistedSession; explicitOnly: boolean }> => {
-      if (externalContextSessionIds.has(session.id)) {
-        return [];
-      }
-      const eligibility = getSessionEligibility(session, params.now, params.config);
-      if (eligibility === 'memory_disabled') {
-        skippedMemoryDisabledSessions += 1;
-        return [];
-      }
-      if (eligibility === 'recent') {
-        skippedRecentSessions += 1;
-        return [];
-      }
-      if (eligibility === 'expired') {
-        skippedExpiredSessions += 1;
-        return [];
-      }
-      if (eligibility === 'plan_or_subagent') {
-        skippedPlanOrSubagentSessions += 1;
-        return [];
-      }
-      return [{ session, explicitOnly: eligibility === 'explicit_recent' }];
-    })
-    .sort((a, b) => b.session.updatedAt - a.session.updatedAt)
-    .slice(0, params.config.maxRolloutsPerStartup);
+  for (const session of params.sessions) {
+    knownSessionIds.add(session.id);
+    const signals = normalizeSessionSignals(session.signals, params.now);
+    const hasExternalContext = hasExternalMemoryContext(signals);
+    const memoryDisabled = isSessionMemoryDisabled(signals);
+    if (hasExternalContext) externalContextSessionIds.add(session.id);
+    if (memoryDisabled) memoryDisabledSessionIds.add(session.id);
+    if (hasExternalContext) continue;
 
-  const outputs = [...prevOutputs];
-  let records = [...prevRecords];
+    const eligibility = getSessionEligibility(session, signals, params.now, params.config);
+    if (eligibility === 'memory_disabled') {
+      skippedMemoryDisabledSessions += 1;
+      continue;
+    }
+    if (eligibility === 'recent') {
+      skippedRecentSessions += 1;
+      continue;
+    }
+    if (eligibility === 'expired') {
+      skippedExpiredSessions += 1;
+      continue;
+    }
+    if (eligibility === 'plan_or_subagent') {
+      skippedPlanOrSubagentSessions += 1;
+      continue;
+    }
+    eligible.push({ session, explicitOnly: eligibility === 'explicit_recent' });
+  }
+  eligible.sort((a, b) => b.session.updatedAt - a.session.updatedAt);
+  if (eligible.length > params.config.maxRolloutsPerStartup) {
+    eligible.length = params.config.maxRolloutsPerStartup;
+  }
+
+  const prevOutputs: Stage1Output[] = [];
+  const prevBySession = new Map<string, Stage1Output>();
+  const outputIndexBySession = new Map<string, number>();
+  for (const output of params.prev.outputs) {
+    if (!knownSessionIds.has(output.sessionId)) continue;
+    if (externalContextSessionIds.has(output.sessionId)) continue;
+    if (memoryDisabledSessionIds.has(output.sessionId)) continue;
+    const outputIndex = prevOutputs.length;
+    prevOutputs.push(output);
+    if (!outputIndexBySession.has(output.sessionId)) {
+      outputIndexBySession.set(output.sessionId, outputIndex);
+    }
+    prevBySession.set(output.sessionId, output);
+  }
+
+  const prevRecords: MemoriesState['records'] = [];
+  const prevRecordCountBySession = new Map<string, number>();
+  for (const record of params.prev.records) {
+    if (!knownSessionIds.has(record.sessionId)) continue;
+    if (externalContextSessionIds.has(record.sessionId)) continue;
+    if (memoryDisabledSessionIds.has(record.sessionId)) continue;
+    prevRecords.push(record);
+    prevRecordCountBySession.set(record.sessionId, (prevRecordCountBySession.get(record.sessionId) || 0) + 1);
+  }
+
+  const skippedExternalContextSessions = externalContextSessionIds.size;
+  const outputs = prevOutputs;
+  const records = prevRecords;
   let insertedOutputs = 0;
   let updatedOutputs = 0;
 
@@ -223,15 +231,22 @@ export function planMemoryUpdate(params: {
       continue;
     }
 
-    records = records.filter((record) => record.sessionId !== session.id);
+    let writeIndex = 0;
+    for (const record of records) {
+      if (record.sessionId === session.id) continue;
+      records[writeIndex] = record;
+      writeIndex += 1;
+    }
+    records.length = writeIndex;
     records.push(...nextRecords);
 
     if (hasSignal(stage1)) {
-      const index = outputs.findIndex((item) => item.sessionId === session.id);
-      if (index >= 0) {
+      const index = outputIndexBySession.get(session.id);
+      if (index !== undefined) {
         outputs[index] = stage1;
         updatedOutputs += 1;
       } else {
+        outputIndexBySession.set(session.id, outputs.length);
         outputs.push(stage1);
         insertedOutputs += 1;
       }

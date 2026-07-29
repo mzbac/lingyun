@@ -1,4 +1,4 @@
-import { getMessageText } from '@kooka/core';
+import { getMessageText, type AgentHistoryMessage } from '@kooka/core';
 
 import type { AgentCallbacks } from '../../../core/types';
 import { cleanAssistantPreamble } from '../utils';
@@ -21,6 +21,14 @@ type TokenBuffer = {
   token: string;
   timer?: NodeJS.Timeout;
 };
+
+function findLatestAssistantMessage(history: AgentHistoryMessage[]): AgentHistoryMessage | undefined {
+  for (let i = history.length - 1; i >= 0; i--) {
+    const message = history[i];
+    if (message?.role === 'assistant') return message;
+  }
+  return undefined;
+}
 
 export interface ChatExecutionState {
   ensureStepMsg(): ChatMessage;
@@ -117,7 +125,7 @@ export function createChatExecutionState(params: ExecutionStateParams): ChatExec
   }
 
   function flushAllTokenBuffers(): void {
-    for (const messageId of [...tokenBuffersByMessageId.keys()]) {
+    for (const messageId of tokenBuffersByMessageId.keys()) {
       flushTokenBuffer(messageId);
     }
   }
@@ -227,8 +235,7 @@ export function createChatExecutionState(params: ExecutionStateParams): ChatExec
   }
 
   function reconcileAssistantFromHistory(): void {
-    const history = view.agent.getHistory();
-    const lastAssistant = [...history].reverse().find(m => m.role === 'assistant');
+    const lastAssistant = findLatestAssistantMessage(view.agent.getHistory());
     if (!lastAssistant) return;
 
     const finalContent = cleanAssistantPreamble(getMessageText(lastAssistant));

@@ -22,8 +22,11 @@ export function bindChatControllerService<
 ): BoundChatControllerService<TController, T> {
   const bound = {} as BoundChatControllerService<TController, T>;
 
-  for (const [name, method] of Object.entries(methods) as Array<[keyof T, T[keyof T]]>) {
-    bound[name] = method.bind(controller) as BoundChatControllerService<TController, T>[keyof T];
+  for (const name in methods) {
+    if (!Object.prototype.hasOwnProperty.call(methods, name)) continue;
+    const key = name as keyof T;
+    const method = methods[key];
+    bound[key] = method.bind(controller) as BoundChatControllerService<TController, T>[keyof T];
   }
 
   return bound;

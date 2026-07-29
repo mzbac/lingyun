@@ -6,6 +6,7 @@ import { LingyunSession } from '@kooka/agent-sdk';
 import type { ToolContext } from '../../core/types';
 import { createGoalHandler, createGoalTool, getGoalHandler, updateGoalHandler } from '../../tools/builtin/goal';
 import {
+  MAX_GOAL_OBJECTIVE_CHARS,
   createBudgetLimitedPrompt,
   createGoalContinuationPrompt,
   formatGoalSummary,
@@ -46,6 +47,20 @@ suite('Goal Command', () => {
     assert.throws(
       () => parseGoalSlashCommand('/goal --tokens zero ship it'),
       /Goal token budget must be a positive number/,
+    );
+  });
+
+  test('validates objective length by Unicode code points', () => {
+    const maxEmojiObjective = '🚀'.repeat(MAX_GOAL_OBJECTIVE_CHARS);
+    assert.deepStrictEqual(parseGoalSlashCommand('/goal ' + maxEmojiObjective), {
+      kind: 'setObjective',
+      objective: maxEmojiObjective,
+    });
+
+    const tooLongEmojiObjective = maxEmojiObjective + '🚀';
+    assert.throws(
+      () => parseGoalSlashCommand('/goal ' + tooLongEmojiObjective),
+      new RegExp(`Goal objective is too long: ${MAX_GOAL_OBJECTIVE_CHARS + 1} characters`),
     );
   });
 
@@ -163,6 +178,21 @@ suite('Goal Tools', () => {
     assert.strictEqual(completed.success, true);
     assert.strictEqual(session.threadGoal?.status, 'complete');
     assert.match(String((completed.data as any)?.completionBudgetReport || ''), /Report final usage from this tool result's structured goal fields/);
+  });
+
+  test('create_goal validates objective length by Unicode code points', async () => {
+    const maxEmojiObjective = '🚀'.repeat(MAX_GOAL_OBJECTIVE_CHARS);
+    const acceptedSession = new LingyunSession({ sessionId: 'session-goal-max-objective' });
+    const accepted = await createGoalHandler({ objective: maxEmojiObjective }, createToolContext(acceptedSession));
+    assert.strictEqual(accepted.success, true);
+    assert.strictEqual(acceptedSession.threadGoal?.objective, maxEmojiObjective);
+
+    const tooLongEmojiObjective = maxEmojiObjective + '🚀';
+    const rejectedSession = new LingyunSession({ sessionId: 'session-goal-too-long-objective' });
+    const rejected = await createGoalHandler({ objective: tooLongEmojiObjective }, createToolContext(rejectedSession));
+    assert.strictEqual(rejected.success, false);
+    assert.match(String(rejected.error || ''), new RegExp(`objective must be at most ${MAX_GOAL_OBJECTIVE_CHARS} characters`));
+    assert.strictEqual(rejectedSession.threadGoal, undefined);
   });
 
   test('uses tool context session id as the response thread id fallback', async () => {

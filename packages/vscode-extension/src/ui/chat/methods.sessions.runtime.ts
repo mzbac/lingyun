@@ -10,6 +10,7 @@ import type { LLMProvider } from '../../core/types';
 import type { ModelInfo } from '../../providers/modelCatalog';
 import { bindChatControllerService } from './controllerService';
 import { postInputNotice } from './inputNotice';
+import { orderSessionsForNavigation } from './sessionOrdering';
 import { createDefaultSessionTitle, getSessionDisplayTitle } from './sessionTitle';
 import { formatErrorForUser, isCancellationMessage } from './utils';
 import type { ChatMessage, ChatSessionInfo } from './types';
@@ -71,6 +72,8 @@ export interface ChatSessionRuntimeDeps {
 
 type ChatSessionRuntimeRuntime = ChatSessionRuntimeDeps & ChatSessionRuntimeService;
 
+const backendTransitionTokens = new WeakMap<ChatSessionRuntimeDeps, object>();
+
 function positiveFiniteNumber(value: unknown): number | undefined {
   if (typeof value === 'number' && Number.isFinite(value) && value > 0) return Math.floor(value);
   if (typeof value === 'string' && value.trim()) {
@@ -83,7 +86,20 @@ function positiveFiniteNumber(value: unknown): number | undefined {
 function findModelInfo(models: ModelInfo[], modelId: string): ModelInfo | undefined {
   const normalized = modelId.trim();
   if (!normalized) return undefined;
-  return models.find((model) => model.id === normalized);
+  for (const model of models) {
+    if (model.id === normalized) return model;
+  }
+  return undefined;
+}
+
+function findLatestSummaryMessage(
+  history: AgentSessionState['history']
+): AgentSessionState['history'][number] | undefined {
+  for (let i = history.length - 1; i >= 0; i--) {
+    const message = history[i];
+    if (message?.role === 'assistant' && (message as any).metadata?.summary) return message;
+  }
+  return undefined;
 }
 
 export function createChatSessionRuntimeService(
@@ -202,7 +218,13 @@ export function createChatSessionRuntimeService(
       const boundaryId = session.revert?.messageId;
       if (!boundaryId) return this.messages;
 
-      const boundaryIndex = this.messages.findIndex(m => m.id === boundaryId);
+      let boundaryIndex = -1;
+      for (let i = 0; i < this.messages.length; i++) {
+        if (this.messages[i].id === boundaryId) {
+          boundaryIndex = i;
+          break;
+        }
+      }
       if (boundaryIndex < 0) return this.messages;
 
       return this.messages.slice(0, boundaryIndex);
@@ -223,10 +245,18 @@ export function createChatSessionRuntimeService(
     },
 
     getSessionsForUI(this: ChatSessionRuntimeRuntime): Array<{ id: string; title: string }> {
-      return [...this.sessions.values()].map(s => ({
-        id: s.id,
-        title: s.parentSessionId ? `↳ ${getSessionDisplayTitle(s)}` : getSessionDisplayTitle(s),
-      }));
+      const sessions: Array<{ id: string; title: string }> = [];
+      for (const { session, depth } of orderSessionsForNavigation(
+        this.sessions.values(),
+        this.activeSessionId
+      )) {
+        const title = getSessionDisplayTitle(session);
+        sessions.push({
+          id: session.id,
+          title: depth > 0 ? `↳ ${title}` : title,
+        });
+      }
+      return sessions;
     },
 
     postSessions(this: ChatSessionRuntimeRuntime): void {
@@ -319,6 +349,8 @@ export function createChatSessionRuntimeService(
       agent: AgentLoop,
       llmProvider?: LLMProvider
     ): Promise<void> {
+      const transitionToken = {};
+      backendTransitionTokens.set(this, transitionToken);
       this.agent = agent;
       this.llmProvider = llmProvider;
       this.isProcessing = false;
@@ -335,6 +367,8 @@ export function createChatSessionRuntimeService(
       this.initAcked = false;
 
       await this.persistence.ensureSessionsLoaded();
+      if (backendTransitionTokens.get(this) !== transitionToken) return;
+
       for (const session of this.sessions.values()) {
         session.currentModel = this.currentModel;
       }
@@ -450,8 +484,7 @@ export function createChatSessionRuntimeService(
           operationMsg.operation.detail = 'Summarized older messages into a compact note.';
           operationMsg.operation.endedAt = endedAt;
 
-          const history = this.agent.getHistory();
-          const summary = [...history].reverse().find(m => m.role === 'assistant' && (m as any).metadata?.summary);
+          const summary = findLatestSummaryMessage(this.agent.getHistory());
           const summaryText = summary ? getMessageText(summary) : '';
           if (summaryText.trim()) {
             operationMsg.operation.summaryText =

@@ -64,22 +64,21 @@ export const globHandler: ToolHandler = async (args, context) => {
       windowsPathsNoEscape: true,
     });
 
-    const entries = await Promise.all(
-      relMatches.slice(0, 200).map(async (rel) => {
-        const abs = path.resolve(base, rel);
-        let mtime = 0;
-        try {
-          const stat = await fs.stat(abs);
-          mtime = stat.mtimeMs ?? 0;
-        } catch {
-          mtime = 0;
-        }
-        return { abs, mtime };
-      })
-    );
+    const statTasks: Array<Promise<{ abs: string; mtime: number }>> = [];
+    const statLimit = Math.min(relMatches.length, 200);
+    for (let i = 0; i < statLimit; i++) {
+      const rel = relMatches[i]!;
+      statTasks.push(statGlobEntry(path.resolve(base, rel)));
+    }
+
+    const entries = await Promise.all(statTasks);
 
     entries.sort((a, b) => b.mtime - a.mtime);
-    const files = entries.map((e) => formatToolPathForOutput(e.abs, context)).slice(0, 100);
+    const files: string[] = [];
+    for (const entry of entries) {
+      if (files.length >= 100) break;
+      files.push(formatToolPathForOutput(entry.abs, context));
+    }
     const truncated = files.length >= 100 || relMatches.length > files.length;
 
     return {
@@ -94,3 +93,14 @@ export const globHandler: ToolHandler = async (args, context) => {
     return { success: false, error: error instanceof Error ? error.message : String(error) };
   }
 };
+
+async function statGlobEntry(abs: string): Promise<{ abs: string; mtime: number }> {
+  let mtime = 0;
+  try {
+    const stat = await fs.stat(abs);
+    mtime = stat.mtimeMs ?? 0;
+  } catch {
+    mtime = 0;
+  }
+  return { abs, mtime };
+}

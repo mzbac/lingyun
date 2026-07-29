@@ -1,5 +1,7 @@
 import * as assert from 'assert';
+import * as fs from 'fs';
 import * as os from 'os';
+import * as path from 'path';
 
 import {
   formatDetailedErrorForDebug,
@@ -124,6 +126,44 @@ suite('Debug Redaction', () => {
     assert.ok(redacted.includes('<local-host>'));
     assert.ok(redacted.includes('<url>'));
     assert.ok(redacted.includes('~'));
+  });
+
+  test('redactSensitive redacts private IPv4 ranges through shared classifier', () => {
+    const input = [
+      '10.0.0.9:8080',
+      '172.16.4.5:8080',
+      '172.31.255.255:8080',
+      '192.168.1.20:8080',
+      '169.254.1.1:8080',
+      '127.0.0.1:8080',
+      '8.8.8.8:53',
+    ].join(' ');
+
+    const redacted = redactSensitive(input, { redactionLevel: 'secrets-only' });
+
+    assert.ok(!redacted.includes('10.0.0.9'));
+    assert.ok(!redacted.includes('172.16.4.5'));
+    assert.ok(!redacted.includes('172.31.255.255'));
+    assert.ok(!redacted.includes('192.168.1.20'));
+    assert.ok(!redacted.includes('169.254.1.1'));
+    assert.ok(!redacted.includes('127.0.0.1'));
+    assert.ok(!redacted.includes('8.8.8.8'));
+    assert.strictEqual((redacted.match(/<private-ip>/g) || []).length, 6);
+    assert.ok(redacted.includes('<ip>'));
+  });
+
+  test('debug redaction uses shared allocation-light private IPv4 classifier', () => {
+    const debugSource = fs.readFileSync(path.resolve(__dirname, '../../../src/core/agent/debug.ts'), 'utf8');
+    assert.match(debugSource, /import \{ TOOL_ERROR_CODES, isPrivateIpv4Address \} from '@kooka\/core';/);
+    assert.match(debugSource, /isPrivateIpv4Address\(match\)/);
+    assert.doesNotMatch(debugSource, /function isPrivateIpv4/);
+    assert.doesNotMatch(debugSource, /split\('\.'\)\.map/);
+
+    const coreSource = fs.readFileSync(path.resolve(__dirname, '../../../../core/src/ip.ts'), 'utf8');
+    assert.match(coreSource, /export function isPrivateIpv4Address/);
+    assert.match(coreSource, /charCodeAt/);
+    assert.doesNotMatch(coreSource, /split\('\.'\)\.map/);
+    assert.doesNotMatch(coreSource, /\.some\(/);
   });
 
   test('summarizeErrorForDebug includes safe provider diagnostics without leaking URLs or model IDs', () => {

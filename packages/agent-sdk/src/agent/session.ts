@@ -7,7 +7,10 @@ import {
 } from '@kooka/core';
 import type { UserHistoryInput } from '@kooka/core';
 import { normalizeSemanticHandlesState, type SemanticHandlesState } from './semanticHandles.js';
-import type { LingyunCompactionSyntheticContext } from './transientSyntheticContext.js';
+import {
+  normalizeCompactionSyntheticContexts,
+  type LingyunCompactionSyntheticContext,
+} from './transientSyntheticContext.js';
 
 export type LingyunFileHandlesState = {
   nextId: number;
@@ -62,6 +65,35 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
+const FILE_HANDLE_ID_RE = /^F(\d+)$/;
+
+function parseFileHandleNumber(id: string): number | undefined {
+  const match = FILE_HANDLE_ID_RE.exec(id);
+  if (!match) return undefined;
+  const parsed = Number(match[1]);
+  return Number.isSafeInteger(parsed) && parsed >= 1 ? parsed : undefined;
+}
+
+export function isNormalizedFileHandlesState(value: unknown): value is LingyunFileHandlesState {
+  if (!isRecord(value)) return false;
+  if (typeof value.nextId !== 'number' || !Number.isSafeInteger(value.nextId) || value.nextId < 1) return false;
+
+  const byId = value.byId;
+  if (!isRecord(byId)) return false;
+
+  let minimumNextId = 1;
+  for (const id in byId) {
+    if (!Object.prototype.hasOwnProperty.call(byId, id)) continue;
+    const fileHandleNumber = parseFileHandleNumber(id);
+    if (fileHandleNumber === undefined) return false;
+    const filePath = byId[id];
+    if (typeof filePath !== 'string' || !filePath || filePath.trim() !== filePath) return false;
+    if (fileHandleNumber >= minimumNextId) minimumNextId = fileHandleNumber + 1;
+  }
+
+  return value.nextId >= minimumNextId;
+}
+
 export function normalizeFileHandlesState(value: unknown): LingyunFileHandlesState | undefined {
   if (!isRecord(value)) return undefined;
 
@@ -72,16 +104,21 @@ export function normalizeFileHandlesState(value: unknown): LingyunFileHandlesSta
   }
 
   const byId: Record<string, string> = {};
-  for (const [id, filePath] of Object.entries(byIdRaw)) {
-    if (!/^F\d+$/.test(id)) continue;
+  let minimumNextId = 1;
+  for (const id in byIdRaw) {
+    if (!Object.prototype.hasOwnProperty.call(byIdRaw, id)) continue;
+    const filePath = byIdRaw[id];
+    const fileHandleNumber = parseFileHandleNumber(id);
+    if (fileHandleNumber === undefined) continue;
     if (typeof filePath !== 'string') continue;
     const normalizedPath = filePath.trim();
     if (!normalizedPath) continue;
     byId[id] = normalizedPath;
+    if (fileHandleNumber >= minimumNextId) minimumNextId = fileHandleNumber + 1;
   }
 
   return {
-    nextId: Math.max(1, Math.floor(nextId)),
+    nextId: Math.max(minimumNextId, Math.floor(nextId)),
     byId,
   };
 }
@@ -115,9 +152,14 @@ function cloneSemanticHandleRange(
 function cloneSemanticHandleEntries<T extends { range: SemanticHandlesState['matches'][string]['range'] }>(
   entries: Record<string, T>,
 ): Record<string, T> {
-  return Object.fromEntries(
-    Object.entries(entries).map(([id, entry]) => [id, { ...entry, range: cloneSemanticHandleRange(entry.range) }]),
-  ) as Record<string, T>;
+  const cloned: Record<string, T> = {};
+  for (const id in entries) {
+    if (!Object.prototype.hasOwnProperty.call(entries, id)) continue;
+    const entry = entries[id];
+    if (!entry) continue;
+    cloned[id] = { ...entry, range: cloneSemanticHandleRange(entry.range) };
+  }
+  return cloned;
 }
 
 export function cloneSemanticHandlesState(
@@ -151,11 +193,12 @@ export function normalizeMentionedSkills(value: unknown): string[] {
 export function normalizeSystemPromptSnapshot(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
 
-  const parts = value
-    .map((part) => (typeof part === 'string' ? part : ''))
-    .map((part) => part.trim())
-    .filter(Boolean);
-
+  const parts: string[] = [];
+  for (const part of value) {
+    if (typeof part !== 'string') continue;
+    const trimmed = part.trim();
+    if (trimmed) parts.push(trimmed);
+  }
   return parts.length > 0 ? parts : undefined;
 }
 
@@ -294,6 +337,29 @@ export function normalizeThreadGoal(value: unknown): LingyunThreadGoal | undefin
   };
 }
 
+export function normalizePendingInputs(inputs: unknown): UserHistoryInput[] {
+  if (!Array.isArray(inputs) || inputs.length === 0) return [];
+
+  const pendingInputs: UserHistoryInput[] = [];
+  for (const input of inputs) {
+    const normalized = parseUserHistoryInput(input);
+    if (normalized !== undefined) {
+      pendingInputs.push(normalized);
+    }
+  }
+  return pendingInputs;
+}
+
+function clonePendingInputs(inputs: readonly UserHistoryInput[]): UserHistoryInput[] {
+  if (!Array.isArray(inputs) || inputs.length === 0) return [];
+
+  const cloned: UserHistoryInput[] = [];
+  for (const input of inputs) {
+    cloned.push(cloneUserHistoryInput(input));
+  }
+  return cloned;
+}
+
 export class LingyunSession {
   history: AgentHistoryMessage[] = [];
   pendingPlan?: string;
@@ -332,9 +398,7 @@ export class LingyunSession {
     if (init?.history) this.history = cloneAgentHistoryMessages(init.history);
     if (init?.pendingPlan) this.pendingPlan = init.pendingPlan;
     if (init?.pendingInputs) this.setPendingInputs(init.pendingInputs);
-    if (init?.compactionSyntheticContexts) {
-      this.compactionSyntheticContexts = init.compactionSyntheticContexts.map((context) => ({ ...context }));
-    }
+    if (init?.compactionSyntheticContexts) this.setCompactionSyntheticContexts(init.compactionSyntheticContexts);
     if (init?.sessionId) this.sessionId = init.sessionId;
     if (init?.parentSessionId) this.parentSessionId = init.parentSessionId;
     if (init?.subagentType) this.subagentType = init.subagentType;
@@ -386,13 +450,15 @@ export class LingyunSession {
   }
 
   getPendingInputs(): UserHistoryInput[] {
-    return this.pendingInputs.map((input) => cloneUserHistoryInput(input));
+    return clonePendingInputs(this.pendingInputs);
   }
 
-  setPendingInputs(inputs: UserHistoryInput[]): void {
-    this.pendingInputs = inputs
-      .map((input) => parseUserHistoryInput(input))
-      .filter((input): input is UserHistoryInput => input !== undefined);
+  setPendingInputs(inputs: unknown): void {
+    this.pendingInputs = normalizePendingInputs(inputs);
+  }
+
+  setCompactionSyntheticContexts(contexts: unknown): void {
+    this.compactionSyntheticContexts = normalizeCompactionSyntheticContexts(contexts);
   }
 
   peekPendingInput(): UserHistoryInput | undefined {

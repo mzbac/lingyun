@@ -45,7 +45,13 @@ export function createChatSkillsService(controller: ChatSkillsDeps): ChatSkillsS
         allowExternalPaths,
         watchWorkspace: true,
       })
-        .then((index) => index.skills.map((skill) => skill.name))
+        .then((index) => {
+          const names = new Array<string>(index.skills.length);
+          for (let i = 0; i < index.skills.length; i++) {
+            names[i] = index.skills[i].name;
+          }
+          return names;
+        })
         .catch(() => []);
 
       return this.skillNamesForUiPromise;

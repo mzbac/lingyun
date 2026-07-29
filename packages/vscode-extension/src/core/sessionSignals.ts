@@ -63,6 +63,7 @@ const MAX_STRUCTURED_MEMORIES = 40;
 const MAX_SOURCE_TURN_IDS = 6;
 const MAX_EXTERNAL_CONTEXT_SOURCES = 12;
 const MAX_MEMORY_TEXT_CHARS = 240;
+const MAX_MEMORY_KEY_TOKENS = 12;
 const WEEKDAY_NAMES = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'] as const;
 
 export function hasMemoryOptOutIntent(text: string): boolean {
@@ -534,16 +535,34 @@ function summarizeText(text: string, maxChars: number): string {
   return compact.slice(0, maxChars).trimEnd() + '...';
 }
 
+function collectStructuredMemoryLines(text: string): { lines: string[]; contentLength: number } {
+  const raw = String(text || '');
+  const lines: string[] = [];
+  let contentLength = 0;
+  let lineStart = 0;
+
+  for (let i = 0; i <= raw.length; i++) {
+    const char = i < raw.length ? raw.charCodeAt(i) : 10;
+    if (char !== 10 && char !== 13) continue;
+
+    const line = raw.slice(lineStart, i).replace(/\s+/g, ' ').trim();
+    if (line) {
+      lines.push(line);
+      contentLength += line.length;
+    }
+
+    if (char === 13 && raw.charCodeAt(i + 1) === 10) i += 1;
+    lineStart = i + 1;
+  }
+
+  return { lines, contentLength };
+}
+
 function summarizeStructuredMemoryText(text: string, maxChars: number): string {
-  const lines = String(text || '')
-    .replace(/\r\n?/g, '\n')
-    .split('\n')
-    .map((line) => line.replace(/\s+/g, ' ').trim())
-    .filter(Boolean);
+  const { lines, contentLength } = collectStructuredMemoryLines(text);
   if (lines.length === 0) return '';
 
-  const compact = lines.join('\n').trim();
-  if (!compact) return '';
+  const compact = lines.join('\n');
   if (lines.length === 1) {
     if (compact.length <= maxChars) return compact;
     return compact.slice(0, maxChars).trimEnd() + '...';
@@ -552,7 +571,6 @@ function summarizeStructuredMemoryText(text: string, maxChars: number): string {
   // For structured multi-line memories, treat line breaks as formatting rather
   // than budget. Preserve complete field lines in order and never clip a
   // trailing `Why:` or `How to apply:` line mid-sentence.
-  const contentLength = lines.reduce((total, line) => total + line.length, 0);
   if (contentLength <= maxChars) return compact;
 
   const kept: string[] = [];
@@ -586,7 +604,8 @@ function asStructuredSentence(text: string): string {
 }
 
 function buildStructuredMemoryText(guidance: string, fields?: { why?: string; howToApply?: string }): string {
-  const lines = [guidance].filter(Boolean);
+  const lines: string[] = [];
+  if (guidance) lines.push(guidance);
   if (fields?.why) lines.push(`Why: ${fields.why}`);
   if (fields?.howToApply) lines.push(`How to apply: ${fields.howToApply}`);
   return lines.join('\n');
@@ -806,20 +825,49 @@ function extractExplicitFeedbackHowToApplyClause(text: string): string {
   return asStructuredSentence(howRaw);
 }
 
+function collectFeedbackSentences(text: string): string[] {
+  const sentences: string[] = [];
+  let sentenceStart = -1;
+
+  for (let i = 0; i <= text.length; i++) {
+    const char = i < text.length ? text.charCodeAt(i) : 46;
+    const isTerminator = char === 46 || char === 63 || char === 33;
+
+    if (!isTerminator) {
+      if (sentenceStart === -1) sentenceStart = i;
+      continue;
+    }
+
+    if (sentenceStart === -1) continue;
+    const sentence = trimTrailingSentencePunctuation(text.slice(sentenceStart, i + 1));
+    if (sentence) sentences.push(sentence);
+    sentenceStart = -1;
+  }
+
+  return sentences;
+}
+
+function joinFeedbackSentences(sentences: string[], endExclusive: number): string {
+  let joined = '';
+  for (let i = 0; i < endExclusive; i++) {
+    const sentence = sentences[i];
+    if (!sentence) continue;
+    joined += joined ? `. ${sentence}` : sentence;
+  }
+  return joined;
+}
+
 function splitFeedbackWhyAndHowToApplyText(text: string): { why?: string; howToApply?: string } {
   const compact = summarizeText(text, MAX_MEMORY_TEXT_CHARS);
   if (!compact) return {};
 
-  const sentencePattern = /(?<sentence>[^.?!]+[.?!]?)/g;
-  const sentences = [...compact.matchAll(sentencePattern)]
-    .map((match) => trimTrailingSentencePunctuation(match.groups?.sentence || match[0] || ''))
-    .filter(Boolean);
+  const sentences = collectFeedbackSentences(compact);
 
   if (sentences.length >= 2) {
     const last = sentences[sentences.length - 1] || '';
     const howToApply = extractExplicitFeedbackHowToApplyClause(last);
     if (howToApply) {
-      const whyText = trimTrailingSentencePunctuation(sentences.slice(0, -1).join('. '));
+      const whyText = trimTrailingSentencePunctuation(joinFeedbackSentences(sentences, sentences.length - 1));
       if (whyText) {
         return { why: asStructuredSentence(whyText), howToApply };
       }
@@ -928,14 +976,59 @@ function isLowSignalValidatedFeedbackSubject(subject: string): boolean {
   if (!normalized) return true;
   if (/^(?:this|that|it|thing|things|stuff|the thing|the things|the stuff)$/.test(normalized)) return true;
 
-  const informativeTokens = normalized
-    .split(/\s+/)
-    .filter((token) => !['a', 'an', 'the', 'this', 'that', 'it', 'these', 'those', 'my', 'our', 'your'].includes(token));
-  if (informativeTokens.length === 0) return true;
+  let tokenStart = -1;
+  for (let i = 0; i <= normalized.length; i++) {
+    const char = i < normalized.length ? normalized.charCodeAt(i) : 32;
+    if (char !== 32) {
+      if (tokenStart < 0) tokenStart = i;
+      continue;
+    }
+    if (tokenStart < 0) continue;
 
-  return informativeTokens.every((token) =>
-    ['approach', 'workflow', 'plan', 'call', 'choice', 'direction', 'way', 'method', 'strategy', 'response'].includes(token),
-  );
+    const token = normalized.slice(tokenStart, i);
+    tokenStart = -1;
+    if (isLowSignalValidatedFeedbackStopWord(token)) continue;
+    if (!isGenericValidatedFeedbackSubjectToken(token)) return false;
+  }
+
+  return true;
+}
+
+function isLowSignalValidatedFeedbackStopWord(token: string): boolean {
+  switch (token) {
+    case 'a':
+    case 'an':
+    case 'the':
+    case 'this':
+    case 'that':
+    case 'it':
+    case 'these':
+    case 'those':
+    case 'my':
+    case 'our':
+    case 'your':
+      return true;
+    default:
+      return false;
+  }
+}
+
+function isGenericValidatedFeedbackSubjectToken(token: string): boolean {
+  switch (token) {
+    case 'approach':
+    case 'workflow':
+    case 'plan':
+    case 'call':
+    case 'choice':
+    case 'direction':
+    case 'way':
+    case 'method':
+    case 'strategy':
+    case 'response':
+      return true;
+    default:
+      return false;
+  }
 }
 
 function normalizeValidatedFeedbackGuidance(subject: string): string {
@@ -958,6 +1051,26 @@ function normalizeValidatedFeedbackGuidance(subject: string): string {
   return `Keep using this validated approach on similar tasks: ${cleanedSubject}.`;
 }
 
+function hasAtLeastTwoValidatedFeedbackSubjectTokens(subject: string): boolean {
+  let tokenStart = -1;
+  let tokenCount = 0;
+
+  for (let i = 0; i <= subject.length; i++) {
+    const char = i < subject.length ? subject.charCodeAt(i) : 32;
+    if (char !== 32) {
+      if (tokenStart < 0) tokenStart = i;
+      continue;
+    }
+    if (tokenStart < 0) continue;
+
+    tokenStart = -1;
+    tokenCount += 1;
+    if (tokenCount >= 2) return true;
+  }
+
+  return false;
+}
+
 function extractValidatedPositiveFeedback(text: string, defaultScope: SessionMemoryCandidateScope): {
   text: string;
   scope: SessionMemoryCandidateScope;
@@ -971,7 +1084,7 @@ function extractValidatedPositiveFeedback(text: string, defaultScope: SessionMem
     /^(?<subject>.+?)\s+\b(?:was|is)\s+(?:the\s+)?(?:right|best|good)\s+call(?:\s+here)?(?:[,:;]\s*(?<why>.+))?[.!?]?$/i,
   );
   const subject = trimTrailingSentencePunctuation(match?.groups?.subject || '');
-  if (!subject || subject.split(/\s+/).length < 2) return undefined;
+  if (!subject || !hasAtLeastTwoValidatedFeedbackSubjectTokens(subject)) return undefined;
   if (isLowSignalValidatedFeedbackSubject(subject)) return undefined;
 
   const guidance = normalizeValidatedFeedbackGuidance(subject);
@@ -1017,6 +1130,16 @@ function recordUniqueFront(list: string[], value: string, maxItems: number): voi
   if (list.length > maxItems) list.splice(maxItems);
 }
 
+function copyBoundedStringList(value: readonly string[] | undefined, maxItems: number): string[] {
+  const copy: string[] = [];
+  if (!value) return copy;
+  for (const item of value) {
+    copy.push(item);
+    if (copy.length >= maxItems) break;
+  }
+  return copy;
+}
+
 function normalizeConfidence(value: unknown, fallback: number): number {
   const numeric = typeof value === 'number' && Number.isFinite(value) ? value : fallback;
   return Math.max(0.05, Math.min(1, numeric));
@@ -1035,6 +1158,35 @@ function normalizeSource(value: unknown, fallback: SessionMemoryCandidateSource)
 function normalizeSourceTurnIds(value: unknown): string[] | undefined {
   const normalized = normalizeStringList(value, MAX_SOURCE_TURN_IDS);
   return normalized.length > 0 ? normalized : undefined;
+}
+
+function mergeSourceTurnIds(
+  existing: readonly string[] | undefined,
+  next: readonly string[] | undefined,
+): string[] | undefined {
+  const merged: string[] = [];
+  const seen = new Set<string>();
+
+  if (appendSourceTurnIds(merged, seen, existing)) return merged;
+  if (appendSourceTurnIds(merged, seen, next)) return merged;
+
+  return merged.length > 0 ? merged : undefined;
+}
+
+function appendSourceTurnIds(
+  merged: string[],
+  seen: Set<string>,
+  list: readonly string[] | undefined,
+): boolean {
+  if (!list) return false;
+  for (const value of list) {
+    const normalized = typeof value === 'string' ? value.trim() : '';
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    merged.push(normalized);
+    if (merged.length >= MAX_SOURCE_TURN_IDS) return true;
+  }
+  return false;
 }
 
 function normalizeMemoryContext(value: unknown, now: number): SessionSignals['memoryContext'] | undefined {
@@ -1130,11 +1282,35 @@ function canonicalizeMemoryText(text: string): string {
     .trim();
 }
 
+function memoryCandidateKeySuffix(normalized: string, maxTokens: number): string {
+  if (maxTokens <= 0) return 'memory';
+
+  let suffix = '';
+  let tokenStart = -1;
+  let tokenCount = 0;
+
+  for (let i = 0; i <= normalized.length; i++) {
+    const char = i < normalized.length ? normalized.charCodeAt(i) : 32;
+    if (char !== 32) {
+      if (tokenStart === -1) tokenStart = i;
+      continue;
+    }
+
+    if (tokenStart === -1) continue;
+    const token = normalized.slice(tokenStart, i);
+    suffix += suffix ? `-${token}` : token;
+    tokenStart = -1;
+    tokenCount += 1;
+    if (tokenCount >= maxTokens) break;
+  }
+
+  return suffix || 'memory';
+}
+
 export function buildMemoryCandidateKey(kind: SessionMemoryCandidateKind, text: string): string {
   const normalized = canonicalizeMemoryText(text);
   if (!normalized) return `${kind}:memory`;
-  const tokens = normalized.split(/\s+/).filter(Boolean).slice(0, 12);
-  return `${kind}:${tokens.join('-') || 'memory'}`;
+  return `${kind}:${memoryCandidateKeySuffix(normalized, MAX_MEMORY_KEY_TOKENS)}`;
 }
 
 function candidateDedupeKey(candidate: SessionMemoryCandidate): string {
@@ -1205,7 +1381,7 @@ function mergeMemoryCandidate(
       confidence: Math.max(existing.confidence, next.confidence),
       explicit: existing.explicit === true || next.explicit === true ? true : undefined,
       evidenceCount: Math.max(1, (existing.evidenceCount || 1) + (next.evidenceCount || 1)),
-      sourceTurnIds: normalizeSourceTurnIds([...(existing.sourceTurnIds || []), ...(next.sourceTurnIds || [])]),
+      sourceTurnIds: mergeSourceTurnIds(existing.sourceTurnIds, next.sourceTurnIds),
     };
     signals.structuredMemories.splice(existingIndex, 1);
     signals.structuredMemories.unshift(merged);
@@ -1483,7 +1659,7 @@ export function markExternalMemoryContext(signals: SessionSignals, source: strin
   const label = summarizeText(source, 80);
   if (!label) return;
   const existing = signals.memoryContext?.external ? signals.memoryContext : undefined;
-  const sources = existing ? [...existing.sources] : [];
+  const sources = copyBoundedStringList(existing?.sources, MAX_EXTERNAL_CONTEXT_SOURCES);
   recordUniqueFront(sources, label, MAX_EXTERNAL_CONTEXT_SOURCES);
   signals.memoryContext = {
     external: true,

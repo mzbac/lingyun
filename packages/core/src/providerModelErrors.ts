@@ -1,3 +1,5 @@
+import { isPrivateIpv4Address } from './ip';
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -37,21 +39,34 @@ function normalizeHeaderName(name: string): string {
   return String(name || '').trim().toLowerCase();
 }
 
+function fieldNameMatches(key: string, names: readonly string[]): boolean {
+  const normalizedKey = key.toLowerCase();
+  for (const name of names) {
+    if (normalizedKey === name.toLowerCase()) return true;
+  }
+  return false;
+}
+
+function headerNameMatches(key: string, names: readonly string[]): boolean {
+  const normalizedKey = normalizeHeaderName(key);
+  for (const name of names) {
+    if (normalizedKey === normalizeHeaderName(name)) return true;
+  }
+  return false;
+}
+
 function safeHeaderValue(name: string, value: string): string {
   return SENSITIVE_RESPONSE_HEADER_NAMES.has(normalizeHeaderName(name)) ? '<redacted>' : value;
 }
 
-function isPrivateIpv4(value: string): boolean {
-  const parts = value.split('.').map((part) => Number.parseInt(part, 10));
-  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return false;
-  const [a, b] = parts;
-  return (
-    a === 10 ||
-    a === 127 ||
-    (a === 172 && b >= 16 && b <= 31) ||
-    (a === 192 && b === 168) ||
-    (a === 169 && b === 254)
-  );
+function stringifyHeaderValue(value: unknown): string {
+  if (!Array.isArray(value)) return String(value);
+  let text = '';
+  for (let i = 0; i < value.length; i++) {
+    if (i > 0) text += ', ';
+    text += String(value[i]);
+  }
+  return text;
 }
 
 function escapeRegex(value: string): string {
@@ -74,7 +89,7 @@ function sanitizeResponseBody(value: string, knownSensitiveValues: string[] = []
   out = out.replace(PRIVATE_DOMAIN_REGEX, '<private-host>');
   out = out.replace(LOCALHOST_REGEX, '<local-host>');
   out = out.replace(BRACKETED_IPV6_REGEX, '<ip>');
-  out = out.replace(IPV4_REGEX, (match) => (isPrivateIpv4(match) ? '<private-ip>' : match));
+  out = out.replace(IPV4_REGEX, (match) => (isPrivateIpv4Address(match) ? '<private-ip>' : match));
   return out;
 }
 
@@ -118,11 +133,13 @@ function sanitizedHeaderRecord(headers: unknown): Record<string, string> | undef
   if (!isRecord(headers)) return undefined;
 
   const out: Record<string, string> = {};
-  for (const [key, value] of Object.entries(headers)) {
+  for (const key in headers) {
+    if (!Object.prototype.hasOwnProperty.call(headers, key)) continue;
+    const value = headers[key];
     if (value === undefined || value === null) continue;
     const name = String(key || '').trim();
     if (!name) continue;
-    const text = Array.isArray(value) ? value.map((item) => String(item)).join(', ') : String(value);
+    const text = stringifyHeaderValue(value);
     out[name] = safeHeaderValue(name, text);
   }
   return out;
@@ -143,19 +160,15 @@ function sanitizeProviderDiagnosticFields(
     }
   }
 
-  for (const key of ['headers', 'responseHeaders']) {
-    const headers = sanitizedHeaderRecord(error[key]);
-    if (headers) assignDiagnosticField(error, key, headers);
-  }
+  const headers = sanitizedHeaderRecord(error.headers);
+  if (headers) assignDiagnosticField(error, 'headers', headers);
+  const responseHeaders = sanitizedHeaderRecord(error.responseHeaders);
+  if (responseHeaders) assignDiagnosticField(error, 'responseHeaders', responseHeaders);
 
-  for (const nested of [
-    error.cause,
-    error.error,
-    error.data,
-    error.response,
-  ]) {
-    sanitizeProviderDiagnosticFields(nested, knownSensitiveValues, seen);
-  }
+  sanitizeProviderDiagnosticFields(error.cause, knownSensitiveValues, seen);
+  sanitizeProviderDiagnosticFields(error.error, knownSensitiveValues, seen);
+  sanitizeProviderDiagnosticFields(error.data, knownSensitiveValues, seen);
+  sanitizeProviderDiagnosticFields(error.response, knownSensitiveValues, seen);
 }
 
 function errorChain(error: unknown): unknown[] {
@@ -173,42 +186,60 @@ function errorChain(error: unknown): unknown[] {
   return chain;
 }
 
-function getFirstString(error: unknown, keys: string[]): string | undefined {
-  const normalized = new Set(keys.map((key) => key.toLowerCase()));
-  for (const item of errorChain(error)) {
+function getFirstString(chain: readonly unknown[], keys: string[]): string | undefined {
+  for (const item of chain) {
     const record = isRecord(item) ? item : undefined;
+    let found = getStringFromRecord(record, keys);
+    if (found !== undefined) return found;
     const data = isRecord(record?.data) ? record.data : undefined;
+    found = getStringFromRecord(data, keys);
+    if (found !== undefined) return found;
     const nestedError = isRecord(record?.error) ? record.error : undefined;
+    found = getStringFromRecord(nestedError, keys);
+    if (found !== undefined) return found;
     const dataError = isRecord(data?.error) ? data.error : undefined;
-
-    for (const source of [record, data, nestedError, dataError]) {
-      if (!source) continue;
-      for (const [key, value] of Object.entries(source)) {
-        if (!normalized.has(key.toLowerCase())) continue;
-        if (typeof value === 'string' && value.trim()) return value.trim();
-      }
-    }
+    found = getStringFromRecord(dataError, keys);
+    if (found !== undefined) return found;
   }
   return undefined;
 }
 
-function getFirstNumber(error: unknown, keys: string[]): number | undefined {
-  const normalized = new Set(keys.map((key) => key.toLowerCase()));
-  for (const item of errorChain(error)) {
-    const record = isRecord(item) ? item : undefined;
-    const response = isRecord(record?.response) ? record.response : undefined;
-    const data = isRecord(record?.data) ? record.data : undefined;
+function getStringFromRecord(source: Record<string, unknown> | undefined, keys: string[]): string | undefined {
+  if (!source) return undefined;
+  for (const key in source) {
+    if (!Object.prototype.hasOwnProperty.call(source, key)) continue;
+    if (!fieldNameMatches(key, keys)) continue;
+    const value = source[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return undefined;
+}
 
-    for (const source of [record, response, data]) {
-      if (!source) continue;
-      for (const [key, value] of Object.entries(source)) {
-        if (!normalized.has(key.toLowerCase())) continue;
-        if (typeof value === 'number' && Number.isFinite(value)) return value;
-        if (typeof value === 'string' && value.trim()) {
-          const parsed = Number(value);
-          if (Number.isFinite(parsed)) return parsed;
-        }
-      }
+function getFirstNumber(chain: readonly unknown[], keys: string[]): number | undefined {
+  for (const item of chain) {
+    const record = isRecord(item) ? item : undefined;
+    let found = getNumberFromRecord(record, keys);
+    if (found !== undefined) return found;
+    const response = isRecord(record?.response) ? record.response : undefined;
+    found = getNumberFromRecord(response, keys);
+    if (found !== undefined) return found;
+    const data = isRecord(record?.data) ? record.data : undefined;
+    found = getNumberFromRecord(data, keys);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}
+
+function getNumberFromRecord(source: Record<string, unknown> | undefined, keys: string[]): number | undefined {
+  if (!source) return undefined;
+  for (const key in source) {
+    if (!Object.prototype.hasOwnProperty.call(source, key)) continue;
+    if (!fieldNameMatches(key, keys)) continue;
+    const value = source[key];
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string' && value.trim()) {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) return parsed;
     }
   }
   return undefined;
@@ -223,11 +254,13 @@ function headersToRecord(headers: Headers): Record<string, string> {
 function normalizeHeaderRecord(headers: Record<string, unknown> | undefined): Record<string, string> | undefined {
   if (!headers) return undefined;
   const out: Record<string, string> = {};
-  for (const [key, value] of Object.entries(headers)) {
+  for (const key in headers) {
+    if (!Object.prototype.hasOwnProperty.call(headers, key)) continue;
+    const value = headers[key];
     if (value === undefined || value === null) continue;
     const name = String(key || '').trim();
     if (!name) continue;
-    const text = Array.isArray(value) ? value.map((item) => String(item)).join(', ') : String(value);
+    const text = stringifyHeaderValue(value);
     out[name] = safeHeaderValue(name, text);
   }
   return out;
@@ -235,14 +268,16 @@ function normalizeHeaderRecord(headers: Record<string, unknown> | undefined): Re
 
 function getHeaderValue(headers: Record<string, unknown> | undefined, names: string[]): string | undefined {
   if (!headers) return undefined;
-  const normalized = new Set(names.map(normalizeHeaderName));
-  for (const [key, value] of Object.entries(headers)) {
-    if (!normalized.has(normalizeHeaderName(key))) continue;
+  for (const key in headers) {
+    if (!Object.prototype.hasOwnProperty.call(headers, key)) continue;
+    const value = headers[key];
+    if (!headerNameMatches(key, names)) continue;
     if (typeof value === 'string' && value.trim()) return value.trim();
     if (typeof value === 'number' && Number.isFinite(value)) return String(value);
     if (Array.isArray(value)) {
-      const first = value.find((item) => typeof item === 'string' && item.trim());
-      if (typeof first === 'string') return first.trim();
+      for (const item of value) {
+        if (typeof item === 'string' && item.trim()) return item.trim();
+      }
     }
   }
   return undefined;
@@ -312,35 +347,42 @@ function parseRetryAfterMs(headers: Record<string, unknown> | undefined): number
   );
 }
 
-function getRecordFromSources(
-  sources: Array<Record<string, unknown> | undefined>,
+function getRecordFromRecord(
+  source: Record<string, unknown> | undefined,
   keys: string[],
 ): Record<string, unknown> | undefined {
-  const normalized = new Set(keys.map((key) => key.toLowerCase()));
-  for (const source of sources) {
-    if (!source) continue;
-    for (const [key, value] of Object.entries(source)) {
-      if (!normalized.has(key.toLowerCase())) continue;
-      if (typeof Headers !== 'undefined' && value instanceof Headers) return headersToRecord(value);
-      if (isRecord(value)) return value;
-    }
+  if (!source) return undefined;
+  for (const key in source) {
+    if (!Object.prototype.hasOwnProperty.call(source, key)) continue;
+    const value = source[key];
+    if (!fieldNameMatches(key, keys)) continue;
+    if (typeof Headers !== 'undefined' && value instanceof Headers) return headersToRecord(value);
+    if (isRecord(value)) return value;
   }
   return undefined;
 }
 
-function getRootRecord(error: unknown, keys: string[]): Record<string, unknown> | undefined {
-  const record = isRecord(error) ? error : undefined;
+function getRecordFromErrorRecord(
+  record: Record<string, unknown> | undefined,
+  keys: string[],
+): Record<string, unknown> | undefined {
+  let found = getRecordFromRecord(record, keys);
+  if (found) return found;
   const response = isRecord(record?.response) ? record.response : undefined;
+  found = getRecordFromRecord(response, keys);
+  if (found) return found;
   const data = isRecord(record?.data) ? record.data : undefined;
-  return getRecordFromSources([record, response, data], keys);
+  return getRecordFromRecord(data, keys);
 }
 
-function getFirstRecord(error: unknown, keys: string[]): Record<string, unknown> | undefined {
-  for (const item of errorChain(error)) {
+function getRootRecord(error: unknown, keys: string[]): Record<string, unknown> | undefined {
+  return getRecordFromErrorRecord(isRecord(error) ? error : undefined, keys);
+}
+
+function getFirstRecord(chain: readonly unknown[], keys: string[]): Record<string, unknown> | undefined {
+  for (const item of chain) {
     const record = isRecord(item) ? item : undefined;
-    const response = isRecord(record?.response) ? record.response : undefined;
-    const data = isRecord(record?.data) ? record.data : undefined;
-    const found = getRecordFromSources([record, response, data], keys);
+    const found = getRecordFromErrorRecord(record, keys);
     if (found) return found;
   }
   return undefined;
@@ -348,31 +390,40 @@ function getFirstRecord(error: unknown, keys: string[]): Record<string, unknown>
 
 function errorMetadata(error: unknown, params: ChatModelErrorContext): Record<string, unknown> {
   const metadata: Record<string, unknown> = {};
-  const status = getFirstNumber(error, ['status', 'statusCode']);
-  const statusCode = getFirstNumber(error, ['statusCode', 'status']);
-  const responseHeadersRaw = getRootRecord(error, ['responseHeaders']) ?? getRootRecord(error, ['headers']) ?? getFirstRecord(error, ['responseHeaders']) ?? getFirstRecord(error, ['headers']);
-  const headersRaw = getRootRecord(error, ['headers']) ?? getRootRecord(error, ['responseHeaders']) ?? getFirstRecord(error, ['headers']) ?? getFirstRecord(error, ['responseHeaders']);
+  const chain = errorChain(error);
+  const status = getFirstNumber(chain, ['status', 'statusCode']);
+  const statusCode = getFirstNumber(chain, ['statusCode', 'status']);
+  const responseHeadersRaw =
+    getRootRecord(error, ['responseHeaders']) ??
+    getRootRecord(error, ['headers']) ??
+    getFirstRecord(chain, ['responseHeaders']) ??
+    getFirstRecord(chain, ['headers']);
+  const headersRaw =
+    getRootRecord(error, ['headers']) ??
+    getRootRecord(error, ['responseHeaders']) ??
+    getFirstRecord(chain, ['headers']) ??
+    getFirstRecord(chain, ['responseHeaders']);
   const responseHeaders = normalizeHeaderRecord(responseHeadersRaw);
   const headers = normalizeHeaderRecord(headersRaw);
   const diagnosticHeaders = responseHeadersRaw ?? headersRaw;
-  const responseBody = getFirstString(error, ['responseBody', 'body']);
+  const responseBody = getFirstString(chain, ['responseBody', 'body']);
   const knownSensitiveValues = [params.modelId];
 
-  safeAssign(metadata, 'url', getFirstString(error, ['url']));
+  safeAssign(metadata, 'url', getFirstString(chain, ['url']));
   safeAssign(metadata, 'status', status);
   safeAssign(metadata, 'statusCode', statusCode);
-  safeAssign(metadata, 'statusText', getFirstString(error, ['statusText']));
+  safeAssign(metadata, 'statusText', getFirstString(chain, ['statusText']));
   safeAssign(metadata, 'responseBody', responseBody ? sanitizeResponseBody(responseBody, knownSensitiveValues) : undefined);
   safeAssign(metadata, 'responseHeaders', responseHeaders);
   safeAssign(metadata, 'headers', headers);
-  safeAssign(metadata, 'requestId', getFirstString(error, ['requestId']) ?? requestIdFromHeaders(diagnosticHeaders));
-  safeAssign(metadata, 'cfRay', getFirstString(error, ['cfRay']) ?? cfRayFromHeaders(diagnosticHeaders));
-  safeAssign(metadata, 'retryAfterMs', getFirstNumber(error, ['retryAfterMs']) ?? parseRetryAfterMs(diagnosticHeaders));
-  safeAssign(metadata, 'code', getFirstString(error, ['code', 'errorCode']));
-  safeAssign(metadata, 'errorCode', getFirstString(error, ['errorCode', 'code']));
-  safeAssign(metadata, 'type', getFirstString(error, ['type', 'errorType']));
-  safeAssign(metadata, 'errorType', getFirstString(error, ['errorType', 'type']));
-  safeAssign(metadata, 'param', getFirstString(error, ['param']));
+  safeAssign(metadata, 'requestId', getFirstString(chain, ['requestId']) ?? requestIdFromHeaders(diagnosticHeaders));
+  safeAssign(metadata, 'cfRay', getFirstString(chain, ['cfRay']) ?? cfRayFromHeaders(diagnosticHeaders));
+  safeAssign(metadata, 'retryAfterMs', getFirstNumber(chain, ['retryAfterMs']) ?? parseRetryAfterMs(diagnosticHeaders));
+  safeAssign(metadata, 'code', getFirstString(chain, ['code', 'errorCode']));
+  safeAssign(metadata, 'errorCode', getFirstString(chain, ['errorCode', 'code']));
+  safeAssign(metadata, 'type', getFirstString(chain, ['type', 'errorType']));
+  safeAssign(metadata, 'errorType', getFirstString(chain, ['errorType', 'type']));
+  safeAssign(metadata, 'param', getFirstString(chain, ['param']));
 
   return metadata;
 }
@@ -397,7 +448,9 @@ export function attachChatModelErrorMetadata(error: unknown, params: ChatModelEr
   assignDiagnosticField(error, 'modelId', params.modelId);
 
   const metadata = errorMetadata(error, params);
-  for (const [key, value] of Object.entries(metadata)) {
+  for (const key in metadata) {
+    if (!Object.prototype.hasOwnProperty.call(metadata, key)) continue;
+    const value = metadata[key];
     // Header fields may come from upstream SDK errors and can include secrets.
     // Replace them with normalized/redacted copies before downstream UI/debug code sees them.
     if ((key === 'responseHeaders' || key === 'headers') && isRecord(value)) {

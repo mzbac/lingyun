@@ -91,6 +91,15 @@ function postAutoApprovedToolsState(controller: Pick<ChatApprovalsDeps, 'autoApp
   });
 }
 
+function findMessageById(messages: ChatMessage[], messageId: string | undefined): ChatMessage | undefined {
+  if (!messageId) return undefined;
+  for (let i = 0; i < messages.length; i++) {
+    const message = messages[i];
+    if (message?.id === messageId) return message;
+  }
+  return undefined;
+}
+
 export function createChatApprovalsService(controller: ChatApprovalsDeps): ChatApprovalsService {
   const service = bindChatControllerService(controller, {
     onAutoApproveEnabled(this: ChatApprovalsDeps): void {
@@ -322,7 +331,7 @@ export function createChatApprovalsService(controller: ChatApprovalsDeps): ChatA
 
     markActiveStepStatus(this: ChatApprovalsDeps, status: 'running' | 'done' | 'error' | 'canceled'): void {
       if (!this.activeStepId) return;
-      const stepMsg = this.messages.find((message) => message.id === this.activeStepId);
+      const stepMsg = findMessageById(this.messages, this.activeStepId);
       if (!stepMsg?.step) return;
       stepMsg.step.status = status;
       this.webviewApi.postMessage({ type: 'updateMessage', message: stepMsg });

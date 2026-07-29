@@ -66,7 +66,11 @@ const recentMemoryRecallBySession = new WeakMap<
 >();
 
 function countCompletedUserTurns(session: LingyunAgentRuntimeContext['session']): number {
-  return session.history.filter((message) => message.role === 'user' && !message.metadata?.synthetic).length;
+  let count = 0;
+  for (const message of session.history) {
+    if (message.role === 'user' && !message.metadata?.synthetic) count++;
+  }
+  return count;
 }
 
 function memoryRecallHitSignature(
@@ -80,18 +84,53 @@ function memoryRecallHitSignature(
 function memoryRecallSelectionSignature(
   hits: Awaited<ReturnType<WorkspaceMemories['searchMemory']>>['hits'],
 ): string {
-  return hits.map((hit) => memoryRecallHitSignature(hit)).filter(Boolean).join('|');
+  let signature = '';
+  for (const hit of hits) {
+    const hitSignature = memoryRecallHitSignature(hit);
+    if (!hitSignature) continue;
+    signature = signature ? signature + '|' + hitSignature : hitSignature;
+  }
+  return signature;
+}
+
+function collectMemoryRecallHitSignatures(
+  hits: Awaited<ReturnType<WorkspaceMemories['searchMemory']>>['hits'],
+): string[] {
+  const signatures: string[] = [];
+  for (const hit of hits) {
+    const hitSignature = memoryRecallHitSignature(hit);
+    if (hitSignature) signatures.push(hitSignature);
+  }
+  return signatures;
 }
 
 function memoryRecallAngleSignature(query: string): string {
   const priority = selectiveMemoryFieldPriority(query);
-  return priority.length > 0 ? priority.join('|') : 'default';
+  if (priority.length === 0) return 'default';
+
+  let signature = '';
+  for (const field of priority) {
+    signature = signature ? signature + '|' + field : field;
+  }
+  return signature;
 }
 
 function memoryRecallRequestedFacets(query: string): MemoryRecallSurfaceFacet[] {
-  return selectiveMemoryFieldPriority(query).filter(
-    (field): field is MemoryRecallSurfaceFacet => field === 'why' || field === 'howToApply',
-  );
+  const requested: MemoryRecallSurfaceFacet[] = [];
+  for (const field of selectiveMemoryFieldPriority(query)) {
+    if (field === 'why' || field === 'howToApply') requested.push(field);
+  }
+  return requested;
+}
+
+function facetsRevealNewSurface(
+  facets: readonly MemoryRecallSurfaceFacet[],
+  prior: ReadonlySet<MemoryRecallSurfaceFacet>,
+): boolean {
+  for (const facet of facets) {
+    if (!prior.has(facet)) return true;
+  }
+  return false;
 }
 
 function memoryRecallSurfacedFacetsForHit(
@@ -149,7 +188,7 @@ function getRecentlySurfacedMemoryHitSignatures(params: {
 
     const priorSurfacedFacets = new Set(prior.surfacedFacetsByHitSignature[hitSignature] || []);
     const newlySurfacedFacets = memoryRecallSurfacedFacetsForHit(hit, params.query);
-    const revealsNewFacet = newlySurfacedFacets.some((facet) => !priorSurfacedFacets.has(facet));
+    const revealsNewFacet = facetsRevealNewSurface(newlySurfacedFacets, priorSurfacedFacets);
     if (!revealsNewFacet) {
       suppressible.add(hitSignature);
     }
@@ -181,7 +220,7 @@ function hasEquivalentRecentMemoryRecall(params: {
     const hitSignature = memoryRecallHitSignature(hit);
     const priorSurfacedFacets = new Set(prior.surfacedFacetsByHitSignature[hitSignature] || []);
     const newlySurfacedFacets = memoryRecallSurfacedFacetsForHit(hit, params.query);
-    if (newlySurfacedFacets.some((facet) => !priorSurfacedFacets.has(facet))) {
+    if (facetsRevealNewSurface(newlySurfacedFacets, priorSurfacedFacets)) {
       return false;
     }
   }
@@ -196,16 +235,21 @@ function shouldSkipAutoRecallForQuery(query: string): boolean {
 function stripMemoryRecallContextForCurrentRun(ctx: LingyunAgentRuntimeContext, query: string): void {
   if (!shouldSkipAutoRecallForQuery(query)) return;
 
-  ctx.session.history = ctx.session.history.filter((message) => {
+  const retainedHistory: typeof ctx.session.history = [];
+  for (const message of ctx.session.history) {
     const metadata = message.metadata;
-    if (!metadata?.synthetic) return true;
-    if (metadata.transientContext === 'memoryRecall') return false;
-    if (metadata.compactionRestore?.source === 'memoryRecall') return false;
-    return true;
-  });
-  ctx.session.compactionSyntheticContexts = ctx.session.compactionSyntheticContexts.filter(
-    (context) => context.transientContext !== 'memoryRecall',
-  );
+    if (metadata?.synthetic && metadata.transientContext === 'memoryRecall') continue;
+    if (metadata?.synthetic && metadata.compactionRestore?.source === 'memoryRecall') continue;
+    retainedHistory.push(message);
+  }
+  ctx.session.history = retainedHistory;
+
+  const retainedContexts: typeof ctx.session.compactionSyntheticContexts = [];
+  for (const context of ctx.session.compactionSyntheticContexts) {
+    if (context.transientContext === 'memoryRecall') continue;
+    retainedContexts.push(context);
+  }
+  ctx.session.compactionSyntheticContexts = retainedContexts;
   recentMemoryRecallBySession.delete(ctx.session);
 }
 
@@ -216,7 +260,10 @@ function hasMemoryContradictionConflicts(hits: Awaited<ReturnType<WorkspaceMemor
       invalidated.add(id);
     }
   }
-  return hits.some((hit) => invalidated.has(hit.record.id));
+  for (const hit of hits) {
+    if (invalidated.has(hit.record.id)) return true;
+  }
+  return false;
 }
 
 function memoryHitLastConfirmedAt(hit: Awaited<ReturnType<WorkspaceMemories['searchMemory']>>['hits'][number]): number {
@@ -251,9 +298,11 @@ function normalizeMemoryToolName(value: string | undefined): string {
 }
 
 function recentToolNamesFromSession(session: LingyunAgentRuntimeContext['session'], maxMessages = 8): Set<string> {
-  const recentMessages = session.history.slice(Math.max(0, session.history.length - maxMessages));
   const tools = new Set<string>();
-  for (const message of recentMessages) {
+  const start = Math.max(0, session.history.length - maxMessages);
+  for (let i = start; i < session.history.length; i++) {
+    const message = session.history[i];
+    if (!message) continue;
     for (const part of message.parts || []) {
       if (part?.type !== 'dynamic-tool') continue;
       const rawToolName = 'toolName' in part ? part.toolName : undefined;
@@ -266,7 +315,14 @@ function recentToolNamesFromSession(session: LingyunAgentRuntimeContext['session
 
 function memoryHitTools(hit: Awaited<ReturnType<WorkspaceMemories['searchMemory']>>['hits'][number]): string[] {
   const values = hit.durableEntry?.toolsUsed ?? hit.record.toolsUsed;
-  return values.map((value) => normalizeMemoryToolName(value)).filter(Boolean);
+  if (!Array.isArray(values) || values.length === 0) return [];
+
+  const tools: string[] = [];
+  for (const value of values) {
+    const toolName = normalizeMemoryToolName(value);
+    if (toolName) tools.push(toolName);
+  }
+  return tools;
 }
 
 function queryMentionsActiveToolMemory(query: string): boolean {
@@ -289,7 +345,13 @@ function shouldSuppressActiveToolUsageMemory(params: {
   if (params.recentTools.size === 0) return false;
   if (!queryMentionsActiveToolMemory(params.query)) return false;
   const hitTools = memoryHitTools(params.hit);
-  if (!hitTools.some((tool) => params.recentTools.has(tool))) return false;
+  let hasRecentTool = false;
+  for (const tool of hitTools) {
+    if (!params.recentTools.has(tool)) continue;
+    hasRecentTool = true;
+    break;
+  }
+  if (!hasRecentTool) return false;
   return !memoryHitIsToolWarning(params.hit);
 }
 
@@ -351,7 +413,10 @@ function hitProvidesReferencePointer(
 function selectedHasReferencePointer(
   selected: Awaited<ReturnType<WorkspaceMemories['searchMemory']>>['hits'],
 ): boolean {
-  return selected.some((item) => hitProvidesReferencePointer(item));
+  for (const item of selected) {
+    if (hitProvidesReferencePointer(item)) return true;
+  }
+  return false;
 }
 
 function currentStateHitSupportOrder(
@@ -454,11 +519,16 @@ function durableCoreGuidanceTokens(entry: ConsolidatedMemoryEntry): string[] {
   const fields = renderMemoryFields(entry);
   const normalized = normalizeDurableComparisonText(fields.guidance);
   if (!normalized) return [];
-  const tokens = normalized
-    .split(/\s+/)
-    .filter((token) => token.length >= 4)
-    .slice(0, 24);
-  return [...new Set(tokens)];
+
+  const tokens: string[] = [];
+  const seen = new Set<string>();
+  for (const token of normalized.split(/\s+/)) {
+    if (token.length < 4 || seen.has(token)) continue;
+    seen.add(token);
+    tokens.push(token);
+    if (tokens.length >= 24) break;
+  }
+  return tokens;
 }
 
 function durableOverlapProfile(
@@ -469,9 +539,12 @@ function durableOverlapProfile(
   const selectedFields = renderMemoryFields(selectedEntry);
   const hitTokens = new Set(durableCoreGuidanceTokens(entry));
   const selectedTokens = new Set(durableCoreGuidanceTokens(selectedEntry));
-  const overlap = [...hitTokens].filter((token) => selectedTokens.has(token));
+  let overlapCount = 0;
+  for (const token of hitTokens) {
+    if (selectedTokens.has(token)) overlapCount++;
+  }
   const minTokenCount = Math.min(hitTokens.size, selectedTokens.size);
-  const heavyGuidanceOverlap = overlap.length >= 3 || (minTokenCount >= 3 && overlap.length >= minTokenCount - 1);
+  const heavyGuidanceOverlap = overlapCount >= 3 || (minTokenCount >= 3 && overlapCount >= minTokenCount - 1);
   if (!heavyGuidanceOverlap) {
     return { heavyGuidanceOverlap: false, distinctWhy: false, distinctHow: false, distinctSpecificity: false };
   }
@@ -486,12 +559,18 @@ function durableOverlapProfile(
     .toLowerCase();
   const hitSpecificity = new Set(extractSpecificityTokens(durableSupportEvidenceText(entry)));
   const selectedSpecificity = new Set(extractSpecificityTokens(durableSupportEvidenceText(selectedEntry)));
+  let distinctSpecificity = false;
+  for (const token of hitSpecificity) {
+    if (selectedSpecificity.has(token)) continue;
+    distinctSpecificity = true;
+    break;
+  }
 
   return {
     heavyGuidanceOverlap,
     distinctWhy: !!hitWhy && hitWhy !== selectedWhy,
     distinctHow: !!hitHow && hitHow !== selectedHow,
-    distinctSpecificity: [...hitSpecificity].some((token) => !selectedSpecificity.has(token)),
+    distinctSpecificity,
   };
 }
 
@@ -501,7 +580,11 @@ function durableAddsDistinctSupport(
   query?: string,
 ): boolean {
   if (hit.source !== 'durable' || !hit.durableEntry) return true;
-  const matchedTerms = new Set((hit.matchedTerms || []).map((term) => String(term || '').trim().toLowerCase()).filter(Boolean));
+  const matchedTerms = new Set<string>();
+  for (const term of hit.matchedTerms || []) {
+    const normalizedTerm = String(term || '').trim().toLowerCase();
+    if (normalizedTerm) matchedTerms.add(normalizedTerm);
+  }
   const queryNeedsWhy = queryLooksLikeWhyIntent(query || '');
   const queryNeedsHow = queryLooksLikeHowIntent(query || '');
   const queryNeedsCurrentState = queryLooksLikeCurrentStateIntent(query || '');
@@ -509,7 +592,12 @@ function durableAddsDistinctSupport(
   if (queryNeedsCurrentState && hit.durableEntry.category === 'project') {
     const hasSelectedReferencePointer = selectedHasReferencePointer(selected);
     if (hasSelectedReferencePointer) {
-      const matchedSpecificity = [...matchedTerms].some((term) => isConcreteCurrentStateAnchor(term));
+      let matchedSpecificity = false;
+      for (const term of matchedTerms) {
+        if (!isConcreteCurrentStateAnchor(term)) continue;
+        matchedSpecificity = true;
+        break;
+      }
       if (!matchedSpecificity) return false;
     }
   }
@@ -522,7 +610,12 @@ function durableAddsDistinctSupport(
     if (queryNeedsWhy && profile.distinctWhy) return true;
     if (queryNeedsHow && profile.distinctHow) return true;
     if (profile.distinctSpecificity) {
-      const matchedSpecificity = [...matchedTerms].some((term) => isDistinctMatchedQueryAspect(term));
+      let matchedSpecificity = false;
+      for (const term of matchedTerms) {
+        if (!isDistinctMatchedQueryAspect(term)) continue;
+        matchedSpecificity = true;
+        break;
+      }
       if (matchedSpecificity) return true;
     }
 
@@ -587,7 +680,10 @@ function renderAdditiveDurableSurfaceLines(
 
     const lines: string[] = [];
     if (compactPriorContext) {
-      lines.push(...renderSelectiveMemorySurfaceLines(entry, { fallbackLabel: 'fact', query, compactPriorContext: true }));
+      const compactLines = renderSelectiveMemorySurfaceLines(entry, { fallbackLabel: 'fact', query, compactPriorContext: true });
+      for (const line of compactLines) {
+        lines.push(line);
+      }
     }
     if (queryNeedsWhy && profile.distinctWhy && fields.why) {
       lines.push(`why: ${fields.why}`);
@@ -605,19 +701,23 @@ function renderAdditiveDurableSurfaceLines(
 
 function durableSupportText(entry: ConsolidatedMemoryEntry): string {
   const fields = renderMemoryFields(entry);
-  return [
-    fields.guidance,
-    fields.why,
-    shouldSurfaceSelectiveHowToApply(entry, fields) ? fields.howToApply : '',
-  ]
-    .filter(Boolean)
-    .join('\n');
+  const lines: string[] = [];
+  if (fields.guidance) lines.push(fields.guidance);
+  if (fields.why) lines.push(fields.why);
+  if (shouldSurfaceSelectiveHowToApply(entry, fields) && fields.howToApply) lines.push(fields.howToApply);
+  return lines.join('\n');
 }
 
 function durableSupportEvidenceText(entry: ConsolidatedMemoryEntry): string {
-  return entry.category === 'reference'
-    ? [durableSupportText(entry), ...entry.rolloutFiles].filter(Boolean).join('\n')
-    : durableSupportText(entry);
+  const supportText = durableSupportText(entry);
+  if (entry.category !== 'reference') return supportText;
+
+  let text = supportText;
+  for (const rolloutFile of entry.rolloutFiles) {
+    if (!rolloutFile) continue;
+    text = text ? `${text}\n${rolloutFile}` : rolloutFile;
+  }
+  return text;
 }
 
 function extractReferenceEvidenceTokens(text: string): string[] {
@@ -650,37 +750,39 @@ function rawSummaryAddsDistinctSupport(
   hit: Awaited<ReturnType<WorkspaceMemories['searchMemory']>>['hits'][number],
   selected: Awaited<ReturnType<WorkspaceMemories['searchMemory']>>['hits'],
 ): boolean {
-  const selectedFiles = new Set(
-    selected
-      .flatMap((item) => (item.durableEntry?.filesTouched ?? item.record.filesTouched) || [])
-      .map((value) => String(value || '').trim().toLowerCase())
-      .filter(Boolean),
-  );
-  if (hit.record.filesTouched.some((value) => {
+  const selectedFiles = new Set<string>();
+  for (const item of selected) {
+    const files = (item.durableEntry?.filesTouched ?? item.record.filesTouched) || [];
+    for (const value of files) {
+      const normalized = String(value || '').trim().toLowerCase();
+      if (normalized) selectedFiles.add(normalized);
+    }
+  }
+  for (const value of hit.record.filesTouched) {
     const normalized = String(value || '').trim().toLowerCase();
-    return normalized && !selectedFiles.has(normalized);
-  })) {
-    return true;
+    if (normalized && !selectedFiles.has(normalized)) return true;
   }
 
-  const selectedTools = new Set(
-    selected
-      .flatMap((item) => (item.durableEntry?.toolsUsed ?? item.record.toolsUsed) || [])
-      .map((value) => String(value || '').trim().toLowerCase())
-      .filter(Boolean),
-  );
-  if (hit.record.toolsUsed.some((value) => {
+  const selectedTools = new Set<string>();
+  for (const item of selected) {
+    const tools = (item.durableEntry?.toolsUsed ?? item.record.toolsUsed) || [];
+    for (const value of tools) {
+      const normalized = String(value || '').trim().toLowerCase();
+      if (normalized) selectedTools.add(normalized);
+    }
+  }
+  for (const value of hit.record.toolsUsed) {
     const normalized = String(value || '').trim().toLowerCase();
-    return normalized && !selectedTools.has(normalized);
-  })) {
-    return true;
+    if (normalized && !selectedTools.has(normalized)) return true;
   }
 
   for (const selectedHit of selected) {
     if (!hitProvidesReferencePointer(selectedHit)) continue;
     const selectedReferenceTokens = hitReferenceEvidenceTokens(selectedHit);
     const hitReferenceTokens = extractReferenceEvidenceTokens(hit.record.text);
-    if (hitReferenceTokens.some((token) => !selectedReferenceTokens.has(token))) return true;
+    for (const token of hitReferenceTokens) {
+      if (!selectedReferenceTokens.has(token)) return true;
+    }
   }
 
   return false;
@@ -690,18 +792,30 @@ function rawAddsDistinctReferenceSupport(
   hit: Awaited<ReturnType<WorkspaceMemories['searchMemory']>>['hits'][number],
   selected: Awaited<ReturnType<WorkspaceMemories['searchMemory']>>['hits'],
 ): boolean {
-  const referencePointerHits = selected.filter((item) => hitProvidesReferencePointer(item));
-  for (const selectedHit of referencePointerHits) {
+  for (const selectedHit of selected) {
+    if (!hitProvidesReferencePointer(selectedHit)) continue;
     const selectedReferenceTokens = hitReferenceEvidenceTokens(selectedHit);
     const hitReferenceTokens = extractReferenceEvidenceTokens(hit.record.text);
-    const hasDistinctReferenceEvidence = hitReferenceTokens.some((token) => !selectedReferenceTokens.has(token));
+    let hasDistinctReferenceEvidence = false;
+    for (const token of hitReferenceTokens) {
+      if (selectedReferenceTokens.has(token)) continue;
+      hasDistinctReferenceEvidence = true;
+      break;
+    }
     if (!hasDistinctReferenceEvidence) continue;
 
-    const selectedMatchedTerms = new Set((selectedHit.matchedTerms || []).map((term) => String(term || '').toLowerCase()));
-    const hitMatchedTerms = (hit.matchedTerms || []).map((term) => String(term || '').toLowerCase());
-    const specificOverlap = hitMatchedTerms.some(
-      (term) => selectedMatchedTerms.has(term) && !LOW_SIGNAL_REFERENCE_TERMS.has(term),
-    );
+    const selectedMatchedTerms = new Set<string>();
+    for (const term of selectedHit.matchedTerms || []) {
+      selectedMatchedTerms.add(String(term || '').toLowerCase());
+    }
+
+    let specificOverlap = false;
+    for (const rawTerm of hit.matchedTerms || []) {
+      const term = String(rawTerm || '').toLowerCase();
+      if (!selectedMatchedTerms.has(term) || LOW_SIGNAL_REFERENCE_TERMS.has(term)) continue;
+      specificOverlap = true;
+      break;
+    }
     if (specificOverlap) return true;
   }
 
@@ -717,7 +831,10 @@ function rawAddsDistinctCurrentStateSupport(
   if (!selectedHasReferencePointer(selected)) return false;
 
   if (rawAddsDistinctReferenceSupport(hit, selected)) return true;
-  return (hit.matchedTerms || []).some((term) => isConcreteCurrentStateAnchor(term));
+  for (const term of hit.matchedTerms || []) {
+    if (isConcreteCurrentStateAnchor(term)) return true;
+  }
+  return false;
 }
 
 function rawAddsDistinctSupport(
@@ -744,12 +861,18 @@ function rawAddsDistinctSupport(
 
   if (rawAddsDistinctReferenceSupport(hit, selected)) return true;
 
-  const selectedText = selected
-    .map((item) => (item.durableEntry ? durableSupportText(item.durableEntry) : item.record.text))
-    .join('\n');
+  let selectedText = '';
+  for (const item of selected) {
+    const text = item.durableEntry ? durableSupportText(item.durableEntry) : item.record.text;
+    if (!text) continue;
+    selectedText = selectedText ? `${selectedText}\n${text}` : text;
+  }
   const selectedTokens = new Set(extractSpecificityTokens(selectedText));
   const hitTokens = extractSpecificityTokens(hit.record.text);
-  return hitTokens.some((token) => !selectedTokens.has(token));
+  for (const token of hitTokens) {
+    if (!selectedTokens.has(token)) return true;
+  }
+  return false;
 }
 
 function selectAutoRecallHits(
@@ -757,16 +880,29 @@ function selectAutoRecallHits(
   maxResults: number,
   query?: string,
 ): Awaited<ReturnType<WorkspaceMemories['searchMemory']>>['hits'] {
-  const matchHits = hits.filter((hit) => hit.reason === 'match');
+  const matchHits: typeof hits = [];
+  const durableMatches: typeof hits = [];
+  const rawMatches: typeof hits = [];
+  let hasDurableReferencePointer = false;
+  for (const hit of hits) {
+    if (hit.reason !== 'match') continue;
+    matchHits.push(hit);
+    if (hit.source === 'durable' && hit.durableEntry) {
+      durableMatches.push(hit);
+      if (hit.durableEntry.category === 'reference') hasDurableReferencePointer = true;
+    } else if (hit.source !== 'durable') {
+      rawMatches.push(hit);
+    }
+  }
   if (matchHits.length === 0) return [];
 
-  const durableMatches = matchHits.filter((hit) => hit.source === 'durable' && hit.durableEntry);
   const usingDurablePool = durableMatches.length > 0;
   const selected: typeof matchHits = [];
   const coveredDurableKeys = new Set<string>();
   const seenRecordIds = new Set<string>();
 
-  const sortedSeedPool = [...matchHits].sort((a, b) => {
+  const sortedSeedPool = matchHits;
+  sortedSeedPool.sort((a, b) => {
     const currentStateOrder = currentStateHitSupportOrder(a, b, query);
     if (currentStateOrder !== 0) return currentStateOrder;
     const duplicateDurableOrder = duplicateDurableCanonicalOrder(a, b);
@@ -777,7 +913,8 @@ function selectAutoRecallHits(
     return memoryHitLastConfirmedAt(b) - memoryHitLastConfirmedAt(a);
   });
 
-  const sortedDurableMatches = [...durableMatches].sort((a, b) => {
+  const sortedDurableMatches = durableMatches;
+  sortedDurableMatches.sort((a, b) => {
     const currentStateCategoryOrder = currentStateReferenceVsProjectOrder(
       a.durableEntry?.category,
       b.durableEntry?.category,
@@ -793,10 +930,8 @@ function selectAutoRecallHits(
     return memoryHitLastConfirmedAt(b) - memoryHitLastConfirmedAt(a);
   });
 
-  const supplementalPool = usingDurablePool
-    ? matchHits.filter((hit) => hit.source !== 'durable')
-    : matchHits;
-  const sortedSupplementalPool = [...supplementalPool].sort((a, b) => {
+  const sortedSupplementalPool = usingDurablePool ? rawMatches : matchHits;
+  sortedSupplementalPool.sort((a, b) => {
     const currentStateRecordOrder = currentStateRawReferenceVsProjectOrder(a, b, query);
     if (currentStateRecordOrder !== 0) return currentStateRecordOrder;
     const supportOrder = rawSupportPriority(a) - rawSupportPriority(b);
@@ -830,11 +965,10 @@ function selectAutoRecallHits(
     return selected.length >= maxResults;
   };
 
-  const durableCursor = 0;
   if (usingDurablePool) {
     const preferCurrentStateDurablePointerFirst = shouldPreferCurrentStateDurablePointerFirst({
       query,
-      hasDurableReferencePointer: durableMatches.some((hit) => hit.durableEntry?.category === 'reference'),
+      hasDurableReferencePointer,
     });
     const shouldSeedFromAnyCurrentTruthHit = queryLooksLikeCurrentStateIntent(query || '') && !preferCurrentStateDurablePointerFirst;
     const seedPool = shouldSeedFromAnyCurrentTruthHit ? sortedSeedPool : sortedDurableMatches;
@@ -856,7 +990,7 @@ function selectAutoRecallHits(
     }
   }
 
-  for (const hit of sortedDurableMatches.slice(durableCursor)) {
+  for (const hit of sortedDurableMatches) {
     if (maybeSelect(hit)) return selected;
   }
 
@@ -938,10 +1072,9 @@ export class VsCodeAgentRuntimePolicy implements LingyunAgentRuntimePolicy {
     const memoryRecallContext = await this.maybeInjectMemoryRecall(ctx);
     if (memoryRecallContext) syntheticContexts.push(memoryRecallContext);
 
-    return {
-      runtime: runtime.snapshot,
-      ...(syntheticContexts.length > 0 ? { syntheticContexts } : {}),
-    };
+    const preparedRun: LingyunAgentPreparedRun = { runtime: runtime.snapshot };
+    if (syntheticContexts.length > 0) preparedRun.syntheticContexts = syntheticContexts;
+    return preparedRun;
   }
 
   private async prepareRuntime(ctx: LingyunAgentRuntimeContext): Promise<PreparedRuntime> {
@@ -968,6 +1101,19 @@ export class VsCodeAgentRuntimePolicy implements LingyunAgentRuntimePolicy {
     const systemPrompt = this.composeSystemPromptText(ctx.config.systemPrompt);
     const compaction = getCompactionConfig();
 
+    const snapshot: LingyunAgentRuntimeSnapshot = {
+      systemPrompt,
+      allowExternalPaths,
+      reasoningEffort,
+      openaiCompatibleThinking,
+      textVerbosity,
+      taskMaxOutputChars,
+      skills,
+      compaction,
+      modelLimits: undefined,
+    };
+    if (modelId && modelLimit) snapshot.modelLimits = { [modelId]: modelLimit };
+
     return {
       systemPrompt,
       allowExternalPaths,
@@ -975,17 +1121,7 @@ export class VsCodeAgentRuntimePolicy implements LingyunAgentRuntimePolicy {
       openaiCompatibleThinking,
       textVerbosity,
       taskMaxOutputChars,
-      snapshot: {
-        systemPrompt,
-        allowExternalPaths,
-        reasoningEffort,
-        openaiCompatibleThinking,
-        textVerbosity,
-        taskMaxOutputChars,
-        skills,
-        compaction,
-        ...(modelId && modelLimit ? { modelLimits: { [modelId]: modelLimit } } : { modelLimits: undefined }),
-      },
+      snapshot,
     };
   }
 
@@ -1043,7 +1179,7 @@ export class VsCodeAgentRuntimePolicy implements LingyunAgentRuntimePolicy {
 
   private composeSystemPromptText(basePrompt?: string): string {
     const prompt = typeof basePrompt === 'string' && basePrompt.trim() ? basePrompt : DEFAULT_SYSTEM_PROMPT;
-    return [prompt, this.instructionsText].filter(Boolean).join('\n\n');
+    return this.instructionsText ? `${prompt}\n\n${this.instructionsText}` : prompt;
   }
 
   private async maybeRunExplorePrepass(
@@ -1079,6 +1215,17 @@ export class VsCodeAgentRuntimePolicy implements LingyunAgentRuntimePolicy {
 
     const exploreModelLimit =
       getModelLimit(exploreModelId, ctx.llm.id) ?? (await ctx.warmModelLimit(exploreModelId));
+    const exploreRuntime: LingyunAgentRuntimeSnapshot = {
+      allowExternalPaths: runtime.allowExternalPaths,
+      reasoningEffort: runtime.reasoningEffort,
+      openaiCompatibleThinking: runtime.openaiCompatibleThinking,
+      textVerbosity: runtime.textVerbosity,
+      taskMaxOutputChars: runtime.taskMaxOutputChars,
+      skills: runtime.snapshot.skills,
+      compaction: runtime.snapshot.compaction,
+    };
+    if (exploreModelLimit) exploreRuntime.modelLimits = { [exploreModelId]: exploreModelLimit };
+
     let exploreText = await ctx.runSyntheticPass({
       input: ctx.input,
       modelId: exploreModelId,
@@ -1089,16 +1236,7 @@ export class VsCodeAgentRuntimePolicy implements LingyunAgentRuntimePolicy {
       parentSessionId: ctx.config.sessionId,
       subagentType: 'explore',
       signal: ctx.signal,
-      runtime: {
-        allowExternalPaths: runtime.allowExternalPaths,
-        reasoningEffort: runtime.reasoningEffort,
-        openaiCompatibleThinking: runtime.openaiCompatibleThinking,
-        textVerbosity: runtime.textVerbosity,
-        taskMaxOutputChars: runtime.taskMaxOutputChars,
-        skills: runtime.snapshot.skills,
-        compaction: runtime.snapshot.compaction,
-        ...(exploreModelLimit ? { modelLimits: { [exploreModelId]: exploreModelLimit } } : {}),
-      },
+      runtime: exploreRuntime,
     });
 
     let truncated = false;
@@ -1108,14 +1246,9 @@ export class VsCodeAgentRuntimePolicy implements LingyunAgentRuntimePolicy {
       truncated = true;
     }
 
-    const injected = [
-      '<subagent_explore_context>',
-      exploreText,
-      truncated ? '\n\n... [TRUNCATED]' : '',
-      '</subagent_explore_context>',
-    ]
-      .filter(Boolean)
-      .join('\n');
+    let injected = `<subagent_explore_context>\n${exploreText}`;
+    if (truncated) injected += '\n\n\n... [TRUNCATED]';
+    injected += '\n</subagent_explore_context>';
 
     return {
       transientContext: 'explore',
@@ -1162,41 +1295,65 @@ export class VsCodeAgentRuntimePolicy implements LingyunAgentRuntimePolicy {
       return undefined;
     }
 
-    const matchHits = search.hits.filter((hit) => hit.reason === 'match');
-    if (matchHits.length === 0) return undefined;
-
     const now = Date.now();
     const ageCutoffMs = now - memoriesConfig.autoRecallMaxAgeDays * 24 * 60 * 60 * 1000;
-    const eligibleMatchHits = matchHits.filter((hit) => {
+    const eligibleMatchHits: typeof search.hits = [];
+    let hasMatchHit = false;
+    for (const hit of search.hits) {
+      if (hit.reason !== 'match') continue;
+      hasMatchHit = true;
       const lastConfirmedAt = memoryHitLastConfirmedAt(hit);
       const freshness = hit.durableEntry?.freshness ?? hit.record.staleness;
-      return lastConfirmedAt >= ageCutoffMs && freshness !== 'invalidated' && hit.score >= memoriesConfig.autoRecallMinScore;
-    });
+      if (lastConfirmedAt < ageCutoffMs || freshness === 'invalidated' || hit.score < memoriesConfig.autoRecallMinScore) continue;
+      eligibleMatchHits.push(hit);
+    }
+    if (!hasMatchHit || eligibleMatchHits.length === 0) return undefined;
+
     const currentStateQuery = queryLooksLikeCurrentStateIntent(query || '');
     const recentTools = recentToolNamesFromSession(ctx.session);
-    const toolAwareEligibleMatchHits = eligibleMatchHits.filter(
-      (hit) => !shouldSuppressActiveToolUsageMemory({ hit, query, recentTools }),
-    );
+    const toolAwareEligibleMatchHits: typeof eligibleMatchHits = [];
+    for (const hit of eligibleMatchHits) {
+      if (shouldSuppressActiveToolUsageMemory({ hit, query, recentTools })) continue;
+      toolAwareEligibleMatchHits.push(hit);
+    }
+    if (toolAwareEligibleMatchHits.length === 0) return undefined;
+
     const recentlySurfacedHitSignatures = getRecentlySurfacedMemoryHitSignatures({
       session: ctx.session,
       currentStateQuery,
       eligibleHits: toolAwareEligibleMatchHits,
       query,
     });
-    const freshEligibleMatchHits = recentlySurfacedHitSignatures.size > 0
-      ? toolAwareEligibleMatchHits.filter((hit) => !recentlySurfacedHitSignatures.has(memoryRecallHitSignature(hit)))
-      : toolAwareEligibleMatchHits;
-    const selectionPool = freshEligibleMatchHits.length > 0 ? freshEligibleMatchHits : toolAwareEligibleMatchHits;
+    let selectionPool: typeof toolAwareEligibleMatchHits = toolAwareEligibleMatchHits;
+    if (recentlySurfacedHitSignatures.size > 0) {
+      const freshEligibleMatchHits: typeof toolAwareEligibleMatchHits = [];
+      for (const hit of toolAwareEligibleMatchHits) {
+        if (recentlySurfacedHitSignatures.has(memoryRecallHitSignature(hit))) continue;
+        freshEligibleMatchHits.push(hit);
+      }
+      if (freshEligibleMatchHits.length > 0) selectionPool = freshEligibleMatchHits;
+    }
     const selectedHits = selectAutoRecallHits(selectionPool, memoriesConfig.maxAutoRecallResults, query);
 
     if (selectedHits.length === 0) return undefined;
 
-    const scoreRankedHits = [...selectedHits].sort((a, b) => b.score - a.score);
-    const topScore = scoreRankedHits[0]?.score ?? 0;
-    const secondScore = scoreRankedHits[1]?.score ?? 0;
-    const hasDurableGuidance = selectedHits.some((hit) => hit.source === 'durable' && hit.durableEntry);
+    let topScore = Number.NEGATIVE_INFINITY;
+    let secondScore = Number.NEGATIVE_INFINITY;
+    let hasDurableGuidance = false;
+    for (const hit of selectedHits) {
+      if (hit.source === 'durable' && hit.durableEntry) hasDurableGuidance = true;
+      const score = hit.score;
+      if (score > topScore) {
+        secondScore = topScore;
+        topScore = score;
+      } else if (score > secondScore) {
+        secondScore = score;
+      }
+    }
+    if (topScore === Number.NEGATIVE_INFINITY) topScore = 0;
+    if (secondScore === Number.NEGATIVE_INFINITY) secondScore = 0;
     if (topScore < memoriesConfig.autoRecallMinScore) return undefined;
-    if (!hasDurableGuidance && scoreRankedHits.length > 1 && topScore - secondScore < memoriesConfig.autoRecallMinScoreGap) {
+    if (!hasDurableGuidance && selectedHits.length > 1 && topScore - secondScore < memoriesConfig.autoRecallMinScoreGap) {
       return undefined;
     }
     if (hasMemoryContradictionConflicts(selectedHits)) return undefined;
@@ -1206,17 +1363,19 @@ export class VsCodeAgentRuntimePolicy implements LingyunAgentRuntimePolicy {
       'Use this recalled context only if it is relevant to the current turn.',
       'Prefer curated durable guidance when present; treat raw memory as supporting evidence, not the primary instruction surface.',
       'Treat recalled memory as prior context, not guaranteed-current truth. Verify drift-prone facts before acting on them.',
-      ...(hasExplicitForgetMemoryIntent(query)
-        ? [
-            'The user is asking to forget memory. Use matching recalled entries only to identify recordId/durableKey for maintain_memory action=invalidate; do not rely on the forgotten content as guidance.',
-          ]
-        : []),
-      ...(hasExplicitMemoryRecallIntent(query)
-        ? [
-            'The user explicitly asked to recall/check memory. Use this recalled context as a starting point; call get_memory search if it is insufficient or missing expected details.',
-          ]
-        : []),
-      ...(explicitMemoryScope ? [`scope_filter: ${explicitMemoryScope}`] : []),
+    ];
+    if (hasExplicitForgetMemoryIntent(query)) {
+      lines.push(
+        'The user is asking to forget memory. Use matching recalled entries only to identify recordId/durableKey for maintain_memory action=invalidate; do not rely on the forgotten content as guidance.',
+      );
+    }
+    if (hasExplicitMemoryRecallIntent(query)) {
+      lines.push(
+        'The user explicitly asked to recall/check memory. Use this recalled context as a starting point; call get_memory search if it is insufficient or missing expected details.',
+      );
+    }
+    if (explicitMemoryScope) lines.push(`scope_filter: ${explicitMemoryScope}`);
+    lines.push(
       '## Before recommending from recalled memory',
       '- If a recalled memory names a file path, check that the file still exists before recommending or editing it.',
       '- If it names a function, symbol, setting, flag, endpoint, or command, grep/read the current workspace before relying on it.',
@@ -1224,9 +1383,10 @@ export class VsCodeAgentRuntimePolicy implements LingyunAgentRuntimePolicy {
       '- If current evidence contradicts recalled memory, trust the current evidence and use maintain_memory to confirm, invalidate, or supersede the stale memory.',
       `query: ${query}`,
       '',
-    ];
+    );
 
     let emitted = 0;
+    const precedingHits: typeof selectedHits = [];
     for (const hit of selectedHits) {
       if (emitted >= memoriesConfig.maxAutoRecallResults) break;
       const label = hit.source === 'durable' ? `durable:${hit.durableEntry?.category || 'memory'}` : hit.record.kind;
@@ -1236,7 +1396,6 @@ export class VsCodeAgentRuntimePolicy implements LingyunAgentRuntimePolicy {
       const lastConfirmedAt = memoryHitLastConfirmedAt(hit);
       const files = hit.durableEntry?.filesTouched ?? hit.record.filesTouched;
       const tools = hit.durableEntry?.toolsUsed ?? hit.record.toolsUsed;
-      const precedingHits = selectedHits.slice(0, emitted);
       const hasLeadingReferencePointer = selectedHasReferencePointer(precedingHits);
       const primaryLabel = hit.source === 'durable' && hit.durableEntry
         ? selectiveMemoryPrimaryLabel(hit.durableEntry, 'fact', query)
@@ -1268,11 +1427,16 @@ export class VsCodeAgentRuntimePolicy implements LingyunAgentRuntimePolicy {
         }
       }
       if (hit.source === 'durable' && hit.durableEntry) {
-        const additiveLines = renderAdditiveDurableSurfaceLines(hit.durableEntry, selectedHits.slice(0, emitted), query);
+        const additiveLines = renderAdditiveDurableSurfaceLines(hit.durableEntry, precedingHits, query);
         if (additiveLines && additiveLines.length > 0) {
-          lines.push(...additiveLines);
+          for (const line of additiveLines) {
+            lines.push(line);
+          }
         } else {
-          lines.push(...renderSelectiveMemorySurfaceLines(hit.durableEntry, { fallbackLabel: 'fact', query }));
+          const surfaceLines = renderSelectiveMemorySurfaceLines(hit.durableEntry, { fallbackLabel: 'fact', query });
+          for (const line of surfaceLines) {
+            lines.push(line);
+          }
         }
       } else if (hit.record.signalKind === 'summary') {
         const summary = renderSummaryRecordText(hit.record);
@@ -1294,6 +1458,7 @@ export class VsCodeAgentRuntimePolicy implements LingyunAgentRuntimePolicy {
         }
       }
       lines.push('');
+      precedingHits.push(hit);
       emitted += 1;
     }
 
@@ -1310,14 +1475,19 @@ export class VsCodeAgentRuntimePolicy implements LingyunAgentRuntimePolicy {
       return undefined;
     }
 
+    const surfacedFacetsByHitSignature: RecentMemoryRecallState['surfacedFacetsByHitSignature'] = {};
+    for (const hit of selectedHits) {
+      const hitSignature = memoryRecallHitSignature(hit);
+      if (!hitSignature) continue;
+      surfacedFacetsByHitSignature[hitSignature] = memoryRecallSurfacedFacetsForHit(hit, query);
+    }
+
     recentMemoryRecallBySession.set(ctx.session, {
       signature: memoryRecallSelectionSignature(selectedHits),
-      hitSignatures: selectedHits.map((hit) => memoryRecallHitSignature(hit)).filter(Boolean),
+      hitSignatures: collectMemoryRecallHitSignatures(selectedHits),
       completedUserTurns: countCompletedUserTurns(ctx.session) + 1,
       angleSignature: memoryRecallAngleSignature(query),
-      surfacedFacetsByHitSignature: Object.fromEntries(
-        selectedHits.map((hit) => [memoryRecallHitSignature(hit), memoryRecallSurfacedFacetsForHit(hit, query)]),
-      ),
+      surfacedFacetsByHitSignature,
     });
 
     return {

@@ -55,6 +55,16 @@ function usageTokenDeltaForGoal(tokens: UsageTokens | undefined): number {
   return Math.max(0, Math.floor((tokens.input ?? 0) + (tokens.output ?? 0)));
 }
 
+function getLastUserMessageText(session: LingyunSession): string | undefined {
+  for (let i = session.history.length - 1; i >= 0; i--) {
+    const message = session.history[i];
+    if (message?.role === 'user') {
+      return getMessageText(message);
+    }
+  }
+  return undefined;
+}
+
 function accountThreadGoalIteration(params: {
   session: LingyunSession;
   activeGoalAtIterationStart: AccountedGoalAtIterationStart | undefined;
@@ -269,10 +279,7 @@ export async function runOnce(params: {
         sessionId,
         mode,
         modelId,
-        message: (() => {
-          const lastUserMessage = [...session.history].reverse().find((msg) => msg.role === 'user');
-          return lastUserMessage ? getMessageText(lastUserMessage) : undefined;
-        })(),
+        message: getLastUserMessageText(session),
       },
       {
         temperature,
@@ -349,10 +356,13 @@ export async function runOnce(params: {
         syntheticResumeUserText,
       });
       syntheticResumeUserText = undefined;
-      const promptMessages: ModelMessage[] = [
-        ...systemParts.map((text) => ({ role: 'system', content: text } as any)),
-        ...modelMessages,
-      ];
+      const promptMessages: ModelMessage[] = [];
+      for (const text of systemParts) {
+        promptMessages.push({ role: 'system', content: text } as any);
+      }
+      for (const message of modelMessages) {
+        promptMessages.push(message);
+      }
 
       let assistantMessage = createAssistantHistoryMessage();
       let attemptText = '';
@@ -650,9 +660,14 @@ export async function runOnce(params: {
       };
 
       const cleanedText = stripToolBlocks(stripThinkBlocks(attemptText)).trim();
-      assistantMessage.parts = assistantMessage.parts.filter(
-        (p: any) => p.type !== 'text' && p.type !== 'reasoning',
-      );
+      let keptPartCount = 0;
+      for (const part of assistantMessage.parts) {
+        const partType = (part as any).type;
+        if (partType === 'text' || partType === 'reasoning') continue;
+        assistantMessage.parts[keptPartCount] = part;
+        keptPartCount += 1;
+      }
+      assistantMessage.parts.length = keptPartCount;
 
       let finalText = cleanedText;
       if (!finalText && mode === 'plan' && attemptReasoning.trim()) {

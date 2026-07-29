@@ -9,6 +9,15 @@ import type { ToolContext, ToolDefinition, ToolResult } from '../../core/types';
 
 const MAX_GOAL_OBJECTIVE_CHARS = 4000;
 
+function goalObjectiveExceedsCodePointLimit(value: string, limit: number): boolean {
+  let count = 0;
+  for (const _ch of value) {
+    count++;
+    if (count > limit) return true;
+  }
+  return false;
+}
+
 function requireSession(context: ToolContext): LingyunSession {
   if (!context.agentSession) {
     throw new Error('Goal tools require an active agent session.');
@@ -122,7 +131,7 @@ export async function createGoalHandler(args: Record<string, unknown>, context: 
   if (!objective) {
     return { success: false, error: 'objective is required' };
   }
-  if ([...objective].length > MAX_GOAL_OBJECTIVE_CHARS) {
+  if (goalObjectiveExceedsCodePointLimit(objective, MAX_GOAL_OBJECTIVE_CHARS)) {
     return { success: false, error: `objective must be at most ${MAX_GOAL_OBJECTIVE_CHARS} characters` };
   }
 

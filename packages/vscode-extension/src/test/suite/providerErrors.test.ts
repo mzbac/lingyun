@@ -1,4 +1,6 @@
 import * as assert from 'assert';
+import * as fs from 'fs';
+import * as path from 'path';
 
 import { createProviderHttpError, fetchProviderResponse, isProviderAbortError, isProviderAuthError, parseProviderJsonResponse, readProviderResponseBody } from '../../providers/providerErrors';
 
@@ -49,6 +51,59 @@ suite('providerErrors', () => {
       isProviderAuthError(Object.assign(new Error('request failed'), { error: { code: 'context_length_exceeded' } })),
       false,
     );
+  });
+
+  test('provider error classifiers scan error chains without map filter arrays', () => {
+    const timeoutCause = Object.assign(new Error('request failed'), {
+      cause: Object.assign(new Error('socket timed out'), { code: 'UND_ERR_BODY_TIMEOUT' }),
+    });
+
+    assert.strictEqual(isProviderAbortError(timeoutCause), false);
+    assert.strictEqual(
+      isProviderAuthError(Object.assign(new Error('request failed'), { data: { error: { message: 'invalid api key' } } })),
+      true,
+    );
+
+    const source = fs.readFileSync(path.resolve(__dirname, '../../../src/providers/providerErrors.ts'), 'utf8');
+    const headerSanitizeStart = source.indexOf('function sanitizeProviderDiagnosticHeaders');
+    assert.ok(headerSanitizeStart >= 0, 'expected diagnostic header sanitizer');
+    const headerSanitizeEnd = source.indexOf('function sanitizeProviderDiagnosticRecord', headerSanitizeStart);
+    assert.ok(headerSanitizeEnd > headerSanitizeStart, 'expected diagnostic record sanitizer after header sanitizer');
+    const appendStart = source.indexOf('function appendDiagnosticLine');
+    assert.ok(appendStart >= 0, 'expected diagnostic line appender');
+    const structuredStart = source.indexOf('const STRUCTURED_AUTH_ERROR_FIELD_KEYS');
+    assert.ok(structuredStart >= 0, 'expected structured auth key list');
+    const structuredEnd = source.indexOf('export function getProviderStatusCode', structuredStart);
+    assert.ok(structuredEnd > structuredStart, 'expected status classifier after structured auth helper');
+    const authStart = source.indexOf('export function isProviderAuthError', appendStart);
+    assert.ok(authStart > appendStart, 'expected auth classifier after diagnostic line appender');
+    const authEnd = source.indexOf('export async function readProviderResponseBody', authStart);
+    assert.ok(authEnd > authStart, 'expected response body reader after auth classifier');
+    const chainStart = source.indexOf('function errorChainText', authEnd);
+    assert.ok(chainStart > authEnd, 'expected error chain text helper after HTTP error factory helpers');
+    const chainEnd = source.indexOf('function isTimeoutLikeError', chainStart);
+    assert.ok(chainEnd > chainStart, 'expected timeout helper after error chain text helper');
+    const headerSanitizeSection = source.slice(headerSanitizeStart, headerSanitizeEnd);
+    const structuredSection = source.slice(structuredStart, structuredEnd);
+    const authSection = source.slice(authStart, authEnd);
+    const chainSection = source.slice(chainStart, chainEnd);
+
+    assert.match(headerSanitizeSection, /for \(const headerName in headers\)/);
+    assert.match(headerSanitizeSection, /hasOwnProperty\.call\(headers, headerName\)/);
+    assert.doesNotMatch(headerSanitizeSection, /Object\.entries\(headers\)/);
+    assert.match(structuredSection, /const STRUCTURED_AUTH_ERROR_FIELD_KEYS = \[/);
+    assert.match(structuredSection, /hasStructuredAuthErrorRecord\(record\)/);
+    assert.doesNotMatch(structuredSection, /for \(const source of \[/);
+    assert.doesNotMatch(structuredSection, /for \(const key of \[/);
+    assert.match(authSection, /let text = '';/);
+    assert.match(authSection, /for \(const item of getErrorChain\(error\)\)/);
+    assert.match(authSection, /appendDiagnosticLine\(text, getRecordString\(record, 'code'\)\)/);
+    assert.match(authSection, /appendDiagnosticLine\(text, typeof record\?\.responseBody === 'string' \? record\.responseBody : undefined\)/);
+    assert.match(chainSection, /let text = '';/);
+    assert.match(chainSection, /for \(const item of getErrorChain\(error\)\)/);
+    assert.match(chainSection, /appendDiagnosticLine\(text, getErrorMessage\(item\)\)/);
+    assert.doesNotMatch(headerSanitizeSection + structuredSection + authSection + chainSection, /\.map\(/);
+    assert.doesNotMatch(headerSanitizeSection + structuredSection + authSection + chainSection, /\.filter\(Boolean\)/);
   });
 
   test('attaches structured metadata to malformed successful JSON responses', async () => {
@@ -482,6 +537,10 @@ suite('providerErrors', () => {
   });
 
   test('wraps network fetch failures with structured provider metadata', async () => {
+    const diagnosticHeaders = Object.assign(Object.create({ 'x-inherited': 'skip' }), {
+      authorization: 'Bearer raw-secret',
+      'x-request-id': 'req_fetch_1',
+    });
     const cause = Object.assign(
       new Error('socket hang up for gpt-test at http://127.0.0.1:8080/v1 token=raw-secret'),
       {
@@ -495,10 +554,7 @@ suite('providerErrors', () => {
             message: 'nested data error for gpt-test at http://127.0.0.1:8080/v1 token=raw-secret',
           },
         },
-        headers: {
-          authorization: 'Bearer raw-secret',
-          'x-request-id': 'req_fetch_1',
-        },
+        headers: diagnosticHeaders,
       },
     );
     cause.stack = 'Error: socket hang up for gpt-test at http://127.0.0.1:8080/v1 token=raw-secret';
@@ -540,6 +596,7 @@ suite('providerErrors', () => {
     assert.strictEqual(cause.data.error.message.includes('gpt-test'), false);
     assert.strictEqual(cause.headers.authorization, '<redacted>');
     assert.strictEqual(cause.headers['x-request-id'], 'req_fetch_1');
+    assert.strictEqual(cause.headers['x-inherited'], undefined);
     assert.strictEqual(thrown.url, 'https://api.example.test/v1/models');
     assert.strictEqual(thrown.provider, 'OpenAI Compatible');
     assert.strictEqual(thrown.providerId, 'openaiCompatible');

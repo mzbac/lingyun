@@ -1,17 +1,19 @@
 import * as assert from 'assert';
+import * as fs from 'fs';
+import * as path from 'path';
 import * as vscode from 'vscode';
 
 import type { ToolContext } from '../../core/types';
 import { TOOL_ERROR_CODES } from '@kooka/core';
 import { WorkspaceMemories, deriveWorkspaceMemoryId } from '../../core/memories';
-import { buildMemoryRecords, buildStage1Output } from '../../core/memories/ingest';
+import { buildMemoryRecords, buildStage1Output, renderMemoryFile, renderMemorySummary } from '../../core/memories/ingest';
 import { planMemoryUpdate } from '../../core/memories/planner';
 import { getMemoryArtifacts, rebuildMemoryArtifacts, readMemoriesState, writeMemoriesState } from '../../core/memories/storage';
 import { buildConsolidatedMemoryEntries, renderMemoryFields, renderRawRecordEvidence, renderSelectiveMemorySurfaceLines, renderSummaryRecordText, selectiveMemoryFieldPriority, selectiveMemoryPrimaryLabel, shouldSurfaceSelectiveHowToApply } from '../../core/memories/consolidate';
-import { STAGE1_OUTPUTS_FILE, STATE_VERSION, type ConsolidatedMemoryEntry } from '../../core/memories/model';
+import { HOUR_MS, STAGE1_OUTPUTS_FILE, STATE_VERSION, type ConsolidatedMemoryEntry, type Stage1Output } from '../../core/memories/model';
 import { searchMemoryRecords } from '../../core/memories/search';
 import { SessionStore } from '../../core/sessionStore';
-import { createBlankSessionSignals, deriveStructuredMemoriesFromText, extractExplicitForgetPayload, extractExplicitForgetScopeHint, extractExplicitMemoryRecallQuery, extractExplicitMemoryRecallScopeHint, extractExplicitRememberPayload, extractExplicitRememberScopeHint, hasDerivableCodebaseMemoryPayload, hasExplicitForgetMemoryIntent, hasExplicitMemoryRecallIntent, hasExplicitRememberDerivableMemoryPayload, hasExplicitRememberMemoryIntent, hasGeneratedMemoryArtifactPayload, hasMemoryOptOutIntent, hasMemorySecretPayload, hasRepositoryInstructionPayload, hasSessionMemoryDisableIntent, hasSessionMemoryEnableIntent, hasSkillInstructionPayload, isExplicitMemoryCandidate, isSessionMemoryDisabled, markExternalMemoryContext, recordAssistantOutcome, recordConstraint, recordDecision, recordFileTouch, recordPreference, recordProcedure, recordStructuredMemory, recordToolUse, recordUserIntent, shouldExcludeUserTextFromMemoryCapture } from '../../core/sessionSignals';
+import { buildMemoryCandidateKey, createBlankSessionSignals, deriveStructuredMemoriesFromText, extractExplicitForgetPayload, extractExplicitForgetScopeHint, extractExplicitMemoryRecallQuery, extractExplicitMemoryRecallScopeHint, extractExplicitRememberPayload, extractExplicitRememberScopeHint, hasDerivableCodebaseMemoryPayload, hasExplicitForgetMemoryIntent, hasExplicitMemoryRecallIntent, hasExplicitRememberDerivableMemoryPayload, hasExplicitRememberMemoryIntent, hasGeneratedMemoryArtifactPayload, hasMemoryOptOutIntent, hasMemorySecretPayload, hasRepositoryInstructionPayload, hasSessionMemoryDisableIntent, hasSessionMemoryEnableIntent, hasSkillInstructionPayload, isExplicitMemoryCandidate, isSessionMemoryDisabled, markExternalMemoryContext, recordAssistantOutcome, recordConstraint, recordDecision, recordFileTouch, recordPreference, recordProcedure, recordStructuredMemory, recordToolUse, recordUserIntent, shouldExcludeUserTextFromMemoryCapture } from '../../core/sessionSignals';
 import { getMemoryHandler } from '../../tools/builtin/getMemory';
 import { maintainMemoryHandler } from '../../tools/builtin/maintainMemory';
 import { updateMemoryHandler } from '../../tools/builtin/updateMemory';
@@ -353,6 +355,85 @@ suite('Memory Tool', () => {
     assert.ok(!records.some((record) => record.text.includes('production token')));
   });
 
+  test('memory ingest caps structured candidates after filtering unsafe and implicit items', () => {
+    const now = Date.parse('2026-01-01T10:00:00.000Z');
+    const rawSecret = joinSecretLiteral('ghp_', '1234567890abcdefghijklmnopqrstuvABCD');
+    const signals = createBlankSessionSignals(now);
+    signals.structuredMemories = [
+      {
+        kind: 'constraint',
+        text: `Do not store token=${rawSecret}.`,
+        scope: 'workspace',
+        confidence: 0.9,
+        source: 'user',
+        evidenceCount: 1,
+        memoryKey: 'constraint:secret',
+        explicit: true,
+      },
+      {
+        kind: 'procedure',
+        text: 'Summarize generated .lingyun/memories/memory.md during maintenance.',
+        scope: 'workspace',
+        confidence: 0.9,
+        source: 'assistant',
+        evidenceCount: 1,
+        memoryKey: 'procedure:memory-artifact',
+        explicit: true,
+      },
+      {
+        kind: 'decision',
+        text: 'Model selection is implemented in packages/vscode-extension/src/core/modelSelection.ts.',
+        scope: 'workspace',
+        confidence: 0.9,
+        source: 'assistant',
+        evidenceCount: 1,
+        memoryKey: 'decision:codebase-fact',
+        explicit: true,
+      },
+      {
+        kind: 'preference',
+        text: 'Prefer implicit memory only when building broad summaries.',
+        scope: 'workspace',
+        confidence: 0.9,
+        source: 'assistant',
+        evidenceCount: 1,
+        memoryKey: 'preference:implicit',
+      },
+      ...Array.from({ length: 18 }, (_, index) => ({
+        kind: 'preference' as const,
+        text: `Remember explicit rollout preference ${index}.`,
+        scope: 'workspace' as const,
+        confidence: 0.9,
+        source: 'user' as const,
+        evidenceCount: 1,
+        memoryKey: `preference:explicit-${index}`,
+        explicit: true,
+      })),
+    ];
+
+    const session = {
+      id: 'session-structured-cap',
+      title: 'Structured memory cap regression',
+      createdAt: now - 1_000,
+      updatedAt: now,
+      signals,
+      mode: 'build' as const,
+      messages: [],
+    };
+
+    const stage1 = buildStage1Output({
+      session,
+      cwd: '/workspace/project',
+      generatedAt: now + 1_000,
+      explicitOnly: true,
+    });
+
+    assert.deepStrictEqual(
+      stage1.structuredMemories.map((item) => item.memoryKey),
+      Array.from({ length: 16 }, (_, index) => `preference:explicit-${17 - index}`),
+    );
+  });
+
   test('memory capture ignores explicit remember requests for derivable codebase facts', () => {
     const signals = createBlankSessionSignals(Date.parse('2026-01-01T10:00:00.000Z'));
     const request = 'Remember this: model selection is implemented in packages/vscode-extension/src/core/modelSelection.ts.';
@@ -476,6 +557,50 @@ suite('Memory Tool', () => {
     assert.deepStrictEqual(signals.userIntents, []);
     assert.deepStrictEqual(signals.assistantOutcomes, []);
     assert.deepStrictEqual(signals.structuredMemories, []);
+  });
+
+  test('memory artifact renderers keep bounded unique focus and rollout sections', () => {
+    const base = Date.parse('2026-01-01T10:00:00.000Z');
+    const outputs: Stage1Output[] = [];
+    for (let i = 0; i < 22; i++) {
+      const focusText = i === 1 ? 'Focus 0' : `Focus ${i}`;
+      outputs.push({
+        sessionId: `session-${i}`,
+        title: `Session ${i}`,
+        sourceUpdatedAt: base + i * HOUR_MS,
+        generatedAt: base + i * HOUR_MS + 1_000,
+        cwd: '/workspace/project',
+        rawMemory: `Raw ${i}`,
+        rolloutSummary: `Rollout ${i}`,
+        rolloutFile: `rollout-${i}.md`,
+        userIntents: [`Intent ${i}`],
+        assistantOutcomes: [`Outcome ${i}`],
+        filesTouched: [],
+        toolsUsed: [],
+        structuredMemories: [
+          {
+            kind: 'preference',
+            text: focusText,
+            scope: 'workspace',
+            confidence: 0.8,
+            source: 'user',
+            evidenceCount: 1,
+            memoryKey: `preference:focus-${i}`,
+          },
+        ],
+      });
+    }
+
+    const memoryFile = renderMemoryFile(outputs);
+    assert.strictEqual((memoryFile.match(/^- Focus 0$/gm) || []).length, 1);
+    assert.match(memoryFile, /^- \[preference\] Focus 16$/m);
+    assert.doesNotMatch(memoryFile, /^- \[preference\] Focus 17$/m);
+    assert.match(memoryFile, /^### Session 19$/m);
+    assert.doesNotMatch(memoryFile, /^### Session 20$/m);
+
+    const summary = renderMemorySummary(outputs);
+    assert.match(summary, /Session 11 \| rollout_summaries\/rollout-11\.md/);
+    assert.doesNotMatch(summary, /Session 12 \| rollout_summaries\/rollout-12\.md/);
   });
 
   test('memory ingest skips generated memory artifact transcript and signal values', () => {
@@ -1071,6 +1196,185 @@ suite('Memory Tool', () => {
     assert.deepStrictEqual(result.state.records, []);
   });
 
+  test('planMemoryUpdate updates existing outputs without duplicating session entries', () => {
+    const now = Date.parse('2026-01-01T12:00:00.000Z');
+    const oldUpdatedAt = now - 8 * HOUR_MS;
+    const newUpdatedAt = now - 4 * HOUR_MS;
+    const oldSignals = createBlankSessionSignals(oldUpdatedAt);
+    recordUserIntent(oldSignals, 'Remember the old planner rollout preference.');
+    const oldSession = {
+      id: 'session-output-update',
+      title: 'Output update session',
+      createdAt: oldUpdatedAt - 1_000,
+      updatedAt: oldUpdatedAt,
+      mode: 'build' as const,
+      messages: [],
+      signals: oldSignals,
+    };
+    const oldStage1 = buildStage1Output({
+      session: oldSession,
+      cwd: '/workspace/project',
+      generatedAt: oldUpdatedAt,
+    });
+    const newSignals = createBlankSessionSignals(newUpdatedAt);
+    recordUserIntent(newSignals, 'Remember the updated planner rollout preference.');
+    const result = planMemoryUpdate({
+      sessions: [
+        {
+          ...oldSession,
+          updatedAt: newUpdatedAt,
+          signals: newSignals,
+        },
+      ],
+      prev: {
+        version: STATE_VERSION,
+        outputs: [oldStage1],
+        records: [],
+      },
+      config: {
+        enabled: true,
+        maxRawMemoriesForGlobal: 20,
+        maxRolloutAgeDays: 30,
+        maxRolloutsPerStartup: 20,
+        minRolloutIdleHours: 2,
+        maxStateOutputs: 100,
+        maxRecords: 200,
+        maxSearchResults: 8,
+        maxResultsPerKind: 3,
+        searchNeighborWindow: 1,
+        autoRecall: true,
+        maxAutoRecallResults: 4,
+        maxAutoRecallTokens: 1200,
+        autoRecallMinScore: 7,
+        autoRecallMinScoreGap: 1.25,
+        autoRecallMaxAgeDays: 45,
+      },
+      workspaceId: 'workspace-planner-update',
+      workspaceRootPath: '/workspace/project',
+      now,
+    });
+
+    assert.strictEqual(result.result.updatedOutputs, 1);
+    assert.strictEqual(result.result.insertedOutputs, 0);
+    assert.deepStrictEqual(
+      result.state.outputs.map((output) => ({
+        sessionId: output.sessionId,
+        sourceUpdatedAt: output.sourceUpdatedAt,
+        userIntents: output.userIntents,
+      })),
+      [
+        {
+          sessionId: 'session-output-update',
+          sourceUpdatedAt: newUpdatedAt,
+          userIntents: ['the updated planner rollout preference.'],
+        },
+      ],
+    );
+  });
+
+  test('planMemoryUpdate scans sessions once while preserving skip counts and rollout cap order', () => {
+    const now = Date.parse('2026-01-01T12:00:00.000Z');
+    const config = {
+      enabled: true,
+      maxRawMemoriesForGlobal: 20,
+      maxRolloutAgeDays: 30,
+      maxRolloutsPerStartup: 2,
+      minRolloutIdleHours: 2,
+      maxStateOutputs: 100,
+      maxRecords: 200,
+      maxSearchResults: 8,
+      maxResultsPerKind: 3,
+      searchNeighborWindow: 1,
+      autoRecall: true,
+      maxAutoRecallResults: 4,
+      maxAutoRecallTokens: 1200,
+      autoRecallMinScore: 7,
+      autoRecallMinScoreGap: 1.25,
+      autoRecallMaxAgeDays: 45,
+    };
+    const session = (id: string, updatedAt: number, intent: string, signals = createBlankSessionSignals(updatedAt)) => {
+      recordUserIntent(signals, intent);
+      return {
+        id,
+        title: id,
+        createdAt: updatedAt - 1_000,
+        updatedAt,
+        mode: 'build' as const,
+        messages: [],
+        signals,
+      };
+    };
+
+    const disabledSignals = createBlankSessionSignals(now - 10 * HOUR_MS);
+    recordUserIntent(disabledSignals, 'Disable memory for this session.');
+    const externalSignals = createBlankSessionSignals(now - 9 * HOUR_MS);
+    markExternalMemoryContext(externalSignals, 'manual-memory-import', now - 9 * HOUR_MS);
+    const externalSession = session('session-external', now - 9 * HOUR_MS, 'External memory should remove old outputs.', externalSignals);
+    const oldExternalOutput = buildStage1Output({
+      session: externalSession,
+      cwd: '/workspace/project',
+      generatedAt: now - 9 * HOUR_MS,
+    });
+
+    const result = planMemoryUpdate({
+      sessions: [
+        session('session-oldest', now - 10 * HOUR_MS, 'Keep the oldest eligible rollout preference.'),
+        session('session-recent', now - HOUR_MS, 'Recent non-explicit session should wait.'),
+        session('session-newest', now - 6 * HOUR_MS, 'Keep the newest eligible rollout preference.'),
+        externalSession,
+        session('session-disabled', now - 8 * HOUR_MS, 'This disabled session should not be indexed.', disabledSignals),
+        session('session-middle', now - 7 * HOUR_MS, 'Keep the middle eligible rollout preference.'),
+      ],
+      prev: {
+        version: STATE_VERSION,
+        outputs: [oldExternalOutput],
+        records: [],
+      },
+      config,
+      workspaceId: 'workspace-planner-scan',
+      workspaceRootPath: '/workspace/project',
+      now,
+    });
+
+    assert.deepStrictEqual(
+      result.state.outputs.map((output) => output.sessionId),
+      ['session-newest', 'session-middle'],
+    );
+    assert.strictEqual(result.result.processedSessions, 2);
+    assert.strictEqual(result.result.skippedRecentSessions, 1);
+    assert.strictEqual(result.result.skippedExternalContextSessions, 1);
+    assert.strictEqual(result.result.skippedMemoryDisabledSessions, 1);
+    assert.ok(!result.state.outputs.some((output) => output.sessionId === 'session-external'));
+  });
+
+  test('workspace memory collection avoids repeated filter map snapshots', () => {
+    const source = fs.readFileSync(path.resolve(__dirname, '../../../src/core/memories/index.ts'), 'utf8');
+    const helperStart = source.indexOf('function collectWorkspaceMemoryState');
+    assert.ok(helperStart >= 0, 'expected workspace memory state helper');
+    const helperEnd = source.indexOf('function buildCandidateTemplate', helperStart);
+    assert.ok(helperEnd > helperStart, 'expected candidate template helper after workspace memory helper');
+    const helperSection = source.slice(helperStart, helperEnd);
+    const maintainStart = source.indexOf('async maintainMemory(');
+    assert.ok(maintainStart >= 0, 'expected memory maintenance method');
+    const maintainEnd = source.indexOf('async searchMemory(', maintainStart);
+    assert.ok(maintainEnd > maintainStart, 'expected search method after memory maintenance');
+    const maintainSection = source.slice(maintainStart, maintainEnd);
+    const searchSection = source.slice(maintainEnd);
+
+    assert.match(helperSection, /for \(const record of params\.records\)/);
+    assert.match(helperSection, /sessionIds\.add\(record\.sessionId\);/);
+    assert.match(helperSection, /for \(const output of params\.outputs\)/);
+    assert.doesNotMatch(helperSection, /\.filter\(/);
+    assert.doesNotMatch(helperSection, /\.map\(/);
+    assert.match(maintainSection, /collectWorkspaceMemoryState\(\{ records, outputs, workspaceId \}\)/);
+    assert.match(maintainSection, /extraOutputSessionIds: outputMatchedSessionIds/);
+    assert.match(searchSection, /collectWorkspaceMemoryState\(\{\s*records: state\.records,/);
+    assert.doesNotMatch(maintainSection, /workspaceRecords = records\.filter/);
+    assert.doesNotMatch(maintainSection, /new Set\(workspaceRecords\.map/);
+    assert.doesNotMatch(searchSection, /workspaceRecords = state\.records\.filter/);
+    assert.doesNotMatch(searchSection, /new Set\(workspaceRecords\.map/);
+  });
+
   test('memory ingest skips disabled-period transcript after session memory is re-enabled', () => {
     const now = Date.parse('2026-01-01T10:00:00.000Z');
     const signals = createBlankSessionSignals(now);
@@ -1344,6 +1648,91 @@ suite('Memory Tool', () => {
     assert.strictEqual(sessionCandidates[0]?.scope, 'session');
     assert.strictEqual(sessionCandidates[0]?.text, 'the temporary repro id is PIPE-421.');
     assert.strictEqual(isExplicitMemoryCandidate(sessionCandidates[0]), true);
+  });
+
+  test('buildMemoryCandidateKey preserves normalized first-token key semantics with bounded tokens', () => {
+    assert.strictEqual(
+      buildMemoryCandidateKey(
+        'preference',
+        'Remember: alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron.',
+      ),
+      'preference:alpha-beta-gamma-delta-epsilon-zeta-eta-theta-iota-kappa-lambda-mu',
+    );
+    assert.strictEqual(buildMemoryCandidateKey('decision', 'Remember!!!'), 'decision:memory');
+  });
+
+  test('recordStructuredMemory normalizes structured memory lines without split artifacts', () => {
+    const signals = createBlankSessionSignals(Date.parse('2026-01-01T10:00:00.000Z'));
+    recordStructuredMemory(signals, {
+      kind: 'constraint',
+      text: ' Integration tests   must hit a real database. \r\n\r\n Why:\tMocked  tests hid migration failures. \rHow to apply:   Use seeded  ephemeral databases. ',
+      scope: 'workspace',
+      confidence: 0.9,
+      source: 'user',
+    });
+
+    assert.strictEqual(
+      signals.structuredMemories[0]?.text,
+      [
+        'Integration tests must hit a real database.',
+        'Why: Mocked tests hid migration failures.',
+        'How to apply: Use seeded ephemeral databases.',
+      ].join('\n'),
+    );
+  });
+
+  test('recordStructuredMemory merges source turn ids without duplicate spread snapshots', () => {
+    const signals = createBlankSessionSignals(Date.parse('2026-01-01T10:00:00.000Z'));
+    recordStructuredMemory(signals, {
+      kind: 'decision',
+      text: 'Use the new token cache for retries.',
+      scope: 'workspace',
+      confidence: 0.8,
+      source: 'user',
+      sourceTurnIds: ['turn-1', 'turn-2', 'turn-3'],
+    });
+    recordStructuredMemory(signals, {
+      kind: 'decision',
+      text: 'Use the new token cache for retries.',
+      scope: 'workspace',
+      confidence: 0.9,
+      source: 'assistant',
+      sourceTurnIds: ['turn-2', 'turn-4', 'turn-5', 'turn-6', 'turn-7'],
+    });
+
+    const candidate = signals.structuredMemories.find((item) => item.kind === 'decision');
+    assert.ok(candidate);
+    assert.deepStrictEqual(candidate?.sourceTurnIds, ['turn-1', 'turn-2', 'turn-3', 'turn-4', 'turn-5', 'turn-6']);
+    assert.strictEqual(candidate?.evidenceCount, 2);
+    assert.strictEqual(candidate?.confidence, 0.9);
+  });
+
+  test('markExternalMemoryContext keeps newest bounded unique sources without spread snapshots', () => {
+    const now = Date.parse('2026-01-01T10:00:00.000Z');
+    const signals = createBlankSessionSignals(now);
+
+    for (let i = 0; i < 14; i++) {
+      markExternalMemoryContext(signals, `source-${i}`, now + i);
+    }
+    markExternalMemoryContext(signals, 'source-10', now + 100);
+
+    assert.strictEqual(signals.memoryContext?.external, true);
+    assert.deepStrictEqual(signals.memoryContext?.sources, [
+      'source-10',
+      'source-13',
+      'source-12',
+      'source-11',
+      'source-9',
+      'source-8',
+      'source-7',
+      'source-6',
+      'source-5',
+      'source-4',
+      'source-3',
+      'source-2',
+    ]);
+    assert.strictEqual(signals.memoryContext?.updatedAt, now + 100);
+    assert.strictEqual(signals.updatedAt, now + 100);
   });
 
   test('recordUserIntent saves explicit remember references as durable candidates', () => {
@@ -1924,6 +2313,44 @@ suite('Memory Tool', () => {
 
     assert.ok(!result.hits.some((hit) => hit.source === 'durable'));
     assert.ok(result.hits.some((hit) => hit.source === 'record'));
+  });
+
+  test('searchMemoryRecords tokenizes path-like and hyphenated queries for lexical recall', () => {
+    const record = {
+      id: 'record-tokenized-query-1',
+      workspaceId: 'workspace-1',
+      sessionId: 'session-memory-1',
+      kind: 'semantic' as const,
+      title: 'Memory search tokenization',
+      text: 'Wire filteredRawMatches in packages/vscode-extension/src/core/memories/search.ts and open PIPE-421.',
+      sourceUpdatedAt: Date.parse('2026-01-01T10:00:00.000Z'),
+      generatedAt: Date.parse('2026-01-01T10:00:00.000Z'),
+      filesTouched: ['packages/vscode-extension/src/core/memories/search.ts'],
+      toolsUsed: ['edit'],
+      index: 0,
+      scope: 'workspace' as const,
+      confidence: 0.82,
+      evidenceCount: 1,
+      lastConfirmedAt: Date.parse('2026-01-01T10:00:00.000Z'),
+      staleness: 'fresh' as const,
+      signalKind: 'procedure' as const,
+    };
+
+    const result = searchMemoryRecords({
+      records: [record],
+      durableEntries: [],
+      query: 'packages/vscode-extension/src/core/memories/search.ts PIPE-421',
+      workspaceId: 'workspace-1',
+      limit: 3,
+      neighborWindow: 0,
+      now: Date.parse('2026-01-02T10:00:00.000Z'),
+    });
+
+    assert.strictEqual(result.hits[0]?.record.id, 'record-tokenized-query-1');
+    assert.ok(result.hits[0]?.matchedTerms.includes('vscode'));
+    assert.ok(result.hits[0]?.matchedTerms.includes('search'));
+    assert.ok(result.hits[0]?.matchedTerms.includes('pipe'));
+    assert.ok(result.hits[0]?.matchedTerms.includes('421'));
   });
 
   test('searchMemoryRecords filters durable and raw matches by memory scope', () => {
@@ -4407,8 +4834,8 @@ suite('Memory Tool', () => {
       text: 'Assistant: Wire summary suppression into filteredRawMatches in packages/vscode-extension/src/core/memories/search.ts and validate with memory tests.',
       sourceUpdatedAt: Date.parse('2026-01-03T09:05:00.000Z'),
       generatedAt: Date.parse('2026-01-03T09:05:00.000Z'),
-      filesTouched: ['packages/vscode-extension/src/core/memories/search.ts'],
-      toolsUsed: ['edit'],
+      filesTouched: ['packages/vscode-extension/src/core/memories/search.ts', '  '],
+      toolsUsed: ['edit', ''],
       index: 0,
       scope: 'session' as const,
       confidence: 0.76,

@@ -1,59 +1,151 @@
 		    const mainChatProtocol = window.LINGYUN_CHAT_PROTOCOL;
-		    const readyInterval = setInterval(() => {
+		    let readyInterval = setInterval(() => {
 		      if (!initReceived) {
 		        vscode.postMessage({ type: mainChatProtocol.ready, clientInstanceId });
 		      }
 		    }, 2000);
 
-		    function rerenderPlanMessage(msg) {
-		      if (!msg || msg.role !== 'plan') return;
-		      const msgEl = msg && typeof msg.id === 'string' ? messageEls.get(msg.id) : null;
-		      if (!msgEl) return;
+		    function clearReadyInterval() {
+		      if (readyInterval === null) return;
+		      clearInterval(readyInterval);
+		      readyInterval = null;
+		    }
 
-		      const existingBody = msgEl.querySelector('.plan-activity-body');
-		      const existingChildren = existingBody ? Array.from(existingBody.children) : [];
-		      const existingOpen = !!msgEl.querySelector('.plan-activity')?.open;
-		      const existingCount = existingChildren.length;
-		      const wasNearBottom = isNearBottom();
+			    function planCardRenderKeyMatches(messageEl, renderKey) {
+			      return !!renderKey
+			        && !!messageEl
+			        && typeof getRememberedPlanCardRenderKey === 'function'
+			        && getRememberedPlanCardRenderKey(messageEl) === renderKey;
+			    }
+
+			    function rerenderPlanMessage(msg, wasNearBottomOverride, renderKeyOverride) {
+			      if (!msg || msg.role !== 'plan') return false;
+			      const msgEl = msg && typeof msg.id === 'string' ? messageEls.get(msg.id) : null;
+			      if (!msgEl) return false;
+			      const nextRenderKey = renderKeyOverride || (typeof getPlanCardRenderKey === 'function' ? getPlanCardRenderKey(msg) : '');
+			      if (planCardRenderKeyMatches(msgEl, nextRenderKey)) return false;
+
+			      const existingActivity = typeof getCachedMessagePlanActivityParts === 'function'
+			        ? getCachedMessagePlanActivityParts(msgEl)
+			        : null;
+			      const existingBody = existingActivity ? existingActivity.body : msgEl.querySelector('.plan-activity-body');
+			      let activityFragment = null;
+			      const existingCount = existingBody ? existingBody.children.length : 0;
+			      if (existingBody && existingBody.firstChild) {
+			        activityFragment = document.createDocumentFragment();
+			        while (existingBody.firstChild) {
+			          activityFragment.appendChild(existingBody.firstChild);
+			        }
+			      }
+			      const existingDetails = existingActivity ? existingActivity.details : msgEl.querySelector('.plan-activity');
+			      const existingOpen = !!(existingDetails && existingDetails.open);
+			      const shouldAutoScroll = typeof wasNearBottomOverride !== 'boolean';
+			      const wasNearBottom = shouldAutoScroll ? isNearBottom() : wasNearBottomOverride;
 
 		      msgEl.className = 'message plan';
 		      if (msg.plan?.status) msgEl.classList.add(msg.plan.status);
 		      msgEl.innerHTML = formatPlanCard(msg);
+		      if (typeof hydratePlanActionPayloads === 'function') hydratePlanActionPayloads(msgEl);
+		      if (nextRenderKey && typeof rememberPlanCardRenderKey === 'function') {
+		        rememberPlanCardRenderKey(msgEl, nextRenderKey);
+		      }
 
-		      const nextDetails = msgEl.querySelector('.plan-activity');
+		      const nextActivity = typeof findMessagePlanActivityParts === 'function'
+		        ? findMessagePlanActivityParts(msgEl)
+		        : null;
+		      const nextDetails = nextActivity ? nextActivity.details : msgEl.querySelector('.plan-activity');
 		      if (nextDetails) {
 		        nextDetails.open = existingOpen;
 		        nextDetails.dataset.count = String(existingCount);
-		        const countEl = nextDetails.querySelector('.plan-activity-count');
+		        const countEl = nextActivity ? nextActivity.count : nextDetails.querySelector('.plan-activity-count');
 		        if (countEl) countEl.textContent = existingCount > 0 ? '(' + existingCount + ')' : '';
 		      }
-		      const nextBody = msgEl.querySelector('.plan-activity-body');
+		      const nextBody = nextActivity ? nextActivity.body : msgEl.querySelector('.plan-activity-body');
 		      if (nextBody) {
-		        for (const child of existingChildren) {
-		          nextBody.appendChild(child);
-		        }
+		        if (activityFragment) nextBody.appendChild(activityFragment);
 		        stepBodies.set(msg.id, nextBody);
 		      }
 
-		      maybeAutoScroll(wasNearBottom);
-		    }
-
-			    function rerenderPlanCards() {
-			      messageDataById.forEach((msg) => {
-			        if (msg && msg.role === 'plan') {
-			          rerenderPlanMessage(msg);
-			        }
-			      });
+			      if (shouldAutoScroll) maybeAutoScroll(wasNearBottom);
+			      return true;
 			    }
 
-			    const MARKDOWN_RENDER_DEBOUNCE_MS = 40;
-			    const assistantMarkdownRenderQueue = new Map();
+				    function rerenderPlanCards() {
+				      let wasNearBottom;
+				      let rerendered = false;
+				      for (const messageId of planMessageIds) {
+				        const msg = messageDataById.get(messageId);
+				        if (msg && msg.role === 'plan') {
+				          const msgEl = typeof msg.id === 'string' ? messageEls.get(msg.id) : null;
+				          if (!msgEl) continue;
+				          const nextRenderKey = typeof getPlanCardRenderKey === 'function' ? getPlanCardRenderKey(msg) : '';
+				          if (planCardRenderKeyMatches(msgEl, nextRenderKey)) continue;
+				          if (wasNearBottom === undefined) wasNearBottom = isNearBottom();
+				          rerendered = rerenderPlanMessage(msg, wasNearBottom, nextRenderKey) || rerendered;
+				        } else {
+				          planMessageIds.delete(messageId);
+				        }
+				      }
+				      if (rerendered) maybeAutoScroll(wasNearBottom);
+				    }
 
-		    function clearAssistantMarkdownRenderQueue() {
-		      assistantMarkdownRenderQueue.forEach((state) => {
+				    const MARKDOWN_RENDER_DEBOUNCE_MS = 40;
+				    const assistantMarkdownRenderQueue = new Map();
+				    const streamTextRenderQueue = new Map();
+					    const planActivityDetailsByToolElement = new WeakMap();
+
+					    function findToolPlanActivityDetailsFromLayout(toolEl) {
+					      const bodyEl = getParentElement(toolEl);
+					      if (!hasRenderedElementClass(bodyEl, 'plan-activity-body')) return null;
+					      const details = getParentElement(bodyEl);
+					      if (!hasRenderedElementClass(details, 'plan-activity')) return null;
+					      planActivityDetailsByToolElement.set(toolEl, details);
+					      return details;
+					    }
+
+					    function getCachedToolPlanActivityDetails(toolEl) {
+					      if (!toolEl) return null;
+					      const cachedDetails = planActivityDetailsByToolElement.get(toolEl);
+					      if (!cachedDetails || typeof cachedDetails.contains !== 'function') return null;
+					      if (cachedDetails.contains(toolEl)) return cachedDetails;
+					      planActivityDetailsByToolElement.delete(toolEl);
+					      return null;
+					    }
+
+					    function getToolPlanActivityDetails(toolEl) {
+					      const cachedDetails = getCachedToolPlanActivityDetails(toolEl);
+					      if (cachedDetails) return cachedDetails;
+					      const layoutDetails = findToolPlanActivityDetailsFromLayout(toolEl);
+					      if (layoutDetails) return layoutDetails;
+					      if (typeof getCachedClosestElement === 'function') {
+					        return getCachedClosestElement(toolEl, '.plan-activity', planActivityDetailsByToolElement);
+					      }
+				      return toolEl && toolEl.closest ? toolEl.closest('.plan-activity') : null;
+				    }
+
+			    function clearAssistantMarkdownRenderQueue() {
+			      for (const state of assistantMarkdownRenderQueue.values()) {
 		        if (state && state.timer) clearTimeout(state.timer);
-		      });
+		      }
 		      assistantMarkdownRenderQueue.clear();
+		    }
+
+		    function clearStreamTextRenderQueue() {
+		      for (const state of streamTextRenderQueue.values()) {
+		        if (state && state.timer) clearTimeout(state.timer);
+		      }
+		      streamTextRenderQueue.clear();
+		    }
+
+		    function normalizeStreamTokenText(token) {
+		      return String(token === undefined || token === null ? '' : token);
+		    }
+
+		    function appendPendingToken(messageId, token) {
+		      if (!messageId) return;
+		      const tokenText = normalizeStreamTokenText(token);
+		      if (!tokenText) return;
+		      pendingTokens.set(messageId, (pendingTokens.get(messageId) || '') + tokenText);
 		    }
 
 		    function discardPendingStreamState(messageId) {
@@ -63,6 +155,11 @@
 		        clearTimeout(state.timer);
 		      }
 		      assistantMarkdownRenderQueue.delete(messageId);
+		      const textState = streamTextRenderQueue.get(messageId);
+		      if (textState && textState.timer) {
+		        clearTimeout(textState.timer);
+		      }
+		      streamTextRenderQueue.delete(messageId);
 		      pendingTokens.delete(messageId);
 		    }
 
@@ -75,11 +172,17 @@
 		      });
 		      reasoningEffortPending = false;
 		      modelSwitchPending = false;
-		      modelFavoritePending = false;
-		      providerAuthBusy = false;
-		      providerSwitchPending = false;
-		      ['reasoningEffort', 'modelSwitch', 'modelFavorite', 'modelPickerOpen', 'modelPickerRefresh', 'providerAuth', 'providerSwitch'].forEach((actionType) => clearPendingActionTimer(actionType));
-		      updateCodexSubscriptionSettingsState(data.codexSubscriptionSettings || {});
+			      modelFavoritePending = false;
+			      providerAuthBusy = false;
+			      providerSwitchPending = false;
+			      clearPendingActionTimer('reasoningEffort');
+			      clearPendingActionTimer('modelSwitch');
+			      clearPendingActionTimer('modelFavorite');
+			      clearPendingActionTimer('modelPickerOpen');
+			      clearPendingActionTimer('modelPickerRefresh');
+			      clearPendingActionTimer('providerAuth');
+			      clearPendingActionTimer('providerSwitch');
+			      updateCodexSubscriptionSettingsState(data.codexSubscriptionSettings || {});
 		      updateOpenAICompatibleSettingsState(data.openAICompatibleSettings || {});
 		      updateProviderSelection(data.currentProviderId || (data.providerAuth && data.providerAuth.providerId) || '');
 		      updateProviderAuthHeader(data.providerAuth || null);
@@ -96,7 +199,7 @@
       updatePluginSettingsState(data.pluginSettings || {});
       updateToolFilterState(data.toolFilter || []);
       updateAutoApprovedToolsState(data.autoApprovedTools || []);
-      updateToolsCatalogState(data.toolsCatalog || null);
+      if (data.toolsCatalog) updateToolsCatalogState(data.toolsCatalog);
       updateWorkspaceEnvState(data.workspaceEnv || {});
 		      updateInstructionPatternsState(data.instructionPatterns || []);
 		      updateInstructionFileSettingsState(data.instructionFileSettings || {});
@@ -122,7 +225,7 @@
 		        typeof data.compactionPruneProtectTokens === 'number' ? data.compactionPruneProtectTokens : 40000,
 		        typeof data.compactionPruneMinimumTokens === 'number' ? data.compactionPruneMinimumTokens : 20000
 		      );
-		      updateCompactionToolOutputModeState(data.compactionToolOutputMode || 'afterToolCall');
+		      updateCompactionToolOutputModeState(data.compactionToolOutputMode || 'onCompaction');
 		      updateModelLimitsState(data.modelLimits || {});
 			      updateGenerationSettingsState(data.generationSettings || {});
 			      updateSkillsEnabledState(data.skillsEnabled !== false);
@@ -148,38 +251,45 @@
 
 			      const el = messageEls.get(messageId);
 			      if (!el) {
-			        pendingTokens.set(messageId, (pendingTokens.get(messageId) || '') + pending);
+			        appendPendingToken(messageId, pending);
 			        return;
 			      }
 
-			      const contentEl = el.querySelector('.message-content');
+			      const contentEl = getCachedMessageContentElement(el);
 			      if (!contentEl || !el.classList.contains('assistant') || !contentEl.classList.contains('md')) {
 			        if (contentEl) {
-			          contentEl.textContent = (contentEl.textContent === '…' ? '' : contentEl.textContent) + pending;
+			          appendStreamTextContent(contentEl, pending, true);
 			        } else {
-			          pendingTokens.set(messageId, (pendingTokens.get(messageId) || '') + pending);
+			          appendPendingToken(messageId, pending);
 			        }
 			        maybeAutoScroll(shouldScroll);
 			        return;
 			      }
 
-			      const raw = (contentEl.dataset.raw || '') + pending;
-			      contentEl.dataset.raw = raw;
-			      contentEl.innerHTML = renderMarkdown(raw);
-			      if (typeof scheduleFileLinkify === 'function') {
-			        try { scheduleFileLinkify(el); } catch {}
+			      const renderInfo = renderAssistantMarkdownInto(contentEl, getAssistantMarkdownRaw(contentEl) + pending);
+			      updateAssistantMessageContent(messageId, renderInfo.raw);
+			      if (renderInfo.htmlChanged && typeof scheduleFileLinkify === 'function') {
+			        try {
+			          if (typeof scheduleFileLinkifyIfNeeded === 'function') {
+			            scheduleFileLinkifyIfNeeded(el, renderInfo.raw);
+			          } else {
+			            scheduleFileLinkify(el);
+			          }
+			        } catch {}
 			      }
 			      maybeAutoScroll(shouldScroll);
 			    }
 
-			    function queueAssistantMarkdownToken(messageId, token, wasNearBottom) {
-			      if (!messageId || !token) return;
-			      const state = assistantMarkdownRenderQueue.get(messageId) || {
-			        pending: '',
-			        timer: null,
-			        wasNearBottom: false,
-			      };
-			      state.pending += token;
+				    function queueAssistantMarkdownToken(messageId, token, wasNearBottom) {
+				      if (!messageId) return;
+				      const tokenText = normalizeStreamTokenText(token);
+				      if (!tokenText) return;
+				      const state = assistantMarkdownRenderQueue.get(messageId) || {
+				        pending: '',
+				        timer: null,
+				        wasNearBottom: false,
+				      };
+				      state.pending += tokenText;
 			      state.wasNearBottom = state.wasNearBottom || !!wasNearBottom;
 			      if (!state.timer) {
 			        state.timer = setTimeout(() => {
@@ -189,65 +299,233 @@
 			      assistantMarkdownRenderQueue.set(messageId, state);
 			    }
 
+			    function flushStreamTextRender(messageId) {
+			      const state = streamTextRenderQueue.get(messageId);
+			      if (!state) return;
+			      if (state.timer) {
+			        clearTimeout(state.timer);
+			        state.timer = null;
+			      }
+
+			      const pending = state.pending || '';
+			      const shouldScroll = !!state.wasNearBottom;
+			      const kind = state.kind || 'content';
+			      streamTextRenderQueue.delete(messageId);
+			      if (!pending) return;
+
+			      const el = messageEls.get(messageId);
+			      if (!el) {
+			        appendPendingToken(messageId, pending);
+			        return;
+			      }
+
+			      const targetEl = kind === 'thought' ? getCachedMessageThinkingTextElement(el) : getCachedMessageContentElement(el);
+			      if (!targetEl) {
+			        appendPendingToken(messageId, pending);
+			        return;
+			      }
+
+			      const renderedText = appendStreamTextContent(targetEl, pending, kind !== 'thought');
+			      if (kind !== 'thought' && typeof scheduleFileLinkify === 'function') {
+			        try {
+			          if (typeof scheduleFileLinkifyIfNeeded === 'function') {
+			            scheduleFileLinkifyIfNeeded(el, renderedText, { appendOnly: true });
+			          } else {
+			            scheduleFileLinkify(el);
+			          }
+			        } catch {}
+			      }
+			      maybeAutoScroll(shouldScroll);
+			    }
+
+				    function flushPendingStreamRenders(messageId) {
+				      flushAssistantMarkdownRender(messageId);
+				      flushStreamTextRender(messageId);
+				    }
+
+				    function replayPendingTokenIntoRenderedMessage(messageId, messageEl, role, pending, wasNearBottom, scheduleAppendLinkify) {
+				      if (!messageId || !messageEl || !pending) return false;
+				      const contentEl = getCachedMessageContentElement(messageEl);
+				      if (!contentEl) return false;
+				      if (role === 'thought') {
+				        const thinkingEl = getCachedMessageThinkingTextElement(messageEl);
+				        if (!thinkingEl) return false;
+				        appendStreamTextContent(thinkingEl, pending, false);
+				        return true;
+				      }
+				      if (messageEl.classList.contains('assistant') && contentEl.classList.contains('md')) {
+				        queueAssistantMarkdownToken(messageId, pending, wasNearBottom);
+				        return true;
+				      }
+				      const renderedText = appendStreamTextContent(contentEl, pending, true);
+				      if (scheduleAppendLinkify && typeof scheduleFileLinkify === 'function') {
+				        try {
+				          if (typeof scheduleFileLinkifyIfNeeded === 'function') {
+				            scheduleFileLinkifyIfNeeded(messageEl, renderedText, { appendOnly: true });
+				          } else {
+				            scheduleFileLinkify(messageEl);
+				          }
+				        } catch {}
+				      }
+				      return true;
+				    }
+
+				    function queueStreamTextToken(messageId, token, wasNearBottom, kind) {
+				      if (!messageId) return;
+				      const tokenText = normalizeStreamTokenText(token);
+				      if (!tokenText) return;
+			      const state = streamTextRenderQueue.get(messageId) || {
+			        pending: '',
+			        timer: null,
+			        wasNearBottom: false,
+			        kind: kind || 'content',
+			      };
+			      state.pending += tokenText;
+			      state.wasNearBottom = state.wasNearBottom || !!wasNearBottom;
+			      state.kind = kind || state.kind || 'content';
+			      if (!state.timer) {
+			        state.timer = setTimeout(() => {
+			          flushStreamTextRender(messageId);
+			        }, MARKDOWN_RENDER_DEBOUNCE_MS);
+			      }
+			      streamTextRenderQueue.set(messageId, state);
+			    }
+
+			    function disposeWebviewTimers() {
+			      if (typeof persistComposerDraftStateNow === 'function') {
+			        try { persistComposerDraftStateNow(); } catch {}
+			      }
+			      if (typeof persistTranscriptPositionStateNow === 'function') {
+			        try { persistTranscriptPositionStateNow(); } catch {}
+			      }
+			      if (typeof clearComposerDraftStateTimer === 'function') {
+			        try { clearComposerDraftStateTimer(); } catch {}
+			      }
+			      if (typeof clearTranscriptPositionStateTimer === 'function') {
+			        try { clearTranscriptPositionStateTimer(); } catch {}
+			      }
+			      clearReadyInterval();
+			      if (typeof stopTranscriptPrependSettle === 'function') {
+			        try { stopTranscriptPrependSettle(); } catch {}
+			      }
+			      if (typeof clearTranscriptHistoryRequestTimeout === 'function') {
+			        try { clearTranscriptHistoryRequestTimeout(); } catch {}
+			      }
+			      clearAssistantMarkdownRenderQueue();
+		      clearStreamTextRenderQueue();
+			      if (typeof resetFileLinkState === 'function') {
+			        try { resetFileLinkState(); } catch {}
+			      }
+			      if (typeof clearAllCopyFeedbackTimers === 'function') {
+			        try { clearAllCopyFeedbackTimers(); } catch {}
+			      }
+				      if (typeof clearOutputModalCopyResetTimer === 'function') {
+				        try { clearOutputModalCopyResetTimer(); } catch {}
+				      }
+				      if (typeof clearPopoverFocusRestoreTimer === 'function') {
+				        try { clearPopoverFocusRestoreTimer(); } catch {}
+				      }
+				      if (typeof clearSettingsPopoverFocusRestoreTimer === 'function') {
+				        try { clearSettingsPopoverFocusRestoreTimer(); } catch {}
+				      }
+				      if (typeof clearAllTurnTimers === 'function') {
+				        try { clearAllTurnTimers(); } catch {}
+				      }
+		      if (typeof stopOperationTimer === 'function') {
+		        try { stopOperationTimer(); } catch {}
+		      }
+		      if (typeof clearOperationHideTimer === 'function') {
+		        try { clearOperationHideTimer(); } catch {}
+		      }
+		      if (typeof clearPendingSettingStates === 'function') {
+		        try { clearPendingSettingStates(); } catch {}
+		      }
+		      if (typeof clearAllPendingActionTimers === 'function') {
+		        try { clearAllPendingActionTimers(); } catch {}
+		      }
+		      if (typeof clearInputNotice === 'function') {
+		        try { clearInputNotice(); } catch {}
+		      }
+		      if (typeof clearQueuedAnimationFrames === 'function') {
+		        try { clearQueuedAnimationFrames(); } catch {}
+		      }
+		    }
+
+		    window.addEventListener('pagehide', disposeWebviewTimers);
+		    window.addEventListener('beforeunload', disposeWebviewTimers);
+
+		    function turnHasNoPendingStatusWork(turnData) {
+		      return !!turnData &&
+		        !turnData.statusTimeout &&
+		        !turnData.retryInfo &&
+		        !turnData.retryInterval &&
+		        !turnData.retryCleanupTimeout;
+		    }
+
 			    window.addEventListener('message', (e) => {
 			      try {
 			        const data = e.data || {};
 			      switch (data.type) {
-	        case 'init':
-			          initReceived = true;
-			          clearInterval(readyInterval);
-			          messages.innerHTML = '';
-			          messages.appendChild(empty);
-			          turnEls.clear();
-			          clearActivityOpenStates();
-				          activeTurnId = '';
+		        case 'init':
+				          initReceived = true;
+				          clearReadyInterval();
+				          const persistedTranscriptPosition = typeof readPersistedTranscriptPositionState === 'function'
+				            ? readPersistedTranscriptPositionState()
+				            : null;
+				          if (typeof rememberPersistedTranscriptPositionState === 'function') {
+				            rememberPersistedTranscriptPositionState(persistedTranscriptPosition);
+				          }
+				          if (typeof resetTranscriptHistoryWindow === 'function') {
+				            try { resetTranscriptHistoryWindow(); } catch {}
+				          }
+				          if (typeof resetFileLinkState === 'function') {
+				            try { resetFileLinkState(); } catch {}
+					          }
+					          clearAllTurnTimers();
+					          turnEls.clear();
+								          activeTurnId = '';
+								          activeProcessingTurnId = '';
+								          messageAppendTarget = null;
 
 			          messageEls.clear();
-				          messageDataById.clear();
+			          clearMessageDataIndexes();
 				          stepBodies.clear();
 				          pendingTokens.clear();
 				          clearAssistantMarkdownRenderQueue();
-				          lastToolMsg = null;
+				          clearStreamTextRenderQueue();
+				          resetLastToolBatchState();
 				          currentOperation = null;
 				          stopOperationTimer();
 				          updateOperationBanner();
-		          currentRevertState = null;
-		          updateRevertBar(null);
-		          activePlanMessageId = typeof data.activePlanMessageId === 'string' ? data.activePlanMessageId : '';
-		          suppressAutoScroll = true;
-		          userScrolledAway = false;
-		          {
-		            const list = Array.isArray(data.messages) ? data.messages : [];
-		            for (const msg of list) {
-		              try {
-		                addMessage(msg);
-		              } catch {
-		                console.error('Failed to render message');
-		              }
-		            }
-		            if (list.length === 0) {
-		            empty.style.display = 'flex';
-	          } else {
-	            empty.style.display = 'none';
-	          }
-		          }
-		          suppressAutoScroll = false;
-		          messages.scrollTop = messages.scrollHeight;
-
-			          try {
-			            const state = vscode.getState() || {};
-			            activityOpenStates = state.activityOpenStates || {};
-			          } catch {}
-			          pruneActivityOpenStatesToTurns();
-
-			          turnEls.forEach((turnData, turnId) => {
-			            const expanded = activityOpenStates[turnId];
-			            if (expanded) {
-			              turnData.activity.open = true;
-			            }
-			            updateTurnActivitySummary(turnData);
-			          });
-      sessionActionPending = '';
+				          currentRevertState = null;
+					          updateRevertBar(null);
+						          activePlanMessageId = typeof data.activePlanMessageId === 'string' ? data.activePlanMessageId : '';
+						          const restoredMessageList = Array.isArray(data.messages) ? data.messages : [];
+						          suppressAutoScroll = true;
+					          stopAutoScrollSettle();
+					          setUserScrolledAway(false);
+						          let restoredTranscriptHasMessages = false;
+						          {
+						            const renderedMessages = restoreTranscriptMessages(restoredMessageList, {
+						              history: data.transcriptHistory,
+						              sessionId: String(data.activeSessionId || ''),
+						            });
+						            setDisplay(empty, renderedMessages === 0 ? 'flex' : 'none');
+						            restoredTranscriptHasMessages = renderedMessages > 0;
+					          }
+				          suppressAutoScroll = false;
+				          const restoredTranscriptPosition = restoredTranscriptHasMessages &&
+				            typeof restoreTranscriptPositionState === 'function' &&
+				            restoreTranscriptPositionState(persistedTranscriptPosition, String(data.activeSessionId || ''));
+				          if (restoredTranscriptHasMessages && !restoredTranscriptPosition) {
+				            maybeAutoScrollAfterLayout(true);
+				          } else {
+				            if (!restoredTranscriptHasMessages) {
+				              messages.scrollTop = 0;
+				              rememberMessagesScrollTop();
+				            }
+				          }
+	      sessionActionPending = '';
       sessionSwitchPending = false;
       revertActionPending = '';
       clearAllPendingActionTimers();
@@ -261,6 +539,15 @@
       if (data.sessions && data.sessions.length > 0) {
         sessionSwitchPending = false;
         updateSessionSelect(data.sessions, data.activeSessionId);
+	      }
+	      if (typeof restorePendingImageAttachments === 'function') {
+	        restorePendingImageAttachments(data.composerAttachments);
+	      }
+	      if (typeof reconcileComposerSubmissionState === 'function') {
+	        reconcileComposerSubmissionState(data.composerSubmissionState);
+	      }
+	      if (typeof scheduleTranscriptPositionStatePersistence === 'function') {
+	        scheduleTranscriptPositionStatePersistence();
 	      }
 	      applySettingsState(data);
 			      updateContextIndicatorState(data.context);
@@ -284,37 +571,90 @@
 		          syncInputState();
 		          vscode.postMessage({ type: mainChatProtocol.initAck, clientInstanceId });
 		          break;
-	        case 'queueState':
-	          clearPendingActionTimer('queueAction');
-	          queueClearPending = false;
-	          queueSteerPendingId = '';
-	          try { setQueueState(Array.isArray(data.queuedInputs) ? data.queuedInputs : []); } catch {}
-	          break;
+		        case 'sendState':
+		          if (typeof applyComposerSubmissionState === 'function') {
+		            applyComposerSubmissionState(data);
+		          }
+		          break;
+		        case mainChatProtocol.transcriptHistoryPage:
+		          if (typeof applyEarlierTranscriptPage === 'function') {
+		            try { applyEarlierTranscriptPage(data); } catch {}
+		          }
+		          break;
+		        case 'queueState':
+		          const nextQueuedInputs = Array.isArray(data.queuedInputs) ? data.queuedInputs : [];
+		          const nextQueueInputsRenderState = typeof getQueueInputsRenderState === 'function'
+		            ? getQueueInputsRenderState(nextQueuedInputs)
+		            : null;
+		          const queueActionWasPending = queueClearPending || !!queueSteerPendingId;
+		          if (
+		            !queueActionWasPending &&
+		            nextQueueInputsRenderState &&
+		            typeof isQueueRenderStateCurrent === 'function' &&
+		            isQueueRenderStateCurrent(nextQueueInputsRenderState)
+		          ) break;
+		          clearPendingActionTimer('queueAction');
+		          queueClearPending = false;
+		          queueSteerPendingId = '';
+		          try { setQueueState(nextQueueInputsRenderState || nextQueuedInputs); } catch {}
+		          break;
         case 'settingsState':
           debugSettingsPending = false;
           pluginSettingsPending = false;
           clearPendingSettingStates();
           applySettingsState(data);
           break;
-	        case 'context':
-	          updateContextIndicatorState(data.context);
-	          break;
+		        case 'context':
+		          const nextContextRenderKey = typeof getContextPopoverRenderKey === 'function'
+		            ? getContextPopoverRenderKey(data.context)
+		            : '';
+		          if (
+		            nextContextRenderKey &&
+		            typeof isContextIndicatorRenderKeyCurrent === 'function' &&
+		            isContextIndicatorRenderKeyCurrent(nextContextRenderKey)
+		          ) break;
+		          updateContextIndicatorState(data.context, nextContextRenderKey);
+		          break;
 	        case 'todos':
-	          updateTodoIndicatorState(data.todos);
+	          const nextTodoRenderState = typeof getTodoRenderState === 'function'
+	            ? getTodoRenderState(data.todos)
+	            : null;
+	          if (
+	            nextTodoRenderState &&
+	            typeof isTodoIndicatorStateCurrent === 'function' &&
+	            isTodoIndicatorStateCurrent(nextTodoRenderState)
+	          ) break;
+	          updateTodoIndicatorState(data.todos, nextTodoRenderState);
 	          break;
-        case 'sessions':
-          clearPendingActionTimer('sessionSwitch');
-          sessionActionPending = '';
-          if (data.sessions && data.sessions.length > 0) {
-            sessionSwitchPending = false;
-            updateSessionSelect(data.sessions, data.activeSessionId || currentSessionId);
-          }
-          syncInputState();
-          break;
+	        case 'sessions':
+	          const nextSessions = Array.isArray(data.sessions) ? data.sessions : [];
+	          const nextActiveSessionId = data.activeSessionId || currentSessionId;
+	          const sessionActionWasPending = !!sessionActionPending || sessionSwitchPending;
+	          const nextSessionSelectRenderKey = !sessionActionWasPending &&
+	            nextSessions.length > 0 &&
+	            typeof getSessionSelectRenderKey === 'function'
+	            ? getSessionSelectRenderKey(nextSessions, nextActiveSessionId)
+	            : '';
+	          if (
+	            !sessionActionWasPending &&
+	            nextSessions.length > 0 &&
+	            nextSessionSelectRenderKey &&
+	            typeof isSessionSelectRenderKeyCurrent === 'function' &&
+	            isSessionSelectRenderKeyCurrent(nextSessionSelectRenderKey)
+	          ) break;
+	          clearPendingActionTimer('sessionSwitch');
+	          sessionActionPending = '';
+	          if (nextSessions.length > 0) {
+	            sessionSwitchPending = false;
+	            updateSessionSelect(nextSessions, nextActiveSessionId, nextSessionSelectRenderKey);
+	          }
+	          syncInputState();
+	          break;
 	        case 'inputHistory':
 	          try { setInputHistoryEntries(Array.isArray(data.entries) ? data.entries : []); } catch {}
 	          break;
         case 'message':
+          if (!data.message || typeof data.message.id !== 'string') break;
           addMessage(data.message);
           break;
         case 'inputNotice':
@@ -322,176 +662,232 @@
             showInputNotice(typeof data.message === 'string' ? data.message : '');
           }
           break;
-		        case 'token':
-		          const el = messageEls.get(data.messageId);
-		          const wasNearBottom = isNearBottom();
-		          if (el) {
-              const msg = messageDataById.get(data.messageId);
-              if (msg && msg.role === 'thought') {
-                const thinkingEl = el.querySelector('.thinking-text');
-                if (thinkingEl) {
-                  thinkingEl.textContent = (thinkingEl.textContent || '') + data.token;
-                }
-                maybeAutoScroll(wasNearBottom);
-                break;
+				        case 'token':
+				          const tokenText = normalizeStreamTokenText(data.token);
+				          if (!data.messageId || !tokenText) break;
+				          const el = messageEls.get(data.messageId);
+				          if (el) {
+			              const msg = messageDataById.get(data.messageId);
+			              if (msg && msg.role === 'thought') {
+		                const wasNearBottom = isNearBottom();
+		                queueStreamTextToken(data.messageId, tokenText, wasNearBottom, 'thought');
+		                break;
+				            }
+			              if (msg && msg.role === 'assistant') {
+			                const wasNearBottom = isNearBottom();
+			                queueAssistantMarkdownToken(data.messageId, tokenText, wasNearBottom);
+			                break;
+			              }
+					            const contentEl = getCachedMessageContentElement(el);
+				            let deferredStreamRender = false;
+				            if (contentEl) {
+				              const wasNearBottom = isNearBottom();
+			                if (el.classList.contains('assistant') && contentEl.classList.contains('md')) {
+			                  queueAssistantMarkdownToken(data.messageId, tokenText, wasNearBottom);
+			                  deferredStreamRender = true;
+			                } else {
+			                  queueStreamTextToken(data.messageId, tokenText, wasNearBottom, 'content');
+			                  deferredStreamRender = true;
+			                }
+				            }
+				            if (!deferredStreamRender) {
+				              const wasNearBottom = isNearBottom();
+				              if (typeof scheduleFileLinkify === 'function') {
+				                try { scheduleFileLinkify(el); } catch {}
+				              }
+				              maybeAutoScroll(wasNearBottom);
+				            }
+				          } else {
+				            appendPendingToken(data.messageId, tokenText);
+				          }
+				          break;
+			        case 'updateTool':
+			          const updatedToolMessage = data.message;
+			          if (!updatedToolMessage || typeof updatedToolMessage.id !== 'string' || !updatedToolMessage.toolCall) break;
+			          let wasNearBottomToolUpdate = false;
+			          let toolUpdateNeedsAutoScroll = false;
+			          const markToolUpdateWillChange = () => {
+			            if (toolUpdateNeedsAutoScroll) return;
+			            wasNearBottomToolUpdate = isNearBottom();
+			            toolUpdateNeedsAutoScroll = true;
+			          };
+				          rememberMessageData(updatedToolMessage);
+				          const toolEl = messageEls.get(updatedToolMessage.id);
+				          if (toolEl) {
+			            const cardEl = getCachedMessageToolCardElement(toolEl);
+			            const toolCardChanged = updateToolCardElement(cardEl, updatedToolMessage.toolCall, markToolUpdateWillChange);
+		            if (toolCardChanged && typeof scheduleFileLinkify === 'function') {
+		              try { scheduleFileLinkify(toolEl, { force: true }); } catch {}
 		            }
-			            const contentEl = el.querySelector('.message-content');
-			            let deferredAssistantMarkdown = false;
-			            if (contentEl) {
-		                if (el.classList.contains('assistant') && contentEl.classList.contains('md')) {
-		                  queueAssistantMarkdownToken(data.messageId, data.token, wasNearBottom);
-		                  deferredAssistantMarkdown = true;
-		                } else {
-		                  contentEl.textContent = (contentEl.textContent === '…' ? '' : contentEl.textContent) + data.token;
-		                }
-			            }
-			            if (!deferredAssistantMarkdown && typeof scheduleFileLinkify === 'function') {
-			              try { scheduleFileLinkify(el); } catch {}
-			            }
-			            if (!deferredAssistantMarkdown) {
-			              maybeAutoScroll(wasNearBottom);
-			            }
-			          } else {
-			            pendingTokens.set(
-			              data.messageId,
-		              (pendingTokens.get(data.messageId) || '') + data.token
-	            );
-	          }
-	          break;
-		        case 'updateTool':
-		          const wasNearBottomToolUpdate = isNearBottom();
-		          if (data.message && typeof data.message.id === 'string') {
-		            messageDataById.set(data.message.id, data.message);
-		          }
-		          const toolEl = messageEls.get(data.message.id);
-		          if (toolEl && data.message.toolCall) {
-	            const cardEl = toolEl.querySelector('.tool-card');
-	            if (cardEl) {
-	              cardEl.className = 'tool-card ' + data.message.toolCall.status;
-	              cardEl.innerHTML = formatToolSummary(data.message.toolCall).replace(/<div class="tool-card[^>]*>/, '').replace(/<\/div>$/, '');
-	            }
-	            if (typeof scheduleFileLinkify === 'function') {
-	              try { scheduleFileLinkify(toolEl, { force: true }); } catch {}
-	            }
-	
-	            const status = data.message.toolCall.status;
-		            if (status === 'pending' || status === 'error' || status === 'rejected') {
-		              const details = toolEl.closest('.plan-activity');
-		              if (details) details.open = true;
-	            }
 
-		            if (status === 'pending' && data.message.toolCall.approvalId && data.message.turnId) {
-		              const turnData = turnEls.get(data.message.turnId);
-		              if (turnData) {
-		                turnData.statusBar.style.display = 'flex';
-		                if (turnData.spinner) turnData.spinner.style.display = 'none';
-		                turnData.statusText.textContent = 'Waiting approval: ' + (data.message.toolCall.name || data.message.toolCall.id || 'Tool');
-		              }
-		            }
-	          }
-		          maybeAutoScrollAfterLayout(wasNearBottomToolUpdate);
-		          break;
+		            const status = updatedToolMessage.toolCall.status;
+								            if (status === 'pending' || status === 'error' || status === 'rejected') {
+					              const details = getToolPlanActivityDetails(toolEl);
+					              if (details && !details.open) {
+				                markToolUpdateWillChange();
+				                details.open = true;
+			              }
+			            }
+
+				            if (status === 'pending' && updatedToolMessage.toolCall.approvalId && updatedToolMessage.turnId) {
+				              const turnData = turnEls.get(updatedToolMessage.turnId);
+				              if (turnData) {
+				                const nextStatusText = 'Waiting approval: ' + (updatedToolMessage.toolCall.name || updatedToolMessage.toolCall.id || 'Tool');
+				                const approvalStatusKey = 'approval\n' + nextStatusText;
+				                const approvalStatusAlreadyCurrent = turnData.statusStateKey === approvalStatusKey && turnHasNoPendingStatusWork(turnData);
+			                if (!approvalStatusAlreadyCurrent) {
+			                  const statusBarWillChange = turnData.statusBar && turnData.statusBar.style && (turnData.statusBar.style.display || '') !== 'flex';
+			                  const spinnerWillChange = turnData.spinner && turnData.spinner.style && (turnData.spinner.style.display || '') !== 'none';
+			                  const statusTextWillChange = turnData.statusText && (turnData.statusRenderedText || '') !== nextStatusText;
+			                  if (statusBarWillChange || spinnerWillChange || statusTextWillChange) markToolUpdateWillChange();
+			                  turnData.currentStatus = '';
+			                  turnData.statusStateKey = '';
+			                  turnData.retryInfo = null;
+			                  clearTurnRetryCountdown(turnData);
+			                  clearTurnStatusTimeout(turnData);
+			                  setDisplay(turnData.statusBar, 'flex');
+			                  setDisplay(turnData.spinner, 'none');
+			                  setTurnStatusText(turnData, nextStatusText);
+			                  turnData.statusStateKey = approvalStatusKey;
+			                }
+			              }
+			            }
+		          }
+			          if (toolUpdateNeedsAutoScroll) maybeAutoScrollAfterLayout(wasNearBottomToolUpdate);
+			          break;
 		        case 'resolvedFileLinks':
 		          if (typeof handleResolvedFileLinks === 'function') {
 		            try { handleResolvedFileLinks(data); } catch {}
 		          }
 		          break;
 				        case 'updateMessage':
+				          const updatedMessage = data.message;
+				          if (!updatedMessage || typeof updatedMessage.id !== 'string') break;
 				          const shouldDiscardPendingStreamState =
-				            data.message &&
-				            typeof data.message.id === 'string' &&
-				            (data.message.role === 'assistant' || data.message.role === 'thought') &&
-				            !String(data.message.content || '').trim();
-				          if (shouldDiscardPendingStreamState) {
-				            discardPendingStreamState(data.message.id);
-				          } else if (data.message && typeof data.message.id === 'string') {
-				            flushAssistantMarkdownRender(data.message.id);
-				          }
-				          if (data.message && typeof data.message.id === 'string') {
-				            messageDataById.set(data.message.id, data.message);
-				          }
-			          const msgEl = messageEls.get(data.message.id);
-			          if (msgEl && data.message.role === 'step') {
+				            (updatedMessage.role === 'assistant' || updatedMessage.role === 'thought') &&
+				            !hasNonWhitespaceText(getMessageTextContent(updatedMessage.content, ''));
+					          if (shouldDiscardPendingStreamState) {
+					            discardPendingStreamState(updatedMessage.id);
+					          } else {
+					            flushPendingStreamRenders(updatedMessage.id);
+					          }
+					          const previousMessage = messageDataById.get(updatedMessage.id);
+					          const previousMessageRenderKey =
+					            previousMessage && typeof getMessageRenderKey === 'function' ? getMessageRenderKey(previousMessage) : '';
+					          rememberMessageData(updatedMessage);
+				          const msgEl = messageEls.get(updatedMessage.id);
+				          if (msgEl && updatedMessage.role === 'step') {
+				            const status = updatedMessage.step?.status || 'running';
+				            const mode = updatedMessage.step?.mode || 'Build';
+				            const model = updatedMessage.step?.model || '';
+				            const nextStepRenderKey = typeof getStepRenderKey === 'function' ? getStepRenderKey(updatedMessage) : '';
+				            if (
+				              nextStepRenderKey &&
+				              typeof getRememberedStepRenderKey === 'function' &&
+				              getRememberedStepRenderKey(msgEl) === nextStepRenderKey
+				            ) {
+				              break;
+				            }
+			            const stepParts = typeof getCachedMessageStepParts === 'function' ? getCachedMessageStepParts(msgEl) : null;
+			            const modeEl = stepParts ? stepParts.mode : msgEl.querySelector('.step-mode');
+			            const sepEl = stepParts ? stepParts.sep : msgEl.querySelector('.step-sep');
+			            const modelEl = stepParts ? stepParts.model : msgEl.querySelector('.step-model');
+			            const body = stepParts ? stepParts.body : msgEl.querySelector('.step-body');
+			            const nextClassName = 'step ' + status;
+			            const nextModelDisplay = model ? '' : 'none';
+			            const stepWillChange =
+			              (msgEl.className || '') !== nextClassName ||
+			              !!(modeEl && (modeEl.textContent || '') !== mode) ||
+			              !!(sepEl && sepEl.style && (sepEl.style.display || '') !== nextModelDisplay) ||
+			              !!(modelEl && (modelEl.textContent || '') !== model) ||
+			              !!(modelEl && modelEl.style && (modelEl.style.display || '') !== nextModelDisplay);
+				            if (!stepWillChange) {
+				              if (nextStepRenderKey && typeof rememberStepRenderKey === 'function') rememberStepRenderKey(msgEl, nextStepRenderKey);
+				              if (body) stepBodies.set(updatedMessage.id, body);
+				              break;
+				            }
 			            const wasNearBottomStepUpdate = isNearBottom();
-			            const status = data.message.step?.status || 'running';
-			            const mode = data.message.step?.mode || 'Build';
-			            const model = data.message.step?.model || '';
 
-		            msgEl.className = 'step ' + status;
-		            const modeEl = msgEl.querySelector('.step-mode');
-		            const sepEl = msgEl.querySelector('.step-sep');
-		            const modelEl = msgEl.querySelector('.step-model');
-		            if (modeEl) modeEl.textContent = mode;
-		            if (sepEl) sepEl.style.display = model ? '' : 'none';
+		            setClassName(msgEl, nextClassName);
+		            setTextContent(modeEl, mode);
+		            setDisplay(sepEl, nextModelDisplay);
 			            if (modelEl) {
-			              modelEl.textContent = model;
-			              modelEl.style.display = model ? '' : 'none';
+			              setTextContent(modelEl, model);
+			              setDisplay(modelEl, nextModelDisplay);
+				            }
+				            if (nextStepRenderKey && typeof rememberStepRenderKey === 'function') rememberStepRenderKey(msgEl, nextStepRenderKey);
+				            if (body) stepBodies.set(updatedMessage.id, body);
+				            maybeAutoScrollAfterLayout(wasNearBottomStepUpdate);
+				          } else if (msgEl && updatedMessage.role === 'plan') {
+				            rerenderPlanMessage(updatedMessage);
+			          } else if (msgEl) {
+			            const pending = pendingTokens.get(updatedMessage.id);
+			            const nextMessageRenderKey = typeof getMessageRenderKey === 'function' ? getMessageRenderKey(updatedMessage) : '';
+				            const messageRenderKeyUnchanged = !!(
+				              nextMessageRenderKey &&
+				              previousMessageRenderKey &&
+				              previousMessageRenderKey === nextMessageRenderKey
+				            );
+				            if (!pending && messageRenderKeyUnchanged) {
+				              break;
+				            }
+				            const wasNearBottomMessageUpdate = pending && updatedMessage.role === 'assistant' ? isNearBottom() : false;
+				            if (
+				              pending &&
+				              messageRenderKeyUnchanged &&
+				              replayPendingTokenIntoRenderedMessage(
+				                updatedMessage.id,
+				                msgEl,
+				                updatedMessage.role,
+				                pending,
+				                wasNearBottomMessageUpdate,
+				                true
+				              )
+				            ) {
+				              pendingTokens.delete(updatedMessage.id);
+				              break;
+				            }
+			            const newEl = createMessageElement(updatedMessage, !!updatedMessage.toolCall);
+			            msgEl.replaceWith(newEl);
+			            messageEls.set(updatedMessage.id, newEl);
+			            if (typeof scheduleFileLinkify === 'function') {
+			              try {
+				                if (updatedMessage.role === 'assistant' && typeof scheduleFileLinkifyIfNeeded === 'function') {
+				                  scheduleFileLinkifyIfNeeded(newEl, getMessageTextContent(updatedMessage.content, ''));
+				                } else {
+			                  scheduleFileLinkify(newEl);
+				                }
+			              } catch {}
 			            }
-			            const body = msgEl.querySelector('.step-body');
-			            if (body) stepBodies.set(data.message.id, body);
-			            maybeAutoScrollAfterLayout(wasNearBottomStepUpdate);
-			          } else if (msgEl && data.message.role === 'plan') {
-			            const existingBody = msgEl.querySelector('.plan-activity-body');
-			            const existingChildren = existingBody ? Array.from(existingBody.children) : [];
-			            const existingOpen = !!msgEl.querySelector('.plan-activity')?.open;
-		            const existingCount = existingChildren.length;
-
-		            msgEl.className = 'message plan';
-		            if (data.message.plan?.status) msgEl.classList.add(data.message.plan.status);
-		            const wasNearBottom = isNearBottom();
-		            msgEl.innerHTML = formatPlanCard(data.message);
-
-		            const nextDetails = msgEl.querySelector('.plan-activity');
-		            if (nextDetails) {
-		              nextDetails.open = existingOpen;
-		              nextDetails.dataset.count = String(existingCount);
-		              const countEl = nextDetails.querySelector('.plan-activity-count');
-		              if (countEl) countEl.textContent = existingCount > 0 ? '(' + existingCount + ')' : '';
-		            }
-		            const nextBody = msgEl.querySelector('.plan-activity-body');
-		            if (nextBody) {
-		              for (const child of existingChildren) {
-		                nextBody.appendChild(child);
-		              }
-		              stepBodies.set(data.message.id, nextBody);
-		            }
-		            maybeAutoScroll(wasNearBottom);
-		          } else if (msgEl) {
-		            const newEl = createMessageElement(data.message, !!data.message.toolCall);
-		            msgEl.replaceWith(newEl);
-		            messageEls.set(data.message.id, newEl);
-		            const pending = pendingTokens.get(data.message.id);
-		            if (pending) {
-		              const contentEl = newEl.querySelector('.message-content');
-		              if (contentEl) {
-                      if (data.message.role === 'thought') {
-                        const thinkingEl = newEl.querySelector('.thinking-text');
-                        if (thinkingEl) {
-                          thinkingEl.textContent = (thinkingEl.textContent || '') + pending;
-                        }
-	                      } else
-	                    if (newEl.classList.contains('assistant') && contentEl.classList.contains('md')) {
-	                      queueAssistantMarkdownToken(data.message.id, pending, isNearBottom());
-	                    } else {
-	                      contentEl.textContent = (contentEl.textContent === '…' ? '' : contentEl.textContent) + pending;
-	                    }
-		              }
-		              pendingTokens.delete(data.message.id);
-		            }
-		          } else {
-		            addMessage(data.message);
-		          }
+				            if (pending) {
+				              replayPendingTokenIntoRenderedMessage(
+				                updatedMessage.id,
+				                newEl,
+				                updatedMessage.role,
+				                pending,
+				                wasNearBottomMessageUpdate,
+				                false
+				              );
+				              pendingTokens.delete(updatedMessage.id);
+				            }
+				          } else {
+			            addMessage(updatedMessage);
+			          }
 		          break;
         case 'processing':
-          if (!data.value) {
+          const nextProcessingState = !!data.value;
+          const processingStopHadPendingAction = !nextProcessingState && (abortRequestPending || approveAllPending);
+          if (!processingStopHadPendingAction && isProcessing === nextProcessingState) break;
+          if (!nextProcessingState) {
             clearPendingActionTimer('abort');
             clearPendingActionTimer('approveAll');
             abortRequestPending = false;
             approveAllPending = false;
           }
-          setProcessing(data.value);
+          setProcessing(nextProcessingState);
           break;
         case 'sessionActionState':
+          if (!data.pending && !sessionActionPending) break;
           if (!data.pending) {
             clearPendingActionTimer('sessionAction');
             sessionActionPending = '';
@@ -499,6 +895,7 @@
           syncInputState();
           break;
         case 'revertActionState':
+          if (!data.pending && !revertActionPending) break;
           if (!data.pending) {
             clearPendingActionTimer('revertAction');
             revertActionPending = '';
@@ -513,18 +910,29 @@
           }
           break;
         case 'approvalsChanged':
+          const nextPendingApprovalsCount = Number(data.count || 0) || 0;
+          const nextManualApprovalsCount = Number(data.manualCount || 0) || 0;
+          const nextAutoApproveThisRun = !!data.autoApproveThisRun;
+          if (
+            !approveAllPending &&
+            pendingApprovalsCount === nextPendingApprovalsCount &&
+            manualApprovalsCount === nextManualApprovalsCount &&
+            autoApproveThisRun === nextAutoApproveThisRun
+          ) break;
           clearPendingActionTimer('approveAll');
           approveAllPending = false;
-          pendingApprovalsCount = Number(data.count || 0) || 0;
-          manualApprovalsCount = Number(data.manualCount || 0) || 0;
-          autoApproveThisRun = !!data.autoApproveThisRun;
+          pendingApprovalsCount = nextPendingApprovalsCount;
+          manualApprovalsCount = nextManualApprovalsCount;
+          autoApproveThisRun = nextAutoApproveThisRun;
           updateApprovalBanner();
           break;
-        case 'operationUpdate':
-          if (currentOperation && data.operation && data.operation.id === currentOperation.id) {
-            currentOperation = { ...currentOperation, ...data.operation };
-            updateOperationBanner();
-          }
+	        case 'operationUpdate':
+	          if (currentOperation && data.operation && data.operation.id === currentOperation.id) {
+	            if (typeof operationPatchHasChanges === 'function' && !operationPatchHasChanges(data.operation)) break;
+	            currentOperation = { ...currentOperation, ...data.operation };
+	            syncActiveTurnProcessingState(shouldShowActiveTurnProcessing());
+	            updateOperationBanner();
+	          }
           break;
         case 'operationEnd':
           if (currentOperation && data.operation && (!data.operation.id || data.operation.id === currentOperation.id)) {
@@ -532,29 +940,52 @@
           }
           break;
         case 'planPending':
-          setPlanPending(!!data.value);
-          activePlanMessageId = typeof data.planMessageId === 'string' ? data.planMessageId : '';
+          const nextPlanPending = !!data.value;
+          const nextActivePlanMessageId = typeof data.planMessageId === 'string' ? data.planMessageId : '';
+          if (planPending === nextPlanPending && activePlanMessageId === nextActivePlanMessageId) break;
+          setPlanPending(nextPlanPending);
+          activePlanMessageId = nextActivePlanMessageId;
           rerenderPlanCards();
           break;
         case 'revertState':
-          canUndo = !!data.canUndo;
-          canRedo = !!data.canRedo;
+          const nextCanUndo = !!data.canUndo;
+          const nextCanRedo = !!data.canRedo;
+          const nextRevertBarRenderKey = typeof getRevertBarRenderKey === 'function' ? getRevertBarRenderKey(data.revertState) : '';
+          if (
+            !revertActionPending &&
+            !revertDiscardConfirmPending &&
+            canUndo === nextCanUndo &&
+            canRedo === nextCanRedo &&
+            nextRevertBarRenderKey &&
+            nextRevertBarRenderKey === lastRevertBarRenderKey
+          ) break;
+          canUndo = nextCanUndo;
+          canRedo = nextCanRedo;
           updateRevertBar(data.revertState);
           syncInputState();
           break;
-		        case 'cleared':
-		          sessionActionPending = '';
-		          syncInputState();
-		          messages.innerHTML = '';
-		          messages.appendChild(empty);
-		          empty.style.display = 'flex';
-		          turnEls.clear();
-			          activeTurnId = '';
-			          messageEls.clear();
-			          stepBodies.clear();
+	        case 'cleared':
+			          sessionActionPending = '';
+			          if (typeof resetTranscriptHistoryWindow === 'function') {
+			            try { resetTranscriptHistoryWindow(); } catch {}
+			          }
+			          if (typeof resetFileLinkState === 'function') {
+			            try { resetFileLinkState(); } catch {}
+				          }
+				          clearAllTurnTimers();
+				          replaceElementChildren(messages, empty);
+				          setDisplay(empty, 'flex');
+			          turnEls.clear();
+				          activeTurnId = '';
+				          activeProcessingTurnId = '';
+				          messageAppendTarget = null;
+				          messageEls.clear();
+				          clearMessageDataIndexes();
+				          stepBodies.clear();
 			          pendingTokens.clear();
 			          clearAssistantMarkdownRenderQueue();
-			          lastToolMsg = null;
+			          clearStreamTextRenderQueue();
+			          resetLastToolBatchState();
 			          activePlanMessageId = '';
 			          currentOperation = null;
 		          stopOperationTimer();
@@ -569,153 +1000,264 @@
 		          updateRevertBar(null);
 		          canUndo = false;
 		          canRedo = false;
-		          setPlanPending(false);
+		          planPending = false;
 		          try { setQueueState([], { sync: false }); } catch {}
 		          syncInputState();
 		          break;
-        case 'modelChanged':
-          clearPendingActionTimer('reasoningEffort');
-          clearPendingActionTimer('modelSwitch');
+	        case 'modelChanged':
+	          const changedModelHeaderState = normalizeModelHeaderState({
+	            model: data.model || '',
+	            label: data.label || data.model || 'Pick model',
+	            isFavorite: !!data.isFavorite,
+	            reasoningEffort: data.reasoningEffort || '',
+	          });
+	          const changedModelHeaderActionWasPending = reasoningEffortPending ||
+	            modelSwitchPending ||
+	            modelFavoritePending ||
+	            modelPickerRefreshPending ||
+	            modelPickerOpenPending;
+	          const changedModelHeaderRenderKey = !changedModelHeaderActionWasPending &&
+	            typeof getModelHeaderRenderKeyForState === 'function'
+	            ? getModelHeaderRenderKeyForState(changedModelHeaderState)
+	            : '';
+	          if (
+	            !changedModelHeaderActionWasPending &&
+	            changedModelHeaderRenderKey &&
+	            typeof isModelHeaderRenderKeyCurrent === 'function' &&
+	            isModelHeaderRenderKeyCurrent(changedModelHeaderRenderKey)
+	          ) break;
+	          clearPendingActionTimer('reasoningEffort');
+	          clearPendingActionTimer('modelSwitch');
           clearPendingActionTimer('modelFavorite');
           reasoningEffortPending = false;
-          modelSwitchPending = false;
-          modelFavoritePending = false;
-          currentModel = data.model;
-          updateModelHeader({
-            model: data.model || '',
-            label: data.label || data.model || 'Pick model',
-            isFavorite: !!data.isFavorite,
-            reasoningEffort: data.reasoningEffort || '',
-          });
-          syncInputState();
-          break;
-        case 'modelState':
-          clearPendingActionTimer('reasoningEffort');
-          clearPendingActionTimer('modelSwitch');
+	          modelSwitchPending = false;
+	          modelFavoritePending = false;
+	          currentModel = data.model;
+	          updateNormalizedModelHeader(changedModelHeaderState, changedModelHeaderRenderKey);
+	          syncInputState();
+	          break;
+	        case 'modelState':
+	          const nextModelHeaderState = normalizeModelHeaderState({
+	            model: data.model || currentModel || '',
+	            label: data.label || data.model || currentModel || 'Pick model',
+	            isFavorite: !!data.isFavorite,
+	            reasoningEffort: data.reasoningEffort || '',
+	          });
+	          const nextModelHeaderActionWasPending = reasoningEffortPending ||
+	            modelSwitchPending ||
+	            modelFavoritePending ||
+	            modelPickerRefreshPending ||
+	            modelPickerOpenPending;
+	          const nextModelHeaderRenderKey = !nextModelHeaderActionWasPending &&
+	            typeof getModelHeaderRenderKeyForState === 'function'
+	            ? getModelHeaderRenderKeyForState(nextModelHeaderState)
+	            : '';
+	          if (
+	            !nextModelHeaderActionWasPending &&
+	            nextModelHeaderRenderKey &&
+	            typeof isModelHeaderRenderKeyCurrent === 'function' &&
+	            isModelHeaderRenderKeyCurrent(nextModelHeaderRenderKey)
+	          ) break;
+	          clearPendingActionTimer('reasoningEffort');
+	          clearPendingActionTimer('modelSwitch');
           clearPendingActionTimer('modelFavorite');
-          reasoningEffortPending = false;
-          modelSwitchPending = false;
-          modelFavoritePending = false;
-          updateModelHeader({
-            model: data.model || currentModel || '',
-            label: data.label || data.model || currentModel || 'Pick model',
-            isFavorite: !!data.isFavorite,
-            reasoningEffort: data.reasoningEffort || '',
-          });
-          syncInputState();
-          break;
-        case 'modelPickerState':
+	          reasoningEffortPending = false;
+	          modelSwitchPending = false;
+	          modelFavoritePending = false;
+	          updateNormalizedModelHeader(nextModelHeaderState, nextModelHeaderRenderKey);
+	          syncInputState();
+	          break;
+	        case 'modelPickerState':
+	          const nextModelPickerState = data.picker || null;
+	          const revealModelPickerState = data.reveal === true;
+	          const nextModelPickerRenderKey = typeof getModelPickerCurrentRenderKey === 'function'
+	            ? getModelPickerCurrentRenderKey(nextModelPickerState)
+	            : '';
+	          if (
+	            !revealModelPickerState &&
+	            !modelFavoritePending &&
+	            !modelPickerRefreshPending &&
+	            !modelPickerOpenPending &&
+	            typeof isModelPickerRenderKeyCurrent === 'function' &&
+	            isModelPickerRenderKeyCurrent(nextModelPickerRenderKey)
+	          ) break;
           clearPendingActionTimer('modelFavorite');
           clearPendingActionTimer('modelPickerRefresh');
           clearPendingActionTimer('modelPickerOpen');
           modelFavoritePending = false;
           modelPickerRefreshPending = false;
           modelPickerOpenPending = false;
-          updateModelPickerState(data.picker || null, { reveal: data.reveal === true });
+	          updateModelPickerState(nextModelPickerState, { reveal: revealModelPickerState, renderKey: nextModelPickerRenderKey });
           syncInputState();
           break;
         case 'advancedModelSettingsState':
+          if (!data.pending && !advancedModelSettingsPending) break;
           clearPendingActionTimer('advancedModelSettings');
           advancedModelSettingsPending = false;
           syncInputState();
           break;
         case 'logsActionState':
+          if (!data.pending && !showLogsPending) break;
           clearPendingActionTimer('showLogs');
           showLogsPending = false;
           syncInputState();
           break;
-        case 'providerState':
-          clearPendingActionTimer('providerAuth');
-          clearPendingActionTimer('providerSwitch');
-          providerAuthBusy = false;
-          providerSwitchPending = false;
-          clearModelPickerCache();
-          updateProviderSelection(data.currentProviderId || (data.providerAuth && data.providerAuth.providerId) || '');
-          updateProviderAuthHeader(data.providerAuth || null);
-          syncInputState();
-          break;
-        case 'openAICompatibleSettingsState':
-          clearPendingActionTimer('providerAuth');
-          clearPendingActionTimer('providerSwitch');
-          providerAuthBusy = false;
-          providerSwitchPending = false;
-          setPendingSettingState('openAICompatibleSettingsState', false);
-          updateOpenAICompatibleSettingsState(data.openAICompatibleSettings || {});
-          updateProviderSelection(data.currentProviderId || (data.providerAuth && data.providerAuth.providerId) || currentProviderId || '');
-          if (data.providerAuth) updateProviderAuthHeader(data.providerAuth);
-          syncInputState();
-          break;
-        case 'codexSubscriptionSettingsState':
-          clearPendingActionTimer('providerAuth');
-          clearPendingActionTimer('providerSwitch');
-          providerAuthBusy = false;
-          providerSwitchPending = false;
-          setPendingSettingState('codexSubscriptionSettingsState', false);
-          updateCodexSubscriptionSettingsState(data.codexSubscriptionSettings || {});
-          updateProviderSelection(data.currentProviderId || (data.providerAuth && data.providerAuth.providerId) || currentProviderId || '');
-          if (data.providerAuth) updateProviderAuthHeader(data.providerAuth);
-          syncInputState();
-          break;
+	        case 'providerState':
+	          const nextProviderStateId = normalizeProviderId(data.currentProviderId || (data.providerAuth && data.providerAuth.providerId) || '');
+	          const nextProviderStateAuth = normalizeProviderAuthState(data.providerAuth || null);
+	          if (
+	            !providerAuthBusy &&
+	            !providerSwitchPending &&
+	            currentProviderId === nextProviderStateId &&
+	            providerAuthStatesEqual(nextProviderStateAuth, currentProviderAuth)
+	          ) break;
+	          clearPendingActionTimer('providerAuth');
+	          clearPendingActionTimer('providerSwitch');
+		          providerAuthBusy = false;
+		          providerSwitchPending = false;
+		          clearModelPickerCache();
+		          updateProviderSelection(nextProviderStateId);
+		          updateNormalizedProviderAuthHeader(nextProviderStateAuth);
+		          syncInputState();
+		          break;
+	        case 'openAICompatibleSettingsState':
+	          const nextOpenAICompatibleSettings = normalizeOpenAICompatibleSettings(data.openAICompatibleSettings || {});
+	          const nextOpenAICompatibleProviderId = normalizeProviderId(data.currentProviderId || (data.providerAuth && data.providerAuth.providerId) || currentProviderId || '');
+	          const hasOpenAICompatibleProviderAuth = !!data.providerAuth;
+	          const nextOpenAICompatibleProviderAuth = hasOpenAICompatibleProviderAuth ? normalizeProviderAuthState(data.providerAuth) : currentProviderAuth;
+	          if (
+	            !providerAuthBusy &&
+	            !providerSwitchPending &&
+	            !hasPendingSettingState('openAICompatibleSettingsState') &&
+	            openAICompatibleSettingsEqual(nextOpenAICompatibleSettings, openAICompatibleSettings) &&
+	            currentProviderId === nextOpenAICompatibleProviderId &&
+	            providerAuthStatesEqual(nextOpenAICompatibleProviderAuth, currentProviderAuth)
+	          ) break;
+	          clearPendingActionTimer('providerAuth');
+	          clearPendingActionTimer('providerSwitch');
+	          providerAuthBusy = false;
+	          providerSwitchPending = false;
+		          setPendingSettingState('openAICompatibleSettingsState', false);
+		          updateNormalizedOpenAICompatibleSettingsState(nextOpenAICompatibleSettings);
+		          updateProviderSelection(nextOpenAICompatibleProviderId);
+		          if (hasOpenAICompatibleProviderAuth) updateNormalizedProviderAuthHeader(nextOpenAICompatibleProviderAuth);
+		          syncInputState();
+		          break;
+	        case 'codexSubscriptionSettingsState':
+	          const nextCodexSubscriptionSettings = normalizeCodexSubscriptionSettings(data.codexSubscriptionSettings || {});
+	          const nextCodexSubscriptionProviderId = normalizeProviderId(data.currentProviderId || (data.providerAuth && data.providerAuth.providerId) || currentProviderId || '');
+	          const hasCodexSubscriptionProviderAuth = !!data.providerAuth;
+	          const nextCodexSubscriptionProviderAuth = hasCodexSubscriptionProviderAuth ? normalizeProviderAuthState(data.providerAuth) : currentProviderAuth;
+	          if (
+	            !providerAuthBusy &&
+	            !providerSwitchPending &&
+	            !hasPendingSettingState('codexSubscriptionSettingsState') &&
+	            codexSubscriptionSettingsEqual(nextCodexSubscriptionSettings, codexSubscriptionSettings) &&
+	            currentProviderId === nextCodexSubscriptionProviderId &&
+	            providerAuthStatesEqual(nextCodexSubscriptionProviderAuth, currentProviderAuth)
+	          ) break;
+	          clearPendingActionTimer('providerAuth');
+	          clearPendingActionTimer('providerSwitch');
+	          providerAuthBusy = false;
+	          providerSwitchPending = false;
+		          setPendingSettingState('codexSubscriptionSettingsState', false);
+		          updateNormalizedCodexSubscriptionSettingsState(nextCodexSubscriptionSettings);
+		          updateProviderSelection(nextCodexSubscriptionProviderId);
+		          if (hasCodexSubscriptionProviderAuth) updateNormalizedProviderAuthHeader(nextCodexSubscriptionProviderAuth);
+		          syncInputState();
+		          break;
         case 'planFirstState':
+          const nextPlanFirstEnabled = data.planFirst !== false;
+          if (!hasPendingSettingState('planFirstState') && planFirstEnabled === nextPlanFirstEnabled) break;
           setPendingSettingState('planFirstState', false);
-          updatePlanFirstState(data.planFirst !== false);
+          updatePlanFirstState(nextPlanFirstEnabled);
           syncInputState();
           break;
         case 'sessionsPersistState':
+          const nextSessionsPersistEnabled = data.sessionsPersist !== false;
+          if (!hasPendingSettingState('sessionsPersistState') && sessionsPersistEnabled === nextSessionsPersistEnabled) break;
           setPendingSettingState('sessionsPersistState', false);
-          updateSessionsPersistState(data.sessionsPersist !== false);
+          updateSessionsPersistState(nextSessionsPersistEnabled);
           syncInputState();
           break;
         case 'sessionRetentionState':
+          const nextSessionRetentionLimits = normalizeSessionRetentionLimits(data.sessionsMaxSessions || 20, data.sessionsMaxSessionBytes || 2000000);
+          const currentSessionRetentionLimits = { maxSessions: sessionsMaxSessions, maxSessionBytes: sessionsMaxSessionBytes };
+          if (!hasPendingSettingState('sessionRetentionState') && sessionRetentionLimitsEqual(nextSessionRetentionLimits, currentSessionRetentionLimits)) break;
           setPendingSettingState('sessionRetentionState', false);
-          updateSessionRetentionState(data.sessionsMaxSessions || 20, data.sessionsMaxSessionBytes || 2000000);
+          updateNormalizedSessionRetentionState(nextSessionRetentionLimits);
           syncInputState();
           break;
         case 'autoApproveState':
+          const nextAutoApproveEnabled = !!data.autoApprove;
+          if (!hasPendingSettingState('autoApproveState') && autoApproveEnabled === nextAutoApproveEnabled) break;
           setPendingSettingState('autoApproveState', false);
-          updateAutoApproveState(!!data.autoApprove);
+          updateAutoApproveState(nextAutoApproveEnabled);
           syncInputState();
           break;
         case 'allowExternalPathsState':
+          const nextAllowExternalPathsEnabled = !!data.allowExternalPaths;
+          if (!hasPendingSettingState('allowExternalPathsState') && allowExternalPathsEnabled === nextAllowExternalPathsEnabled) break;
           setPendingSettingState('allowExternalPathsState', false);
-          updateAllowExternalPathsState(!!data.allowExternalPaths);
+          updateAllowExternalPathsState(nextAllowExternalPathsEnabled);
           syncInputState();
           break;
         case 'blockGitPushState':
+          const nextBlockGitPushEnabled = data.blockGitPush !== false;
+          if (!hasPendingSettingState('blockGitPushState') && blockGitPushEnabled === nextBlockGitPushEnabled) break;
           setPendingSettingState('blockGitPushState', false);
-          updateBlockGitPushState(data.blockGitPush !== false);
+          updateBlockGitPushState(nextBlockGitPushEnabled);
           syncInputState();
           break;
-        case 'debugSettingsState':
-          debugSettingsPending = false;
-          updateDebugSettingsState(data.debugSettings || {});
-          syncInputState();
-          break;
-        case 'toolRuntimeLimitsState':
-          setPendingSettingState('toolRuntimeLimitsState', false);
-          updateToolRuntimeLimitsState(data.toolRuntimeLimits || {});
-          syncInputState();
-          break;
-        case 'pluginSettingsState':
-          pluginSettingsPending = false;
-          updatePluginSettingsState(data.pluginSettings || {});
-          syncInputState();
-          break;
-        case 'toolFilterState':
-          setPendingSettingState('toolFilterState', false);
-          updateToolFilterState(data.toolFilter || []);
-          if (data.toolsCatalog) updateToolsCatalogState(data.toolsCatalog);
-          syncInputState();
-          break;
-        case 'toolsCatalogState':
-          clearPendingActionTimer('toolsCatalog');
-          toolsCatalogRequestPending = false;
-          updateToolsCatalogState(data.toolsCatalog || null, { reveal: data.reveal === true });
-          syncInputState();
-          break;
+	        case 'debugSettingsState':
+	          const nextDebugSettings = normalizeDebugSettings(data.debugSettings || {});
+	          if (!debugSettingsPending && debugSettingsEqual(nextDebugSettings, debugSettings)) break;
+	          debugSettingsPending = false;
+	          updateNormalizedDebugSettingsState(nextDebugSettings);
+	          syncInputState();
+	          break;
+	        case 'toolRuntimeLimitsState':
+	          const nextToolRuntimeLimits = normalizeToolRuntimeLimits(data.toolRuntimeLimits || {});
+	          if (!hasPendingSettingState('toolRuntimeLimitsState') && toolRuntimeLimitsEqual(nextToolRuntimeLimits, toolRuntimeLimits)) break;
+	          setPendingSettingState('toolRuntimeLimitsState', false);
+	          updateNormalizedToolRuntimeLimitsState(nextToolRuntimeLimits);
+	          syncInputState();
+	          break;
+	        case 'pluginSettingsState':
+	          const nextPluginSettings = normalizePluginSettings(data.pluginSettings || {});
+	          if (!pluginSettingsPending && pluginSettingsEqual(nextPluginSettings, pluginSettings)) break;
+	          pluginSettingsPending = false;
+	          updateNormalizedPluginSettingsState(nextPluginSettings);
+	          syncInputState();
+	          break;
+	        case 'toolFilterState':
+	          const nextToolFilter = normalizeToolFilter(data.toolFilter || []);
+	          if (
+	            !hasPendingSettingState('toolFilterState') &&
+	            stringListsEqual(nextToolFilter, toolFilter) &&
+	            !data.toolsCatalog
+	          ) break;
+	          setPendingSettingState('toolFilterState', false);
+	          updateNormalizedToolFilterState(nextToolFilter);
+	          if (data.toolsCatalog) updateToolsCatalogState(data.toolsCatalog);
+	          syncInputState();
+	          break;
+	        case 'toolsCatalogState':
+	          const nextToolsCatalog = data.toolsCatalog && typeof data.toolsCatalog === 'object' ? data.toolsCatalog : null;
+	          if (!toolsCatalogRequestPending && data.reveal !== true && !nextToolsCatalog && !currentToolsCatalog) {
+	            cancelToolsCatalogSearchRender();
+	            break;
+	          }
+	          clearPendingActionTimer('toolsCatalog');
+	          toolsCatalogRequestPending = false;
+	          updateToolsCatalogState(nextToolsCatalog, { reveal: data.reveal === true });
+	          syncInputState();
+	          break;
         case 'autoApprovedToolsState':
+          const nextAutoApprovedTools = normalizeAutoApprovedTools(data.autoApprovedTools || []);
+          if (!autoApprovedToolsPending && stringListsEqual(nextAutoApprovedTools, autoApprovedTools)) break;
           autoApprovedToolsPending = false;
-          updateAutoApprovedToolsState(data.autoApprovedTools || []);
+          updateNormalizedAutoApprovedToolsState(nextAutoApprovedTools);
           syncInputState();
           break;
         case 'manualToolConfirmationRequired':
@@ -724,209 +1266,298 @@
         case 'manualToolResult':
           handleManualToolResult(data);
           break;
-        case 'workspaceEnvState':
-          setPendingSettingState('workspaceEnvState', false);
-          updateWorkspaceEnvState(data.workspaceEnv || {});
-          syncInputState();
-          break;
-        case 'instructionPatternsState':
-          setPendingSettingState('instructionPatternsState', false);
-          updateInstructionPatternsState(data.instructionPatterns || []);
-          syncInputState();
-          break;
-        case 'instructionFileSettingsState':
-          setPendingSettingState('instructionFileSettingsState', false);
-          updateInstructionFileSettingsState(data.instructionFileSettings || {});
-          syncInputState();
-          break;
+	        case 'workspaceEnvState':
+	          const nextWorkspaceEnv = normalizeWorkspaceEnv(data.workspaceEnv || {});
+	          if (!hasPendingSettingState('workspaceEnvState') && workspaceEnvsEqual(nextWorkspaceEnv, workspaceEnv)) break;
+	          setPendingSettingState('workspaceEnvState', false);
+		          updateNormalizedWorkspaceEnvState(nextWorkspaceEnv);
+	          syncInputState();
+	          break;
+	        case 'instructionPatternsState':
+	          const nextInstructionPatterns = normalizeInstructionPatterns(data.instructionPatterns || []);
+	          if (!hasPendingSettingState('instructionPatternsState') && stringListsEqual(nextInstructionPatterns, instructionPatterns)) break;
+	          setPendingSettingState('instructionPatternsState', false);
+	          updateNormalizedInstructionPatternsState(nextInstructionPatterns);
+	          syncInputState();
+	          break;
+	        case 'instructionFileSettingsState':
+	          const nextInstructionFileSettings = normalizeInstructionFileSettings(data.instructionFileSettings || {});
+	          if (!hasPendingSettingState('instructionFileSettingsState') && instructionFileSettingsEqual(nextInstructionFileSettings, instructionFileSettings)) break;
+	          setPendingSettingState('instructionFileSettingsState', false);
+	          updateNormalizedInstructionFileSettingsState(nextInstructionFileSettings);
+	          syncInputState();
+	          break;
         case 'showThinkingState':
+          const nextShowThinkingEnabled = data.showThinking !== false;
+          if (!hasPendingSettingState('showThinkingState') && showThinkingEnabled === nextShowThinkingEnabled) break;
           setPendingSettingState('showThinkingState', false);
-          updateShowThinkingState(data.showThinking !== false);
+          updateShowThinkingState(nextShowThinkingEnabled);
           syncInputState();
           break;
         case 'memoriesFeatureState':
+          const nextMemoriesFeatureEnabled = data.memoriesFeatureEnabled !== false;
+          if (!hasPendingSettingState('memoriesFeatureState') && memoriesFeatureEnabled === nextMemoriesFeatureEnabled) break;
           setPendingSettingState('memoriesFeatureState', false);
-          updateMemoriesFeatureState(data.memoriesFeatureEnabled !== false);
+          updateMemoriesFeatureState(nextMemoriesFeatureEnabled);
           syncInputState();
           break;
         case 'memoryAutoRecallState':
+          const nextMemoryAutoRecallEnabled = data.memoryAutoRecall !== false;
+          if (!hasPendingSettingState('memoryAutoRecallState') && memoryAutoRecallEnabled === nextMemoryAutoRecallEnabled) break;
           setPendingSettingState('memoryAutoRecallState', false);
-          updateMemoryAutoRecallState(data.memoryAutoRecall !== false);
+          updateMemoryAutoRecallState(nextMemoryAutoRecallEnabled);
           syncInputState();
           break;
         case 'memoryAutoRecallBudgetState':
+          const nextMemoryAutoRecallBudget = normalizeMemoryAutoRecallBudget(data.memoryAutoRecallMaxResults || 4, data.memoryAutoRecallMaxTokens || 1200);
+          const currentMemoryAutoRecallBudget = { maxResults: memoryAutoRecallMaxResults, maxTokens: memoryAutoRecallMaxTokens };
+          if (!hasPendingSettingState('memoryAutoRecallBudgetState') && memoryAutoRecallBudgetEqual(nextMemoryAutoRecallBudget, currentMemoryAutoRecallBudget)) break;
           setPendingSettingState('memoryAutoRecallBudgetState', false);
-          updateMemoryAutoRecallBudgetState(data.memoryAutoRecallMaxResults || 4, data.memoryAutoRecallMaxTokens || 1200);
+          updateNormalizedMemoryAutoRecallBudgetState(nextMemoryAutoRecallBudget);
           syncInputState();
           break;
         case 'memoryAutoRecallFiltersState':
-          setPendingSettingState('memoryAutoRecallFiltersState', false);
-          updateMemoryAutoRecallFiltersState(
+          const nextMemoryAutoRecallFilters = normalizeMemoryAutoRecallFilters(
             typeof data.memoryAutoRecallMinScore === 'number' ? data.memoryAutoRecallMinScore : 7,
             typeof data.memoryAutoRecallMinScoreGap === 'number' ? data.memoryAutoRecallMinScoreGap : 1.25,
             typeof data.memoryAutoRecallMaxAgeDays === 'number' ? data.memoryAutoRecallMaxAgeDays : 45
           );
+          const currentMemoryAutoRecallFilters = {
+            minScore: memoryAutoRecallMinScore,
+            minScoreGap: memoryAutoRecallMinScoreGap,
+            maxAgeDays: memoryAutoRecallMaxAgeDays,
+          };
+          if (!hasPendingSettingState('memoryAutoRecallFiltersState') && memoryAutoRecallFiltersEqual(nextMemoryAutoRecallFilters, currentMemoryAutoRecallFilters)) break;
+          setPendingSettingState('memoryAutoRecallFiltersState', false);
+          updateNormalizedMemoryAutoRecallFiltersState(nextMemoryAutoRecallFilters);
           syncInputState();
           break;
         case 'memoryAdvancedLimitsState':
+          const nextMemoryAdvancedLimits = normalizeMemoryAdvancedLimits(data.memoryAdvancedLimits || {});
+          if (!hasPendingSettingState('memoryAdvancedLimitsState') && memoryAdvancedLimitsEqual(nextMemoryAdvancedLimits, memoryAdvancedLimits)) break;
           setPendingSettingState('memoryAdvancedLimitsState', false);
-          updateMemoryAdvancedLimitsState(data.memoryAdvancedLimits || {});
+	          updateNormalizedMemoryAdvancedLimitsState(nextMemoryAdvancedLimits);
           syncInputState();
           break;
         case 'memoryActionStatusState':
           updateMemoryActionStatusState(data.memoryActionStatus || null);
           break;
         case 'explorePrepassState':
+          const nextExplorePrepassEnabled = !!data.explorePrepass;
+          const nextExplorePrepassMaxChars = normalizeExplorePrepassMaxChars(data.explorePrepassMaxChars);
+          if (
+            !hasPendingSettingState('explorePrepassState') &&
+            explorePrepassEnabled === nextExplorePrepassEnabled &&
+            explorePrepassMaxChars === nextExplorePrepassMaxChars
+          ) break;
           setPendingSettingState('explorePrepassState', false);
-          updateExplorePrepassState(!!data.explorePrepass, data.explorePrepassMaxChars || 8000);
+          updateNormalizedExplorePrepassState(nextExplorePrepassEnabled, nextExplorePrepassMaxChars);
           syncInputState();
           break;
         case 'subagentModelOverrideState':
+          const nextSubagentModelOverride = normalizeSubagentModelOverride(data.subagentModelOverride);
+          if (!hasPendingSettingState('subagentModelOverrideState') && subagentModelOverride === nextSubagentModelOverride) break;
           setPendingSettingState('subagentModelOverrideState', false);
-          updateSubagentModelOverrideState(typeof data.subagentModelOverride === 'string' ? data.subagentModelOverride : '');
+          updateNormalizedSubagentModelOverrideState(nextSubagentModelOverride);
           syncInputState();
           break;
         case 'subagentTaskMaxOutputCharsState':
+          const nextSubagentTaskMaxOutputChars = normalizeSubagentTaskMaxOutputChars(data.subagentTaskMaxOutputChars || 8000);
+          if (!hasPendingSettingState('subagentTaskMaxOutputCharsState') && subagentTaskMaxOutputChars === nextSubagentTaskMaxOutputChars) break;
           setPendingSettingState('subagentTaskMaxOutputCharsState', false);
-          updateSubagentTaskMaxOutputCharsState(data.subagentTaskMaxOutputChars || 8000);
+          updateNormalizedSubagentTaskMaxOutputCharsState(nextSubagentTaskMaxOutputChars);
           syncInputState();
           break;
         case 'autoCompactionState':
+          const nextAutoCompactionEnabled = data.autoCompaction !== false;
+          if (!hasPendingSettingState('autoCompactionState') && autoCompactionEnabled === nextAutoCompactionEnabled) break;
           setPendingSettingState('autoCompactionState', false);
-          updateAutoCompactionState(data.autoCompaction !== false);
+          updateAutoCompactionState(nextAutoCompactionEnabled);
           syncInputState();
           break;
         case 'compactionPruneState':
-          setPendingSettingState('compactionPruneState', false);
-          updateCompactionPruneState(
+          const nextCompactionPruneProtectTokensSource = typeof data.compactionPruneProtectTokens === 'number' ? data.compactionPruneProtectTokens : 40000;
+          const nextCompactionPruneMinimumTokensSource = typeof data.compactionPruneMinimumTokens === 'number' ? data.compactionPruneMinimumTokens : 20000;
+          const nextCompactionPruneSettings = normalizeCompactionPruneSettings(
             data.compactionPrune !== false,
-            typeof data.compactionPruneProtectTokens === 'number' ? data.compactionPruneProtectTokens : 40000,
-            typeof data.compactionPruneMinimumTokens === 'number' ? data.compactionPruneMinimumTokens : 20000
+            nextCompactionPruneProtectTokensSource,
+            nextCompactionPruneMinimumTokensSource
           );
+          const currentCompactionPruneSettings = {
+            prune: compactionPruneEnabled,
+            pruneProtectTokens: compactionPruneProtectTokens,
+            pruneMinimumTokens: compactionPruneMinimumTokens,
+          };
+          if (!hasPendingSettingState('compactionPruneState') && compactionPruneSettingsEqual(nextCompactionPruneSettings, currentCompactionPruneSettings)) break;
+          setPendingSettingState('compactionPruneState', false);
+          updateNormalizedCompactionPruneState(nextCompactionPruneSettings);
           syncInputState();
           break;
         case 'compactionToolOutputModeState':
+          const nextCompactionToolOutputMode = normalizeCompactionToolOutputMode(data.compactionToolOutputMode || 'onCompaction');
+          if (!hasPendingSettingState('compactionToolOutputModeState') && compactionToolOutputMode === nextCompactionToolOutputMode) break;
           setPendingSettingState('compactionToolOutputModeState', false);
-          updateCompactionToolOutputModeState(data.compactionToolOutputMode || 'afterToolCall');
+	          updateNormalizedCompactionToolOutputModeState(nextCompactionToolOutputMode);
           syncInputState();
           break;
         case 'modelLimitsState':
+          const nextModelLimits = normalizeModelLimits(data.modelLimits || {});
+          if (!hasPendingSettingState('modelLimitsState') && modelLimitsEqual(nextModelLimits, modelLimits)) break;
           setPendingSettingState('modelLimitsState', false);
-          updateModelLimitsState(data.modelLimits || {});
+	          updateNormalizedModelLimitsState(nextModelLimits);
           syncInputState();
           break;
         case 'generationSettingsState':
+          const nextGenerationSettings = normalizeGenerationSettings(data.generationSettings || {});
+          if (!hasPendingSettingState('generationSettingsState') && generationSettingsEqual(nextGenerationSettings, currentGenerationSettings())) break;
           setPendingSettingState('generationSettingsState', false);
-          updateGenerationSettingsState(data.generationSettings || {});
+          updateNormalizedGenerationSettingsState(nextGenerationSettings);
           syncInputState();
           break;
-        case 'skillsEnabledState':
-          setPendingSettingState('skillsEnabledState', false);
-          updateSkillsEnabledState(data.skillsEnabled !== false);
-          try { setAvailableSkills(Array.isArray(data.skills) ? data.skills : []); } catch {}
-          syncInputState();
-          break;
-        case 'skillSearchPathsState':
-          setPendingSettingState('skillSearchPathsState', false);
-          updateSkillSearchPathsState(data.skillSearchPaths || []);
-          try { setAvailableSkills(Array.isArray(data.skills) ? data.skills : []); } catch {}
-          syncInputState();
-          break;
-        case 'skillsBudgetState':
-          setPendingSettingState('skillsBudgetState', false);
-          updateSkillsBudgetState(data.skillsBudget || {});
-          syncInputState();
-          break;
+	        case 'skillsEnabledState':
+	          const nextSkillsEnabled = data.skillsEnabled !== false;
+	          const nextSkillsEnabledAvailableSkills = normalizeAvailableSkills(Array.isArray(data.skills) ? data.skills : []);
+	          if (
+	            !hasPendingSettingState('skillsEnabledState') &&
+	            skillsEnabled === nextSkillsEnabled &&
+	            nextSkillsEnabledAvailableSkills.key === availableSkillsKey
+	          ) break;
+	          setPendingSettingState('skillsEnabledState', false);
+	          updateSkillsEnabledState(nextSkillsEnabled);
+	          try { setAvailableSkillsFromNormalized(nextSkillsEnabledAvailableSkills); } catch {}
+	          syncInputState();
+	          break;
+	        case 'skillSearchPathsState':
+	          const nextSkillSearchPaths = normalizeSkillSearchPaths(data.skillSearchPaths || []);
+	          const nextSkillSearchPathsAvailableSkills = normalizeAvailableSkills(Array.isArray(data.skills) ? data.skills : []);
+	          if (
+	            !hasPendingSettingState('skillSearchPathsState') &&
+	            stringListsEqual(nextSkillSearchPaths, skillSearchPaths) &&
+	            nextSkillSearchPathsAvailableSkills.key === availableSkillsKey
+	          ) break;
+	          setPendingSettingState('skillSearchPathsState', false);
+          updateNormalizedSkillSearchPathsState(nextSkillSearchPaths);
+	          try { setAvailableSkillsFromNormalized(nextSkillSearchPathsAvailableSkills); } catch {}
+	          syncInputState();
+	          break;
+	        case 'skillsBudgetState':
+	          const nextSkillsBudget = normalizeSkillsBudget(data.skillsBudget || {});
+	          if (!hasPendingSettingState('skillsBudgetState') && skillsBudgetsEqual(nextSkillsBudget, skillsBudget)) break;
+	          setPendingSettingState('skillsBudgetState', false);
+          updateNormalizedSkillsBudgetState(nextSkillsBudget);
+	          syncInputState();
+	          break;
         case 'modeChanged':
+          const nextMode = data.mode === 'plan' ? 'plan' : 'build';
+          if (!modeSwitchPending && currentMode === nextMode) break;
           clearPendingActionTimer('modeSwitch');
           modeSwitchPending = false;
-          setMode(data.mode || 'build');
-          syncInputState();
+          setMode(nextMode);
           break;
         case 'turnStatus':
           if (data.turnId && data.status) {
             const turnData = turnEls.get(data.turnId);
-            if (turnData) {
-              if (data.status.type === 'retry') {
-                turnData.statusText.textContent = 'Retrying: ' + (data.status.message || 'error');
-                turnData.retryInfo = {
-                  attempt: data.status.attempt,
-                  nextRetryTime: data.status.nextRetryTime,
+		            if (turnData) {
+			              if (data.status.type === 'retry') {
+			                const currentRetryInfo = turnData.retryInfo || null;
+			                if (
+			                  currentRetryInfo &&
+			                  currentRetryInfo.attempt === data.status.attempt &&
+			                  currentRetryInfo.nextRetryTime === data.status.nextRetryTime &&
+			                  currentRetryInfo.message === data.status.message &&
+			                  (turnData.retryInterval || turnData.retryCleanupTimeout)
+			                ) break;
+			                turnData.statusStateKey = '';
+			                clearTurnStatusTimeout(turnData);
+			                setTurnStatusText(turnData, 'Retrying: ' + (data.status.message || 'error'));
+			                turnData.retryInfo = {
+			                  attempt: data.status.attempt,
+			                  nextRetryTime: data.status.nextRetryTime,
                   message: data.status.message,
-                };
-                startRetryCountdown(turnData);
-              } else if (data.status.type === 'paused') {
-                turnData.statusText.textContent = 'Paused (' + (data.status.reason || 'permission denied') + ')';
-                turnData.currentStatus = '';
-                if (turnData.statusTimeout) {
-                  clearTimeout(turnData.statusTimeout);
-                  turnData.statusTimeout = null;
-                }
+			                };
+			                startRetryCountdown(turnData);
+			              } else if (data.status.type === 'paused') {
+			                const pausedStatusText = 'Paused (' + (data.status.reason || 'permission denied') + ')';
+			                const pausedStatusKey = 'paused\n' + pausedStatusText;
+			                if (turnData.statusStateKey === pausedStatusKey && turnHasNoPendingStatusWork(turnData)) break;
+			                setTurnStatusText(turnData, pausedStatusText);
+			                turnData.currentStatus = '';
+			                turnData.statusStateKey = pausedStatusKey;
+			                turnData.retryInfo = null;
+			                clearTurnRetryCountdown(turnData);
+                clearTurnStatusTimeout(turnData);
               } else if (data.status.type === 'running') {
-                const newStatus = (data.status.message && data.status.message.trim()) ? data.status.message : 'Thinking…';
+                const newStatus = hasNonWhitespaceText(data.status.message) ? data.status.message : 'Thinking…';
+                if (
+                  newStatus === turnData.currentStatus &&
+                  !turnData.statusTimeout &&
+                  !turnData.retryInfo &&
+                  !turnData.retryInterval &&
+                  !turnData.retryCleanupTimeout
+                ) break;
+                turnData.statusStateKey = '';
                 if (newStatus !== turnData.currentStatus) {
                   const now = Date.now();
                   const timeSinceShow = now - turnData.statusShowTime;
-                  if (turnData.statusShowTime > 0 && timeSinceShow < 1000) {
-                    turnData.statusTimeout = setTimeout(() => {
-                      turnData.currentStatus = newStatus;
-                      turnData.statusText.textContent = newStatus;
-                      turnData.statusShowTime = Date.now();
-                      turnData.statusTimeout = null;
-                    }, 1000 - timeSinceShow);
-                  } else {
-                    turnData.currentStatus = newStatus;
-                    turnData.statusText.textContent = newStatus;
-                    turnData.statusShowTime = now;
-                  }
-                }
-                turnData.retryInfo = null;
-              } else if (data.status.type === 'done') {
-                turnData.statusText.textContent = '';
-                turnData.currentStatus = '';
-                if (turnData.statusTimeout) {
-                  clearTimeout(turnData.statusTimeout);
-                  turnData.statusTimeout = null;
-                }
-                turnData.retryInfo = null;
-              } else if (data.status.type === 'error') {
-                turnData.statusText.textContent = 'Error: ' + (data.status.message || 'unknown error');
-                turnData.currentStatus = '';
-                if (turnData.statusTimeout) {
-                  clearTimeout(turnData.statusTimeout);
-                  turnData.statusTimeout = null;
-                }
-                turnData.retryInfo = null;
+                  clearTurnStatusTimeout(turnData);
+			                  if (turnData.statusShowTime > 0 && timeSinceShow < 1000) {
+			                    turnData.statusTimeout = setTimeout(() => {
+			                      turnData.currentStatus = newStatus;
+			                      setTurnStatusText(turnData, newStatus);
+			                      turnData.statusShowTime = Date.now();
+			                      turnData.statusTimeout = null;
+			                    }, 1000 - timeSinceShow);
+			                  } else {
+			                    turnData.currentStatus = newStatus;
+			                    setTurnStatusText(turnData, newStatus);
+			                    turnData.statusShowTime = now;
+			                  }
+			                }
+			                turnData.retryInfo = null;
+			                clearTurnRetryCountdown(turnData);
+			              } else if (data.status.type === 'done') {
+			                if (turnData.statusStateKey === 'done' && turnHasNoPendingStatusWork(turnData)) break;
+			                setTurnStatusText(turnData, '');
+			                turnData.currentStatus = '';
+			                turnData.statusStateKey = 'done';
+			                turnData.retryInfo = null;
+			                clearTurnRetryCountdown(turnData);
+			                clearTurnStatusTimeout(turnData);
+			              } else if (data.status.type === 'error') {
+			                const errorStatusText = 'Error: ' + (data.status.message || 'unknown error');
+			                const errorStatusKey = 'error\n' + errorStatusText;
+			                if (turnData.statusStateKey === errorStatusKey && turnHasNoPendingStatusWork(turnData)) break;
+			                setTurnStatusText(turnData, errorStatusText);
+			                turnData.currentStatus = '';
+			                turnData.statusStateKey = errorStatusKey;
+			                turnData.retryInfo = null;
+			                clearTurnRetryCountdown(turnData);
+                clearTurnStatusTimeout(turnData);
               }
 
-              if (turnData.statusText.textContent.trim()) {
-                turnData.statusBar.style.display = 'flex';
-                if (turnData.spinner) {
-                  turnData.spinner.style.display = data.status.type === 'running' || data.status.type === 'retry' ? '' : 'none';
-                }
+              if (hasNonWhitespaceText(turnData.statusRenderedText)) {
+                setDisplay(turnData.statusBar, 'flex');
+                setDisplay(turnData.spinner, data.status.type === 'running' || data.status.type === 'retry' ? '' : 'none');
               } else if (!turnData.isProcessing) {
-                turnData.statusBar.style.display = 'none';
+                setDisplay(turnData.statusBar, 'none');
               }
             }
           }
           break;
-        case 'setInput':
-          input.value = String(data.value || '');
-          if (typeof data.placeholder === 'string' && data.placeholder) {
-            input.placeholder = data.placeholder;
-          }
-          input.style.height = 'auto';
-          input.style.height = Math.min(input.scrollHeight, 120) + 'px';
-          clearInputBtn.disabled = !input.value.trim();
-          input.focus();
-          break;
-        case 'focusInput':
-          if (typeof data.placeholder === 'string' && data.placeholder && !input.value.trim()) {
-            input.placeholder = data.placeholder;
-          }
-          input.style.height = 'auto';
-          input.style.height = Math.min(input.scrollHeight, 120) + 'px';
-          input.focus();
+		        case 'setInput':
+		          setValue(input, data.value === undefined || data.value === null ? '' : data.value);
+		          if (typeof data.placeholder === 'string' && data.placeholder) {
+		            setPlaceholder(input, data.placeholder);
+		          }
+	          updateInputLayout();
+	          focusComposerInput();
+	          break;
+	        case 'focusInput':
+	          if (typeof data.placeholder === 'string' && data.placeholder && !hasNonWhitespaceText(input.value)) {
+	            setPlaceholder(input, data.placeholder);
+	          }
+          updateInputLayout();
+          focusComposerInput();
           break;
       }
       } catch (err) {
@@ -934,5 +1565,8 @@
       }
 	    });
 
+		    if (typeof restoreComposerDraftState === 'function') {
+		      restoreComposerDraftState();
+		    }
 		    syncInputState();
 		    vscode.postMessage({ type: mainChatProtocol.ready, clientInstanceId });

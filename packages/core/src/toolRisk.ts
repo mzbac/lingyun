@@ -69,6 +69,28 @@ function stripShellToken(token: string): string {
   return token.replace(/^[`"'()[\]{}<>,;|&]+|[`"'()[\]{}<>,;|&]+$/g, '');
 }
 
+function isShellTokenWhitespace(code: number): boolean {
+  return code <= 32 || code === 160;
+}
+
+function collectShellTokens(text: string): string[] {
+  const tokens: string[] = [];
+  let tokenStart = -1;
+  for (let i = 0; i <= text.length; i++) {
+    const atEnd = i === text.length;
+    if (!atEnd && !isShellTokenWhitespace(text.charCodeAt(i))) {
+      if (tokenStart < 0) tokenStart = i;
+      continue;
+    }
+    if (tokenStart < 0) continue;
+    const rawToken = text.slice(tokenStart, i);
+    const token = stripShellToken(rawToken);
+    if (token) tokens.push(token);
+    tokenStart = -1;
+  }
+  return tokens;
+}
+
 function normalizePermissionPath(input: string, workspaceRoot?: string): string {
   if (!workspaceRoot) return input;
 
@@ -144,7 +166,7 @@ export function collectProtectedDotEnvTargets(def: ToolDefinitionRiskLike, args:
     }
     const include = asString((args as any).include);
     if (include) {
-      for (const token of include.split(/\s+/).map(stripShellToken).filter(Boolean)) {
+      for (const token of collectShellTokens(include)) {
         if (classifyDotEnvPath(token) === 'protected') {
           out.add(token);
         }
@@ -163,7 +185,7 @@ export function collectProtectedDotEnvTargets(def: ToolDefinitionRiskLike, args:
         ? asString((def.execution as unknown as Record<string, unknown>).script)
         : undefined);
     if (commandText) {
-      for (const token of commandText.split(/\s+/).map(stripShellToken).filter(Boolean)) {
+      for (const token of collectShellTokens(commandText)) {
         const rhs = token.includes('=') ? token.slice(token.lastIndexOf('=') + 1) : token;
         if (rhs && classifyDotEnvPath(rhs) === 'protected') {
           out.add(rhs);

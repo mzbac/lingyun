@@ -22,6 +22,30 @@ export function expandHome(p: string): string {
   return trimmed;
 }
 
+function compactPathTail(normalized: string, tailSegments: number): string {
+  const tail: string[] = [];
+  let segmentEnd = normalized.length;
+  let totalSegments = 0;
+
+  for (let i = normalized.length - 1; i >= -1; i -= 1) {
+    if (i >= 0 && normalized[i] !== '/') continue;
+    if (segmentEnd > i + 1) {
+      totalSegments += 1;
+      if (tail.length < tailSegments) {
+        tail.push(normalized.slice(i + 1, segmentEnd));
+      }
+    }
+    segmentEnd = i;
+  }
+
+  if (totalSegments <= tailSegments) return normalized;
+  let compact = '...';
+  for (let i = tail.length - 1; i >= 0; i -= 1) {
+    compact += '/' + tail[i];
+  }
+  return compact;
+}
+
 export function redactFsPathForPrompt(
   value: string,
   options?: { workspaceRoot?: string; homeDir?: string; tailSegments?: number }
@@ -45,7 +69,5 @@ export function redactFsPathForPrompt(
   }
 
   const tailSegments = Math.max(1, Math.floor(options?.tailSegments ?? 2));
-  const parts = normalized.split('/').filter(Boolean);
-  if (parts.length <= tailSegments) return normalized;
-  return `.../${parts.slice(-tailSegments).join('/')}`;
+  return compactPathTail(normalized, tailSegments);
 }

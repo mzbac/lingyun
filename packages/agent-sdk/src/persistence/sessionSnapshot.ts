@@ -14,7 +14,10 @@ import {
   type LingyunSession as LingyunSessionType,
 } from '../agent/session.js';
 import { normalizeSemanticHandlesState, type SemanticHandlesState } from '../agent/semanticHandles.js';
-import type { LingyunCompactionSyntheticContext } from '../agent/transientSyntheticContext.js';
+import {
+  normalizeCompactionSyntheticContexts,
+  type LingyunCompactionSyntheticContext,
+} from '../agent/transientSyntheticContext.js';
 
 export type LingyunSessionSnapshotV1 = {
   version: 1;
@@ -74,24 +77,6 @@ function requireSnapshotSessionId(value: unknown, context: string): string {
   return sessionId;
 }
 
-function normalizeCompactionSyntheticContexts(
-  value: unknown,
-): LingyunCompactionSyntheticContext[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const contexts = value
-    .filter(
-      (context): context is LingyunCompactionSyntheticContext =>
-        isRecord(context) &&
-        (context.transientContext === 'explore' || context.transientContext === 'memoryRecall' || context.transientContext === 'goal') &&
-        typeof context.text === 'string',
-    )
-    .map(context => ({
-      transientContext: context.transientContext,
-      text: context.text,
-    }));
-  return contexts.length > 0 ? contexts : undefined;
-}
-
 function coerceSessionSnapshot(value: RecordLike): LingyunSessionSnapshot | undefined {
   if (value.version !== 1) return undefined;
 
@@ -126,7 +111,7 @@ function coerceSessionSnapshot(value: RecordLike): LingyunSessionSnapshot | unde
     stats: getAgentHistoryStats(history),
     ...(mentionedSkills ? { mentionedSkills } : {}),
     ...(threadGoal ? { threadGoal } : {}),
-    ...(compactionSyntheticContexts ? { compactionSyntheticContexts } : {}),
+    ...(compactionSyntheticContexts.length > 0 ? { compactionSyntheticContexts } : {}),
     ...(fileHandles ? { fileHandles } : {}),
     ...(semanticHandles ? { semanticHandles } : {}),
   };
@@ -184,7 +169,7 @@ export function snapshotSession(
     ...(session.threadGoal ? { threadGoal: cloneThreadGoal(session.threadGoal) } : {}),
     ...(session.compactionSyntheticContexts.length > 0
       ? {
-          compactionSyntheticContexts: session.compactionSyntheticContexts.map((context) => ({ ...context })),
+          compactionSyntheticContexts: normalizeCompactionSyntheticContexts(session.compactionSyntheticContexts),
         }
       : {}),
     ...(includeFileHandles && session.fileHandles ? { fileHandles: cloneFileHandlesState(session.fileHandles) } : {}),

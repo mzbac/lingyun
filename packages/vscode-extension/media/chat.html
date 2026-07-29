@@ -60,8 +60,12 @@
       align-items: center;
       justify-content: center;
       cursor: pointer;
-      transition: all 0.12s ease;
       flex-shrink: 0;
+      transition:
+        background-color 0.12s ease,
+        border-color 0.12s ease,
+        color 0.12s ease,
+        opacity 0.12s ease;
     }
 
     .header-btn:hover:not(:disabled) {
@@ -84,13 +88,9 @@
       cursor: not-allowed;
     }
 
-    .header-btn:focus {
+    .header-btn:focus-visible {
       outline: 1px solid var(--vscode-focusBorder);
       outline-offset: 1px;
-    }
-
-    .header-btn .codicon {
-      font-size: 16px;
     }
 
     .header-btn svg {
@@ -110,7 +110,7 @@
       font-size: 0.7em;
       opacity: 0.7;
       text-transform: uppercase;
-      letter-spacing: 0.5px;
+      letter-spacing: 0;
       font-weight: 500;
       white-space: nowrap;
     }
@@ -143,6 +143,19 @@
       align-items: center;
       justify-content: space-between;
       gap: 6px;
+    }
+
+    .model-picker-label {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .model-select-caret {
+      opacity: 0.7;
+      flex-shrink: 0;
     }
 
     .provider-select {
@@ -193,6 +206,14 @@
       cursor: not-allowed;
     }
 
+    .plan-first-label:has(input:focus-visible),
+    .thinking-label:has(input:focus-visible),
+    .skills-toggle-label:has(input:focus-visible) {
+      outline: 1px solid var(--vscode-focusBorder);
+      outline-offset: 1px;
+      border-radius: 4px;
+    }
+
     .plan-first-checkbox,
     .thinking-checkbox {
       margin: 0;
@@ -227,8 +248,8 @@
       cursor: not-allowed;
     }
 
-    .model-settings-btn:focus,
-    .provider-settings-btn:focus {
+    .model-settings-btn:focus-visible,
+    .provider-settings-btn:focus-visible {
       outline: 1px solid var(--vscode-focusBorder);
       outline-offset: 1px;
     }
@@ -271,8 +292,8 @@
       cursor: not-allowed;
     }
 
-    .session-settings-btn:focus,
-    .safety-settings-btn:focus {
+    .session-settings-btn:focus-visible,
+    .safety-settings-btn:focus-visible {
       outline: 1px solid var(--vscode-focusBorder);
       outline-offset: 1px;
     }
@@ -285,12 +306,14 @@
       position: absolute;
       top: calc(100% + 6px);
       right: 0;
-      width: 280px;
-      max-height: min(70vh, 560px);
-      overflow-y: auto;
-      border-radius: 8px;
-      border: 1px solid var(--vscode-widget-border);
-      background: var(--vscode-editorWidget-background, rgba(28, 28, 28, 0.95));
+	      width: min(280px, calc(100vw - 16px));
+	      max-width: calc(100vw - 16px);
+	      max-height: min(70vh, 560px);
+	      overflow-y: auto;
+	      overscroll-behavior: contain;
+	      border-radius: 8px;
+	      border: 1px solid var(--vscode-widget-border);
+	      background: var(--vscode-editorWidget-background, rgba(28, 28, 28, 0.95));
       box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
       padding: 10px;
       z-index: 60;
@@ -323,8 +346,8 @@
     .session-settings-popover-close,
     .safety-settings-popover-close,
     .skills-settings-popover-close {
-      width: 22px;
-      height: 22px;
+      width: 24px;
+      height: 24px;
       border: none;
       border-radius: 4px;
       background: transparent;
@@ -342,10 +365,20 @@
       opacity: 1;
     }
 
+    .model-settings-popover-close:focus-visible,
+    .provider-settings-popover-close:focus-visible,
+    .session-settings-popover-close:focus-visible,
+    .safety-settings-popover-close:focus-visible,
+    .skills-settings-popover-close:focus-visible {
+      outline: 1px solid var(--vscode-focusBorder);
+      outline-offset: 1px;
+    }
+
     .safety-setting-toggle {
       display: flex;
       gap: 8px;
       align-items: flex-start;
+      min-height: 24px;
       margin-top: 10px;
       font-size: 0.8em;
       cursor: pointer;
@@ -355,6 +388,13 @@
     .safety-setting-toggle.disabled {
       opacity: 0.6;
       cursor: not-allowed;
+    }
+
+    .safety-setting-toggle:has(input:focus-visible),
+    .model-setting-toggle:has(input:focus-visible) {
+      outline: 1px solid var(--vscode-focusBorder);
+      outline-offset: 1px;
+      border-radius: 4px;
     }
 
     .safety-setting-toggle input {
@@ -387,7 +427,7 @@
       font-weight: 700;
       opacity: 0.75;
       text-transform: uppercase;
-      letter-spacing: 0.04em;
+      letter-spacing: 0;
     }
 
     .safety-warning {
@@ -401,14 +441,15 @@
       line-height: 1.3;
     }
 
-    .tools-catalog {
-      margin-top: 8px;
-      max-height: 220px;
-      overflow-y: auto;
-      border: 1px solid var(--vscode-widget-border);
-      border-radius: 6px;
-      background: var(--vscode-editor-background);
-    }
+	    .tools-catalog {
+	      margin-top: 8px;
+	      max-height: 220px;
+	      overflow-y: auto;
+	      overscroll-behavior: contain;
+	      border: 1px solid var(--vscode-widget-border);
+	      border-radius: 6px;
+	      background: var(--vscode-editor-background);
+	    }
 
     .tools-catalog.hidden {
       display: none;
@@ -428,6 +469,12 @@
 
     .tools-catalog-empty {
       border-bottom: none;
+    }
+
+    .tools-catalog-items {
+      margin: 0;
+      padding: 0;
+      list-style: none;
     }
 
     .tools-catalog-item {
@@ -541,14 +588,22 @@
     }
 
     .tools-catalog-result-output summary {
+      min-height: 24px;
       cursor: pointer;
       color: var(--vscode-textLink-foreground);
+    }
+
+    .tools-catalog-result-output summary:focus-visible {
+      outline: 1px solid var(--vscode-focusBorder);
+      outline-offset: 1px;
+      border-radius: 4px;
     }
 
     .tools-catalog-result-output pre {
       margin: 6px 0 0;
       max-height: 140px;
       overflow: auto;
+      overscroll-behavior: contain;
       font-family: var(--vscode-editor-font-family, monospace);
       font-size: 0.95em;
       white-space: pre-wrap;
@@ -556,6 +611,11 @@
       border: 1px solid var(--vscode-widget-border);
       border-radius: 4px;
       padding: 6px;
+    }
+
+    .tools-catalog-result-output pre:focus-visible {
+      outline: 1px solid var(--vscode-focusBorder);
+      outline-offset: 1px;
     }
 
     .tools-catalog-confirmation {
@@ -569,18 +629,32 @@
       background: var(--vscode-inputValidation-warningBackground, rgba(204, 167, 0, 0.12));
     }
 
+    .tools-catalog-confirmation-title {
+      font-weight: 600;
+    }
+
+    .tools-catalog-confirmation-reason {
+      color: var(--vscode-descriptionForeground);
+      line-height: 1.35;
+    }
+
     .tools-catalog-confirmation-actions {
       display: flex;
       justify-content: flex-end;
       gap: 6px;
     }
 
-    .auto-approved-tools {
-      margin-top: 8px;
-      border: 1px solid var(--vscode-widget-border);
-      border-radius: 6px;
-      background: var(--vscode-editor-background);
-    }
+	    .auto-approved-tools {
+	      margin: 8px 0 0;
+	      padding: 0;
+	      list-style: none;
+	      max-height: 220px;
+	      overflow-y: auto;
+	      overscroll-behavior: contain;
+	      border: 1px solid var(--vscode-widget-border);
+	      border-radius: 6px;
+	      background: var(--vscode-editor-background);
+	    }
 
     .auto-approved-tools-empty {
       padding: 7px 8px;
@@ -608,14 +682,15 @@
       min-width: 0;
     }
 
-    .model-picker-list {
-      margin-top: 8px;
-      max-height: 220px;
-      overflow-y: auto;
-      border: 1px solid var(--vscode-widget-border);
-      border-radius: 6px;
-      background: var(--vscode-editor-background);
-    }
+	    .model-picker-list {
+	      margin-top: 8px;
+	      max-height: 220px;
+	      overflow-y: auto;
+	      overscroll-behavior: contain;
+	      border: 1px solid var(--vscode-widget-border);
+	      border-radius: 6px;
+	      background: var(--vscode-editor-background);
+	    }
 
     .model-picker-list.hidden {
       display: none;
@@ -626,11 +701,11 @@
       color: var(--vscode-descriptionForeground);
       font-size: 0.72em;
       text-transform: uppercase;
-      letter-spacing: 0.04em;
+      letter-spacing: 0;
       border-top: 1px solid var(--vscode-widget-border);
     }
 
-    .model-picker-section:first-child {
+    .model-picker-section-group:first-child .model-picker-section {
       border-top: none;
     }
 
@@ -657,6 +732,17 @@
       font: inherit;
     }
 
+    .model-picker-item:disabled {
+      cursor: default;
+      opacity: 1;
+    }
+
+    .model-picker-item:focus-visible,
+    .model-picker-favorite:focus-visible {
+      outline: 1px solid var(--vscode-focusBorder);
+      outline-offset: -1px;
+    }
+
     .model-picker-row:hover {
       background: var(--vscode-list-hoverBackground, var(--vscode-toolbar-hoverBackground));
     }
@@ -668,7 +754,11 @@
 
     .model-picker-favorite {
       width: 30px;
+      min-height: 30px;
       flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
       border: 0;
       border-left: 1px solid var(--vscode-widget-border);
       background: transparent;
@@ -695,6 +785,13 @@
       color: var(--vscode-descriptionForeground);
       font-size: 0.72em;
       overflow-wrap: anywhere;
+    }
+
+    .model-picker-overflow {
+      padding: 7px 8px;
+      color: var(--vscode-descriptionForeground);
+      font-size: 0.75em;
+      border-top: 1px solid var(--vscode-widget-border);
     }
 
     .model-setting-field {
@@ -737,6 +834,7 @@
       display: flex;
       gap: 8px;
       align-items: flex-start;
+      min-height: 24px;
       margin-top: 10px;
       font-size: 0.8em;
       cursor: pointer;
@@ -774,6 +872,11 @@
       white-space: nowrap;
     }
 
+    .provider-auth-btn:not(:disabled):not(.connected),
+    .provider-auth-secondary:not(:disabled) {
+      cursor: pointer;
+    }
+
     .provider-auth-btn.connected {
       cursor: default;
       background: var(--vscode-editor-inactiveSelectionBackground, var(--vscode-dropdown-background));
@@ -781,8 +884,17 @@
 
     .provider-auth-secondary {
       min-width: auto;
-      max-width: none;
+      max-width: 120px;
       padding: 0 8px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .provider-auth-btn:focus-visible,
+    .provider-auth-secondary:focus-visible {
+      outline: 1px solid var(--vscode-focusBorder);
+      outline-offset: 1px;
     }
 
     .context-wrap {
@@ -818,7 +930,7 @@
       opacity: 1;
     }
 
-    .context-indicator:focus {
+    .context-indicator:focus-visible {
       outline: 1px solid var(--vscode-focusBorder);
       outline-offset: 1px;
     }
@@ -844,11 +956,14 @@
       position: absolute;
       top: calc(100% + 6px);
       right: 0;
-      width: 320px;
-      max-width: min(320px, 85vw);
-      border-radius: 8px;
-      border: 1px solid var(--vscode-widget-border);
-      background: var(--vscode-editorWidget-background, rgba(28, 28, 28, 0.95));
+	      width: 320px;
+	      max-width: calc(100vw - 16px);
+	      max-height: min(78vh, 620px);
+	      overflow-y: auto;
+	      overscroll-behavior: contain;
+	      border-radius: 8px;
+	      border: 1px solid var(--vscode-widget-border);
+	      background: var(--vscode-editorWidget-background, rgba(28, 28, 28, 0.95));
       box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
       padding: 10px 10px 8px 10px;
       z-index: 50;
@@ -891,7 +1006,7 @@
       opacity: 1;
     }
 
-    .context-popover-close:focus {
+    .context-popover-close:focus-visible {
       outline: 1px solid var(--vscode-focusBorder);
       outline-offset: 1px;
     }
@@ -1009,7 +1124,7 @@
       color: var(--vscode-descriptionForeground);
       font-size: 0.82em;
       line-height: 1.35;
-      word-break: break-word;
+      overflow-wrap: anywhere;
     }
 
     .context-status.hidden {
@@ -1085,7 +1200,7 @@
       opacity: 1;
     }
 
-    .todo-indicator:focus {
+    .todo-indicator:focus-visible {
       outline: 1px solid var(--vscode-focusBorder);
       outline-offset: 1px;
     }
@@ -1104,7 +1219,7 @@
       top: calc(100% + 6px);
       right: 0;
       width: 360px;
-      max-width: min(360px, 85vw);
+      max-width: calc(100vw - 16px);
       border-radius: 8px;
       border: 1px solid #3e4451;
       /* One Dark Pro border */
@@ -1152,23 +1267,38 @@
       opacity: 1;
     }
 
-    .todo-popover-close:focus {
+    .todo-popover-close:focus-visible {
       outline: 1px solid var(--vscode-focusBorder);
       outline-offset: 1px;
     }
 
     .todo-popover-body {
       display: flex;
-      flex-direction: column;
-      gap: 6px;
-      max-height: 320px;
-      overflow: auto;
-    }
+	      flex-direction: column;
+	      gap: 6px;
+	      max-height: 320px;
+	      overflow: auto;
+	      overscroll-behavior: contain;
+	    }
 
-    .todo-empty {
-      font-size: 0.85em;
-      opacity: 0.75;
-      padding: 6px 2px;
+	    .todo-empty {
+	      font-size: 0.85em;
+	      opacity: 0.75;
+	      padding: 6px 2px;
+	    }
+
+	    .todo-popover-overflow {
+	      padding: 2px 10px 0 36px;
+	      color: var(--vscode-descriptionForeground);
+	      font-size: 0.78em;
+	      line-height: 1.3;
+	    }
+
+	    .todo-overflow {
+	      padding: 4px 10px 0 36px;
+      color: var(--vscode-descriptionForeground);
+      font-size: 0.75em;
+      line-height: 1.3;
     }
 
     .todo-item {
@@ -1181,7 +1311,8 @@
       background: #21252b;
     }
 
-    .todo-item.completed {
+    .todo-item.completed,
+    .todo-item.cancelled {
       opacity: 0.7;
     }
 
@@ -1198,7 +1329,7 @@
       min-width: 0;
       font-size: 0.85em;
       line-height: 1.35;
-      word-break: break-word;
+      overflow-wrap: anywhere;
     }
 
     .todo-meta {
@@ -1245,18 +1376,24 @@
       opacity: 0.85;
     }
 
-    .todo-pill.in-progress {
+    .todo-pill.in_progress {
       border-color: #56b6c2;
       /* One Dark Pro cyan */
       color: #56b6c2;
     }
 
-    .todo-pill.done {
+    .todo-pill.completed {
       border-color: #98c379;
       color: #98c379;
     }
 
+    .todo-pill.cancelled {
+      border-color: #e06c75;
+      color: #e06c75;
+    }
+
     .context-btn {
+      min-height: 24px;
       padding: 6px 10px;
       border-radius: 6px;
       border: 1px solid var(--vscode-widget-border);
@@ -1264,14 +1401,18 @@
       color: var(--vscode-button-foreground);
       cursor: pointer;
       font-size: 0.8em;
-      transition: all 0.15s ease;
+      transition:
+        background-color 0.15s ease,
+        border-color 0.15s ease,
+        color 0.15s ease,
+        opacity 0.15s ease;
     }
 
     .context-btn:hover {
       background: var(--vscode-button-hoverBackground);
     }
 
-    .context-btn:focus {
+    .context-btn:focus-visible {
       outline: 1px solid var(--vscode-focusBorder);
       outline-offset: 1px;
     }
@@ -1312,7 +1453,7 @@
       cursor: not-allowed;
     }
 
-    .mode-btn:focus {
+    .mode-btn:focus-visible {
       outline: 1px solid var(--vscode-focusBorder);
       outline-offset: -1px;
     }
@@ -1368,10 +1509,6 @@
       .header-btn {
         width: 26px;
         height: 26px;
-      }
-
-      .header-btn .codicon {
-        font-size: 14px;
       }
 
       .context-indicator {
@@ -1450,26 +1587,22 @@
         height: 24px;
       }
 
-      .header-btn .codicon {
-        font-size: 12px;
-      }
-
       .context-indicator {
         height: 24px;
         padding: 0 6px;
         font-size: 0.65em;
       }
 
-      .mode-toggle {
-        height: 24px;
-        border-radius: 3px;
-      }
+	      .mode-toggle {
+	        height: 26px;
+	        border-radius: 3px;
+	      }
 
-      .mode-btn {
-        padding: 0 6px;
-        height: 22px;
-        font-size: 0.65em;
-      }
+	      .mode-btn {
+	        padding: 0 6px;
+	        height: 24px;
+	        font-size: 0.65em;
+	      }
 
       .plan-first-label {
         height: 24px;
@@ -1482,18 +1615,53 @@
       flex: 1;
       overflow-y: auto;
       overflow-x: hidden;
+      overscroll-behavior: contain;
       padding: 12px 16px;
       display: flex;
       flex-direction: column;
       gap: 8px;
-      scroll-behavior: smooth;
+      scroll-behavior: auto;
     }
 
-    .messages:focus {
-      outline: none;
-    }
+	    .messages:focus-visible {
+	      outline: 1px solid var(--vscode-focusBorder);
+	      outline-offset: -1px;
+	    }
 
-    .step {
+	    .transcript-history-control {
+	      display: flex;
+	      flex: 0 0 auto;
+	      justify-content: center;
+	      padding: 2px 0 6px;
+	    }
+
+	    .transcript-history-load {
+	      min-height: 28px;
+	      padding: 4px 10px;
+	      border: 1px solid var(--vscode-button-border, var(--vscode-widget-border));
+	      border-radius: 4px;
+	      background: var(--vscode-button-secondaryBackground);
+	      color: var(--vscode-button-secondaryForeground);
+	      cursor: pointer;
+	      font: inherit;
+	      font-size: 0.8em;
+	    }
+
+	    .transcript-history-load:hover:not(:disabled) {
+	      background: var(--vscode-button-secondaryHoverBackground);
+	    }
+
+	    .transcript-history-load:disabled {
+	      cursor: wait;
+	      opacity: 0.7;
+	    }
+
+	    .transcript-history-load:focus-visible {
+	      outline: 1px solid var(--vscode-focusBorder);
+	      outline-offset: 1px;
+	    }
+
+	    .step {
       padding: 4px 0 4px 10px;
       border-left: 2px solid var(--vscode-editorIndentGuide-background, rgba(127, 127, 127, 0.25));
       animation: fadeIn 0.2s ease-out;
@@ -1591,132 +1759,9 @@
       animation: fadeIn 0.2s ease-out;
     }
 
-    .turn-toggle {
-      background: var(--vscode-editorWidget-background, rgba(127, 127, 127, 0.1));
-    }
-
-    .turn-toggle {
-      background: transparent;
-      border: none;
-      color: var(--vscode-foreground);
-      cursor: pointer;
-      padding: 2px 6px;
-      border-radius: 3px;
-      font-size: inherit;
-      opacity: 0.85;
-    }
-
-    .turn-toggle:hover {
-      background: var(--vscode-toolbar-hoverBackground, rgba(127, 127, 127, 0.15));
-    }
-
-    .turn-status {
-      font-weight: 500;
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      padding: 2px 6px;
-      border-radius: 10px;
-      background: var(--vscode-notificationInfoBackground, rgba(56, 139, 253, 0.15));
-      color: var(--vscode-notificationInfoForeground, #388bfd);
-      font-size: 0.75em;
-    }
-
-    .turn-status:empty {
-      display: none;
-    }
-
-    .turn-status .typing-dot {
-      width: 6px;
-      height: 6px;
-      background: currentColor;
-      border-radius: 50%;
-      animation: typingPulse 1.4s ease-in-out infinite;
-    }
-
-    .turn-status .typing-dot:nth-child(2) {
-      animation-delay: 0.2s;
-    }
-
-    .turn-status .typing-dot:nth-child(3) {
-      animation-delay: 0.4s;
-    }
-
-    @keyframes typingPulse {
-
-      0%,
-      60%,
-      100% {
-        opacity: 0.3;
-        transform: scale(0.8);
-      }
-
-      30% {
-        opacity: 1;
-        transform: scale(1);
-      }
-    }
-
-    @keyframes permissionPulse {
-
-      0%,
-      100% {
-        box-shadow: 0 0 0 0 var(--vscode-notificationInfoBackground, rgba(56, 139, 253, 0.3));
-      }
-
-      50% {
-        box-shadow: 0 0 8px 2px var(--vscode-notificationInfoBackground, rgba(56, 139, 253, 0.2));
-      }
-    }
-
-    .permission-actions {
-      display: flex;
-      gap: 4px;
-      margin-left: 8px;
-    }
-
-    .permission-btn {
-      padding: 2px 8px;
-      border-radius: 3px;
-      font-size: 0.7em;
-      cursor: pointer;
-      border: 1px solid transparent;
-      font-family: inherit;
-      transition: all 0.12s ease;
-    }
-
-    .permission-btn:focus {
-      outline: 1px solid var(--vscode-focusBorder);
-      outline-offset: 1px;
-    }
-
-    .permission-btn.approve {
-      background: var(--vscode-testing-iconPassed, #4ec9b0);
-      color: white;
-    }
-
-    .permission-btn.approve:hover {
-      filter: brightness(1.1);
-    }
-
-    .permission-btn.always {
-      background: var(--vscode-notificationInfoBackground, rgba(56, 139, 253, 0.2));
-      color: var(--vscode-notificationInfoForeground, #388bfd);
-      border-color: var(--vscode-notificationInfoBorder, #388bfd);
-    }
-
-    .permission-btn.always:hover {
-      background: var(--vscode-notificationInfoBackground, rgba(56, 139, 253, 0.3));
-    }
-
-    .permission-btn.reject {
-      background: transparent;
-      color: var(--vscode-testing-iconFailed, #f14c4c);
-      border-color: var(--vscode-testing-iconFailed, #f14c4c);
-    }
-
-    .permission-btn.reject:hover {
-      background: var(--vscode-testing-iconFailed, rgba(241, 76, 76, 0.1));
+    .turn[data-restored="true"],
+    .message[data-restored="true"] {
+      animation: none;
     }
 
     .turn-response {
@@ -1735,6 +1780,7 @@
       display: flex;
       align-items: center;
       gap: 8px;
+      min-width: 0;
       padding: 8px 12px;
       margin-top: 4px;
       border-radius: 6px;
@@ -1765,54 +1811,16 @@
 
     .turn-status-text {
       flex: 1;
-    }
-
-    .turn-activity {
-      margin-top: 6px;
-      border: 1px solid var(--vscode-widget-border);
-      border-radius: 6px;
-      background: var(--vscode-sideBar-background);
+      min-width: 0;
       overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
 
-    .turn-activity-summary {
-      cursor: pointer;
-      user-select: none;
-      padding: 6px 10px;
-      font-size: 0.8em;
-      opacity: 0.8;
-      list-style: none;
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }
-
-    .turn-activity-summary::-webkit-details-marker {
-      display: none;
-    }
-
-    .turn-activity-summary::before {
-      content: '▸';
-      display: inline-block;
-      width: 10px;
-      opacity: 0.8;
-    }
-
-    .turn-activity[open] .turn-activity-summary::before {
-      content: '▾';
-    }
-
-    .turn-activity-count {
-      opacity: 0.7;
-    }
-
-    .turn-activity-body {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      padding: 8px 10px 10px 10px;
-      max-height: 260px;
-      overflow: auto;
+    .plan-activity-summary:focus-visible,
+    .revert-files-summary:focus-visible {
+      outline: 1px solid var(--vscode-focusBorder);
+      outline-offset: -2px;
     }
 
     .message {
@@ -1872,10 +1880,11 @@
 
     .message-content {
       flex: 1;
+      min-width: 0;
       padding: 8px 12px;
       border-radius: 8px;
       white-space: pre-wrap;
-      word-wrap: break-word;
+      overflow-wrap: anywhere;
       line-height: 1.5;
       overflow-x: hidden;
     }
@@ -1897,28 +1906,35 @@
       pointer-events: none;
     }
 
-    .assistant .message-bubble:hover .message-actions {
+    .assistant .message-bubble:hover .message-actions,
+    .assistant .message-bubble:focus-within .message-actions {
       opacity: 1;
       pointer-events: auto;
     }
 
-    .message-action-btn {
-      padding: 2px 6px;
-      border-radius: 5px;
-      font-size: 0.72em;
-      cursor: pointer;
+	    .message-action-btn {
+	      padding: 2px 6px;
+	      min-width: 32px;
+	      min-height: 24px;
+	      border-radius: 5px;
+	      font-size: 0.72em;
+	      cursor: pointer;
       border: 1px solid var(--vscode-widget-border);
       background: var(--vscode-editor-background);
       color: var(--vscode-foreground);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
       font-family: inherit;
       line-height: 1.2;
+      white-space: nowrap;
     }
 
     .message-action-btn:hover {
       background: var(--vscode-toolbar-hoverBackground);
     }
 
-    .message-action-btn:focus {
+    .message-action-btn:focus-visible {
       outline: 1px solid var(--vscode-focusBorder);
       outline-offset: 1px;
     }
@@ -1991,6 +2007,26 @@
       font-size: 0.85em;
     }
 
+	    .message-content.md .markdown-table-wrap,
+	    .plan-body.md .markdown-table-wrap {
+	      margin: 8px 0;
+	      max-height: min(60vh, 420px);
+	      overflow: auto;
+	      overscroll-behavior: contain;
+	    }
+
+    .message-content.md .markdown-table-wrap:focus-visible,
+    .plan-body.md .markdown-table-wrap:focus-visible {
+      outline: 1px solid var(--vscode-focusBorder);
+      outline-offset: 2px;
+    }
+
+    .message-content.md .markdown-table-wrap table,
+    .plan-body.md .markdown-table-wrap table {
+      margin: 0;
+      min-width: 100%;
+    }
+
     .message-content.md th,
     .message-content.md td {
       border: 1px solid var(--vscode-widget-border);
@@ -2019,15 +2055,71 @@
       overflow-x: auto;
     }
 
-    .message-content.md pre code {
-      background: transparent;
-      padding: 0;
-      border-radius: 0;
+	    .message-content.md pre code {
+	      background: transparent;
+	      padding: 0;
+	      border-radius: 0;
+	    }
+
+	    .message-content.md .markdown-code-block,
+	    .plan-body.md .markdown-code-block {
+	      position: relative;
+	      margin: 8px 0;
+	    }
+
+	    .message-content.md .markdown-code-block pre,
+	    .plan-body.md .markdown-code-block pre {
+	      margin: 0;
+	      padding-right: 58px;
+	      max-height: min(60vh, 420px);
+	      overflow: auto;
+	      overscroll-behavior: contain;
+	    }
+
+    .message-content.md .markdown-code-block pre:focus-visible,
+    .plan-body.md .markdown-code-block pre:focus-visible {
+      outline: 1px solid var(--vscode-focusBorder);
+      outline-offset: 2px;
     }
 
-    .user .message-content {
-      background: transparent;
-      color: #abb2bf;
+	    .markdown-code-copy {
+	      position: absolute;
+	      top: 6px;
+	      right: 6px;
+	      z-index: 1;
+	      min-width: 44px;
+	      height: 24px;
+	      padding: 0 8px;
+	      border: 1px solid var(--vscode-widget-border);
+	      border-radius: 4px;
+	      background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
+	      color: var(--vscode-descriptionForeground);
+	      display: inline-flex;
+	      align-items: center;
+	      justify-content: center;
+	      font-size: 11px;
+	      line-height: 1;
+	      cursor: pointer;
+	    }
+
+	    .markdown-code-copy:hover {
+	      background: var(--vscode-toolbar-hoverBackground);
+	      color: var(--vscode-foreground);
+	    }
+
+	    .markdown-code-copy:focus-visible {
+	      outline: 1px solid var(--vscode-focusBorder);
+	      outline-offset: 2px;
+	    }
+
+	    .markdown-code-copy.copied {
+	      color: var(--vscode-testing-iconPassed, #4ec9b0);
+	      border-color: var(--vscode-testing-iconPassed, #4ec9b0);
+	    }
+
+	    .user .message-content {
+	      background: transparent;
+	      color: #abb2bf;
       /* One Dark Pro muted text */
       border-bottom-right-radius: 2px;
       border-left: 2px solid #98c379;
@@ -2057,9 +2149,17 @@
     .thinking-summary {
       cursor: pointer;
       user-select: none;
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
       list-style: none;
       opacity: 0.85;
       font-style: italic;
+    }
+
+    .thinking-summary:focus-visible {
+      outline: 1px solid var(--vscode-focusBorder);
+      outline-offset: 1px;
     }
 
     .thinking-summary::-webkit-details-marker {
@@ -2124,7 +2224,7 @@
     .revert-bar-title {
       font-weight: 600;
       font-size: 0.75em;
-      letter-spacing: 0.3px;
+      letter-spacing: 0;
       text-transform: uppercase;
       opacity: 0.8;
     }
@@ -2153,15 +2253,20 @@
       background: var(--vscode-editor-background);
       color: var(--vscode-foreground);
       font-family: inherit;
-      transition: all 0.12s ease;
       white-space: nowrap;
+      transition:
+        background-color 0.12s ease,
+        border-color 0.12s ease,
+        color 0.12s ease,
+        filter 0.12s ease,
+        opacity 0.12s ease;
     }
 
     .revert-bar-btn:hover:not(:disabled) {
       filter: brightness(1.05);
     }
 
-    .revert-bar-btn:focus {
+    .revert-bar-btn:focus-visible {
       outline: 1px solid var(--vscode-focusBorder);
       outline-offset: 1px;
     }
@@ -2218,6 +2323,7 @@
     .revert-files-summary {
       cursor: pointer;
       user-select: none;
+      min-height: 24px;
       padding: 6px 10px;
       font-size: 0.8em;
       opacity: 0.8;
@@ -2249,6 +2355,7 @@
       gap: 4px;
       max-height: 220px;
       overflow: auto;
+      overscroll-behavior: contain;
       font-family: var(--vscode-editor-font-family);
       font-size: 0.8em;
     }
@@ -2422,10 +2529,19 @@
       font-weight: 600;
       font-size: 0.85em;
       text-transform: uppercase;
-      letter-spacing: 0.5px;
+      letter-spacing: 0;
       color: var(--vscode-notificationsForeground);
       margin-bottom: 8px;
     }
+
+	    .plan-question-list {
+	      margin: 0;
+	      padding: 0 2px 0 0;
+	      list-style: none;
+	      max-height: min(45vh, 320px);
+	      overflow: auto;
+	      overscroll-behavior: contain;
+	    }
 
     .plan-question {
       padding: 8px 10px;
@@ -2434,6 +2550,7 @@
       margin-bottom: 6px;
       border-left: 3px solid var(--vscode-notificationInfoBorder, #388bfd);
       color: var(--vscode-notificationsForeground);
+      overflow-wrap: anywhere;
     }
 
     .plan-sub-questions {
@@ -2442,10 +2559,15 @@
       list-style-type: disc;
     }
 
-    .plan-sub-questions li {
-      margin: 4px 0;
-      opacity: 0.9;
-    }
+	    .plan-sub-questions li {
+	      margin: 4px 0;
+	      opacity: 0.9;
+	    }
+
+	    .plan-question-list:focus-visible {
+	      outline: 1px solid var(--vscode-focusBorder);
+	      outline-offset: -2px;
+	    }
 
     .plan-hint {
       margin-top: 6px;
@@ -2463,6 +2585,7 @@
     .plan-activity-summary {
       cursor: pointer;
       user-select: none;
+      min-height: 24px;
       padding: 6px 10px;
       font-size: 0.8em;
       opacity: 0.8;
@@ -2498,25 +2621,43 @@
       gap: 8px;
       max-height: 260px;
       overflow: auto;
+      overscroll-behavior: contain;
+    }
+
+    .plan-activity-body:focus-visible,
+    .revert-files-list:focus-visible {
+      outline: 1px solid var(--vscode-focusBorder);
+      outline-offset: -2px;
     }
 
     .plan-actions {
       display: flex;
+      align-items: center;
       gap: 6px;
       flex-wrap: wrap;
     }
 
     .plan-btn {
       padding: 5px 10px;
+      min-height: 26px;
       border-radius: 4px;
       font-size: 0.8em;
       cursor: pointer;
       border: 1px solid transparent;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
       font-family: inherit;
-      transition: all 0.12s ease;
+      white-space: nowrap;
+      transition:
+        background-color 0.12s ease,
+        color 0.12s ease,
+        border-color 0.12s ease,
+        filter 0.12s ease,
+        opacity 0.12s ease;
     }
 
-    .plan-btn:focus {
+    .plan-btn:focus-visible {
       outline: 1px solid var(--vscode-focusBorder);
       outline-offset: 1px;
     }
@@ -2574,6 +2715,8 @@
 
     .plan-cancel-confirm-actions {
       display: flex;
+      flex-wrap: wrap;
+      align-items: center;
       justify-content: flex-end;
       gap: 8px;
       margin-top: 8px;
@@ -2601,6 +2744,7 @@
 
     .tool-card {
       flex: 1;
+      min-width: 0;
       padding: 8px 10px;
       border-radius: 6px;
       background: var(--vscode-editor-background);
@@ -2645,6 +2789,11 @@
       white-space: nowrap;
     }
 
+    .tool-icon {
+      display: inline-block;
+      margin-inline-end: 4px;
+    }
+
     .tool-path {
       color: var(--vscode-textLink-foreground);
       font-family: var(--vscode-editor-font-family);
@@ -2663,7 +2812,13 @@
       font-family: var(--vscode-editor-font-family);
       font-size: 0.85em;
       overflow-x: auto;
+      overscroll-behavior: contain;
       background: var(--vscode-sideBar-background);
+    }
+
+    .tool-diff:focus-visible {
+      outline: 1px solid var(--vscode-focusBorder);
+      outline-offset: 2px;
     }
 
     .tool-diff-viewer {
@@ -2686,13 +2841,19 @@
       text-overflow: ellipsis;
     }
 
-    .tool-diff-scroll {
-      max-height: 240px;
-      overflow: auto;
-      background: var(--vscode-editor-background);
-    }
+	    .tool-diff-scroll {
+	      max-height: 240px;
+	      overflow: auto;
+	      overscroll-behavior: contain;
+	      background: var(--vscode-editor-background);
+	    }
 
-    .tool-diff-hunk-header {
+	    .tool-diff-scroll:focus-visible {
+	      outline: 1px solid var(--vscode-focusBorder);
+	      outline-offset: -2px;
+	    }
+
+	    .tool-diff-hunk-header {
       padding: 4px 8px;
       border-top: 1px solid var(--vscode-widget-border);
       background: var(--vscode-sideBar-background);
@@ -2751,6 +2912,11 @@
 
     button.tool-diff-ln:hover {
       text-decoration: underline;
+    }
+
+    button.tool-diff-ln:focus-visible {
+      outline: 1px solid var(--vscode-focusBorder);
+      outline-offset: 1px;
     }
 
     .tool-diff-sign {
@@ -2816,18 +2982,29 @@
       gap: 10px;
     }
 
-    .tool-diff-action {
-      appearance: none;
-      border: none;
-      background: transparent;
+	    .tool-diff-action {
+	      appearance: none;
+	      border: none;
+	      background: transparent;
       color: var(--vscode-textLink-foreground);
       cursor: pointer;
-      font-size: 0.9em;
-      padding: 0;
+	      display: inline-flex;
+	      align-items: center;
+	      justify-content: center;
+	      min-height: 24px;
+	      border-radius: 3px;
+	      font-size: 0.9em;
+	      padding: 0;
+      white-space: nowrap;
     }
 
     .tool-diff-action:hover {
       text-decoration: underline;
+    }
+
+    .tool-diff-action:focus-visible {
+      outline: 1px solid var(--vscode-focusBorder);
+      outline-offset: 1px;
     }
 
     .tool-diff-action.secondary {
@@ -2900,15 +3077,11 @@
       font-family: var(--vscode-editor-font-family);
       font-size: 0.85em;
       overflow: auto;
+      overscroll-behavior: contain;
       white-space: pre;
       background: var(--vscode-sideBar-background);
       max-height: 150px;
       position: relative;
-    }
-
-    .tool-output-collapsed {
-      max-height: 80px;
-      overflow: hidden;
     }
 
     .tool-output-toggle {
@@ -2916,11 +3089,15 @@
       bottom: 0;
       left: 0;
       right: 0;
+      width: 100%;
+      min-height: 24px;
+      border: 0;
       background: linear-gradient(transparent, var(--vscode-sideBar-background));
       padding: 20px 0 4px;
       text-align: center;
       cursor: pointer;
       color: var(--vscode-textLink-foreground);
+      font-family: inherit;
       font-size: 0.75em;
     }
 
@@ -2928,27 +3105,49 @@
       text-decoration: underline;
     }
 
-    .copy-btn {
-      position: absolute;
-      top: 4px;
-      right: 4px;
-      padding: 2px 6px;
-      border-radius: 3px;
-      font-size: 0.7em;
+	    .tool-output-toggle:focus-visible {
+	      outline: 1px solid var(--vscode-focusBorder);
+	      outline-offset: -2px;
+	    }
+
+	    .tool-output:focus-visible {
+	      outline: 1px solid var(--vscode-focusBorder);
+	      outline-offset: -2px;
+	    }
+
+		    .copy-btn {
+	      position: absolute;
+	      top: 4px;
+	      right: 4px;
+	      padding: 2px 6px;
+	      min-width: 36px;
+	      min-height: 24px;
+	      border-radius: 3px;
+	      font-size: 0.7em;
       cursor: pointer;
       border: 1px solid var(--vscode-widget-border);
       background: var(--vscode-editor-background);
       color: var(--vscode-foreground);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
       opacity: 0;
       transition: opacity 0.15s;
+      white-space: nowrap;
     }
 
-    .tool-output:hover .copy-btn {
+    .tool-output:hover .copy-btn,
+    .tool-output:focus-within .copy-btn {
       opacity: 1;
     }
 
     .copy-btn:hover {
       background: var(--vscode-toolbar-hoverBackground);
+    }
+
+    .copy-btn:focus-visible {
+      outline: 1px solid var(--vscode-focusBorder);
+      outline-offset: 1px;
     }
 
     .copy-btn.copied {
@@ -2974,6 +3173,16 @@
       gap: 6px;
     }
 
+    .lsp-location-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .lsp-location {
+      display: block;
+    }
+
     .lsp-link {
       display: flex;
       align-items: baseline;
@@ -2994,7 +3203,7 @@
       background: var(--vscode-toolbar-hoverBackground);
     }
 
-    .lsp-link:focus {
+    .lsp-link:focus-visible {
       outline: 1px solid var(--vscode-focusBorder);
       outline-offset: 1px;
     }
@@ -3020,12 +3229,14 @@
       border: 1px solid var(--vscode-widget-border);
       background: var(--vscode-sideBar-background);
       font-size: 0.85em;
+      max-height: 220px;
+      overflow: auto;
+      overscroll-behavior: contain;
     }
 
-    .tool-warning {
-      color: var(--vscode-editorWarning-foreground, #cca700);
-      font-size: 0.85em;
-      margin-left: 6px;
+    .lsp-hover:focus-visible {
+      outline: 1px solid var(--vscode-focusBorder);
+      outline-offset: -2px;
     }
 
     .tool-more {
@@ -3104,14 +3315,19 @@
       cursor: pointer;
       font-size: 0.8em;
       font-family: inherit;
-      transition: all 0.12s ease;
+      transition:
+        background-color 0.12s ease,
+        border-color 0.12s ease,
+        color 0.12s ease,
+        filter 0.12s ease,
+        opacity 0.12s ease;
     }
 
     .output-modal-btn:hover:not(:disabled) {
       filter: brightness(1.1);
     }
 
-    .output-modal-btn:focus {
+    .output-modal-btn:focus-visible {
       outline: 1px solid var(--vscode-focusBorder);
       outline-offset: 1px;
     }
@@ -3135,11 +3351,17 @@
     .output-modal-body {
       flex: 1;
       overflow: auto;
+      overscroll-behavior: contain;
       padding: 12px;
       font-family: var(--vscode-editor-font-family);
       font-size: 0.85em;
       line-height: 1.4;
       white-space: pre;
+    }
+
+    .output-modal-body:focus-visible {
+      outline: 1px solid var(--vscode-focusBorder);
+      outline-offset: -2px;
     }
 
     .tool-batch {
@@ -3167,21 +3389,33 @@
 
     .tool-actions {
       display: flex;
+      flex-wrap: wrap;
+      align-items: center;
       gap: 4px;
       margin-top: 8px;
     }
 
     .tool-btn {
       padding: 4px 8px;
+      min-height: 24px;
       border-radius: 4px;
       font-size: 0.75em;
       cursor: pointer;
       border: 1px solid transparent;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
       font-family: inherit;
-      transition: all 0.12s ease;
+      white-space: nowrap;
+      transition:
+        background-color 0.12s ease,
+        color 0.12s ease,
+        border-color 0.12s ease,
+        filter 0.12s ease,
+        opacity 0.12s ease;
     }
 
-    .tool-btn:focus {
+    .tool-btn:focus-visible {
       outline: 1px solid var(--vscode-focusBorder);
       outline-offset: 1px;
     }
@@ -3265,6 +3499,7 @@
       color: var(--vscode-foreground);
       display: inline-flex;
       align-items: center;
+      min-height: 24px;
       gap: 8px;
       padding: 5px 8px;
       cursor: pointer;
@@ -3277,7 +3512,7 @@
       background: var(--vscode-toolbar-hoverBackground);
     }
 
-    .slash-command-suggestion:focus {
+    .slash-command-suggestion:focus-visible {
       outline: 1px solid var(--vscode-focusBorder);
       outline-offset: 1px;
     }
@@ -3298,23 +3533,23 @@
       background: color-mix(in srgb, var(--vscode-input-background) 88%, var(--vscode-focusBorder) 12%);
     }
 
-    .input-status-row {
-      display: flex;
-      align-items: center;
-      flex-wrap: wrap;
-      gap: 8px;
-      min-height: 22px;
-      grid-column: 1 / span 3;
-      grid-row: 2;
-      min-width: 0;
-    }
+	    .input-status-row {
+	      display: flex;
+	      align-items: center;
+	      flex-wrap: wrap;
+	      gap: 8px;
+	      min-height: 24px;
+	      grid-column: 1 / span 3;
+	      grid-row: 2;
+	      min-width: 0;
+	    }
 
-    .status-command {
-      min-width: 0;
-      height: 22px;
-      border: 1px solid color-mix(in srgb, var(--vscode-focusBorder) 40%, var(--vscode-dropdown-border));
-      border-radius: 999px;
-      background: color-mix(in srgb, var(--vscode-editorWidget-background) 82%, var(--vscode-focusBorder) 18%);
+	    .status-command {
+	      min-width: 0;
+	      height: 24px;
+	      border: 1px solid color-mix(in srgb, var(--vscode-focusBorder) 40%, var(--vscode-dropdown-border));
+	      border-radius: 999px;
+	      background: color-mix(in srgb, var(--vscode-editorWidget-background) 82%, var(--vscode-focusBorder) 18%);
       color: var(--vscode-descriptionForeground);
       display: inline-flex;
       align-items: center;
@@ -3332,7 +3567,7 @@
       color: var(--vscode-foreground);
     }
 
-    .status-command:focus {
+    .status-command:focus-visible {
       outline: 1px solid var(--vscode-focusBorder);
       outline-offset: 1px;
     }
@@ -3356,11 +3591,11 @@
       flex-shrink: 0;
     }
 
-    .skills-toggle-label {
-      height: 22px;
-      padding: 0 7px;
-      border: 1px solid var(--vscode-dropdown-border);
-      border-radius: 999px;
+	    .skills-toggle-label {
+	      height: 24px;
+	      padding: 0 7px;
+	      border: 1px solid var(--vscode-dropdown-border);
+	      border-radius: 999px;
       background: var(--vscode-dropdown-background);
       color: var(--vscode-dropdown-foreground);
       display: flex;
@@ -3378,12 +3613,12 @@
       border-color: var(--vscode-widget-border);
     }
 
-    .skills-settings-btn {
-      width: 22px;
-      height: 22px;
-      padding: 0;
-      border: 1px solid var(--vscode-dropdown-border);
-      border-radius: 999px;
+	    .skills-settings-btn {
+	      width: 24px;
+	      height: 24px;
+	      padding: 0;
+	      border: 1px solid var(--vscode-dropdown-border);
+	      border-radius: 999px;
       background: var(--vscode-dropdown-background);
       color: var(--vscode-dropdown-foreground);
       display: flex;
@@ -3404,7 +3639,7 @@
       cursor: not-allowed;
     }
 
-    .skills-settings-btn:focus {
+    .skills-settings-btn:focus-visible {
       outline: 1px solid var(--vscode-focusBorder);
       outline-offset: 1px;
     }
@@ -3494,7 +3729,7 @@
       font-size: 0.68em;
       line-height: 1;
       font-weight: 700;
-      letter-spacing: 0.05em;
+      letter-spacing: 0;
       text-transform: uppercase;
     }
 
@@ -3518,14 +3753,23 @@
       color: var(--vscode-descriptionForeground);
     }
 
-    .queue-items {
-      flex: 1;
-      min-width: 0;
-      display: flex;
-      flex-direction: column;
-      align-items: stretch;
-      gap: 6px;
-    }
+	    .queue-items {
+	      flex: 1;
+	      min-width: 0;
+	      display: flex;
+	      flex-direction: column;
+	      align-items: stretch;
+	      gap: 6px;
+	      max-height: min(32vh, 260px);
+	      overflow-y: auto;
+	      overscroll-behavior: contain;
+	      padding-right: 2px;
+	    }
+
+	    .queue-items:focus-visible {
+	      outline: 1px solid var(--vscode-focusBorder);
+	      outline-offset: -2px;
+	    }
 
     .queue-item {
       min-height: 34px;
@@ -3541,7 +3785,7 @@
       font-size: 0.75em;
       line-height: 1;
       user-select: none;
-      transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+      transition: background-color 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
       width: 100%;
       max-width: none;
       box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.02);
@@ -3555,7 +3799,7 @@
       transform: translateY(-1px);
     }
 
-    .queue-item:focus {
+    .queue-item:focus-visible {
       outline: 1px solid var(--vscode-focusBorder);
       outline-offset: 1px;
     }
@@ -3584,7 +3828,7 @@
       font-size: 0.66em;
       font-weight: 700;
       line-height: 1;
-      letter-spacing: 0.04em;
+      letter-spacing: 0;
       text-transform: uppercase;
       color: var(--vscode-button-background);
       white-space: nowrap;
@@ -3616,6 +3860,13 @@
       white-space: nowrap;
     }
 
+    .queue-overflow {
+      padding: 2px 8px;
+      color: var(--vscode-descriptionForeground);
+      font-size: 0.72em;
+      line-height: 1.3;
+    }
+
     .queue-banner-btn {
       align-self: start;
       height: 30px;
@@ -3625,12 +3876,16 @@
       background: var(--vscode-input-background, var(--vscode-editor-background));
       color: var(--vscode-descriptionForeground);
       cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
       font-size: 0.73em;
       font-weight: 500;
       line-height: 1;
       user-select: none;
-      transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+      transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
       flex-shrink: 0;
+      white-space: nowrap;
     }
 
     .queue-banner-btn:hover:not(:disabled) {
@@ -3642,6 +3897,11 @@
     .queue-banner-btn:disabled {
       opacity: 0.5;
       cursor: not-allowed;
+    }
+
+    .queue-banner-btn:focus-visible {
+      outline: 1px solid var(--vscode-focusBorder);
+      outline-offset: 1px;
     }
 
     @media (max-width: 520px) {
@@ -3677,15 +3937,16 @@
       }
     }
 
-    .input-attachments {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 6px;
-      align-items: stretch;
-      max-height: 108px;
-      overflow-y: auto;
-      padding-right: 2px;
-    }
+	    .input-attachments {
+	      display: flex;
+	      flex-wrap: wrap;
+	      gap: 6px;
+	      align-items: stretch;
+	      max-height: 108px;
+	      overflow-y: auto;
+	      overscroll-behavior: contain;
+	      padding-right: 2px;
+	    }
 
     .input-attachments.hidden {
       display: none;
@@ -3743,17 +4004,17 @@
       font-size: 0.86em;
     }
 
-    .input-attachment-remove {
-      border: none;
-      background: transparent;
-      color: var(--vscode-descriptionForeground);
-      cursor: pointer;
-      border-radius: 4px;
-      width: 22px;
-      height: 22px;
-      flex: 0 0 22px;
-      padding: 0;
-      line-height: 1;
+	    .input-attachment-remove {
+	      border: none;
+	      background: transparent;
+	      color: var(--vscode-descriptionForeground);
+	      cursor: pointer;
+	      border-radius: 4px;
+	      width: 24px;
+	      height: 24px;
+	      flex: 0 0 24px;
+	      padding: 0;
+	      line-height: 1;
       display: inline-flex;
       align-items: center;
       justify-content: center;
@@ -3766,11 +4027,17 @@
       color: var(--vscode-foreground);
     }
 
+    .input-attachment-remove:focus-visible {
+      outline: 1px solid var(--vscode-focusBorder);
+      outline-offset: 1px;
+    }
+
     .operation-banner {
       padding: 6px 12px;
       border-top: 1px solid var(--vscode-widget-border);
       display: flex;
       align-items: center;
+      flex-wrap: wrap;
       justify-content: space-between;
       gap: 10px;
       background: var(--vscode-sideBar-background);
@@ -3817,11 +4084,17 @@
     .operation-banner-actions {
       display: flex;
       align-items: center;
+      flex-wrap: wrap;
+      justify-content: flex-end;
       gap: 6px;
       flex-shrink: 0;
     }
 
     .operation-banner-stop {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 26px;
       padding: 4px 10px;
       border-radius: 6px;
       border: none;
@@ -3829,7 +4102,12 @@
       color: white;
       cursor: pointer;
       font-size: 0.8em;
-      transition: all 0.15s ease;
+      white-space: nowrap;
+      transition:
+        background-color 0.15s ease,
+        color 0.15s ease,
+        filter 0.15s ease,
+        opacity 0.15s ease;
     }
 
     .operation-banner-stop:hover:not(:disabled) {
@@ -3841,11 +4119,17 @@
       cursor: not-allowed;
     }
 
+    .operation-banner-stop:focus-visible {
+      outline: 1px solid var(--vscode-focusBorder);
+      outline-offset: 1px;
+    }
+
     .approval-banner {
       padding: 6px 12px;
       border-top: 1px solid var(--vscode-widget-border);
       display: flex;
       align-items: center;
+      flex-wrap: wrap;
       justify-content: space-between;
       gap: 10px;
       background: var(--vscode-sideBar-background);
@@ -3884,11 +4168,17 @@
     .approval-banner-actions {
       display: flex;
       align-items: center;
+      flex-wrap: wrap;
+      justify-content: flex-end;
       gap: 6px;
       flex-shrink: 0;
     }
 
     .approval-banner-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 26px;
       padding: 4px 10px;
       border-radius: 6px;
       border: 1px solid var(--vscode-widget-border);
@@ -3896,7 +4186,13 @@
       color: var(--vscode-button-foreground);
       cursor: pointer;
       font-size: 0.8em;
-      transition: all 0.15s ease;
+      white-space: nowrap;
+      transition:
+        background-color 0.15s ease,
+        border-color 0.15s ease,
+        color 0.15s ease,
+        filter 0.15s ease,
+        opacity 0.15s ease;
     }
 
     .approval-banner-btn:hover:not(:disabled) {
@@ -3909,6 +4205,10 @@
     }
 
     .approval-banner-stop {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 26px;
       padding: 4px 10px;
       border-radius: 6px;
       border: none;
@@ -3916,7 +4216,12 @@
       color: white;
       cursor: pointer;
       font-size: 0.8em;
-      transition: all 0.15s ease;
+      white-space: nowrap;
+      transition:
+        background-color 0.15s ease,
+        color 0.15s ease,
+        filter 0.15s ease,
+        opacity 0.15s ease;
     }
 
     .approval-banner-stop:hover:not(:disabled) {
@@ -3926,6 +4231,12 @@
     .approval-banner-stop:disabled {
       opacity: 0.5;
       cursor: not-allowed;
+    }
+
+    .approval-banner-btn:focus-visible,
+    .approval-banner-stop:focus-visible {
+      outline: 1px solid var(--vscode-focusBorder);
+      outline-offset: 1px;
     }
 
     .operation-card {
@@ -4004,7 +4315,7 @@
       font-size: 0.8em;
       opacity: 0.85;
       white-space: pre-wrap;
-      word-break: break-word;
+      overflow-wrap: anywhere;
     }
 
     .operation-actions {
@@ -4014,11 +4325,14 @@
     }
 
     .operation-action-link {
-      padding: 0;
+      min-height: 24px;
+      padding: 0 2px;
       border: none;
       background: transparent;
       color: var(--vscode-textLink-foreground);
       cursor: pointer;
+      display: inline-flex;
+      align-items: center;
       font-size: 0.75em;
     }
 
@@ -4026,7 +4340,7 @@
       text-decoration: underline;
     }
 
-    .operation-action-link:focus {
+    .operation-action-link:focus-visible {
       outline: 1px solid var(--vscode-focusBorder);
       outline-offset: 2px;
       border-radius: 4px;
@@ -4034,6 +4348,7 @@
 
     .input-wrapper {
       flex: 1;
+      min-width: 0;
       position: relative;
       display: flex;
       align-items: stretch;
@@ -4041,6 +4356,7 @@
 
     textarea {
       flex: 1;
+      min-width: 0;
       padding: 8px 64px 8px 10px;
       border: 1px solid var(--vscode-input-border);
       background: var(--vscode-input-background);
@@ -4051,13 +4367,18 @@
       resize: none;
       min-height: 36px;
       max-height: 180px;
+      overscroll-behavior: contain;
       line-height: 1.4;
       transition: border-color 0.15s;
     }
 
     textarea:focus {
-      outline: none;
       border-color: var(--vscode-focusBorder);
+    }
+
+    textarea:focus-visible {
+      outline: 1px solid var(--vscode-focusBorder);
+      outline-offset: 1px;
     }
 
     textarea::placeholder {
@@ -4077,11 +4398,12 @@
       background: var(--vscode-input-background);
       border: 1px solid var(--vscode-input-border);
       border-radius: 8px;
-      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
-      max-height: 240px;
-      overflow-y: auto;
-      z-index: 50;
-    }
+	      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+	      max-height: 240px;
+	      overflow-y: auto;
+	      overscroll-behavior: contain;
+	      z-index: 50;
+	    }
 
     .skill-dropdown.hidden {
       display: none;
@@ -4122,12 +4444,12 @@
       align-items: center;
     }
 
-    .input-btn {
-      width: 22px;
-      height: 22px;
-      border-radius: 4px;
-      border: none;
-      background: transparent;
+	    .input-btn {
+	      width: 24px;
+	      height: 24px;
+	      border-radius: 4px;
+	      border: none;
+	      background: transparent;
       color: var(--vscode-descriptionForeground);
       cursor: pointer;
       display: flex;
@@ -4135,7 +4457,10 @@
       justify-content: center;
       font-size: 14px;
       opacity: 0.6;
-      transition: all 0.15s ease;
+      transition:
+        background-color 0.15s ease,
+        color 0.15s ease,
+        opacity 0.15s ease;
     }
 
     .input-btn:hover:not(:disabled) {
@@ -4143,7 +4468,7 @@
       background: var(--vscode-toolbar-hoverBackground);
     }
 
-    .input-btn:focus {
+    .input-btn:focus-visible {
       outline: 1px solid var(--vscode-focusBorder);
       outline-offset: 1px;
     }
@@ -4166,12 +4491,16 @@
       cursor: pointer;
       font-size: inherit;
       font-weight: 500;
-      transition: all 0.15s ease;
       display: flex;
       align-items: center;
       gap: 4px;
       height: 36px;
       flex-shrink: 0;
+      transition:
+        background-color 0.15s ease,
+        color 0.15s ease,
+        filter 0.15s ease,
+        opacity 0.15s ease;
     }
 
     .send-btn:hover:not(:disabled) {
@@ -4183,13 +4512,9 @@
       cursor: not-allowed;
     }
 
-    .send-btn:focus {
+    .send-btn:focus-visible {
       outline: 1px solid var(--vscode-focusBorder);
       outline-offset: 1px;
-    }
-
-    .send-btn .codicon {
-      font-size: 14px;
     }
 
     .send-btn.stop {
@@ -4202,54 +4527,12 @@
       filter: brightness(1.1);
     }
 
-    .send-btn.stop .stop-icon {
-      display: inline-block;
-      width: 12px;
-      height: 12px;
-      background: currentColor;
-      border-radius: 2px;
-    }
-
-    .send-btn.stop .spinner {
-      animation: spin 1s linear infinite;
-    }
-
     .stop-btn.hidden {
       display: none;
     }
 
     .hidden {
       display: none !important;
-    }
-
-    @keyframes spin {
-      from {
-        transform: rotate(0deg);
-      }
-
-      to {
-        transform: rotate(360deg);
-      }
-    }
-
-    .clear-btn {
-      padding: 8px 12px;
-      background: transparent;
-      color: var(--vscode-descriptionForeground);
-      border: 1px solid var(--vscode-widget-border);
-      border-radius: 6px;
-      cursor: pointer;
-      font-size: inherit;
-      transition: all 0.15s ease;
-    }
-
-    .clear-btn:hover {
-      background: var(--vscode-toolbar-hoverBackground);
-    }
-
-    .clear-btn:focus {
-      outline: 1px solid var(--vscode-focusBorder);
-      outline-offset: 1px;
     }
 
     .empty {
@@ -4293,14 +4576,24 @@
     }
 
     .quick-action {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      min-height: 30px;
       padding: 6px 10px;
       background: var(--vscode-editor-background);
       border: 1px solid var(--vscode-widget-border);
       border-radius: 6px;
       font-size: 0.8em;
+      line-height: 1.2;
       cursor: pointer;
       color: var(--vscode-foreground);
-      transition: all 0.15s ease;
+      white-space: nowrap;
+      transition:
+        background-color 0.15s ease,
+        color 0.15s ease,
+        border-color 0.15s ease;
     }
 
     .quick-action:hover {
@@ -4309,46 +4602,9 @@
       border-color: var(--vscode-button-background);
     }
 
-    .quick-action:focus {
+    .quick-action:focus-visible {
       outline: 1px solid var(--vscode-focusBorder);
       outline-offset: 1px;
-    }
-
-    .loading-indicator {
-      display: flex;
-      gap: 3px;
-      padding: 3px 0;
-    }
-
-    .loading-dot {
-      width: 5px;
-      height: 5px;
-      border-radius: 50%;
-      background: var(--vscode-descriptionForeground);
-      animation: pulse 1.2s ease-in-out infinite;
-    }
-
-    .loading-dot:nth-child(2) {
-      animation-delay: 0.15s;
-    }
-
-    .loading-dot:nth-child(3) {
-      animation-delay: 0.3s;
-    }
-
-    @keyframes pulse {
-
-      0%,
-      70%,
-      100% {
-        transform: scale(0.7);
-        opacity: 0.5;
-      }
-
-      50% {
-        transform: scale(1);
-        opacity: 1;
-      }
     }
 
     code {
@@ -4383,22 +4639,53 @@
       white-space: nowrap;
       border: 0;
     }
+
+    @media (prefers-reduced-motion: reduce) {
+      *,
+      *::before,
+      *::after {
+        animation-duration: 0.001ms !important;
+        animation-iteration-count: 1 !important;
+        scroll-behavior: auto !important;
+        transition-duration: 0.001ms !important;
+        transition-delay: 0ms !important;
+      }
+
+      .turn,
+      .step,
+      .message,
+      .operation-card,
+      .step.running .step-dot,
+      .turn-spinner,
+      .operation-banner-spinner {
+        animation: none !important;
+      }
+
+      .step.running .step-dot {
+        opacity: 1;
+        transform: none;
+      }
+
+      .queue-item:hover:not(:disabled) {
+        transform: none;
+      }
+    }
   </style>
 </head>
 
 <body>
   <div id="liveRegion" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
   <div class="header">
-    <button id="newSession" class="header-btn" title="New session" aria-label="New session">
-      ＋
+    <button id="newSession" class="header-btn" type="button" title="New session" aria-label="New session">
+      <span aria-hidden="true">＋</span>
     </button>
-    <button id="undo" class="header-btn" title="Undo last message" aria-label="Undo">
-      ↶
+    <button id="undo" class="header-btn" type="button" title="Undo last message" aria-label="Undo last message">
+      <span aria-hidden="true">↶</span>
     </button>
-    <button id="redo" class="header-btn" title="Redo last undo" aria-label="Redo">
-      ↷
+    <button id="redo" class="header-btn" type="button" title="Redo last undo" aria-label="Redo last undo">
+      <span aria-hidden="true">↷</span>
     </button>
-    <button id="compactSession" class="header-btn" title="Compact context" aria-label="Compact context">
+    <button id="compactSession" class="header-btn" type="button" title="Compact context" aria-label="Compact context">
       <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
         <path d="M2 6.5H5V5L8 8L5 11V9.5H2V6.5Z"></path>
         <path d="M14 6.5H11V5L8 8L11 11V9.5H14V6.5Z"></path>
@@ -4410,41 +4697,41 @@
         <option value="">Loading…</option>
       </select>
       <div class="session-settings-wrap">
-        <button id="sessionSettings" class="session-settings-btn" type="button" aria-label="Open session settings" title="Session settings">⋯</button>
-        <div id="sessionSettingsPopover" class="session-settings-popover hidden" role="dialog" aria-label="Session settings">
+        <button id="sessionSettings" class="session-settings-btn" type="button" aria-label="Open session settings" title="Session settings" aria-controls="sessionSettingsPopover" aria-expanded="false" aria-haspopup="dialog"><span aria-hidden="true">⋯</span></button>
+        <div id="sessionSettingsPopover" class="session-settings-popover hidden" role="dialog" aria-labelledby="sessionSettingsPopoverTitle">
           <div class="session-settings-popover-header">
-            <span>Session</span>
-            <button id="sessionSettingsClose" class="session-settings-popover-close" type="button" aria-label="Close session settings">✕</button>
+            <span id="sessionSettingsPopoverTitle">Session settings</span>
+            <button id="sessionSettingsClose" class="session-settings-popover-close" type="button" aria-label="Close session settings"><span aria-hidden="true">✕</span></button>
           </div>
           <label id="sessionsPersistLabel" class="safety-setting-toggle" title="Restore chat sessions and input history after VS Code restarts">
-            <input id="sessionsPersistToggle" type="checkbox" checked />
+            <input id="sessionsPersistToggle" type="checkbox" checked aria-label="Persist sessions" aria-describedby="sessionsPersistHint" />
             <span class="safety-setting-copy">
               <span class="safety-setting-title">Persist sessions</span>
-              <span class="safety-setting-hint">Restore chat sessions and input history after VS Code restarts.</span>
+              <span id="sessionsPersistHint" class="safety-setting-hint">Restore chat sessions and input history after VS Code restarts.</span>
             </span>
           </label>
-          <label class="model-setting-field">
+          <label id="sessionsMaxSessionsLabel" class="model-setting-field">
             <span>Saved sessions</span>
-            <input id="sessionsMaxSessionsInput" type="number" min="1" step="1" value="20" />
-            <span class="model-setting-hint">Oldest saved sessions are pruned beyond this count.</span>
+            <input id="sessionsMaxSessionsInput" type="number" min="1" step="1" value="20" aria-describedby="sessionsMaxSessionsHint" />
+            <span id="sessionsMaxSessionsHint" class="model-setting-hint">Oldest saved sessions are pruned beyond this count.</span>
           </label>
-          <label class="model-setting-field">
+          <label id="sessionsMaxSessionBytesLabel" class="model-setting-field">
             <span>Max session size (bytes)</span>
-            <input id="sessionsMaxSessionBytesInput" type="number" min="1000" step="100000" value="2000000" />
-            <span class="model-setting-hint">Oldest messages may be truncated when a saved session exceeds this size.</span>
+            <input id="sessionsMaxSessionBytesInput" type="number" min="1000" step="100000" value="2000000" aria-describedby="sessionsMaxSessionBytesHint" />
+            <span id="sessionsMaxSessionBytesHint" class="model-setting-hint">Oldest messages may be truncated when a saved session exceeds this size.</span>
           </label>
           <div class="model-settings-actions">
-            <button id="sessionSettingsApply" class="context-btn" type="button">Apply</button>
+            <button id="sessionSettingsApply" class="context-btn" type="button" title="Apply session settings" aria-label="Apply, apply session settings">Apply</button>
           </div>
           <div class="model-settings-actions">
-            <button id="sessionClearCurrent" class="context-btn" type="button" title="Clear messages and runtime state for the current session" aria-controls="sessionClearConfirm" aria-expanded="false">Clear current</button>
-            <button id="sessionClearSaved" class="context-btn" type="button" title="Delete all saved sessions, todos, and input history from workspace storage" aria-controls="sessionClearConfirm" aria-expanded="false">Clear saved</button>
+            <button id="sessionClearCurrent" class="context-btn" type="button" title="Clear messages and runtime state for the current session" aria-label="Clear current, clear messages and runtime state for the current session" aria-controls="sessionClearConfirm" aria-expanded="false">Clear current</button>
+            <button id="sessionClearSaved" class="context-btn" type="button" title="Delete all saved sessions, todos, and input history from workspace storage" aria-label="Clear saved, delete all saved sessions, todos, and input history from workspace storage" aria-controls="sessionClearConfirm" aria-expanded="false">Clear saved</button>
           </div>
-          <div id="sessionClearConfirm" class="inline-confirm hidden" role="alert" aria-live="polite">
-            <div id="sessionClearConfirmText">Clear session?</div>
+          <div id="sessionClearConfirm" class="inline-confirm hidden" role="group" aria-labelledby="sessionClearConfirmText">
+            <div id="sessionClearConfirmText">Clear messages and runtime state for the current session?</div>
             <div class="inline-confirm-actions">
-              <button id="sessionClearCancel" class="context-btn" type="button">Cancel</button>
-              <button id="sessionClearConfirmRun" class="context-btn" type="button">Clear</button>
+              <button id="sessionClearCancel" class="context-btn" type="button" aria-label="Cancel clear session" title="Cancel clear session">Cancel</button>
+              <button id="sessionClearConfirmRun" class="context-btn" type="button" aria-label="Clear current session" title="Clear current session">Clear current</button>
             </div>
           </div>
           <div class="safety-warning">Saved sessions use workspace storage and may contain sensitive data. Locked while a task is running.</div>
@@ -4459,55 +4746,55 @@
         <option value="openaiCompatible">OpenAI-compatible</option>
       </select>
       <div class="provider-settings-wrap">
-        <button id="providerSettings" class="provider-settings-btn" type="button" aria-label="Open provider settings" title="Provider settings">⚙</button>
-        <div id="providerSettingsPopover" class="provider-settings-popover hidden" role="dialog" aria-label="Provider settings">
+        <button id="providerSettings" class="provider-settings-btn" type="button" aria-label="Open provider settings" title="Provider settings" aria-controls="providerSettingsPopover" aria-expanded="false" aria-haspopup="dialog"><span aria-hidden="true">⚙</span></button>
+        <div id="providerSettingsPopover" class="provider-settings-popover hidden" role="dialog" aria-labelledby="providerSettingsPopoverTitle">
           <div class="provider-settings-popover-header">
-            <span>Provider settings</span>
-            <button id="providerSettingsClose" class="provider-settings-popover-close" type="button" aria-label="Close provider settings">✕</button>
+            <span id="providerSettingsPopoverTitle">Provider settings</span>
+            <button id="providerSettingsClose" class="provider-settings-popover-close" type="button" aria-label="Close provider settings"><span aria-hidden="true">✕</span></button>
           </div>
           <div class="safety-section-title">Codex subscription</div>
           <label id="codexDefaultModelLabel" class="model-setting-field" title="Fallback model id for the Codex subscription provider">
             <span>Default model</span>
-            <input id="codexDefaultModelInput" type="text" value="gpt-5.3-codex" placeholder="gpt-5.3-codex" aria-label="Codex subscription default model id" />
-            <span class="model-setting-hint">Used by the Codex subscription provider when no model is selected.</span>
+            <input id="codexDefaultModelInput" type="text" value="gpt-5.3-codex" placeholder="gpt-5.3-codex" aria-label="Default model, Codex subscription default model id" aria-describedby="codexDefaultModelHint" />
+            <span id="codexDefaultModelHint" class="model-setting-hint">Used by the Codex subscription provider when no model is selected.</span>
           </label>
           <div class="safety-section-title">OpenAI-compatible</div>
           <label id="openAIBaseURLLabel" class="model-setting-field" title="Base URL for OpenAI-compatible requests">
             <span>Base URL</span>
-            <input id="openAIBaseURLInput" type="text" value="" placeholder="http://localhost:8080/v1" aria-label="OpenAI-compatible base URL" />
-            <span class="model-setting-hint">Include /v1. Leave blank to configure later.</span>
+            <input id="openAIBaseURLInput" type="text" value="" placeholder="http://localhost:8080/v1" aria-label="Base URL, OpenAI-compatible base URL" aria-describedby="openAIBaseURLHint" />
+            <span id="openAIBaseURLHint" class="model-setting-hint">Include /v1. Leave blank to configure later.</span>
           </label>
           <label id="openAIDefaultModelLabel" class="model-setting-field" title="Fallback model id when no model is selected">
             <span>Default model</span>
-            <input id="openAIDefaultModelInput" type="text" value="" placeholder="model-id" aria-label="OpenAI-compatible default model id" />
-            <span class="model-setting-hint">Used if the global model setting is empty or model listing is unavailable.</span>
+            <input id="openAIDefaultModelInput" type="text" value="" placeholder="model-id" aria-label="Default model, OpenAI-compatible default model id" aria-describedby="openAIDefaultModelHint" />
+            <span id="openAIDefaultModelHint" class="model-setting-hint">Used if the global model setting is empty or model listing is unavailable.</span>
           </label>
           <label id="openAIApiKeyEnvLabel" class="model-setting-field" title="Environment variable that contains the API key">
             <span>API key env var</span>
-            <input id="openAIApiKeyEnvInput" type="text" value="OPENAI_API_KEY" aria-label="OpenAI-compatible API key environment variable" />
-            <span class="model-setting-hint">Only the environment variable name is stored; the API key value is never shown here.</span>
+            <input id="openAIApiKeyEnvInput" type="text" value="OPENAI_API_KEY" aria-label="API key env var, OpenAI-compatible API key environment variable" aria-describedby="openAIApiKeyEnvHint" />
+            <span id="openAIApiKeyEnvHint" class="model-setting-hint">Only the environment variable name is stored; the API key value is never shown here.</span>
           </label>
           <label id="openAIAllowInsecureTLSLabel" class="model-setting-field" title="Allow self-signed or invalid TLS certificates for OpenAI-compatible HTTPS requests">
             <span>Allow insecure TLS</span>
-            <input id="openAIAllowInsecureTLSInput" type="checkbox" aria-label="Allow insecure TLS for OpenAI-compatible provider" />
-            <span class="model-setting-hint">For local self-signed HTTPS servers only. Disables certificate verification for this provider.</span>
+            <input id="openAIAllowInsecureTLSInput" type="checkbox" aria-label="Allow insecure TLS for OpenAI-compatible provider" aria-describedby="openAIAllowInsecureTLSHint" />
+            <span id="openAIAllowInsecureTLSHint" class="model-setting-hint">For local self-signed HTTPS servers only. Disables certificate verification for this provider.</span>
           </label>
           <label id="openAIModelDisplayNamesLabel" class="model-setting-field" title="Friendly names for OpenAI-compatible model ids">
             <span>Model display names</span>
-            <textarea id="openAIModelDisplayNamesInput" rows="3" placeholder="model-id = Friendly name" aria-label="OpenAI-compatible model display names"></textarea>
-            <span class="model-setting-hint">One model-id = display name per line. Optional.</span>
+            <textarea id="openAIModelDisplayNamesInput" rows="3" placeholder="model-id = Friendly name" aria-label="Model display names, OpenAI-compatible model display names" aria-describedby="openAIModelDisplayNamesHint"></textarea>
+            <span id="openAIModelDisplayNamesHint" class="model-setting-hint">One model-id = display name per line. Optional.</span>
           </label>
           <div class="model-settings-actions">
-            <button id="providerSettingsApply" class="context-btn" type="button">Apply</button>
+            <button id="providerSettingsApply" class="context-btn" type="button" title="Apply provider settings" aria-label="Apply, apply provider settings">Apply</button>
           </div>
         </div>
       </div>
     </div>
     <div class="header-title">
       <span class="header-label">Model</span>
-      <button id="modelPicker" class="model-select" type="button" aria-label="Select AI model">
-        <span id="modelPickerLabel" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">Loading… {{VERSION_SUFFIX}}</span>
-        <span aria-hidden="true" style="opacity:0.7;flex-shrink:0;">▾</span>
+      <button id="modelPicker" class="model-select" type="button" aria-label="Loading… {{VERSION_SUFFIX}}, select AI model" aria-controls="modelSettingsPopover" aria-expanded="false" aria-haspopup="dialog">
+        <span id="modelPickerLabel" class="model-picker-label">Loading… {{VERSION_SUFFIX}}</span>
+        <span class="model-select-caret" aria-hidden="true">▾</span>
       </button>
       <select id="reasoningEffortSelect" class="reasoning-effort-select" aria-label="Reasoning effort" title="Reasoning effort">
         <option value="">Off</option>
@@ -4516,329 +4803,353 @@
         <option value="high">High</option>
         <option value="xhigh">XHigh</option>
       </select>
-      <button id="modelFavoriteToggle" class="header-btn" type="button" aria-label="Toggle favorite model" title="Favorite model" disabled>☆</button>
+      <button id="modelFavoriteToggle" class="header-btn" type="button" aria-label="Toggle favorite model" aria-pressed="false" title="Toggle favorite model" disabled><span id="modelFavoriteIcon" aria-hidden="true">☆</span></button>
       <div class="model-settings-wrap">
-        <button id="modelSettings" class="model-settings-btn" type="button" aria-label="Open generation settings" title="Generation settings">⚙</button>
-        <div id="modelSettingsPopover" class="model-settings-popover hidden" role="dialog" aria-label="Generation settings">
+        <button id="modelSettings" class="model-settings-btn" type="button" aria-label="Open model and generation settings" title="Model and generation settings" aria-controls="modelSettingsPopover" aria-expanded="false" aria-haspopup="dialog"><span aria-hidden="true">⚙</span></button>
+        <div id="modelSettingsPopover" class="model-settings-popover hidden" role="dialog" aria-labelledby="modelSettingsPopoverTitle">
           <div class="model-settings-popover-header">
-            <span>Generation</span>
-            <button id="modelSettingsClose" class="model-settings-popover-close" type="button" aria-label="Close generation settings">✕</button>
+            <span id="modelSettingsPopoverTitle">Model and generation</span>
+            <button id="modelSettingsClose" class="model-settings-popover-close" type="button" aria-label="Close model and generation settings"><span aria-hidden="true">✕</span></button>
           </div>
           <label id="customModelLabel" class="model-setting-field" title="Set an exact model ID">
             <span>Custom model ID</span>
-            <input id="customModelInput" type="text" placeholder="model-id" aria-label="Custom model ID" />
-            <span class="model-setting-hint">Use an exact provider model ID, including models not shown in the picker.</span>
+            <input id="customModelInput" type="text" placeholder="model-id" aria-label="Custom model ID" aria-describedby="customModelHint" />
+            <span id="customModelHint" class="model-setting-hint">Use an exact provider model ID, including models not shown in the picker.</span>
           </label>
           <div class="model-settings-actions">
-            <button id="modelRefreshList" class="context-btn" type="button">Refresh models</button>
-            <button id="modelClearRecents" class="context-btn" type="button">Clear recents</button>
-            <button id="customModelApply" class="context-btn" type="button">Use model</button>
+            <button id="modelRefreshList" class="context-btn" type="button" title="Refresh listed provider models" aria-label="Refresh models, refresh listed provider models">Refresh models</button>
+            <button id="modelClearRecents" class="context-btn" type="button" title="Clear recent models" aria-label="Clear recents, clear recent models">Clear recents</button>
+            <button id="customModelApply" class="context-btn" type="button" title="Use custom model ID" aria-label="Use model, use custom model ID">Use model</button>
           </div>
           <label id="modelPickerSearchLabel" class="model-setting-field" title="Filter listed provider models by name, ID, vendor, or family">
             <span>Search models</span>
-            <input id="modelPickerSearchInput" type="search" placeholder="Search listed models…" aria-label="Search listed models" />
+            <input id="modelPickerSearchInput" type="search" autocomplete="off" spellcheck="false" placeholder="Search listed models…" aria-label="Search models, search listed provider models" aria-controls="modelPickerList" aria-describedby="modelPickerSearchHint" />
+            <span id="modelPickerSearchHint" class="model-setting-hint">Filter listed provider models by name, ID, vendor, or family.</span>
           </label>
-          <div id="modelPickerList" class="model-picker-list hidden" aria-live="polite"></div>
-          <label class="model-setting-field">
+          <div id="modelPickerStatus" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+          <div id="modelPickerList" class="model-picker-list hidden" role="list" aria-label="Available models"></div>
+          <label id="temperatureLabel" class="model-setting-field">
             <span>Temperature</span>
-            <input id="temperatureInput" type="number" min="0" max="2" step="0.1" value="0" />
-            <span class="model-setting-hint">0 is deterministic; higher values are more varied.</span>
+            <input id="temperatureInput" type="number" min="0" max="2" step="0.1" value="0" aria-describedby="temperatureHint" />
+            <span id="temperatureHint" class="model-setting-hint">0 is deterministic; higher values are more varied.</span>
           </label>
           <label id="topPLabel" class="model-setting-field" title="Nucleus sampling probability">
             <span>Top-p</span>
-            <input id="topPInput" type="number" min="0" max="1" step="0.05" value="0" />
-            <span class="model-setting-hint">0 uses provider default; lower values make output more focused.</span>
+            <input id="topPInput" type="number" min="0" max="1" step="0.05" value="0" aria-describedby="topPHint" />
+            <span id="topPHint" class="model-setting-hint">0 uses provider default; lower values make output more focused.</span>
           </label>
           <label id="topKLabel" class="model-setting-field" title="Top-k sampling count">
             <span>Top-k</span>
-            <input id="topKInput" type="number" min="0" step="1" value="0" />
-            <span class="model-setting-hint">0 uses provider default; supported models restrict token choices.</span>
+            <input id="topKInput" type="number" min="0" step="1" value="0" aria-describedby="topKHint" />
+            <span id="topKHint" class="model-setting-hint">0 uses provider default; supported models restrict token choices.</span>
           </label>
-          <label class="model-setting-field">
+          <label id="maxOutputTokensLabel" class="model-setting-field">
             <span>Fallback max output tokens</span>
-            <input id="maxOutputTokensInput" type="number" min="1" step="1000" value="32000" />
-            <span class="model-setting-hint">Used when the selected model does not publish an output limit.</span>
+            <input id="maxOutputTokensInput" type="number" min="1" step="1000" value="32000" aria-describedby="maxOutputTokensHint" />
+            <span id="maxOutputTokensHint" class="model-setting-hint">Used when the selected model does not publish an output limit.</span>
           </label>
-          <label class="model-setting-field">
+          <label id="maxIterationsLabel" class="model-setting-field">
             <span>Max iterations</span>
-            <input id="maxIterationsInput" type="number" min="-1" step="1" value="50" />
-            <span class="model-setting-hint">Assistant/tool loop cap. Set -1 for no limit.</span>
+            <input id="maxIterationsInput" type="number" min="-1" step="1" value="50" aria-describedby="maxIterationsHint" />
+            <span id="maxIterationsHint" class="model-setting-hint">Assistant/tool loop cap. Set -1 for no limit.</span>
           </label>
           <label id="textVerbosityLabel" class="model-setting-field" title="Text verbosity for GPT-5/Responses API models">
             <span>Text verbosity</span>
-            <select id="textVerbositySelect" aria-label="Text verbosity">
+            <select id="textVerbositySelect" aria-label="Text verbosity" aria-describedby="textVerbosityHint">
               <option value="">Provider default</option>
               <option value="low">Low</option>
               <option value="medium">Medium</option>
               <option value="high">High</option>
             </select>
-            <span class="model-setting-hint">Controls response detail for GPT-5/Responses API models.</span>
+            <span id="textVerbosityHint" class="model-setting-hint">Controls response detail for GPT-5/Responses API models.</span>
           </label>
-          <label class="model-setting-field">
+          <label id="maxRetriesLabel" class="model-setting-field">
             <span>Max retries</span>
-            <input id="maxRetriesInput" type="number" min="0" step="1" value="2" />
-            <span class="model-setting-hint">Retry transient LLM failures. Set 0 to disable automatic retries.</span>
+            <input id="maxRetriesInput" type="number" min="0" step="1" value="2" aria-describedby="maxRetriesHint" />
+            <span id="maxRetriesHint" class="model-setting-hint">Retry transient LLM failures. Set 0 to disable automatic retries.</span>
           </label>
-          <label class="model-setting-field">
+          <label id="llmTimeoutLabel" class="model-setting-field">
             <span>Timeout (ms)</span>
-            <input id="llmTimeoutInput" type="number" min="0" step="1000" value="0" />
-            <span class="model-setting-hint">0 disables request timeout. Provider changes may reconnect the model backend.</span>
+            <input id="llmTimeoutInput" type="number" min="0" step="1000" value="0" aria-describedby="llmTimeoutHint" />
+            <span id="llmTimeoutHint" class="model-setting-hint">0 disables request timeout. Provider changes may reconnect the model backend.</span>
           </label>
           <label id="retryWithPartialOutputLabel" class="model-setting-toggle" title="Retry transient streaming failures after partial output">
-            <input id="retryWithPartialOutputToggle" type="checkbox" />
+            <input id="retryWithPartialOutputToggle" type="checkbox" checked aria-label="Retry partial output" aria-describedby="retryWithPartialOutputHint" />
             <span class="safety-setting-copy">
               <span class="safety-setting-title">Retry partial output</span>
-              <span class="safety-setting-hint">Allow retry after streaming has already shown partial assistant output.</span>
+              <span id="retryWithPartialOutputHint" class="safety-setting-hint">Replace an incomplete response and retry after a transient stream interruption.</span>
             </span>
           </label>
           <div class="model-settings-actions">
-            <button id="modelSettingsOpenSettings" class="context-btn" type="button" title="Open VS Code settings for more model options">Open VS Code settings…</button>
-            <button id="modelSettingsApply" class="context-btn" type="button">Apply</button>
+            <button id="modelSettingsOpenSettings" class="context-btn" type="button" title="Open VS Code settings for more model options" aria-label="Open VS Code settings…, open VS Code settings for more model options">Open VS Code settings…</button>
+            <button id="modelSettingsApply" class="context-btn" type="button" title="Apply generation settings" aria-label="Apply, apply generation settings">Apply</button>
           </div>
         </div>
       </div>
     </div>
-    <div id="providerAuthGroup" class="header-title hidden">
-      <span class="header-label">Account</span>
-      <button id="providerAuthPrimary" class="provider-auth-btn" type="button" aria-label="Provider account" disabled>Loading…</button>
+    <div id="providerAuthGroup" class="header-title hidden" role="group" aria-labelledby="providerAuthGroupLabel">
+      <span id="providerAuthGroupLabel" class="header-label">Account</span>
+      <button id="providerAuthPrimary" class="provider-auth-btn" type="button" aria-label="Loading… provider account" disabled>Loading…</button>
       <button id="providerAuthSecondary" class="provider-auth-secondary hidden" type="button" aria-label="Disconnect provider" title="Disconnect provider" disabled>Disconnect</button>
     </div>
     <div class="context-wrap">
       <button id="contextIndicator" class="context-indicator hidden" type="button" title="Context usage"
-        aria-label="Context usage"></button>
-      <div id="contextPopover" class="context-popover hidden" role="dialog" aria-label="Context and memory settings">
+        aria-label="Context usage" aria-controls="contextPopover" aria-expanded="false" aria-haspopup="dialog"></button>
+      <div id="contextPopover" class="context-popover hidden" role="dialog" aria-labelledby="contextPopoverTitle">
         <div class="context-popover-header">
-          <div class="context-popover-title">Context & memory</div>
+          <div id="contextPopoverTitle" class="context-popover-title">Context and memory</div>
           <button id="contextPopoverClose" class="context-popover-close" type="button"
-            aria-label="Close context and memory settings">✕</button>
+            aria-label="Close context and memory settings"><span aria-hidden="true">✕</span></button>
         </div>
         <div id="contextPopoverBody" class="context-popover-body"></div>
         <div class="context-memory-row">
           <label id="instructionPatternsLabel" class="context-select-row" title="Additional instruction files or glob patterns included in the system prompt">
             <span class="context-memory-copy">
               <span class="context-memory-title">Instruction files</span>
-              <textarea id="instructionPatternsInput" class="context-select" rows="3" placeholder="AGENTS.md\ndocs/agent-rules.md\n.instructions/*.md" aria-label="Additional instruction file patterns"></textarea>
-              <span class="context-memory-hint">One path/glob per line or comma-separated. Empty uses default discovery only.</span>
+              <textarea id="instructionPatternsInput" class="context-select" rows="3" placeholder="AGENTS.md\ndocs/agent-rules.md\n.instructions/*.md" aria-label="Instruction files, additional instruction file patterns" aria-describedby="instructionPatternsHint"></textarea>
+              <span id="instructionPatternsHint" class="context-memory-hint">One path/glob per line or comma-separated. Empty uses default discovery only.</span>
             </span>
           </label>
           <label id="instructionIncludeGlobalLabel" class="context-memory-toggle" title="Include ~/.config/lingyun/AGENTS.md when present">
-            <input id="instructionIncludeGlobalToggle" class="context-memory-checkbox" type="checkbox" checked />
+            <input id="instructionIncludeGlobalToggle" class="context-memory-checkbox" type="checkbox" checked aria-label="Global instructions" aria-describedby="instructionIncludeGlobalHint" />
             <span class="context-memory-copy">
               <span class="context-memory-title">Global instructions</span>
-              <span class="context-memory-hint">Include your global LingYun AGENTS.md in the system prompt.</span>
+              <span id="instructionIncludeGlobalHint" class="context-memory-hint">Include your global LingYun AGENTS.md in the system prompt.</span>
             </span>
           </label>
           <label id="instructionMaxCharsPerFileLabel" class="context-select-row" title="Maximum characters loaded from each instruction file">
             <span class="context-memory-copy">
               <span class="context-memory-title">Per-file instruction cap</span>
-              <input id="instructionMaxCharsPerFileInput" class="context-select" type="number" min="1000" step="1000" value="60000" aria-label="Instruction file max characters per file" />
+              <input id="instructionMaxCharsPerFileInput" class="context-select" type="number" min="1000" step="1000" value="60000" aria-label="Per-file instruction cap, instruction file max characters per file" aria-describedby="instructionMaxCharsPerFileHint" />
+              <span id="instructionMaxCharsPerFileHint" class="sr-only">Maximum characters loaded from each instruction file.</span>
             </span>
           </label>
           <label id="instructionMaxTotalCharsLabel" class="context-select-row" title="Maximum total instruction-file characters injected into the prompt">
             <span class="context-memory-copy">
               <span class="context-memory-title">Total instruction cap</span>
-              <input id="instructionMaxTotalCharsInput" class="context-select" type="number" min="1000" step="1000" value="180000" aria-label="Instruction files max total characters" />
+              <input id="instructionMaxTotalCharsInput" class="context-select" type="number" min="1000" step="1000" value="180000" aria-label="Total instruction cap, instruction files max total characters" aria-describedby="instructionMaxTotalCharsHint" />
+              <span id="instructionMaxTotalCharsHint" class="sr-only">Maximum total instruction-file characters injected into the prompt.</span>
             </span>
           </label>
           <div class="context-actions">
-            <button id="instructionPatternsApply" class="context-btn" type="button">Apply instructions</button>
+            <button id="instructionPatternsApply" class="context-btn" type="button" title="Apply instruction file settings" aria-label="Apply instructions, apply instruction file settings">Apply instructions</button>
           </div>
           <label id="memoriesFeatureLabel" class="context-memory-toggle" title="Enable memory pipeline and memory tool">
-            <input id="memoriesFeatureToggle" class="context-memory-checkbox" type="checkbox" checked />
+            <input id="memoriesFeatureToggle" class="context-memory-checkbox" type="checkbox" checked aria-label="Memories" aria-describedby="memoriesFeatureHint" />
             <span class="context-memory-copy">
               <span class="context-memory-title">Memories</span>
-              <span class="context-memory-hint">Enable memory extraction, recall, and the memory tool.</span>
+              <span id="memoriesFeatureHint" class="context-memory-hint">Enable memory extraction, recall, and the memory tool.</span>
             </span>
           </label>
           <label id="memoryAutoRecallLabel" class="context-memory-toggle" title="Automatically recall saved memories before each new user turn">
-            <input id="memoryAutoRecallToggle" class="context-memory-checkbox" type="checkbox" checked />
+            <input id="memoryAutoRecallToggle" class="context-memory-checkbox" type="checkbox" checked aria-label="Memory recall" aria-describedby="memoryAutoRecallHint" />
             <span class="context-memory-copy">
               <span class="context-memory-title">Memory recall</span>
-              <span class="context-memory-hint">Inject relevant saved memories into new turns.</span>
+              <span id="memoryAutoRecallHint" class="context-memory-hint">Inject relevant saved memories into new turns.</span>
             </span>
           </label>
           <label id="memoryAutoRecallMaxResultsLabel" class="context-select-row" title="Maximum auto-recalled memory matches injected into prompt context">
             <span class="context-memory-copy">
               <span class="context-memory-title">Memory results</span>
-              <input id="memoryAutoRecallMaxResultsInput" class="context-select" type="number" min="1" step="1" value="4" aria-label="Memory auto-recall max results" />
+              <input id="memoryAutoRecallMaxResultsInput" class="context-select" type="number" min="1" step="1" value="4" aria-label="Memory results, auto-recall max results" aria-describedby="memoryAutoRecallMaxResultsHint" />
+              <span id="memoryAutoRecallMaxResultsHint" class="sr-only">Maximum auto-recalled memory matches injected into prompt context.</span>
             </span>
           </label>
           <label id="memoryAutoRecallMaxTokensLabel" class="context-select-row" title="Maximum estimated memory tokens injected into prompt context">
             <span class="context-memory-copy">
               <span class="context-memory-title">Memory token cap</span>
-              <input id="memoryAutoRecallMaxTokensInput" class="context-select" type="number" min="100" step="100" value="1200" aria-label="Memory auto-recall max tokens" />
+              <input id="memoryAutoRecallMaxTokensInput" class="context-select" type="number" min="100" step="100" value="1200" aria-label="Memory token cap, auto-recall max tokens" aria-describedby="memoryAutoRecallMaxTokensHint" />
+              <span id="memoryAutoRecallMaxTokensHint" class="sr-only">Maximum estimated memory tokens injected into prompt context.</span>
             </span>
           </label>
           <label id="memoryAutoRecallMinScoreLabel" class="context-select-row" title="Minimum retrieval score required before memory is auto-recalled">
             <span class="context-memory-copy">
               <span class="context-memory-title">Memory min score</span>
-              <input id="memoryAutoRecallMinScoreInput" class="context-select" type="number" min="0" max="100" step="0.25" value="7" aria-label="Memory auto-recall minimum score" />
+              <input id="memoryAutoRecallMinScoreInput" class="context-select" type="number" min="0" max="100" step="0.25" value="7" aria-label="Memory min score, auto-recall minimum score" aria-describedby="memoryAutoRecallMinScoreHint" />
+              <span id="memoryAutoRecallMinScoreHint" class="sr-only">Minimum retrieval score required before memory is auto-recalled.</span>
             </span>
           </label>
           <label id="memoryAutoRecallMinScoreGapLabel" class="context-select-row" title="Minimum score gap between top memory recall candidates">
             <span class="context-memory-copy">
               <span class="context-memory-title">Memory score gap</span>
-              <input id="memoryAutoRecallMinScoreGapInput" class="context-select" type="number" min="0" max="50" step="0.25" value="1.25" aria-label="Memory auto-recall minimum score gap" />
+              <input id="memoryAutoRecallMinScoreGapInput" class="context-select" type="number" min="0" max="50" step="0.25" value="1.25" aria-label="Memory score gap, auto-recall minimum score gap" aria-describedby="memoryAutoRecallMinScoreGapHint" />
+              <span id="memoryAutoRecallMinScoreGapHint" class="sr-only">Minimum score gap between top memory recall candidates.</span>
             </span>
           </label>
           <label id="memoryAutoRecallMaxAgeDaysLabel" class="context-select-row" title="Ignore auto-recall matches older than this many days">
             <span class="context-memory-copy">
               <span class="context-memory-title">Memory max age</span>
-              <input id="memoryAutoRecallMaxAgeDaysInput" class="context-select" type="number" min="1" step="1" value="45" aria-label="Memory auto-recall max age in days" />
+              <input id="memoryAutoRecallMaxAgeDaysInput" class="context-select" type="number" min="1" step="1" value="45" aria-label="Memory max age, auto-recall max age in days" aria-describedby="memoryAutoRecallMaxAgeDaysHint" />
+              <span id="memoryAutoRecallMaxAgeDaysHint" class="sr-only">Ignore auto-recall matches older than this many days.</span>
             </span>
           </label>
           <label id="memoryMaxRawMemoriesForGlobalLabel" class="context-select-row" title="Maximum latest rollout memories retained in generated memory artifacts">
             <span class="context-memory-copy">
               <span class="context-memory-title">Memory artifact rollouts</span>
-              <input id="memoryMaxRawMemoriesForGlobalInput" class="context-select" type="number" min="1" max="2000" step="1" value="120" aria-label="Maximum rollout memories retained in artifacts" />
+              <input id="memoryMaxRawMemoriesForGlobalInput" class="context-select" type="number" min="1" max="2000" step="1" value="120" aria-label="Memory artifact rollouts, maximum rollout memories retained in artifacts" aria-describedby="memoryMaxRawMemoriesForGlobalHint" />
+              <span id="memoryMaxRawMemoriesForGlobalHint" class="sr-only">Maximum latest rollout memories retained in generated memory artifacts.</span>
             </span>
           </label>
           <label id="memoryMaxRolloutAgeDaysLabel" class="context-select-row" title="Ignore persisted sessions older than this when extracting memories">
             <span class="context-memory-copy">
               <span class="context-memory-title">Extraction age window</span>
-              <input id="memoryMaxRolloutAgeDaysInput" class="context-select" type="number" min="1" max="3650" step="1" value="30" aria-label="Memory extraction max session age in days" />
+              <input id="memoryMaxRolloutAgeDaysInput" class="context-select" type="number" min="1" max="3650" step="1" value="30" aria-label="Extraction age window, memory extraction max session age in days" aria-describedby="memoryMaxRolloutAgeDaysHint" />
+              <span id="memoryMaxRolloutAgeDaysHint" class="sr-only">Ignore persisted sessions older than this when extracting memories.</span>
             </span>
           </label>
           <label id="memoryMaxRolloutsPerStartupLabel" class="context-select-row" title="Maximum persisted sessions scanned during each memory update run">
             <span class="context-memory-copy">
               <span class="context-memory-title">Extraction session cap</span>
-              <input id="memoryMaxRolloutsPerStartupInput" class="context-select" type="number" min="1" max="2000" step="1" value="24" aria-label="Maximum sessions scanned per memory update" />
+              <input id="memoryMaxRolloutsPerStartupInput" class="context-select" type="number" min="1" max="2000" step="1" value="24" aria-label="Extraction session cap, maximum sessions scanned per memory update" aria-describedby="memoryMaxRolloutsPerStartupHint" />
+              <span id="memoryMaxRolloutsPerStartupHint" class="sr-only">Maximum persisted sessions scanned during each memory update run.</span>
             </span>
           </label>
           <label id="memoryMinRolloutIdleHoursLabel" class="context-select-row" title="Only extract memory from sessions idle for at least this many hours">
             <span class="context-memory-copy">
               <span class="context-memory-title">Extraction idle hours</span>
-              <input id="memoryMinRolloutIdleHoursInput" class="context-select" type="number" min="0" max="720" step="0.5" value="2" aria-label="Minimum session idle hours before memory extraction" />
+              <input id="memoryMinRolloutIdleHoursInput" class="context-select" type="number" min="0" max="720" step="0.5" value="2" aria-label="Extraction idle hours, minimum session idle hours before memory extraction" aria-describedby="memoryMinRolloutIdleHoursHint" />
+              <span id="memoryMinRolloutIdleHoursHint" class="sr-only">Only extract memory from sessions idle for at least this many hours.</span>
             </span>
           </label>
           <label id="memoryMaxStateOutputsLabel" class="context-select-row" title="Maximum stage-1 memory outputs retained in extension storage">
             <span class="context-memory-copy">
               <span class="context-memory-title">Memory output cap</span>
-              <input id="memoryMaxStateOutputsInput" class="context-select" type="number" min="10" max="5000" step="10" value="500" aria-label="Maximum retained memory extraction outputs" />
+              <input id="memoryMaxStateOutputsInput" class="context-select" type="number" min="10" max="5000" step="10" value="500" aria-label="Memory output cap, maximum retained memory extraction outputs" aria-describedby="memoryMaxStateOutputsHint" />
+              <span id="memoryMaxStateOutputsHint" class="sr-only">Maximum stage-1 memory outputs retained in extension storage.</span>
             </span>
           </label>
           <label id="memoryMaxRecordsLabel" class="context-select-row" title="Maximum transcript-backed memory records retained in extension storage">
             <span class="context-memory-copy">
               <span class="context-memory-title">Memory record cap</span>
-              <input id="memoryMaxRecordsInput" class="context-select" type="number" min="100" max="50000" step="100" value="5000" aria-label="Maximum retained transcript-backed memory records" />
+              <input id="memoryMaxRecordsInput" class="context-select" type="number" min="100" max="50000" step="100" value="5000" aria-label="Memory record cap, maximum retained transcript-backed memory records" aria-describedby="memoryMaxRecordsHint" />
+              <span id="memoryMaxRecordsHint" class="sr-only">Maximum transcript-backed memory records retained in extension storage.</span>
             </span>
           </label>
           <label id="memoryMaxSearchResultsLabel" class="context-select-row" title="Default maximum transcript-backed memory matches returned by search">
             <span class="context-memory-copy">
               <span class="context-memory-title">Memory search results</span>
-              <input id="memoryMaxSearchResultsInput" class="context-select" type="number" min="1" max="100" step="1" value="8" aria-label="Default memory search result count" />
+              <input id="memoryMaxSearchResultsInput" class="context-select" type="number" min="1" max="100" step="1" value="8" aria-label="Memory search results, default memory search result count" aria-describedby="memoryMaxSearchResultsHint" />
+              <span id="memoryMaxSearchResultsHint" class="sr-only">Default maximum transcript-backed memory matches returned by search.</span>
             </span>
           </label>
           <label id="memoryMaxResultsPerKindLabel" class="context-select-row" title="Maximum top-level memory matches returned per memory kind">
             <span class="context-memory-copy">
               <span class="context-memory-title">Memory results per kind</span>
-              <input id="memoryMaxResultsPerKindInput" class="context-select" type="number" min="1" max="20" step="1" value="3" aria-label="Maximum memory search results per kind" />
+              <input id="memoryMaxResultsPerKindInput" class="context-select" type="number" min="1" max="20" step="1" value="3" aria-label="Memory results per kind, maximum memory search results per kind" aria-describedby="memoryMaxResultsPerKindHint" />
+              <span id="memoryMaxResultsPerKindHint" class="sr-only">Maximum top-level memory matches returned per memory kind.</span>
             </span>
           </label>
           <label id="memorySearchNeighborWindowLabel" class="context-select-row" title="Neighboring transcript chunks included around each memory search hit">
             <span class="context-memory-copy">
               <span class="context-memory-title">Memory neighbor window</span>
-              <input id="memorySearchNeighborWindowInput" class="context-select" type="number" min="0" max="5" step="1" value="1" aria-label="Memory search neighbor window" />
+              <input id="memorySearchNeighborWindowInput" class="context-select" type="number" min="0" max="5" step="1" value="1" aria-label="Memory neighbor window, memory search neighbor window" aria-describedby="memorySearchNeighborWindowHint" />
+              <span id="memorySearchNeighborWindowHint" class="sr-only">Neighboring transcript chunks included around each memory search hit.</span>
             </span>
           </label>
           <div class="context-actions">
-            <button id="memoryAdvancedLimitsApply" class="context-btn" type="button">Apply memory limits</button>
+            <button id="memoryAdvancedLimitsApply" class="context-btn" type="button" title="Apply memory limit settings" aria-label="Apply memory limits, apply memory limit settings">Apply memory limits</button>
           </div>
           <div class="context-actions">
-            <button id="memoryUpdateNow" class="context-btn" type="button" title="Rebuild memory artifacts from saved sessions">Update memories</button>
-            <button id="memoryDrop" class="context-btn" type="button" title="Delete generated memory artifacts and extraction outputs" aria-controls="memoryDropConfirm" aria-expanded="false">Drop memories</button>
+            <button id="memoryUpdateNow" class="context-btn" type="button" title="Rebuild memory artifacts from saved sessions" aria-label="Update memories, rebuild memory artifacts from saved sessions">Update memories</button>
+            <button id="memoryDrop" class="context-btn" type="button" title="Delete generated memory artifacts and extraction outputs" aria-label="Drop memories, delete generated memory artifacts and extraction outputs" aria-controls="memoryDropConfirm" aria-expanded="false">Drop memories</button>
           </div>
-          <div id="memoryDropConfirm" class="memory-drop-confirm hidden" role="alert" aria-live="polite">
-            <div>Delete generated memory artifacts and extraction outputs? This cannot be undone.</div>
+          <div id="memoryDropConfirm" class="memory-drop-confirm hidden" role="group" aria-labelledby="memoryDropConfirmText">
+            <div id="memoryDropConfirmText">Delete generated memory artifacts and extraction outputs? This cannot be undone.</div>
             <div class="memory-drop-confirm-actions">
-              <button id="memoryDropCancel" class="context-btn" type="button">Cancel</button>
-              <button id="memoryDropConfirmRun" class="context-btn" type="button">Drop memories</button>
+              <button id="memoryDropCancel" class="context-btn" type="button" aria-label="Cancel drop memories" title="Cancel drop memories">Cancel</button>
+              <button id="memoryDropConfirmRun" class="context-btn" type="button" aria-label="Drop memories and generated artifacts" title="Drop memories and generated artifacts">Drop memories</button>
             </div>
           </div>
-          <div id="memoryActionStatus" class="context-status hidden" role="status" aria-live="polite"></div>
+          <div id="memoryActionStatus" class="context-status hidden" role="note" aria-label="Memory action status"></div>
           <label id="explorePrepassLabel" class="context-memory-toggle" title="Automatically run an explore subagent before each user turn">
-            <input id="explorePrepassToggle" class="context-memory-checkbox" type="checkbox" />
+            <input id="explorePrepassToggle" class="context-memory-checkbox" type="checkbox" aria-label="Explore prepass" aria-describedby="explorePrepassHint" />
             <span class="context-memory-copy">
               <span class="context-memory-title">Explore prepass</span>
-              <span class="context-memory-hint">Gather lightweight workspace context before new turns.</span>
+              <span id="explorePrepassHint" class="context-memory-hint">Gather lightweight workspace context before new turns.</span>
             </span>
           </label>
           <label id="explorePrepassMaxCharsLabel" class="context-select-row" title="Maximum explore prepass output injected into prompt context">
             <span class="context-memory-copy">
               <span class="context-memory-title">Explore context cap</span>
-              <input id="explorePrepassMaxCharsInput" class="context-select" type="number" min="500" step="500" value="8000" aria-label="Explore prepass max injected characters" />
+              <input id="explorePrepassMaxCharsInput" class="context-select" type="number" min="500" step="500" value="8000" aria-label="Explore context cap, explore prepass max injected characters" aria-describedby="explorePrepassMaxCharsHint" />
+              <span id="explorePrepassMaxCharsHint" class="sr-only">Maximum explore prepass output injected into prompt context.</span>
             </span>
           </label>
           <label id="subagentModelOverrideLabel" class="context-select-row" title="Optional model ID used by explore/task subagents; empty uses the main model">
             <span class="context-memory-copy">
               <span class="context-memory-title">Subagent model</span>
-              <input id="subagentModelOverrideInput" class="context-select" type="text" maxlength="200" placeholder="Use main model" aria-label="Subagent model override" />
+              <input id="subagentModelOverrideInput" class="context-select" type="text" maxlength="200" placeholder="Use main model" aria-label="Subagent model override" aria-describedby="subagentModelOverrideHint" />
+              <span id="subagentModelOverrideHint" class="sr-only">Optional model ID used by explore/task subagents. Empty uses the main model.</span>
             </span>
           </label>
           <label id="subagentTaskMaxOutputCharsLabel" class="context-select-row" title="Maximum task-subagent output injected into prompt context">
             <span class="context-memory-copy">
               <span class="context-memory-title">Subagent output cap</span>
-              <input id="subagentTaskMaxOutputCharsInput" class="context-select" type="number" min="500" step="500" value="8000" aria-label="Task subagent max injected characters" />
+              <input id="subagentTaskMaxOutputCharsInput" class="context-select" type="number" min="500" step="500" value="8000" aria-label="Subagent output cap, task subagent max injected characters" aria-describedby="subagentTaskMaxOutputCharsHint" />
+              <span id="subagentTaskMaxOutputCharsHint" class="sr-only">Maximum task-subagent output injected into prompt context.</span>
             </span>
           </label>
           <label id="autoCompactionLabel" class="context-memory-toggle" title="Automatically compact context before it overflows">
-            <input id="autoCompactionToggle" class="context-memory-checkbox" type="checkbox" checked />
+            <input id="autoCompactionToggle" class="context-memory-checkbox" type="checkbox" checked aria-label="Auto-compaction" aria-describedby="autoCompactionHint" />
             <span class="context-memory-copy">
               <span class="context-memory-title">Auto-compaction</span>
-              <span class="context-memory-hint">Summarize older context automatically near the limit.</span>
+              <span id="autoCompactionHint" class="context-memory-hint">Summarize older context automatically near the limit.</span>
             </span>
           </label>
           <label id="modelLimitsLabel" class="context-select-row" title="Per-model token limits used for context tracking and auto-compaction">
             <span class="context-memory-copy">
               <span class="context-memory-title">Model token limits</span>
-              <textarea id="modelLimitsInput" class="context-select" rows="4" placeholder="gpt-4o = 128000 / 32000&#10;codexSubscription:gpt-5.4 = 258400 / 32000" aria-label="Per-model token limits"></textarea>
-              <span class="context-memory-hint">One model or provider:model per line: context / output. Output is optional.</span>
+              <textarea id="modelLimitsInput" class="context-select" rows="4" placeholder="gpt-4o = 128000 / 32000&#10;codexSubscription:gpt-5.4 = 258400 / 32000" aria-label="Model token limits, per-model token limits" aria-describedby="modelLimitsHint"></textarea>
+              <span id="modelLimitsHint" class="context-memory-hint">One model or provider:model per line: context / output. Output is optional.</span>
             </span>
           </label>
           <div class="context-actions">
-            <button id="modelLimitsApply" class="context-btn" type="button">Apply model limits</button>
+            <button id="modelLimitsApply" class="context-btn" type="button" title="Apply model token limits" aria-label="Apply model limits, apply model token limits">Apply model limits</button>
           </div>
           <label id="compactionPruneLabel" class="context-memory-toggle" title="Prune old tool outputs before full compaction summaries">
-            <input id="compactionPruneToggle" class="context-memory-checkbox" type="checkbox" checked />
+            <input id="compactionPruneToggle" class="context-memory-checkbox" type="checkbox" checked aria-label="Prune old tool outputs" aria-describedby="compactionPruneHint" />
             <span class="context-memory-copy">
               <span class="context-memory-title">Prune old tool outputs</span>
-              <span class="context-memory-hint">Clear older tool-output context before full compaction.</span>
+              <span id="compactionPruneHint" class="context-memory-hint">Clear older tool-output context before full compaction.</span>
             </span>
           </label>
           <label id="compactionPruneProtectTokensLabel" class="context-select-row" title="Keep at least this many recent tool-output tokens before pruning older outputs">
             <span class="context-memory-copy">
               <span class="context-memory-title">Protect recent tool tokens</span>
-              <input id="compactionPruneProtectTokensInput" class="context-select" type="number" min="0" step="1000" value="40000" aria-label="Compaction prune protected recent tool-output tokens" />
+              <input id="compactionPruneProtectTokensInput" class="context-select" type="number" min="0" step="1000" value="40000" aria-label="Protect recent tool tokens, compaction prune protected recent tool-output tokens" aria-describedby="compactionPruneProtectTokensHint" />
+              <span id="compactionPruneProtectTokensHint" class="sr-only">Keep at least this many recent tool-output tokens before pruning older outputs.</span>
             </span>
           </label>
           <label id="compactionPruneMinimumTokensLabel" class="context-select-row" title="Only prune tool outputs when at least this many tokens would be cleared">
             <span class="context-memory-copy">
               <span class="context-memory-title">Minimum prune savings</span>
-              <input id="compactionPruneMinimumTokensInput" class="context-select" type="number" min="0" step="1000" value="20000" aria-label="Compaction prune minimum saved tokens" />
+              <input id="compactionPruneMinimumTokensInput" class="context-select" type="number" min="0" step="1000" value="20000" aria-label="Minimum prune savings, compaction prune minimum saved tokens" aria-describedby="compactionPruneMinimumTokensHint" />
+              <span id="compactionPruneMinimumTokensHint" class="sr-only">Only prune tool outputs when at least this many tokens would be cleared.</span>
             </span>
           </label>
           <label id="compactionToolOutputModeLabel" class="context-select-row" title="Choose when large tool outputs are compacted in prompt context">
             <span class="context-memory-copy">
               <span class="context-memory-title">Tool output context</span>
-              <select id="compactionToolOutputModeSelect" class="context-select" aria-label="Tool output context behavior">
-                <option value="afterToolCall">Compact after seen once</option>
+              <select id="compactionToolOutputModeSelect" class="context-select" aria-label="Tool output context behavior" aria-describedby="compactionToolOutputModeHint">
                 <option value="onCompaction">Only during compaction</option>
+                <option value="afterToolCall">Compact after seen once</option>
               </select>
+              <span id="compactionToolOutputModeHint" class="sr-only">Choose when large tool outputs are compacted in prompt context.</span>
             </span>
           </label>
         </div>
         <div class="context-actions">
-          <button id="contextCompactNow" class="context-btn" type="button">Compact now</button>
+          <button id="contextCompactNow" class="context-btn" type="button" title="Compact current context now" aria-label="Compact now, compact current context">Compact now</button>
         </div>
       </div>
     </div>
     <div class="todo-wrap">
       <button id="todoIndicator" class="todo-indicator hidden" type="button" title="Todo list"
-        aria-label="Todo list"></button>
-      <div id="todoPopover" class="todo-popover hidden" role="dialog" aria-label="Todo list">
+        aria-label="Todo list" aria-controls="todoPopover" aria-expanded="false" aria-haspopup="dialog"></button>
+      <div id="todoPopover" class="todo-popover hidden" role="dialog" aria-labelledby="todoPopoverTitle">
         <div class="todo-popover-header">
-          <div class="todo-popover-title">Todo</div>
-          <button id="todoPopoverClose" class="todo-popover-close" type="button" aria-label="Close todo list">✕</button>
+          <div id="todoPopoverTitle" class="todo-popover-title">Todo list</div>
+          <button id="todoPopoverClose" class="todo-popover-close" type="button" aria-label="Close todo list"><span aria-hidden="true">✕</span></button>
         </div>
         <div id="todoPopoverBody" class="todo-popover-body"></div>
       </div>
@@ -4850,169 +5161,181 @@
         <option value="auto">Auto-approve tools</option>
       </select>
       <div class="safety-settings-wrap">
-        <button id="safetySettings" class="safety-settings-btn" type="button" aria-label="Open advanced safety settings" title="Advanced safety">⋯</button>
-        <div id="safetySettingsPopover" class="safety-settings-popover hidden" role="dialog" aria-label="Advanced safety settings">
+        <button id="safetySettings" class="safety-settings-btn" type="button" aria-label="Open advanced safety settings" title="Advanced safety" aria-controls="safetySettingsPopover" aria-expanded="false" aria-haspopup="dialog"><span aria-hidden="true">⋯</span></button>
+        <div id="safetySettingsPopover" class="safety-settings-popover hidden" role="dialog" aria-labelledby="safetySettingsPopoverTitle">
           <div class="safety-settings-popover-header">
-            <span>Advanced safety</span>
-            <button id="safetySettingsClose" class="safety-settings-popover-close" type="button" aria-label="Close advanced safety settings">✕</button>
+            <span id="safetySettingsPopoverTitle">Advanced safety settings</span>
+            <button id="safetySettingsClose" class="safety-settings-popover-close" type="button" aria-label="Close advanced safety settings"><span aria-hidden="true">✕</span></button>
           </div>
           <label id="allowExternalPathsLabel" class="safety-setting-toggle" title="Allow tools to access paths outside the workspace">
-            <input id="allowExternalPathsToggle" type="checkbox" />
+            <input id="allowExternalPathsToggle" type="checkbox" aria-label="External paths" aria-describedby="allowExternalPathsHint" />
             <span class="safety-setting-copy">
               <span class="safety-setting-title">External paths</span>
-              <span class="safety-setting-hint">Allow tools and shell commands to reference files outside this workspace.</span>
+              <span id="allowExternalPathsHint" class="safety-setting-hint">Allow tools and shell commands to reference files outside this workspace.</span>
             </span>
           </label>
           <label id="blockGitPushLabel" class="safety-setting-toggle" title="Block git push commands in the bash tool">
-            <input id="blockGitPushToggle" type="checkbox" checked />
+            <input id="blockGitPushToggle" type="checkbox" checked aria-label="Block git push" aria-describedby="blockGitPushHint" />
             <span class="safety-setting-copy">
               <span class="safety-setting-title">Block git push</span>
-              <span class="safety-setting-hint">Prevent accidental pushes to remotes from tool commands.</span>
+              <span id="blockGitPushHint" class="safety-setting-hint">Prevent accidental pushes to remotes from tool commands.</span>
             </span>
           </label>
           <div class="safety-section-title">Diagnostics</div>
           <label id="debugDetailsLabel" class="safety-setting-toggle" title="Enable detailed LingYun output-channel logs">
-            <input id="debugDetailsToggle" type="checkbox" />
+            <input id="debugDetailsToggle" type="checkbox" aria-label="Detailed logs" aria-describedby="debugDetailsHint" />
             <span class="safety-setting-copy">
               <span class="safety-setting-title">Detailed logs</span>
-              <span class="safety-setting-hint">Turns on LLM, tool, and plugin debug streams with secrets, paths, URLs, and hosts redacted.</span>
+              <span id="debugDetailsHint" class="safety-setting-hint">Turns on LLM, tool, and plugin debug streams with credential-like secrets masked; paths, URLs, and hosts remain visible.</span>
             </span>
           </label>
           <label id="debugLlmLabel" class="safety-setting-toggle" title="Log redacted LLM request and response metadata">
-            <input id="debugLlmToggle" type="checkbox" />
+            <input id="debugLlmToggle" type="checkbox" aria-label="LLM debug" aria-describedby="debugLlmHint" />
             <span class="safety-setting-copy">
               <span class="safety-setting-title">LLM debug</span>
-              <span class="safety-setting-hint">Log redacted LLM metadata to help diagnose cutoffs or missing tool calls.</span>
+              <span id="debugLlmHint" class="safety-setting-hint">Log redacted LLM metadata to help diagnose cutoffs or missing tool calls.</span>
             </span>
           </label>
           <label id="debugToolsLabel" class="safety-setting-toggle" title="Log tool execution and approval metadata">
-            <input id="debugToolsToggle" type="checkbox" />
+            <input id="debugToolsToggle" type="checkbox" aria-label="Tool debug" aria-describedby="debugToolsHint" />
             <span class="safety-setting-copy">
               <span class="safety-setting-title">Tool debug</span>
-              <span class="safety-setting-hint">Log tool execution and approval boundary events without prompts or URLs.</span>
+              <span id="debugToolsHint" class="safety-setting-hint">Log tool execution and approval boundary events without prompts or URLs.</span>
             </span>
           </label>
           <label id="debugPluginsLabel" class="safety-setting-toggle" title="Log plugin discovery and loading events">
-            <input id="debugPluginsToggle" type="checkbox" />
+            <input id="debugPluginsToggle" type="checkbox" aria-label="Plugin debug" aria-describedby="debugPluginsHint" />
             <span class="safety-setting-copy">
               <span class="safety-setting-title">Plugin debug</span>
-              <span class="safety-setting-hint">Log plugin discovery/loading events for workspace and configured plugins.</span>
+              <span id="debugPluginsHint" class="safety-setting-hint">Log plugin discovery/loading events for workspace and configured plugins.</span>
             </span>
           </label>
           <div class="model-settings-actions">
-            <button id="showLogs" class="context-btn" type="button" title="Open the LingYun output channel">Show logs</button>
+            <button id="showLogs" class="context-btn" type="button" title="Open the LingYun output channel" aria-label="Show logs, open the LingYun output channel">Show logs</button>
           </div>
           <div class="safety-section-title">Plugins</div>
           <label id="pluginsAutoDiscoverLabel" class="safety-setting-toggle" title="Auto-discover workspace plugins">
-            <input id="pluginsAutoDiscoverToggle" type="checkbox" />
+            <input id="pluginsAutoDiscoverToggle" type="checkbox" aria-label="Auto-discover plugins" aria-describedby="pluginsAutoDiscoverHint" />
             <span class="safety-setting-copy">
               <span class="safety-setting-title">Auto-discover plugins</span>
-              <span class="safety-setting-hint">Load trusted workspace plugins from the configured plugin directory.</span>
+              <span id="pluginsAutoDiscoverHint" class="safety-setting-hint">Load trusted workspace plugins from the configured plugin directory.</span>
             </span>
           </label>
           <label id="pluginsWorkspaceDirLabel" class="model-setting-field" title="Workspace directory used for plugin auto-discovery">
             <span>Workspace plugin dir</span>
-            <input id="pluginsWorkspaceDirInput" type="text" value=".lingyun" aria-label="Plugin workspace directory" />
-            <span class="model-setting-hint">Discovers JS files under &lt;workspace&gt;/&lt;dir&gt;/plugin.</span>
+            <input id="pluginsWorkspaceDirInput" type="text" value=".lingyun" aria-label="Workspace plugin dir, plugin workspace directory" aria-describedby="pluginsWorkspaceDirHint" />
+            <span id="pluginsWorkspaceDirHint" class="model-setting-hint">Discovers JS files under &lt;workspace&gt;/&lt;dir&gt;/plugin.</span>
           </label>
           <label id="pluginSpecsLabel" class="model-setting-field" title="Additional plugin modules to load">
             <span>Plugin modules</span>
-            <textarea id="pluginSpecsInput" rows="3" placeholder="./.lingyun/plugin/my-plugin.js" aria-label="Plugin module specs"></textarea>
-            <span class="model-setting-hint">One module spec/path per line or comma-separated. Plugins can alter prompts, tools, permissions, and outputs.</span>
+            <textarea id="pluginSpecsInput" rows="3" placeholder="./.lingyun/plugin/my-plugin.js" aria-label="Plugin modules, plugin module specs" aria-describedby="pluginSpecsHint"></textarea>
+            <span id="pluginSpecsHint" class="model-setting-hint">One module spec/path per line or comma-separated. Plugins can alter prompts, tools, permissions, and outputs.</span>
           </label>
           <div class="model-settings-actions">
-            <button id="pluginSettingsApply" class="context-btn" type="button">Apply</button>
+            <button id="pluginSettingsApply" class="context-btn" type="button" title="Apply plugin settings" aria-label="Apply, apply plugin settings">Apply</button>
           </div>
           <div class="safety-section-title">Tool availability</div>
           <label id="toolFilterLabel" class="model-setting-field" title="Only allow tools matching these patterns; empty allows all tools">
             <span>Allowed tools</span>
-            <textarea id="toolFilterInput" rows="3" placeholder="All tools\nread\nglob\nworkspace_*" aria-label="Allowed tool patterns"></textarea>
-            <span class="model-setting-hint">One pattern per line or comma-separated. Empty allows all tools.</span>
+            <textarea id="toolFilterInput" rows="3" placeholder="All tools\nread\nglob\nworkspace_*" aria-label="Allowed tools, allowed tool patterns" aria-describedby="toolFilterHint"></textarea>
+            <span id="toolFilterHint" class="model-setting-hint">One pattern per line or comma-separated. Empty allows all tools.</span>
           </label>
           <div class="model-settings-actions">
-            <button id="toolFilterApply" class="context-btn" type="button">Apply</button>
-            <button id="listTools" class="context-btn" type="button" title="Browse registered tools and parameter schemas">List tools</button>
-            <button id="runTool" class="context-btn" type="button" title="Open the inline tool runner">Run tool</button>
-            <button id="createToolsConfig" class="context-btn" type="button" title="Create a sample .vscode/agent-tools.json workspace tools config">Create config</button>
+            <button id="toolFilterApply" class="context-btn" type="button" title="Apply allowed tool patterns" aria-label="Apply, apply allowed tool patterns">Apply</button>
+            <button id="listTools" class="context-btn" type="button" title="Browse registered tools and parameter schemas" aria-label="List tools, browse registered tools and parameter schemas">List tools</button>
+            <button id="runTool" class="context-btn" type="button" title="Open the inline tool runner" aria-label="Run tool, open the inline tool runner">Run tool</button>
+            <button id="createToolsConfig" class="context-btn" type="button" title="Create a sample .vscode/agent-tools.json workspace tools config" aria-label="Create config, create a sample .vscode/agent-tools.json workspace tools config">Create config</button>
           </div>
           <label id="toolsCatalogSearchLabel" class="model-setting-field tools-catalog-search-field hidden" title="Filter the visible tools catalog without changing the Allowed tools setting">
             <span>Find tool</span>
-            <input id="toolsCatalogSearchInput" type="text" placeholder="read, bash, memory…" aria-label="Find tool in catalog" />
-            <span class="model-setting-hint">Filters the inline catalog only. It does not change which tools the agent may use.</span>
+            <input id="toolsCatalogSearchInput" type="search" autocomplete="off" spellcheck="false" placeholder="read, bash, memory…" aria-label="Find tool in catalog" aria-controls="toolsCatalog" aria-describedby="toolsCatalogSearchHint" />
+            <span id="toolsCatalogSearchHint" class="model-setting-hint">Filters the inline catalog only. It does not change which tools the agent may use.</span>
           </label>
-          <div id="toolsCatalog" class="tools-catalog hidden" aria-live="polite"></div>
+          <div id="toolsCatalogStatus" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+          <div id="toolsCatalog" class="tools-catalog hidden" role="region" aria-label="Tools catalog"></div>
           <div class="safety-section-title">Always-allowed tools</div>
-          <div class="model-setting-hint">Tools saved with “Always” skip future approval prompts in Build mode.</div>
-          <div id="autoApprovedToolsList" class="auto-approved-tools" aria-live="polite"></div>
+          <div id="autoApprovedToolsHint" class="model-setting-hint">Tools saved with “Always” skip future approval prompts in Build mode.</div>
+          <div id="autoApprovedToolsStatus" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+          <ul id="autoApprovedToolsList" class="auto-approved-tools" aria-label="Always-allowed tools" aria-describedby="autoApprovedToolsHint"></ul>
           <div class="model-settings-actions">
-            <button id="autoApprovedToolsClear" class="context-btn" type="button" title="Clear all saved always-allowed tool approvals" aria-controls="autoApprovedToolsClearConfirm" aria-expanded="false">Clear always allowed</button>
+            <button id="autoApprovedToolsClear" class="context-btn" type="button" title="Clear all saved always-allowed tool approvals" aria-label="Clear always allowed, clear all saved always-allowed tool approvals" aria-controls="autoApprovedToolsClearConfirm" aria-expanded="false">Clear always allowed</button>
           </div>
-          <div id="autoApprovedToolsClearConfirm" class="inline-confirm hidden" role="alert" aria-live="polite">
-            <div>Clear all saved always-allowed tool approvals? Future guarded tools will ask again.</div>
+          <div id="autoApprovedToolsClearConfirm" class="inline-confirm hidden" role="group" aria-labelledby="autoApprovedToolsClearConfirmText">
+            <div id="autoApprovedToolsClearConfirmText">Clear all saved always-allowed tool approvals? Future guarded tools will ask again.</div>
             <div class="inline-confirm-actions">
-              <button id="autoApprovedToolsClearCancel" class="context-btn" type="button">Cancel</button>
-              <button id="autoApprovedToolsClearConfirmRun" class="context-btn" type="button">Clear always allowed</button>
+              <button id="autoApprovedToolsClearCancel" class="context-btn" type="button" aria-label="Cancel clear always allowed tools" title="Cancel clear always allowed tools">Cancel</button>
+              <button id="autoApprovedToolsClearConfirmRun" class="context-btn" type="button" aria-label="Clear always allowed tools" title="Clear always allowed tools">Clear always allowed</button>
             </div>
           </div>
           <div class="safety-section-title">Workspace env</div>
           <label id="workspaceEnvLabel" class="model-setting-field" title="Environment variables available to workspace-defined tools via ${env:NAME}">
             <span>Tool env vars</span>
-            <textarea id="workspaceEnvInput" rows="4" placeholder="API_BASE_URL=https://example.test&#10;DEPLOY_ENV=staging" aria-label="Workspace tool environment variables"></textarea>
-            <span class="model-setting-hint">One NAME=value per line. Values may be sensitive; they are stored in VS Code settings and used for ${env:NAME} in workspace tools.</span>
+            <textarea id="workspaceEnvInput" rows="4" placeholder="API_BASE_URL=https://example.test&#10;DEPLOY_ENV=staging" aria-label="Tool env vars, workspace tool environment variables" aria-describedby="workspaceEnvHint"></textarea>
+            <span id="workspaceEnvHint" class="model-setting-hint">One NAME=value per line. Values may be sensitive; they are stored in VS Code settings and used for ${env:NAME} in workspace tools.</span>
           </label>
           <div class="model-settings-actions">
-            <button id="workspaceEnvApply" class="context-btn" type="button">Apply env</button>
+            <button id="workspaceEnvApply" class="context-btn" type="button" title="Apply workspace tool environment variables" aria-label="Apply env, apply workspace tool environment variables">Apply env</button>
           </div>
           <div class="safety-section-title">Tool limits</div>
           <label id="toolTimeoutMsLabel" class="model-setting-field" title="Timeout in milliseconds for all tools; 0 disables the global timeout">
             <span>Global timeout (ms)</span>
-            <input id="toolTimeoutMsInput" type="number" min="0" step="1000" value="0" />
+            <input id="toolTimeoutMsInput" type="number" min="0" step="1000" value="0" aria-describedby="toolTimeoutMsHint" />
+            <span id="toolTimeoutMsHint" class="sr-only">Timeout in milliseconds for all tools. 0 disables the global timeout.</span>
           </label>
           <label id="readMaxLinesLabel" class="model-setting-field" title="Maximum lines the Read tools can return per call">
             <span>Read max lines</span>
-            <input id="readMaxLinesInput" type="number" min="1" step="50" value="300" />
+            <input id="readMaxLinesInput" type="number" min="1" step="50" value="300" aria-describedby="readMaxLinesHint" />
+            <span id="readMaxLinesHint" class="sr-only">Maximum lines the Read tools can return per call.</span>
           </label>
           <label id="bashBackgroundTtlMsLabel" class="model-setting-field" title="TTL for background bash commands; 0 disables auto-stop">
             <span>Bash background TTL (ms)</span>
-            <input id="bashBackgroundTtlMsInput" type="number" min="0" step="60000" value="600000" />
+            <input id="bashBackgroundTtlMsInput" type="number" min="0" step="60000" value="600000" aria-describedby="bashBackgroundTtlMsHint" />
+            <span id="bashBackgroundTtlMsHint" class="sr-only">TTL for background bash commands. 0 disables auto-stop.</span>
           </label>
           <label id="bashBackgroundCaptureMsLabel" class="model-setting-field" title="Startup capture wait for background bash commands">
             <span>Bash capture wait (ms)</span>
-            <input id="bashBackgroundCaptureMsInput" type="number" min="0" step="500" value="2000" />
+            <input id="bashBackgroundCaptureMsInput" type="number" min="0" step="500" value="2000" aria-describedby="bashBackgroundCaptureMsHint" />
+            <span id="bashBackgroundCaptureMsHint" class="sr-only">Startup capture wait for background bash commands.</span>
           </label>
           <label id="bashBackgroundCaptureLinesLabel" class="model-setting-field" title="Maximum startup lines captured from background bash commands">
             <span>Bash capture lines</span>
-            <input id="bashBackgroundCaptureLinesInput" type="number" min="0" step="10" value="50" />
+            <input id="bashBackgroundCaptureLinesInput" type="number" min="0" step="10" value="50" aria-describedby="bashBackgroundCaptureLinesHint" />
+            <span id="bashBackgroundCaptureLinesHint" class="sr-only">Maximum startup lines captured from background bash commands.</span>
           </label>
           <label id="workspaceShellTimeoutMsLabel" class="model-setting-field" title="Timeout for workspace-defined shell tools">
             <span>Workspace shell timeout (ms)</span>
-            <input id="workspaceShellTimeoutMsInput" type="number" min="0" step="1000" value="60000" />
+            <input id="workspaceShellTimeoutMsInput" type="number" min="0" step="1000" value="60000" aria-describedby="workspaceShellTimeoutMsHint" />
+            <span id="workspaceShellTimeoutMsHint" class="sr-only">Timeout for workspace-defined shell tools.</span>
           </label>
           <label id="httpTimeoutMsLabel" class="model-setting-field" title="Timeout for workspace-defined HTTP tools">
             <span>HTTP tool timeout (ms)</span>
-            <input id="httpTimeoutMsInput" type="number" min="0" step="1000" value="30000" />
+            <input id="httpTimeoutMsInput" type="number" min="0" step="1000" value="30000" aria-describedby="httpTimeoutMsHint" />
+            <span id="httpTimeoutMsHint" class="sr-only">Timeout for workspace-defined HTTP tools.</span>
           </label>
           <div class="model-settings-actions">
-            <button id="toolLimitsApply" class="context-btn" type="button">Apply</button>
+            <button id="toolLimitsApply" class="context-btn" type="button" title="Apply tool runtime limits" aria-label="Apply, apply tool runtime limits">Apply</button>
           </div>
           <div class="safety-warning">These settings change tool permissions and runtime behavior globally. They are locked while a task is running.</div>
         </div>
       </div>
     </div>
     <label id="thinkingLabel" class="thinking-label" title="Show model thinking output as collapsible blocks">
-      <input id="thinkingToggle" class="thinking-checkbox" type="checkbox" checked />
+      <input id="thinkingToggle" class="thinking-checkbox" type="checkbox" checked aria-describedby="thinkingHint" />
       <span>Thinking</span>
+      <span id="thinkingHint" class="sr-only">Show model thinking output as collapsible blocks.</span>
     </label>
     <div class="mode-toggle" role="group" aria-label="Agent mode">
-      <button id="modePlan" class="mode-btn" type="button" title="Plan mode (read-only)">Plan</button>
-      <button id="modeBuild" class="mode-btn" type="button" title="Build mode (can modify workspace)">Build</button>
+      <button id="modePlan" class="mode-btn" type="button" title="Plan mode (read-only)" aria-label="Plan, plan mode read-only" aria-pressed="false">Plan</button>
+      <button id="modeBuild" class="mode-btn active" type="button" title="Build mode (can modify workspace)" aria-label="Build, build mode can modify workspace" aria-pressed="true">Build</button>
     </div>
     <label id="planFirstLabel" class="plan-first-label" title="Generate a plan before the first build-mode change">
-      <input id="planFirstToggle" class="plan-first-checkbox" type="checkbox" checked />
+      <input id="planFirstToggle" class="plan-first-checkbox" type="checkbox" checked aria-describedby="planFirstHint" />
       <span>Plan first</span>
+      <span id="planFirstHint" class="sr-only">Generate a plan before the first build-mode change.</span>
     </label>
   </div>
-  <div id="revertBar" class="revert-bar hidden" role="status" aria-live="polite">
+  <div id="revertStatus" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+  <div id="revertBar" class="revert-bar hidden" role="group" aria-label="Undo controls">
     <div class="revert-bar-row">
       <div class="revert-bar-info">
         <div class="revert-bar-title">Undo</div>
@@ -5020,117 +5343,122 @@
         <div class="revert-bar-hint">Send a new message to continue from here (undone messages will be discarded).</div>
       </div>
       <div class="revert-bar-actions">
-        <button id="revertRedo" class="revert-bar-btn" type="button">Redo</button>
-        <button id="revertRedoAll" class="revert-bar-btn" type="button">Redo all</button>
-        <button id="revertDiff" class="revert-bar-btn" type="button">View changes</button>
-        <button id="revertDiscard" class="revert-bar-btn danger" type="button" aria-controls="revertDiscardConfirm" aria-expanded="false">Discard</button>
+        <button id="revertRedo" class="revert-bar-btn" type="button" title="Redo last undone message" aria-label="Redo, redo last undone message">Redo</button>
+        <button id="revertRedoAll" class="revert-bar-btn" type="button" title="Redo all undone messages" aria-label="Redo all, redo all undone messages">Redo all</button>
+        <button id="revertDiff" class="revert-bar-btn" type="button" title="View reverted file changes" aria-label="View changes, view reverted file changes">View changes</button>
+        <button id="revertDiscard" class="revert-bar-btn danger" type="button" title="Discard undone history" aria-label="Discard undone history" aria-controls="revertDiscardConfirm" aria-expanded="false">Discard</button>
       </div>
     </div>
-    <div id="revertDiscardConfirm" class="revert-discard-confirm hidden" role="alert" aria-live="polite">
-      <div>Discard undone history? This cannot be undone.</div>
+    <div id="revertDiscardConfirm" class="revert-discard-confirm hidden" role="group" aria-labelledby="revertDiscardConfirmText">
+      <div id="revertDiscardConfirmText">Discard undone history? This cannot be undone.</div>
       <div class="revert-discard-confirm-actions">
-        <button id="revertDiscardCancel" class="revert-bar-btn" type="button">Cancel</button>
-        <button id="revertDiscardConfirmRun" class="revert-bar-btn danger" type="button">Discard</button>
+        <button id="revertDiscardCancel" class="revert-bar-btn" type="button" aria-label="Cancel discard undone history" title="Cancel discard undone history">Cancel</button>
+        <button id="revertDiscardConfirmRun" class="revert-bar-btn danger" type="button" aria-label="Discard undone history" title="Discard undone history">Discard</button>
       </div>
     </div>
     <details id="revertFiles" class="revert-files" hidden>
       <summary id="revertFilesSummary" class="revert-files-summary">Reverted files</summary>
-      <div id="revertFilesList" class="revert-files-list"></div>
+      <div id="revertFilesList" class="revert-files-list" role="list" tabindex="0" data-scrollable="true" aria-label="Reverted files"></div>
     </details>
   </div>
-  <div class="messages" id="messages" role="log" aria-live="polite" aria-label="Chat messages" tabindex="0">
+  <div class="messages" id="messages" role="log" aria-live="off" aria-label="Chat messages" tabindex="0">
     <div class="empty" id="empty">
       <img class="empty-icon" src="{{LOGO_URI}}" alt="LingYun" />
       <h2>LingYun</h2>
       <p>Ask me to help with tasks in your workspace</p>
-      <div class="quick-actions">
-        <button class="quick-action" data-cmd="Read README">📖 Read README</button>
-        <button class="quick-action" data-cmd="List files">📁 List files</button>
-        <button class="quick-action" data-cmd="Search code">🔍 Search code</button>
+      <div id="quickActions" class="quick-actions">
+        <button class="quick-action" type="button" title="Read README" aria-label="Read README, quick action"><span aria-hidden="true">📖</span><span>Read README</span></button>
+        <button class="quick-action" type="button" title="List files" aria-label="List files, quick action"><span aria-hidden="true">📁</span><span>List files</span></button>
+        <button class="quick-action" type="button" title="Search code" aria-label="Search code, quick action"><span aria-hidden="true">🔍</span><span>Search code</span></button>
       </div>
     </div>
   </div>
-  <div id="operationBanner" class="operation-banner hidden" role="status" aria-live="polite">
+  <div id="operationBanner" class="operation-banner hidden" role="group" aria-label="Current operation">
     <div class="operation-banner-left">
-      <span id="operationSpinner" class="operation-banner-spinner"></span>
+      <span id="operationSpinner" class="operation-banner-spinner" aria-hidden="true"></span>
       <span id="operationLabel" class="operation-banner-label"></span>
-      <span id="operationElapsed" class="operation-banner-elapsed"></span>
+      <span id="operationElapsed" class="operation-banner-elapsed" aria-hidden="true"></span>
     </div>
     <div class="operation-banner-actions">
       <button id="operationStop" class="operation-banner-stop" type="button" title="Stop current task" aria-label="Stop current task">Stop</button>
     </div>
   </div>
-  <div id="approvalBanner" class="approval-banner hidden" role="status" aria-live="polite">
+  <div id="approvalBanner" class="approval-banner hidden" role="group" aria-label="Pending approvals">
     <div class="approval-banner-left">
-      <span class="approval-banner-icon">⚠</span>
+      <span class="approval-banner-icon" aria-hidden="true">⚠</span>
       <span id="approvalLabel" class="approval-banner-label"></span>
     </div>
     <div class="approval-banner-actions">
-      <button id="approvalAllowAll" class="approval-banner-btn" type="button">Allow all</button>
+      <button id="approvalAllowAll" class="approval-banner-btn" type="button" title="Allow all pending automatic approvals" aria-label="Allow all pending automatic approvals">Allow all</button>
       <button id="approvalStop" class="approval-banner-stop" type="button" title="Stop current task" aria-label="Stop current task">Stop</button>
     </div>
   </div>
   <div class="input-area">
     <div id="inputComposer" class="input-composer">
-      <div id="inputAttachments" class="input-attachments hidden" role="list" aria-label="Attached images"></div>
+      <div id="inputAttachments" class="input-attachments hidden" role="list" aria-label="Attached images" aria-live="polite" aria-relevant="additions removals"></div>
       <input id="imageFileInput" class="image-file-input" type="file" accept="image/*" multiple aria-hidden="true" tabindex="-1" />
-      <button id="goalCommandSuggestion" class="slash-command-suggestion hidden" type="button" aria-label="Insert /goal slash command">
+      <button id="goalCommandSuggestion" class="slash-command-suggestion hidden" type="button" aria-label="/goal, set session goal">
         <span class="slash-command-name">/goal</span>
         <span>Set session goal</span>
       </button>
       <div class="input-wrapper">
-        <textarea id="input" placeholder="Describe a task or type /goal <objective>" rows="1" aria-label="Chat input"></textarea>
+        <textarea id="input" placeholder="Describe a task or type /goal &lt;objective&gt;" rows="1" aria-label="Describe a task or type /goal objective" aria-describedby="inputHint" aria-controls="skillDropdown" aria-haspopup="listbox" aria-autocomplete="list" aria-expanded="false"></textarea>
         <div id="skillDropdown" class="skill-dropdown hidden" role="listbox" aria-label="Skill suggestions"></div>
         <div class="input-actions">
-          <button id="attachImageButton" class="input-btn attach-image-btn" type="button" title="Attach images" aria-label="Attach images">＋</button>
-          <button id="clearInput" class="input-btn" type="button" title="Clear input" aria-label="Clear input" disabled>✕</button>
+          <button id="attachImageButton" class="input-btn attach-image-btn" type="button" title="Attach images" aria-label="Attach images"><span aria-hidden="true">＋</span></button>
+          <button id="clearInput" class="input-btn" type="button" title="Clear input" aria-label="Clear input" disabled><span aria-hidden="true">✕</span></button>
         </div>
       </div>
     </div>
-    <button id="stop" class="send-btn stop stop-btn hidden" type="button" aria-label="Stop">Stop</button>
-    <button id="send" class="send-btn" aria-label="Send message">
-      <span>Send</span><span>→</span>
+    <button id="stop" class="send-btn stop stop-btn hidden" type="button" title="Stop current task" aria-label="Stop current task">Stop</button>
+    <button id="send" class="send-btn" type="button" aria-label="Send, send message">
+      <span>Send</span><span aria-hidden="true">→</span>
     </button>
     <div class="input-status-row" aria-label="Input options">
       <div class="skills-settings-wrap">
         <label id="skillsToggleLabel" class="skills-toggle-label" title="Enable skill discovery, $ suggestions, and the skill tool">
-          <input id="skillsToggle" class="skills-toggle-checkbox" type="checkbox" checked />
+          <input id="skillsToggle" class="skills-toggle-checkbox" type="checkbox" checked aria-describedby="skillsToggleHint" />
           <span>Skills</span>
+          <span id="skillsToggleHint" class="sr-only">Enable skill discovery, dollar-sign suggestions, and the skill tool.</span>
         </label>
-        <button id="skillsSettings" class="skills-settings-btn" type="button" title="Skills prompt and injection budgets" aria-label="Skills settings">⋯</button>
-        <div id="skillsSettingsPopover" class="skills-settings-popover hidden" role="dialog" aria-label="Skills settings">
+        <button id="skillsSettings" class="skills-settings-btn" type="button" title="Skills prompt and injection budgets" aria-label="Open skills settings" aria-controls="skillsSettingsPopover" aria-expanded="false" aria-haspopup="dialog"><span aria-hidden="true">⋯</span></button>
+        <div id="skillsSettingsPopover" class="skills-settings-popover hidden" role="dialog" aria-labelledby="skillsSettingsPopoverTitle">
           <div class="skills-settings-popover-header">
-            <span>Skills settings</span>
-            <button id="skillsSettingsClose" class="skills-settings-popover-close" type="button" aria-label="Close skills settings">✕</button>
+            <span id="skillsSettingsPopoverTitle">Skills settings</span>
+            <button id="skillsSettingsClose" class="skills-settings-popover-close" type="button" aria-label="Close skills settings"><span aria-hidden="true">✕</span></button>
           </div>
-          <label class="model-setting-field" title="Maximum number of skills listed in the system prompt; 0 hides the skills section">
+          <label id="skillsMaxPromptLabel" class="model-setting-field" title="Maximum number of skills listed in the system prompt; 0 hides the skills section">
             <span>Prompt skills</span>
-            <input id="skillsMaxPromptInput" type="number" min="0" step="1" value="50" />
+            <input id="skillsMaxPromptInput" type="number" min="0" step="1" value="50" aria-describedby="skillsMaxPromptHint" />
+            <span id="skillsMaxPromptHint" class="model-setting-hint">Maximum number of skills listed in the system prompt. 0 hides the skills section.</span>
           </label>
-          <label class="model-setting-field" title="Maximum referenced skills auto-injected per user message">
+          <label id="skillsMaxInjectLabel" class="model-setting-field" title="Maximum referenced skills auto-injected per user message">
             <span>Injected skills</span>
-            <input id="skillsMaxInjectInput" type="number" min="1" step="1" value="5" />
+            <input id="skillsMaxInjectInput" type="number" min="1" step="1" value="5" aria-describedby="skillsMaxInjectHint" />
+            <span id="skillsMaxInjectHint" class="model-setting-hint">Maximum referenced skills auto-injected per user message.</span>
           </label>
-          <label class="model-setting-field" title="Maximum characters injected from each referenced skill file">
+          <label id="skillsMaxInjectCharsLabel" class="model-setting-field" title="Maximum characters injected from each referenced skill file">
             <span>Skill char cap</span>
-            <input id="skillsMaxInjectCharsInput" type="number" min="1" step="500" value="20000" />
+            <input id="skillsMaxInjectCharsInput" type="number" min="1" step="500" value="20000" aria-describedby="skillsMaxInjectCharsHint" />
+            <span id="skillsMaxInjectCharsHint" class="model-setting-hint">Maximum characters injected from each referenced skill file.</span>
           </label>
           <label id="skillSearchPathsLabel" class="model-setting-field" title="Directories searched for SKILL.md files; workspace-relative paths are resolved from the workspace root">
             <span>Skill paths</span>
-            <textarea id="skillSearchPathsInput" rows="3" placeholder=".lingyun/skills&#10;~/.codex/skills" aria-label="Skill search paths"></textarea>
-            <span class="model-setting-hint">One directory per line or comma-separated. External paths require “Allow external paths”.</span>
+            <textarea id="skillSearchPathsInput" rows="3" placeholder=".lingyun/skills&#10;~/.codex/skills" aria-label="Skill paths, skill search paths" aria-describedby="skillSearchPathsHint"></textarea>
+            <span id="skillSearchPathsHint" class="model-setting-hint">One directory per line or comma-separated. External paths require “Allow external paths”.</span>
           </label>
           <div class="model-settings-actions">
-            <button id="skillsSettingsApply" class="context-btn" type="button">Apply</button>
+            <button id="skillsSettingsApply" class="context-btn" type="button" title="Apply skills settings" aria-label="Apply, apply skills settings">Apply</button>
           </div>
         </div>
       </div>
-      <button id="goalCommandInsert" class="status-command" type="button" title="Set a session goal with /goal <objective>" aria-label="Insert /goal slash command">
+      <button id="goalCommandInsert" class="status-command" type="button" title="Set a session goal with /goal &lt;objective&gt;" aria-label="/goal, set goal">
         <code>/goal</code>
         <span>set goal</span>
       </button>
       <div id="inputHint" class="input-hint">Enter to send · Shift+Enter for newline · Paste or attach images · /goal for goals · $ for skills</div>
-      <div id="queueBanner" class="queue-banner hidden" role="status" aria-live="polite">
+      <div id="queueStatus" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+      <div id="queueBanner" class="queue-banner hidden" role="group" aria-label="Message queue">
         <div class="queue-banner-summary">
           <span id="queueBannerCount" class="queue-banner-count"></span>
           <div class="queue-banner-copy">
@@ -5138,23 +5466,23 @@
             <span id="queueBannerHint" class="queue-banner-hint"></span>
           </div>
         </div>
-        <div id="queueItems" class="queue-items" role="list" aria-label="Queued messages"></div>
+	        <div id="queueItems" class="queue-items" role="group" tabindex="0" data-scrollable="true" aria-label="Queued messages"></div>
         <button id="queueClear" class="queue-banner-btn" type="button"
-          title="Clear queued messages" aria-label="Clear queued messages">Clear all</button>
+          title="Clear all queued messages" aria-label="Clear all queued messages">Clear all</button>
       </div>
     </div>
   </div>
-  <div id="outputModal" class="output-modal hidden" role="dialog" aria-modal="true" aria-label="Full output viewer">
+  <div id="outputModal" class="output-modal hidden" role="dialog" aria-modal="true" aria-labelledby="outputModalTitle">
     <div id="outputModalBackdrop" class="output-modal-backdrop" aria-hidden="true"></div>
     <div class="output-modal-panel" role="document">
       <div class="output-modal-header">
         <div id="outputModalTitle" class="output-modal-title"></div>
         <div class="output-modal-actions">
           <button id="outputModalCopy" class="output-modal-btn" type="button" title="Copy full output" aria-label="Copy full output">Copy</button>
-          <button id="outputModalClose" class="output-modal-btn danger" type="button" title="Close output viewer" aria-label="Close output viewer">✕</button>
+          <button id="outputModalClose" class="output-modal-btn danger" type="button" title="Close output viewer" aria-label="Close output viewer"><span aria-hidden="true">✕</span></button>
         </div>
       </div>
-      <pre id="outputModalBody" class="output-modal-body"></pre>
+      <pre id="outputModalBody" class="output-modal-body" tabindex="0" data-scrollable="true" aria-label="Full output"></pre>
     </div>
   </div>
   {{SCRIPTS}}

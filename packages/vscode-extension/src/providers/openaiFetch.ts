@@ -1,13 +1,16 @@
 import type { FetchFunction } from '@ai-sdk/provider-utils';
 import { Agent, fetch as undiciFetch } from 'undici';
 
+const hasOwnHeader = Object.prototype.hasOwnProperty;
+
 function setHeader(headers: Record<string, string>, name: unknown, value: unknown): void {
   if (value === undefined || value === null) return;
   const key = String(name).trim();
   if (!key) return;
 
   const normalized = key.toLowerCase();
-  for (const existing of Object.keys(headers)) {
+  for (const existing in headers) {
+    if (!hasOwnHeader.call(headers, existing)) continue;
     if (existing.toLowerCase() === normalized) delete headers[existing];
   }
 
@@ -16,7 +19,11 @@ function setHeader(headers: Record<string, string>, name: unknown, value: unknow
 
 function hasHeader(headers: Record<string, string>, name: string): boolean {
   const normalized = name.toLowerCase();
-  return Object.keys(headers).some((key) => key.toLowerCase() === normalized);
+  for (const key in headers) {
+    if (!hasOwnHeader.call(headers, key)) continue;
+    if (key.toLowerCase() === normalized) return true;
+  }
+  return false;
 }
 
 function isRequestInput(input: unknown): input is Request {
@@ -81,7 +88,10 @@ function mergeHeaders(headers: Record<string, string>, initHeaders: unknown): vo
   }
 
   if (typeof initHeaders === 'object') {
-    for (const [key, value] of Object.entries(initHeaders as Record<string, unknown>)) {
+    const headerRecord = initHeaders as Record<string, unknown>;
+    for (const key in headerRecord) {
+      if (!hasOwnHeader.call(headerRecord, key)) continue;
+      const value = headerRecord[key];
       setHeader(headers, key, value);
     }
   }

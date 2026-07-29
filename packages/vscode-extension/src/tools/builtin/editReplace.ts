@@ -2,25 +2,71 @@
 
 export type Replacer = (content: string, find: string) => Generator<string, void, unknown>;
 
-const SINGLE_CANDIDATE_SIMILARITY_THRESHOLD = 0.0;
 const MULTIPLE_CANDIDATES_SIMILARITY_THRESHOLD = 0.3;
+const REGEXP_SPECIAL_CHARS_RE = /[.*+?^${}()|[\]\\]/g;
+const WHITESPACE_CHAR_RE = /\s/;
+
+function escapeRegExpLiteral(value: string): string {
+  return value.replace(REGEXP_SPECIAL_CHARS_RE, '\\$&');
+}
+
+function buildWhitespaceFlexiblePattern(value: string): string {
+  const trimmed = value.trim();
+  let pattern = '';
+  let tokenStart = -1;
+  let hasToken = false;
+
+  for (let i = 0; i <= trimmed.length; i++) {
+    if (i < trimmed.length && !WHITESPACE_CHAR_RE.test(trimmed[i])) {
+      if (tokenStart < 0) tokenStart = i;
+      continue;
+    }
+    if (tokenStart < 0) continue;
+
+    if (hasToken) pattern += '\\s+';
+    pattern += escapeRegExpLiteral(trimmed.slice(tokenStart, i));
+    hasToken = true;
+    tokenStart = -1;
+  }
+
+  return pattern;
+}
 
 function levenshtein(a: string, b: string): number {
+  if (a === b) return 0;
   if (a === '' || b === '') {
     return Math.max(a.length, b.length);
   }
 
-  const matrix = Array.from({ length: a.length + 1 }, (_, i) =>
-    Array.from({ length: b.length + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0))
-  );
-
-  for (let i = 1; i <= a.length; i++) {
-    for (let j = 1; j <= b.length; j++) {
-      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-      matrix[i][j] = Math.min(matrix[i - 1][j] + 1, matrix[i][j - 1] + 1, matrix[i - 1][j - 1] + cost);
-    }
+  let source = a;
+  let target = b;
+  if (target.length > source.length) {
+    source = b;
+    target = a;
   }
-  return matrix[a.length][b.length];
+
+  let previous = new Array<number>(target.length + 1);
+  let current = new Array<number>(target.length + 1);
+  for (let j = 0; j <= target.length; j++) {
+    previous[j] = j;
+  }
+
+  for (let i = 1; i <= source.length; i++) {
+    current[0] = i;
+    for (let j = 1; j <= target.length; j++) {
+      const cost = source.charCodeAt(i - 1) === target.charCodeAt(j - 1) ? 0 : 1;
+      const deletion = previous[j] + 1;
+      const insertion = current[j - 1] + 1;
+      const substitution = previous[j - 1] + cost;
+      const best = deletion < insertion ? deletion : insertion;
+      current[j] = substitution < best ? substitution : best;
+    }
+
+    const nextPrevious = current;
+    current = previous;
+    previous = nextPrevious;
+  }
+  return previous[target.length];
 }
 
 export const SimpleReplacer: Replacer = function* (_content, find) {
@@ -40,10 +86,18 @@ export const FileTagStrippingReplacer: Replacer = function* (_content, find) {
 
 export const ReadLinePrefixStrippingReplacer: Replacer = function* (_content, find) {
   // Handle accidental inclusion of the read tool's line-number prefix (e.g. "00001| ").
-  const lines = find.split('\n');
-  const strippedLines = lines.map((line) => line.replace(/^\s*\d+\|\s?/, '').replace(/^\s*\d+\t/, ''));
-  const stripped = strippedLines.join('\n');
-  if (stripped !== find) {
+  let stripped = '';
+  let changed = false;
+  let lineStart = 0;
+  for (let i = 0; i <= find.length; i++) {
+    if (i < find.length && find.charCodeAt(i) !== 10) continue;
+    const line = find.slice(lineStart, i);
+    const nextLine = line.replace(/^\s*\d+\|\s?/, '').replace(/^\s*\d+\t/, '');
+    if (nextLine !== line) changed = true;
+    stripped += lineStart === 0 ? nextLine : '\n' + nextLine;
+    lineStart = i + 1;
+  }
+  if (changed) {
     yield stripped;
   }
 };
@@ -124,44 +178,18 @@ export const BlockAnchorReplacer: Replacer = function* (content, find) {
 
   if (candidates.length === 1) {
     const { startLine, endLine } = candidates[0];
-    const actualBlockSize = endLine - startLine + 1;
-
-    let similarity = 0;
-    const linesToCheck = Math.min(searchBlockSize - 2, actualBlockSize - 2);
-
-    if (linesToCheck > 0) {
-      for (let j = 1; j < searchBlockSize - 1 && j < actualBlockSize - 1; j++) {
-        const originalLine = originalLines[startLine + j].trim();
-        const searchLine = searchLines[j].trim();
-        const maxLen = Math.max(originalLine.length, searchLine.length);
-        if (maxLen === 0) {
-          continue;
-        }
-        const distance = levenshtein(originalLine, searchLine);
-        similarity += (1 - distance / maxLen) / linesToCheck;
-
-        if (similarity >= SINGLE_CANDIDATE_SIMILARITY_THRESHOLD) {
-          break;
-        }
-      }
-    } else {
-      similarity = 1.0;
+    let matchStartIndex = 0;
+    for (let k = 0; k < startLine; k++) {
+      matchStartIndex += originalLines[k].length + 1;
     }
-
-    if (similarity >= SINGLE_CANDIDATE_SIMILARITY_THRESHOLD) {
-      let matchStartIndex = 0;
-      for (let k = 0; k < startLine; k++) {
-        matchStartIndex += originalLines[k].length + 1;
+    let matchEndIndex = matchStartIndex;
+    for (let k = startLine; k <= endLine; k++) {
+      matchEndIndex += originalLines[k].length;
+      if (k < endLine) {
+        matchEndIndex += 1;
       }
-      let matchEndIndex = matchStartIndex;
-      for (let k = startLine; k <= endLine; k++) {
-        matchEndIndex += originalLines[k].length;
-        if (k < endLine) {
-          matchEndIndex += 1;
-        }
-      }
-      yield content.substring(matchStartIndex, matchEndIndex);
     }
+    yield content.substring(matchStartIndex, matchEndIndex);
     return;
   }
 
@@ -217,28 +245,18 @@ export const BlockAnchorReplacer: Replacer = function* (content, find) {
 export const WhitespaceNormalizedReplacer: Replacer = function* (content, find) {
   const normalizeWhitespace = (text: string) => text.replace(/\s+/g, ' ').trim();
   const normalizedFind = normalizeWhitespace(find);
+  const whitespaceFlexibleRegex = new RegExp(buildWhitespaceFlexiblePattern(find));
 
   const lines = content.split('\n');
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    if (normalizeWhitespace(line) === normalizedFind) {
+    const normalizedLine = normalizeWhitespace(line);
+    if (normalizedLine === normalizedFind) {
       yield line;
-    } else {
-      const normalizedLine = normalizeWhitespace(line);
-      if (normalizedLine.includes(normalizedFind)) {
-        const words = find.trim().split(/\s+/);
-        if (words.length > 0) {
-          const pattern = words.map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+');
-          try {
-            const regex = new RegExp(pattern);
-            const match = line.match(regex);
-            if (match) {
-              yield match[0];
-            }
-          } catch {
-            // ignore invalid regex
-          }
-        }
+    } else if (normalizedLine.includes(normalizedFind)) {
+      const match = line.match(whitespaceFlexibleRegex);
+      if (match) {
+        yield match[0];
       }
     }
   }
@@ -257,17 +275,36 @@ export const WhitespaceNormalizedReplacer: Replacer = function* (content, find) 
 export const IndentationFlexibleReplacer: Replacer = function* (content, find) {
   const removeIndentation = (text: string) => {
     const lines = text.split('\n');
-    const nonEmptyLines = lines.filter((line) => line.trim().length > 0);
-    if (nonEmptyLines.length === 0) return text;
+    let minIndent = Number.POSITIVE_INFINITY;
+    let hasNonEmptyLine = false;
 
-    const minIndent = Math.min(
-      ...nonEmptyLines.map((line) => {
-        const match = line.match(/^(\s*)/);
-        return match ? match[1].length : 0;
-      })
-    );
+    for (const line of lines) {
+      let indent = 0;
+      while (indent < line.length) {
+        const charCode = line.charCodeAt(indent);
+        if (charCode !== 32 && charCode !== 9) break;
+        indent++;
+      }
+      if (indent === line.length) continue;
+      hasNonEmptyLine = true;
+      if (indent < minIndent) minIndent = indent;
+    }
+    if (!hasNonEmptyLine || minIndent <= 0) return text;
 
-    return lines.map((line) => (line.trim().length === 0 ? line : line.slice(minIndent))).join('\n');
+    let normalized = '';
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      let indent = 0;
+      while (indent < line.length) {
+        const charCode = line.charCodeAt(indent);
+        if (charCode !== 32 && charCode !== 9) break;
+        indent++;
+      }
+      const nextLine = indent === line.length ? line : line.slice(minIndent);
+      normalized += i === 0 ? nextLine : '\n' + nextLine;
+    }
+
+    return normalized;
   };
 
   const normalizedFind = removeIndentation(find);

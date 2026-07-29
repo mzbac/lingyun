@@ -18,7 +18,7 @@ async function waitFor(
 }
 
 suite('Chat Webview Smoke', () => {
-  test('opening the real chat view completes the renderer handshake', async function () {
+  test('opening and recreating the real chat view completes the renderer handshake', async function () {
     this.timeout(20_000);
 
     const ext = vscode.extensions.getExtension('mzbac.lingyun');
@@ -46,5 +46,24 @@ suite('Chat Webview Smoke', () => {
     const state = getChatWebviewHandshakeStateForTesting();
     assert.strictEqual(state.initAcked, true);
     assert.ok(state.webviewClientInstanceId, 'expected a live webview client instance id');
+
+    const firstClientInstanceId = state.webviewClientInstanceId;
+    await vscode.commands.executeCommand('workbench.view.explorer');
+    await waitFor(
+      () => !getChatWebviewHandshakeStateForTesting().visible,
+      () => `chat view did not become hidden: ${JSON.stringify(getChatWebviewHandshakeStateForTesting())}`,
+    );
+
+    await vscode.commands.executeCommand('lingyun.openAgent');
+    await waitFor(
+      () => {
+        const next = getChatWebviewHandshakeStateForTesting();
+        return next.visible &&
+          next.initAcked &&
+          !!next.webviewClientInstanceId &&
+          next.webviewClientInstanceId !== firstClientInstanceId;
+      },
+      () => `chat webview was not recreated: ${JSON.stringify(getChatWebviewHandshakeStateForTesting())}`,
+    );
   });
 });

@@ -32,6 +32,20 @@ suite('toolDiff', () => {
     assert.deepStrictEqual(stats, { additions: 0, deletions: 0 });
   });
 
+  test('counts CRLF unified diff lines without counting headers', () => {
+    const diff = [
+      '--- a/foo.txt',
+      '+++ b/foo.txt',
+      '@@ -1 +1 @@',
+      '-old',
+      '+new',
+      '',
+    ].join('\r\n');
+
+    const stats = computeUnifiedDiffStats(diff);
+    assert.deepStrictEqual(stats, { additions: 1, deletions: 1 });
+  });
+
   test('trims large diffs', () => {
     const before = Array.from({ length: 800 }, () => 'a').join('\n') + '\n';
     const after = Array.from({ length: 800 }, () => 'b').join('\n') + '\n';
@@ -41,6 +55,41 @@ suite('toolDiff', () => {
     assert.strictEqual(trimmed.truncated, true);
     assert.ok(trimmed.text.includes('[TRUNCATED]'));
     assert.ok(trimmed.text.length <= 1600);
+  });
+
+  test('trims by line limit without splitting escaped slash-n text', () => {
+    const diff = [
+      '--- a/foo.txt',
+      '+++ b/foo.txt',
+      '@@ -1,3 +1,3 @@',
+      '-before',
+      '+after with literal \\n marker',
+      ' context',
+    ].join('\n');
+    const trimmed = trimUnifiedDiff(diff, { maxChars: 10_000, maxLines: 5 });
+
+    assert.strictEqual(trimmed.truncated, true);
+    assert.ok(trimmed.text.includes('+after with literal \\n marker'));
+    assert.ok(!trimmed.text.includes(' context'));
+    assert.ok(trimmed.text.endsWith('\n... [TRUNCATED]'));
+  });
+
+  test('trims CRLF diffs by line limit while normalizing kept lines', () => {
+    const diff = [
+      '--- a/foo.txt',
+      '+++ b/foo.txt',
+      '@@ -1,3 +1,3 @@',
+      '-before',
+      '+after',
+      ' context',
+    ].join('\r\n');
+    const trimmed = trimUnifiedDiff(diff, { maxChars: 10_000, maxLines: 5 });
+
+    assert.strictEqual(trimmed.truncated, true);
+    assert.ok(trimmed.text.includes('+after'));
+    assert.ok(!trimmed.text.includes(' context'));
+    assert.ok(!trimmed.text.includes('\r'));
+    assert.ok(trimmed.text.endsWith('\n... [TRUNCATED]'));
   });
 
   test('buildToolDiffView assigns old/new line numbers', () => {
@@ -62,6 +111,26 @@ suite('toolDiff', () => {
     assert.ok(allLines.some(l => l.kind === 'ctx' && l.oldLine === 1 && l.newLine === 1 && l.text === 'a'));
     assert.ok(allLines.some(l => l.kind === 'del' && l.oldLine === 2 && l.text === 'b'));
     assert.ok(allLines.some(l => l.kind === 'add' && l.newLine === 2 && l.text === 'B'));
+  });
+
+  test('buildToolDiffView parses CRLF hunks', () => {
+    const diff = [
+      '--- a/foo.txt',
+      '+++ b/foo.txt',
+      '@@ -1,2 +1,2 @@',
+      ' same',
+      '-old',
+      '+new',
+      '',
+    ].join('\r\n');
+
+    const view = buildToolDiffView(diff, { filePath: 'foo.txt' });
+    assert.ok(view);
+
+    const allLines = view!.files[0].hunks.flatMap(h => h.lines);
+    assert.ok(allLines.some(l => l.kind === 'ctx' && l.oldLine === 1 && l.newLine === 1 && l.text === 'same'));
+    assert.ok(allLines.some(l => l.kind === 'del' && l.oldLine === 2 && l.text === 'old'));
+    assert.ok(allLines.some(l => l.kind === 'add' && l.newLine === 2 && l.text === 'new'));
   });
 
   test('buildToolDiffView strips truncation marker', () => {

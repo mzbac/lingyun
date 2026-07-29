@@ -17,6 +17,7 @@ import { normalizeSessionSignals } from '../../core/sessionSignals';
 import { SessionStore } from '../../core/sessionStore';
 import { bindChatControllerService } from './controllerService';
 import { postInputNotice } from './inputNotice';
+import { compareSessionRecency } from './sessionOrdering';
 import { createDefaultSessionTitle, createSessionPreview } from './sessionTitle';
 import type { ChatMessage, ChatSessionInfo } from './types';
 import type { PendingApprovalEntry } from './controllerPorts';
@@ -72,6 +73,14 @@ export interface ChatSessionPersistenceDeps {
 }
 
 type ChatSessionPersistenceRuntime = ChatSessionPersistenceDeps & ChatSessionPersistenceService;
+type InterruptedSessionMessages = {
+  lastRunningStep?: ChatMessage;
+  lastTool?: ChatMessage;
+};
+type SessionRecencyCandidate = {
+  session: ChatSessionInfo;
+  index: number;
+};
 
 const SESSION_STORAGE_REDACTION = { redactionLevel: 'full' as const };
 const MAX_PERSISTED_STRING_CHARS = 20_000;
@@ -106,6 +115,104 @@ const REDACT_PERSISTED_ARG_KEYS = new Set([
   'xapikey',
 ]);
 
+function findLatestInterruptedSessionMessages(messages: ChatMessage[]): InterruptedSessionMessages {
+  let lastRunningStep: ChatMessage | undefined;
+  let lastTool: ChatMessage | undefined;
+
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (!lastRunningStep && message?.role === 'step' && message.step?.status === 'running') {
+      lastRunningStep = message;
+    }
+    if (
+      !lastTool &&
+      message?.role === 'tool' &&
+      (message.toolCall?.status === 'running' || message.toolCall?.status === 'pending')
+    ) {
+      lastTool = message;
+    }
+    if (lastRunningStep && lastTool) break;
+  }
+
+  return { lastRunningStep, lastTool };
+}
+
+function collectSessionIdsToKeep(
+  sessions: Map<string, ChatSessionInfo>,
+  maxSessions: number,
+  activeSessionId: string
+): Set<string> {
+  const limit = Number.isFinite(maxSessions) ? Math.max(1, Math.floor(maxSessions)) : 1;
+  const activeExists = sessions.has(activeSessionId);
+  const candidateLimit = Math.max(0, limit - (activeExists ? 1 : 0));
+  const recent: SessionRecencyCandidate[] = [];
+  let active: SessionRecencyCandidate | undefined;
+  let index = 0;
+
+  const compareCandidates = (
+    left: SessionRecencyCandidate,
+    right: SessionRecencyCandidate
+  ): number => {
+    const timestampOrder = compareSessionRecency(left.session, right.session);
+    if (timestampOrder !== 0) return timestampOrder;
+    if (left.index === right.index) return 0;
+    return left.index > right.index ? 1 : -1;
+  };
+
+  const siftUp = (candidate: SessionRecencyCandidate): void => {
+    let childIndex = recent.length;
+    recent.push(candidate);
+    while (childIndex > 0) {
+      const parentIndex = (childIndex - 1) >> 1;
+      if (compareCandidates(recent[parentIndex], recent[childIndex]) <= 0) break;
+      [recent[parentIndex], recent[childIndex]] = [recent[childIndex], recent[parentIndex]];
+      childIndex = parentIndex;
+    }
+  };
+
+  const siftDown = (): void => {
+    let parentIndex = 0;
+    while (true) {
+      const leftIndex = parentIndex * 2 + 1;
+      if (leftIndex >= recent.length) return;
+      const rightIndex = leftIndex + 1;
+      let oldestIndex = leftIndex;
+      if (
+        rightIndex < recent.length &&
+        compareCandidates(recent[rightIndex], recent[leftIndex]) < 0
+      ) {
+        oldestIndex = rightIndex;
+      }
+      if (compareCandidates(recent[parentIndex], recent[oldestIndex]) <= 0) return;
+      [recent[parentIndex], recent[oldestIndex]] = [recent[oldestIndex], recent[parentIndex]];
+      parentIndex = oldestIndex;
+    }
+  };
+
+  for (const session of sessions.values()) {
+    const candidate = { session, index };
+    index++;
+    if (session.id === activeSessionId) {
+      active = candidate;
+      continue;
+    }
+    if (candidateLimit === 0) continue;
+    if (recent.length < candidateLimit) {
+      siftUp(candidate);
+      continue;
+    }
+    if (compareCandidates(candidate, recent[0]) <= 0) continue;
+    recent[0] = candidate;
+    siftDown();
+  }
+
+  if (active) recent.push(active);
+  recent.sort(compareCandidates);
+  const keep = new Set<string>();
+  for (const candidate of recent) keep.add(candidate.session.id);
+  return keep;
+}
+
 function normalizeStorageKey(key: string): string {
   return key.replace(/[^a-z0-9]/gi, '').toLowerCase();
 }
@@ -120,11 +227,20 @@ function sanitizeGenericStorageValue(value: unknown, depth = 0): unknown {
   if (depth > 20) return '[omitted:depth]';
   if (typeof value === 'string') return redactStringForStorage(value);
   if (typeof value !== 'object' || value === null) return value;
-  if (Array.isArray(value)) return value.map(item => sanitizeGenericStorageValue(item, depth + 1));
+  if (Array.isArray(value)) {
+    const out = new Array<unknown>(value.length);
+    for (let i = 0; i < value.length; i++) {
+      if (i in value) out[i] = sanitizeGenericStorageValue(value[i], depth + 1);
+    }
+    return out;
+  }
 
   const out: Record<string, unknown> = {};
-  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-    out[key] = sanitizeGenericStorageValue(child, depth + 1);
+  const record = value as Record<string, unknown>;
+  for (const key in record) {
+    if (Object.prototype.hasOwnProperty.call(record, key)) {
+      out[key] = sanitizeGenericStorageValue(record[key], depth + 1);
+    }
   }
   return out;
 }
@@ -136,11 +252,20 @@ function sanitizeToolArgValue(key: string, value: unknown, depth = 0): unknown {
   if (REDACT_PERSISTED_ARG_KEYS.has(normalizedKey)) return '[redacted]';
   if (typeof value === 'string') return redactStringForStorage(value, MAX_PERSISTED_ARG_STRING_CHARS);
   if (typeof value !== 'object' || value === null) return value;
-  if (Array.isArray(value)) return value.map(item => sanitizeToolArgValue('', item, depth + 1));
+  if (Array.isArray(value)) {
+    const out = new Array<unknown>(value.length);
+    for (let i = 0; i < value.length; i++) {
+      if (i in value) out[i] = sanitizeToolArgValue('', value[i], depth + 1);
+    }
+    return out;
+  }
 
   const out: Record<string, unknown> = {};
-  for (const [childKey, childValue] of Object.entries(value as Record<string, unknown>)) {
-    out[childKey] = sanitizeToolArgValue(childKey, childValue, depth + 1);
+  const record = value as Record<string, unknown>;
+  for (const childKey in record) {
+    if (Object.prototype.hasOwnProperty.call(record, childKey)) {
+      out[childKey] = sanitizeToolArgValue(childKey, record[childKey], depth + 1);
+    }
   }
   return out;
 }
@@ -154,6 +279,15 @@ function sanitizeToolArgsForStorage(rawArgs: string): string {
   }
 }
 
+function sanitizeBatchFilesForStorage(batchFiles: unknown): string[] | undefined {
+  if (!Array.isArray(batchFiles)) return undefined;
+  const sanitized = new Array<string>(batchFiles.length);
+  for (let i = 0; i < batchFiles.length; i++) {
+    sanitized[i] = redactStringForStorage(String(batchFiles[i] || ''), 1_000);
+  }
+  return sanitized;
+}
+
 function sanitizeToolCallForStorage(toolCall: NonNullable<ChatMessage['toolCall']>): NonNullable<ChatMessage['toolCall']> {
   const sanitized: NonNullable<ChatMessage['toolCall']> = {
     ...toolCall,
@@ -162,9 +296,7 @@ function sanitizeToolCallForStorage(toolCall: NonNullable<ChatMessage['toolCall'
     path: toolCall.path ? redactStringForStorage(toolCall.path, 1_000) : undefined,
     approvalReason: toolCall.approvalReason ? redactStringForStorage(toolCall.approvalReason, 1_000) : undefined,
     blockedReason: toolCall.blockedReason ? redactStringForStorage(toolCall.blockedReason, 1_000) : undefined,
-    batchFiles: Array.isArray(toolCall.batchFiles)
-      ? toolCall.batchFiles.map(file => redactStringForStorage(file, 1_000))
-      : undefined,
+    batchFiles: sanitizeBatchFilesForStorage(toolCall.batchFiles),
     lsp: sanitizeGenericStorageValue(toolCall.lsp),
     todos: sanitizeGenericStorageValue(toolCall.todos),
   };
@@ -191,6 +323,15 @@ function sanitizeMessageForStorage(message: ChatMessage): ChatMessage {
   };
 }
 
+function sanitizeMessagesForStorage(messages: ChatMessage[] | undefined): ChatMessage[] {
+  if (!Array.isArray(messages) || messages.length === 0) return [];
+  const sanitized = new Array<ChatMessage>(messages.length);
+  for (let i = 0; i < messages.length; i++) {
+    sanitized[i] = sanitizeMessageForStorage(messages[i]);
+  }
+  return sanitized;
+}
+
 export function sanitizeSessionForStorage(session: ChatSessionInfo): ChatSessionInfo {
   return {
     ...session,
@@ -199,7 +340,7 @@ export function sanitizeSessionForStorage(session: ChatSessionInfo): ChatSession
       ? redactStringForStorage(session.firstUserMessagePreview, 500)
       : undefined,
     signals: sanitizeGenericStorageValue(session.signals) as ChatSessionInfo['signals'],
-    messages: (session.messages || []).map(sanitizeMessageForStorage),
+    messages: sanitizeMessagesForStorage(session.messages),
     agentState: sanitizeGenericStorageValue(session.agentState) as AgentSessionState,
     queuedInputs: session.queuedInputs
       ? sanitizeGenericStorageValue(session.queuedInputs) as ChatSessionInfo['queuedInputs']
@@ -216,8 +357,77 @@ function deriveFirstUserMessagePreview(raw: ChatSessionInfo): string | undefined
   if (stored) return stored;
 
   const messages = Array.isArray(raw.messages) ? raw.messages : [];
-  const firstUserMessage = messages.find(message => message?.role === 'user');
-  return createSessionPreview(firstUserMessage?.content || '');
+  for (const message of messages) {
+    if (message?.role !== 'user') continue;
+    return createSessionPreview(message.content || '');
+  }
+  return undefined;
+}
+
+function normalizeLoadedQueuedInputs(raw: unknown, now: number): ChatSessionInfo['queuedInputs'] {
+  if (!Array.isArray(raw)) return [];
+
+  const maxQueuedInputs = Math.min(raw.length, 50);
+  const normalized: NonNullable<ChatSessionInfo['queuedInputs']> = new Array(maxQueuedInputs);
+  let writeIndex = maxQueuedInputs;
+  let count = 0;
+  for (let i = raw.length - 1; i >= 0 && count < maxQueuedInputs; i--) {
+    const item = raw[i];
+    if (!item || typeof item !== 'object') continue;
+
+    const value = item as Record<string, unknown>;
+    writeIndex--;
+    normalized[writeIndex] = {
+      id: typeof value.id === 'string' && value.id ? value.id : crypto.randomUUID(),
+      createdAt: typeof value.createdAt === 'number' && Number.isFinite(value.createdAt) ? value.createdAt : now,
+      message: typeof value.message === 'string' ? value.message : '',
+      displayContent: typeof value.displayContent === 'string' ? value.displayContent : '',
+      attachmentCount:
+        typeof value.attachmentCount === 'number' && Number.isFinite(value.attachmentCount)
+          ? Math.max(0, Math.floor(value.attachmentCount))
+          : 0,
+    };
+    count++;
+  }
+
+  if (count === 0) return [];
+  if (writeIndex === 0) return normalized;
+
+  const compacted: NonNullable<ChatSessionInfo['queuedInputs']> = new Array(count);
+  for (let i = 0; i < count; i++) {
+    compacted[i] = normalized[writeIndex + i];
+  }
+  return compacted;
+}
+
+function normalizeLoadedPendingInputs(raw: unknown): AgentSessionState['pendingInputs'] {
+  if (!Array.isArray(raw)) return undefined;
+
+  const pendingInputs: NonNullable<AgentSessionState['pendingInputs']> = [];
+  for (const input of raw) {
+    const normalized = parseUserHistoryInput(input);
+    if (normalized !== undefined) pendingInputs.push(normalized);
+  }
+  return pendingInputs;
+}
+
+function normalizeLoadedCompactionSyntheticContexts(raw: unknown): AgentSessionState['compactionSyntheticContexts'] {
+  if (!Array.isArray(raw)) return undefined;
+
+  const contexts: NonNullable<AgentSessionState['compactionSyntheticContexts']> = [];
+  for (const context of raw) {
+    if (!context || typeof context !== 'object') continue;
+
+    const value = context as Record<string, unknown>;
+    const transientContext = value.transientContext;
+    if (transientContext !== 'explore' && transientContext !== 'memoryRecall' && transientContext !== 'goal') {
+      continue;
+    }
+    if (typeof value.text !== 'string') continue;
+
+    contexts.push({ transientContext, text: value.text });
+  }
+  return contexts;
 }
 
 export function createChatSessionPersistenceService(
@@ -274,8 +484,24 @@ export function createChatSessionPersistenceService(
 
       const measure = (value: unknown) => Buffer.byteLength(JSON.stringify(value), 'utf8');
 
-      while (measure(base) > maxSessionBytes && base.messages.length > 1) {
-        base.messages.shift();
+      if (measure(base) > maxSessionBytes && base.messages.length > 1) {
+        const originalMessages = base.messages;
+        let low = 0;
+        let high = originalMessages.length - 1;
+        let bestStart = high;
+
+        while (low <= high) {
+          const mid = Math.floor((low + high) / 2);
+          base.messages = originalMessages.slice(mid);
+          if (measure(base) <= maxSessionBytes) {
+            bestStart = mid;
+            high = mid - 1;
+          } else {
+            low = mid + 1;
+          }
+        }
+
+        base.messages = originalMessages.slice(bestStart);
       }
 
       if (measure(base) > maxSessionBytes && base.messages.length === 1) {
@@ -325,17 +551,10 @@ export function createChatSessionPersistenceService(
     pruneSessionsInMemory(this: ChatSessionPersistenceRuntime, maxSessions: number): void {
       if (this.sessions.size <= maxSessions) return;
 
-      const ids = [...this.sessions.keys()];
-      let keep = ids.slice(-maxSessions);
-      if (!keep.includes(this.activeSessionId)) {
-        keep = keep.slice(1);
-        keep.push(this.activeSessionId);
-      }
-
-      const keepSet = new Set(keep);
-      for (const id of ids) {
+      const keepSet = collectSessionIdsToKeep(this.sessions, maxSessions, this.activeSessionId);
+      for (const [id, session] of this.sessions) {
         if (keepSet.has(id)) continue;
-        this.queueManager.releaseSession(this.sessions.get(id));
+        this.queueManager.releaseSession(session);
         this.sessions.delete(id);
         this.dirtySessionIds.delete(id);
       }
@@ -357,17 +576,21 @@ export function createChatSessionPersistenceService(
         this.pruneSessionsInMemory(maxSessions);
       }
 
-      const dirtyIds = [...this.dirtySessionIds];
-      this.dirtySessionIds.clear();
+      const dirtyIds = this.dirtySessionIds;
+      this.dirtySessionIds = new Set<string>();
+      const sessionIdsToPersist =
+        this.sessions.size > maxSessions
+          ? collectSessionIdsToKeep(this.sessions, maxSessions, this.activeSessionId)
+          : this.sessions.keys();
 
       await store.save({
         sessionsById: this.sessions,
         activeSessionId: this.activeSessionId,
-        order: [...this.sessions.keys()],
-        dirtySessionIds: dirtyIds.length > 0 ? dirtyIds : undefined,
+        order: sessionIdsToPersist,
+        dirtySessionIds: dirtyIds.size > 0 ? dirtyIds : undefined,
       });
 
-      if (dirtyIds.length > 0) {
+      if (dirtyIds.size > 0) {
         void new WorkspaceMemories(this.context).scheduleUpdateFromSessions(undefined, { delayMs: 1500 }).catch(() => {
           // Ignore background refresh failures during session persistence.
         });
@@ -376,24 +599,7 @@ export function createChatSessionPersistenceService(
 
     normalizeLoadedSession(this: ChatSessionPersistenceRuntime, raw: ChatSessionInfo): ChatSessionInfo {
       const now = Date.now();
-
-      const queuedInputsRaw = (raw as any).queuedInputs;
-      const queuedInputs =
-        Array.isArray(queuedInputsRaw)
-          ? queuedInputsRaw
-              .filter((v: any) => v && typeof v === 'object')
-              .map((v: any) => ({
-                id: typeof v.id === 'string' && v.id ? v.id : crypto.randomUUID(),
-                createdAt: typeof v.createdAt === 'number' && Number.isFinite(v.createdAt) ? v.createdAt : now,
-                message: typeof v.message === 'string' ? v.message : '',
-                displayContent: typeof v.displayContent === 'string' ? v.displayContent : '',
-                attachmentCount:
-                  typeof v.attachmentCount === 'number' && Number.isFinite(v.attachmentCount)
-                    ? Math.max(0, Math.floor(v.attachmentCount))
-                    : 0,
-              }))
-              .slice(-50)
-          : [];
+      const queuedInputs = normalizeLoadedQueuedInputs((raw as any).queuedInputs, now);
 
       return {
         id: typeof raw.id === 'string' ? raw.id : crypto.randomUUID(),
@@ -442,14 +648,27 @@ export function createChatSessionPersistenceService(
       const state = raw as any;
       const rawHistory = Array.isArray(state.history) ? state.history : [];
 
-      const isValid = rawHistory.every((msg: any) => {
-        if (!msg || typeof msg !== 'object') return false;
-        if (typeof msg.id !== 'string' || !msg.id) return false;
-        if (msg.role !== 'user' && msg.role !== 'assistant' && msg.role !== 'system') return false;
-        return Array.isArray(msg.parts);
-      });
+      let historyIsValid = true;
+      for (const msg of rawHistory) {
+        if (!msg || typeof msg !== 'object') {
+          historyIsValid = false;
+          break;
+        }
+        if (typeof msg.id !== 'string' || !msg.id) {
+          historyIsValid = false;
+          break;
+        }
+        if (msg.role !== 'user' && msg.role !== 'assistant' && msg.role !== 'system') {
+          historyIsValid = false;
+          break;
+        }
+        if (!Array.isArray(msg.parts)) {
+          historyIsValid = false;
+          break;
+        }
+      }
 
-      if (!isValid) return this.runtime.getBlankAgentState();
+      if (!historyIsValid) return this.runtime.getBlankAgentState();
       const history = cloneAgentHistoryMessages(rawHistory);
 
       const fileHandlesRaw = state.fileHandles;
@@ -458,46 +677,25 @@ export function createChatSessionPersistenceService(
       const semanticHandlesRaw = state.semanticHandles;
       const semanticHandles = normalizeSemanticHandlesState(semanticHandlesRaw);
 
-      const pendingInputsRaw = (state as any).pendingInputs;
-      const pendingInputs =
-        Array.isArray(pendingInputsRaw)
-          ? pendingInputsRaw
-              .map((input: unknown) => parseUserHistoryInput(input))
-              .filter((input): input is NonNullable<AgentSessionState['pendingInputs']>[number] => input !== undefined)
-          : undefined;
+      const pendingInputs = normalizeLoadedPendingInputs((state as any).pendingInputs);
 
       const mentionedSkillsRaw = (state as any).mentionedSkills;
       const mentionedSkills = normalizeOptionalMentionedSkills(mentionedSkillsRaw);
       const systemPromptSnapshot = normalizeSystemPromptSnapshot((state as any).systemPromptSnapshot);
 
-      const compactionSyntheticContextsRaw = (state as any).compactionSyntheticContexts;
-      const compactionSyntheticContexts =
-        Array.isArray(compactionSyntheticContextsRaw)
-          ? compactionSyntheticContextsRaw
-              .filter(
-                (context: unknown): context is NonNullable<AgentSessionState['compactionSyntheticContexts']>[number] =>
-                  !!context &&
-                  typeof context === 'object' &&
-                  (((context as any).transientContext === 'explore' ||
-                    (context as any).transientContext === 'memoryRecall') &&
-                    typeof (context as any).text === 'string'),
-              )
-              .map((context) => ({
-                transientContext: context.transientContext,
-                text: context.text,
-              }))
-          : undefined;
+      const compactionSyntheticContexts = normalizeLoadedCompactionSyntheticContexts((state as any).compactionSyntheticContexts);
 
-      return {
+      const loadedState: AgentSessionState = {
         history,
         fileHandles,
         semanticHandles,
-        ...(systemPromptSnapshot ? { systemPromptSnapshot } : {}),
         stats: getAgentHistoryStats(history),
-        ...(pendingInputs ? { pendingInputs } : {}),
-        ...(mentionedSkills && mentionedSkills.length > 0 ? { mentionedSkills } : {}),
-        ...(compactionSyntheticContexts ? { compactionSyntheticContexts } : {}),
       };
+      if (systemPromptSnapshot) loadedState.systemPromptSnapshot = systemPromptSnapshot;
+      if (pendingInputs) loadedState.pendingInputs = pendingInputs;
+      if (mentionedSkills && mentionedSkills.length > 0) loadedState.mentionedSkills = mentionedSkills;
+      if (compactionSyntheticContexts) loadedState.compactionSyntheticContexts = compactionSyntheticContexts;
+      return loadedState;
     },
 
     recoverInterruptedSessions(this: ChatSessionPersistenceRuntime): void {
@@ -508,20 +706,11 @@ export function createChatSessionPersistenceService(
         if (!session.runtime?.wasRunning) continue;
         changed = true;
 
-        const lastRunningStep = [...session.messages]
-          .reverse()
-          .find(m => m.role === 'step' && m.step?.status === 'running');
+        const { lastRunningStep, lastTool } = findLatestInterruptedSessionMessages(session.messages);
         if (lastRunningStep?.step) {
           lastRunningStep.step.status = 'canceled';
         }
 
-        const lastTool = [...session.messages]
-          .reverse()
-          .find(
-            m =>
-              m.role === 'tool' &&
-              (m.toolCall?.status === 'running' || m.toolCall?.status === 'pending')
-          );
         if (lastTool?.toolCall && lastTool.toolCall.status !== 'rejected') {
           lastTool.toolCall.status = 'error';
           lastTool.toolCall.result =

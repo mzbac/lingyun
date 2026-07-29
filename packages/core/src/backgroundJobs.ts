@@ -106,15 +106,21 @@ export function getBackgroundJob(scope: string, key: string): BackgroundJob | un
 }
 
 export function listBackgroundJobs(scope?: string): BackgroundJob[] {
+  const jobs: BackgroundJob[] = [];
+
   if (scope) {
     const scopeJobs = jobsByScope.get(scope);
-    if (!scopeJobs) return [];
-    return [...scopeJobs.values()].map(snapshot);
+    if (!scopeJobs) return jobs;
+    for (const job of scopeJobs.values()) {
+      jobs.push(snapshot(job));
+    }
+    return jobs;
   }
 
-  const jobs: BackgroundJob[] = [];
   for (const scopeJobs of jobsByScope.values()) {
-    jobs.push(...[...scopeJobs.values()].map(snapshot));
+    for (const job of scopeJobs.values()) {
+      jobs.push(snapshot(job));
+    }
   }
   return jobs;
 }

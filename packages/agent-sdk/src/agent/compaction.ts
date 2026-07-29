@@ -51,6 +51,51 @@ function trimCompactionStateText(text: string, maxChars: number): string {
   return `${trimmed.slice(0, keep).trimEnd()}${TRUNCATED_SUFFIX}`;
 }
 
+function buildLatestFileHandleSection(fileHandles: LingyunSession['fileHandles']): string {
+  const byId = fileHandles?.byId;
+  if (!byId) return '';
+
+  const latestLines: string[] = [];
+  let fileHandleCount = 0;
+  for (const id in byId) {
+    if (!Object.prototype.hasOwnProperty.call(byId, id)) continue;
+    latestLines[fileHandleCount % MAX_FILE_HANDLES] = `- ${id}: ${byId[id]}`;
+    fileHandleCount++;
+  }
+
+  if (fileHandleCount === 0) return '';
+
+  const keep = Math.min(fileHandleCount, MAX_FILE_HANDLES);
+  const start = fileHandleCount > MAX_FILE_HANDLES ? fileHandleCount % MAX_FILE_HANDLES : 0;
+  let section = 'Active file handles:';
+  for (let offset = 0; offset < keep; offset++) {
+    const line = latestLines[(start + offset) % MAX_FILE_HANDLES];
+    if (line) section += `\n${line}`;
+  }
+  return section;
+}
+
+function buildCompactionPromptText(compacting: unknown): string {
+  const prompt = (compacting as any).prompt;
+  if (typeof prompt === 'string' && prompt.trim()) return prompt;
+
+  let promptText = COMPACTION_PROMPT_TEXT;
+  const context = (compacting as any).context;
+  if (Array.isArray(context)) {
+    for (const item of context) {
+      if (item) promptText += `\n\n${item}`;
+    }
+  }
+  return promptText;
+}
+
+function appendHistoryWithoutIds(target: any[], history: AgentHistoryMessage[]): void {
+  for (const message of history) {
+    const { id: _id, ...rest } = message;
+    target.push(rest);
+  }
+}
+
 function buildSessionStateRestoreText(session: LingyunSession): string | undefined {
   const sections: string[] = [];
 
@@ -64,12 +109,8 @@ function buildSessionStateRestoreText(session: LingyunSession): string | undefin
     sections.push(`Mentioned skills: ${mentionedSkills.join(', ')}`);
   }
 
-  const fileEntries = Object.entries(session.fileHandles?.byId || {}).slice(-MAX_FILE_HANDLES);
-  if (fileEntries.length > 0) {
-    sections.push(
-      ['Active file handles:', ...fileEntries.map(([id, filePath]) => `- ${id}: ${filePath}`)].join('\n'),
-    );
-  }
+  const fileHandleSection = buildLatestFileHandleSection(session.fileHandles);
+  if (fileHandleSection) sections.push(fileHandleSection);
 
   if (sections.length === 0) return undefined;
 
@@ -132,13 +173,7 @@ export async function compactSessionInternal(params: {
       { context: [] as string[], prompt: undefined as string | undefined },
     );
 
-    const extraContext = Array.isArray((compacting as any).context)
-      ? ((compacting as any).context as any[]).filter(Boolean)
-      : [];
-    const promptText =
-      typeof (compacting as any).prompt === 'string' && (compacting as any).prompt.trim()
-        ? (compacting as any).prompt
-        : [COMPACTION_PROMPT_TEXT, ...extraContext].join('\n\n');
+    const promptText = buildCompactionPromptText(compacting);
 
     const rawModel = await params.llm.getModel(params.modelId);
     const compactionModel = wrapLanguageModel({
@@ -151,11 +186,13 @@ export async function compactSessionInternal(params: {
       stripCompactionRestoredSyntheticMessages(effective),
       params.compactionConfig,
     );
-    const withoutIds = prepared.map(({ id: _id, ...rest }: AgentHistoryMessage) => rest);
 
     const compactionUser = createUserHistoryMessage(promptText, { synthetic: true });
+    const compactionHistoryInput: any[] = [];
+    appendHistoryWithoutIds(compactionHistoryInput, prepared);
+    compactionHistoryInput.push(compactionUser as any);
     const convertedCompactionModelMessages = await convertToModelMessages(
-      [...withoutIds, compactionUser as any],
+      compactionHistoryInput,
       { tools: {} as any },
     );
     const compactionModelMessages = params.providerBehavior.transformModelMessages(

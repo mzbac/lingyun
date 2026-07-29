@@ -233,6 +233,27 @@ function scoreRecordEvidenceLine(text: string): number {
   return score;
 }
 
+function findBestRecordEvidenceLine(text: string): string {
+  let bestLine = '';
+  let bestScore = Number.NEGATIVE_INFINITY;
+  const value = String(text || '');
+  let lineStart = 0;
+
+  for (let i = 0; i <= value.length; i++) {
+    if (i < value.length && value.charCodeAt(i) !== 10) continue;
+    const line = strippedRecordDetailLine(value.slice(lineStart, i).trim());
+    lineStart = i + 1;
+    if (!line) continue;
+    const score = scoreRecordEvidenceLine(line);
+    if (score > bestScore) {
+      bestScore = score;
+      bestLine = line;
+    }
+  }
+
+  return bestLine;
+}
+
 export function renderSummaryRecordText(record: Pick<MemoryRecord, 'title' | 'text' | 'filesTouched' | 'toolsUsed'>): {
   summary: string;
   details: string[];
@@ -279,16 +300,7 @@ export function renderRawRecordEvidence(
 } {
   const title = summarizeText(String(record.title || '').trim(), 96);
   const text = compactMemoryText(String(record.text || ''), MAX_DURABLE_TEXT_CHARS);
-  const lines = text
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => strippedRecordDetailLine(line))
-    .filter(Boolean);
-
-  const evidence = [...lines]
-    .sort((a, b) => scoreRecordEvidenceLine(b) - scoreRecordEvidenceLine(a))
-    .find(Boolean) || title || summarizeText(text, 118) || 'Transcript-backed evidence';
+  const evidence = findBestRecordEvidenceLine(text) || title || summarizeText(text, 118) || 'Transcript-backed evidence';
 
   const details: string[] = [];
   if (!options?.compact) {
@@ -994,7 +1006,13 @@ export function buildConsolidatedMemoryEntries(params: {
 }
 
 function entriesForCategory(entries: ConsolidatedMemoryEntry[], category: DurableMemoryCategory, limit: number): ConsolidatedMemoryEntry[] {
-  return entries.filter((entry) => entry.category === category).slice(0, limit);
+  const out: ConsolidatedMemoryEntry[] = [];
+  for (const entry of entries) {
+    if (entry.category !== category) continue;
+    out.push(entry);
+    if (out.length >= limit) break;
+  }
+  return out;
 }
 
 function appendSummarySection(

@@ -54,6 +54,93 @@ suite('SessionStore', () => {
     }
   });
 
+  test('save accepts iterable order and falls back to the first existing session', async () => {
+    const dir = makeTempDir();
+    try {
+      const store = new SessionStore<TestSession>(vscode.Uri.file(dir), {
+        maxSessions: 20,
+        maxSessionBytes: 2_000_000,
+      });
+
+      const now = Date.now();
+      const sessionsById = new Map<string, TestSession>();
+      for (const id of ['s1', 's2']) {
+        sessionsById.set(id, {
+          id,
+          title: id,
+          createdAt: now,
+          updatedAt: now,
+          messages: [{ content: id }],
+        });
+      }
+
+      function* orderedIds(): Generator<string> {
+        yield 'missing';
+        yield 's1';
+        yield 's2';
+      }
+
+      await store.save({
+        sessionsById,
+        activeSessionId: 'missing-active',
+        order: orderedIds(),
+      });
+
+      const loaded = await store.loadAll();
+      assert.ok(loaded);
+      assert.strictEqual(loaded?.index.activeSessionId, 's1');
+      assert.deepStrictEqual(loaded?.index.order, ['s1', 's2']);
+      assert.strictEqual(loaded?.sessionsById.has('s1'), true);
+      assert.strictEqual(loaded?.sessionsById.has('s2'), true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('save skips unchanged index rewrite when no sessions are dirty', async () => {
+    const dir = makeTempDir();
+    try {
+      const store = new SessionStore<TestSession>(vscode.Uri.file(dir), {
+        maxSessions: 20,
+        maxSessionBytes: 2_000_000,
+      });
+
+      const now = Date.now();
+      const session: TestSession = {
+        id: 's1',
+        title: 'Session 1',
+        createdAt: now,
+        updatedAt: now,
+        messages: [{ content: 'hello' }],
+      };
+      const sessionsById = new Map<string, TestSession>([[session.id, session]]);
+
+      await store.save({
+        sessionsById,
+        activeSessionId: session.id,
+        order: [session.id],
+        dirtySessionIds: [session.id],
+      });
+
+      const indexPath = path.join(dir, 'sessions', 'index.json');
+      const beforeStat = fs.statSync(indexPath);
+      const beforeContent = fs.readFileSync(indexPath, 'utf8');
+
+      await store.save({
+        sessionsById,
+        activeSessionId: session.id,
+        order: [session.id],
+        dirtySessionIds: [],
+      });
+
+      const afterStat = fs.statSync(indexPath);
+      assert.strictEqual(fs.readFileSync(indexPath, 'utf8'), beforeContent);
+      assert.strictEqual(afterStat.mtimeMs, beforeStat.mtimeMs);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('prunes sessions beyond maxSessions', async () => {
     const dir = makeTempDir();
     try {
@@ -160,4 +247,3 @@ suite('SessionStore', () => {
     }
   });
 });
-

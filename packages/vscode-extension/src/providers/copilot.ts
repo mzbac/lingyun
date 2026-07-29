@@ -114,7 +114,35 @@ function normalizeCopilotModelInfo(model: vscode.LanguageModelChat): ModelInfo |
   };
 }
 
-const FALLBACK_MODEL_MAP = new Map(FALLBACK_MODELS.map((model) => [model.id, model]));
+function buildFallbackModelMap(): Map<string, ModelInfo> {
+  const map = new Map<string, ModelInfo>();
+  for (const model of FALLBACK_MODELS) {
+    map.set(model.id, model);
+  }
+  return map;
+}
+
+const FALLBACK_MODEL_MAP = buildFallbackModelMap();
+
+function cloneFallbackCopilotModels(): ModelInfo[] {
+  const models = new Array<ModelInfo>(FALLBACK_MODELS.length);
+  for (let index = 0; index < FALLBACK_MODELS.length; index++) {
+    models[index] = { ...FALLBACK_MODELS[index] };
+  }
+  return models;
+}
+
+function collectCopilotModelInfo(models: readonly vscode.LanguageModelChat[] | undefined): ModelInfo[] {
+  const normalized: ModelInfo[] = [];
+  if (!Array.isArray(models)) return normalized;
+
+  for (const model of models) {
+    const normalizedModel = normalizeCopilotModelInfo(model);
+    if (normalizedModel) normalized.push(normalizedModel);
+  }
+
+  return normalized;
+}
 
 function mergeKnownCopilotFallbackMetadata(model: ModelInfo): ModelInfo {
   const fallback = FALLBACK_MODEL_MAP.get(model.id);
@@ -379,10 +407,8 @@ export class CopilotProvider implements LLMProvider {
   private async loadModels(): Promise<ModelInfo[]> {
     try {
       const vscodeLmModels = await this.selectChatModels({});
-      const discoveredModels = vscodeLmModels
-        ?.map((model) => normalizeCopilotModelInfo(model))
-        .filter((model): model is ModelInfo => Boolean(model));
-      if (discoveredModels && discoveredModels.length > 0) {
+      const discoveredModels = collectCopilotModelInfo(vscodeLmModels);
+      if (discoveredModels.length > 0) {
         this.cachedModels = mergeFallbackCopilotModels(discoveredModels);
         return this.cachedModels;
       }
@@ -395,7 +421,7 @@ export class CopilotProvider implements LLMProvider {
       }
     }
 
-    this.cachedModels = FALLBACK_MODELS.map((model) => ({ ...model }));
+    this.cachedModels = cloneFallbackCopilotModels();
     return this.cachedModels;
   }
 

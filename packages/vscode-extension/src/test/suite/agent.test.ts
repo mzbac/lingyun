@@ -20,7 +20,7 @@ import { WorkspaceMemories } from '../../core/memories';
 import { SessionStore } from '../../core/sessionStore';
 import { ToolRegistry } from '../../core/registry';
 import type { LLMProvider } from '../../core/types';
-import { createAssistantHistoryMessage, getMessageText, TOOL_ERROR_CODES } from '@kooka/core';
+import { createAssistantHistoryMessage, formatBuiltinSubagentsForToolDescription, getMessageText, TOOL_ERROR_CODES } from '@kooka/core';
 import { COMPACTED_TOOL_PLACEHOLDER, COMPACTION_AUTO_CONTINUE_TEXT, createHistoryForModel } from '../../core/compaction';
 import { PluginManager } from '../../core/hooks/pluginManager';
 import { backgroundTerminalManager } from '../../core/terminal/backgroundTerminal';
@@ -1060,6 +1060,19 @@ suite('AgentLoop', () => {
     assert.strictEqual(agent.getThreadGoal(), undefined);
   });
 
+  test('setThreadGoalObjective validates objective length by Unicode code points', () => {
+    const maxEmojiObjective = '🚀'.repeat(4000);
+    const accepted = agent.setThreadGoalObjective({ objective: maxEmojiObjective });
+    assert.strictEqual(accepted.objective, maxEmojiObjective);
+
+    agent.clearThreadGoal();
+    assert.throws(
+      () => agent.setThreadGoalObjective({ objective: maxEmojiObjective + '🚀' }),
+      /Goal objective must be at most 4000 characters/,
+    );
+    assert.strictEqual(agent.getThreadGoal(), undefined);
+  });
+
   test('run - actual Copilot Responses model preserves the v2.1.10 tool-call conversation flow', async () => {
     const originalFetch = globalThis.fetch;
     const requestBodies: Array<Record<string, unknown>> = [];
@@ -1298,6 +1311,19 @@ suite('AgentLoop', () => {
     }
   });
 
+  test('task tool description uses shared subagent list', () => {
+    const expectedList = [
+      '- general: General-purpose agent for complex, multi-step tasks. Use when you want the agent to execute a longer workflow.',
+      '- explore: Fast, read-only agent specialized for exploring a workspace: list files, grep, read small snippets, and summarize findings.',
+    ].join('\n');
+
+    assert.strictEqual(formatBuiltinSubagentsForToolDescription(), expectedList);
+    assert.ok(
+      taskTool.description.includes(`Available subagent types:\n${expectedList}\n\nUsage:`),
+      'expected VS Code task tool description to include shared subagent list',
+    );
+  });
+
   test('run - task tool returns sanitized session_id and text payload', async () => {
     registry.registerTool(taskTool, taskHandler);
 
@@ -1532,10 +1558,14 @@ suite('AgentLoop', () => {
   test('state round-trips pending steers and clear resets runtime state', async () => {
     const importedState = {
       history: [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hello' }] } as any],
-      pendingInputs: ['queued follow-up'],
+      pendingInputs: ['queued follow-up', [], null] as any,
       mentionedSkills: ['skill-1'],
       systemPromptSnapshot: ['  Base system prompt  ', '', 'Tool context'],
-      compactionSyntheticContexts: [{ transientContext: 'memoryRecall' as const, text: 'remember me' }],
+      compactionSyntheticContexts: [
+        { transientContext: 'memoryRecall' as const, text: 'remember me', extra: 'drop' },
+        { transientContext: 'bad', text: 'drop' },
+        { transientContext: 'goal' },
+      ] as any,
       fileHandles: {
         nextId: 2.9,
         byId: {
@@ -1682,6 +1712,33 @@ suite('AgentLoop', () => {
     const history = agent.getHistory();
     assert.strictEqual(history.filter(m => m.role === 'assistant').length, 1);
     assert.strictEqual(getMessageText(history[history.length - 1]), 'Hello');
+  });
+
+  test('run - does not replay a retryable stream after a tool call starts', async () => {
+    agent.updateConfig({ maxRetries: 1, retryWithPartialOutput: true });
+
+    const err = {
+      name: 'TypeError',
+      message: 'terminated',
+      responseHeaders: { 'retry-after-ms': '1' },
+    };
+
+    mockLLM.setNextResponse({
+      kind: 'stream',
+      chunks: [
+        {
+          type: 'tool-call' as const,
+          toolCallId: 'call_retry_boundary',
+          toolName: 'test_echo',
+          input: JSON.stringify({ message: 'once' }),
+        },
+        { type: 'error' as const, error: err },
+      ],
+    });
+    mockLLM.queueResponse({ kind: 'text', content: 'must not replay' });
+
+    await assert.rejects(() => agent.run('Run the tool once'), /Connection terminated/);
+    assert.strictEqual(mockLLM.callCount, 1);
   });
 
   test('run - retries copilot codex responses parser-state errors before finish', async () => {

@@ -15,6 +15,20 @@ export interface ChatUserInput {
   attachments?: ChatImageAttachment[];
 }
 
+export type ChatUserMessageOptions = {
+  fromQueue?: boolean;
+  synthetic?: boolean;
+  displayContent?: string;
+  forceBuild?: boolean;
+  onAccepted?: () => void;
+};
+
+export type ChatComposerSubmissionState = {
+  id: string;
+  status: 'pending' | 'accepted' | 'rejected';
+  draft: string;
+};
+
 export interface ChatQueuedInput {
   id: string;
   createdAt: number;

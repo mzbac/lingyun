@@ -9,6 +9,10 @@
 export const WEBVIEW_MESSAGE_READY = 'ready';
 export const WEBVIEW_MESSAGE_INIT_ACK = 'initAck';
 export const WEBVIEW_MESSAGE_ERROR = 'webviewError';
+export const WEBVIEW_MESSAGE_TRANSCRIPT_HISTORY_REQUEST = 'transcriptHistoryRequest';
+export const WEBVIEW_MESSAGE_TRANSCRIPT_HISTORY_PAGE = 'transcriptHistoryPage';
+
+const MAX_TRANSCRIPT_HISTORY_ID_LENGTH = 512;
 
 export type WebviewCrashPayload = {
   kind?: string;
@@ -31,6 +35,13 @@ export type WebviewInitAckMessage = {
 export type WebviewErrorMessage = {
   type: typeof WEBVIEW_MESSAGE_ERROR;
   error?: unknown;
+};
+
+export type WebviewTranscriptHistoryRequest = {
+  type: typeof WEBVIEW_MESSAGE_TRANSCRIPT_HISTORY_REQUEST;
+  requestId: number;
+  sessionId: string;
+  cursor: string;
 };
 
 export function getWebviewMessageType(data: unknown): string | undefined {
@@ -76,6 +87,29 @@ export function parseWebviewErrorMessage(data: unknown): WebviewErrorMessage | u
   };
 }
 
+export function parseWebviewTranscriptHistoryRequest(
+  data: unknown
+): WebviewTranscriptHistoryRequest | undefined {
+  const record = parseTypedWebviewMessage(data, WEBVIEW_MESSAGE_TRANSCRIPT_HISTORY_REQUEST);
+  if (!record) {
+    return undefined;
+  }
+
+  const requestId = record.requestId;
+  const sessionId = parseBoundedNonEmptyString(record.sessionId, MAX_TRANSCRIPT_HISTORY_ID_LENGTH);
+  const cursor = parseBoundedNonEmptyString(record.cursor, MAX_TRANSCRIPT_HISTORY_ID_LENGTH);
+  if (!Number.isSafeInteger(requestId) || (requestId as number) <= 0 || !sessionId || !cursor) {
+    return undefined;
+  }
+
+  return {
+    type: WEBVIEW_MESSAGE_TRANSCRIPT_HISTORY_REQUEST,
+    requestId: requestId as number,
+    sessionId,
+    cursor,
+  };
+}
+
 function parseTypedWebviewMessage(data: unknown, type: string): Record<string, unknown> | undefined {
   const record = asRecord(data);
   if (!record || record.type !== type) {
@@ -85,12 +119,14 @@ function parseTypedWebviewMessage(data: unknown, type: string): Record<string, u
 }
 
 function parseWebviewClientInstanceId(value: unknown): string | undefined {
-  if (typeof value !== 'string') {
-    return undefined;
-  }
+  return parseBoundedNonEmptyString(value);
+}
 
+function parseBoundedNonEmptyString(value: unknown, maxLength?: number): string | undefined {
+  if (typeof value !== 'string') return undefined;
   const trimmed = value.trim();
-  return trimmed || undefined;
+  if (!trimmed || (maxLength !== undefined && trimmed.length > maxLength)) return undefined;
+  return trimmed;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {

@@ -23,23 +23,15 @@ function uniqueStrings(items: string[]): string[] {
   return out;
 }
 
-async function exists(p: string): Promise<boolean> {
-  try {
-    await fs.stat(p);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 async function listPluginFiles(dir: string): Promise<string[]> {
   try {
     const entries = await fs.readdir(dir, { withFileTypes: true });
-    return entries
-      .filter((ent) => ent.isFile())
-      .map((ent) => ent.name)
-      .filter((name) => /\.(cjs|mjs|js)$/i.test(name))
-      .map((name) => path.join(dir, name));
+    const files: string[] = [];
+    for (const ent of entries) {
+      if (!ent.isFile() || !/\.(cjs|mjs|js)$/i.test(ent.name)) continue;
+      files.push(path.join(dir, ent.name));
+    }
+    return files;
   } catch {
     return [];
   }
@@ -54,7 +46,6 @@ async function resolveWorkspacePluginPaths(params: {
   if (!params.workspaceRoot) return [];
 
   const pluginDir = path.join(params.workspaceRoot, params.workspaceDirName, 'plugin');
-  if (!(await exists(pluginDir))) return [];
   return uniqueStrings(await listPluginFiles(pluginDir));
 }
 
@@ -100,9 +91,12 @@ function extractHooksFromModule(moduleExports: any, input: LingyunPluginInput): 
   if (!moduleExports) return [];
   const out: Array<{ id: string; hooks: LingyunHooks }> = [];
   const seen = new Set<unknown>();
+  let sawEnumerableProperty = false;
 
-  const entries = Object.entries(moduleExports as Record<string, unknown>);
-  for (const [name, value] of entries) {
+  for (const name in moduleExports as Record<string, unknown>) {
+    if (!Object.prototype.hasOwnProperty.call(moduleExports, name)) continue;
+    sawEnumerableProperty = true;
+    const value = moduleExports[name];
     if (seen.has(value)) continue;
     if (typeof value === 'function') {
       seen.add(value);
@@ -115,11 +109,21 @@ function extractHooksFromModule(moduleExports: any, input: LingyunPluginInput): 
     }
   }
 
-  if (entries.length === 0 && typeof moduleExports === 'function') {
+  if (!sawEnumerableProperty && typeof moduleExports === 'function') {
     out.push({ id: 'default', hooks: (moduleExports as LingyunPluginFactory)(input) as any });
   }
 
   return out;
+}
+
+function appendPluginTools(out: LingyunPluginToolEntry[], pluginId: string, toolMap: unknown): void {
+  if (!isRecord(toolMap)) return;
+  for (const toolId in toolMap) {
+    if (!Object.prototype.hasOwnProperty.call(toolMap, toolId)) continue;
+    const tool = toolMap[toolId];
+    if (!toolId || !tool) continue;
+    out.push({ pluginId, toolId, tool: tool as any });
+  }
 }
 
 export class PluginManager {
@@ -194,12 +198,7 @@ export class PluginManager {
           const pluginId = `${spec}#${entry.id}`;
           this.loadedHooks.push({ id: pluginId, hooks });
 
-          if (hooks.tool && isRecord(hooks.tool)) {
-            for (const [toolId, tool] of Object.entries(hooks.tool)) {
-              if (!toolId || !tool) continue;
-              this.pluginTools.push({ pluginId, toolId, tool: tool as any });
-            }
-          }
+          appendPluginTools(this.pluginTools, pluginId, hooks.tool);
         }
       } catch (error) {
         this.options.logger?.(`agent-sdk: failed to load plugin ${spec}: ${error instanceof Error ? error.message : String(error)}`);
@@ -211,12 +210,7 @@ export class PluginManager {
     await this.loadPluginsIfNeeded();
     const out: LingyunPluginToolEntry[] = [...this.pluginTools];
     for (const entry of this.extraHooks) {
-      const toolMap = (entry.hooks as any)?.tool;
-      if (!isRecord(toolMap)) continue;
-      for (const [toolId, tool] of Object.entries(toolMap)) {
-        if (!toolId || !tool) continue;
-        out.push({ pluginId: entry.id, toolId, tool: tool as any });
-      }
+      appendPluginTools(out, entry.id, (entry.hooks as any)?.tool);
     }
     return out;
   }

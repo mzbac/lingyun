@@ -1,9 +1,7 @@
 import type { ToolDefinition, ToolHandler } from '../../core/types';
-import { TOOL_ERROR_CODES, listBuiltinSubagents } from '@kooka/core';
+import { TOOL_ERROR_CODES, formatBuiltinSubagentsForToolDescription } from '@kooka/core';
 
-const agentsList = listBuiltinSubagents()
-  .map((agent) => `- ${agent.name}: ${agent.description}`)
-  .join('\n');
+const agentsList = formatBuiltinSubagentsForToolDescription();
 
 export const taskTool: ToolDefinition = {
   id: 'task',

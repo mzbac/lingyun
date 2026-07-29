@@ -70,8 +70,10 @@ function getEnvValue(baseEnv: NodeJS.ProcessEnv, key: string): string | undefine
   // On Windows, env var names are case-insensitive. `process.env` is special,
   // but it is still safer to do a best-effort fallback scan.
   const lower = key.toLowerCase();
-  for (const [k, v] of Object.entries(baseEnv)) {
-    if (k.toLowerCase() === lower && typeof v === 'string') return v;
+  for (const candidateKey in baseEnv) {
+    if (!Object.prototype.hasOwnProperty.call(baseEnv, candidateKey)) continue;
+    const value = baseEnv[candidateKey];
+    if (candidateKey.toLowerCase() === lower && typeof value === 'string') return value;
   }
 
   return undefined;
@@ -97,4 +99,3 @@ export function buildSafeChildProcessEnv(options?: SafeChildProcessEnvOptions): 
 
   return out;
 }
-

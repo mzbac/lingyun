@@ -62,6 +62,38 @@ suite('Codex subscription model catalog', () => {
     assert.ok(!models.some((model) => model.id === 'gpt-5.3-codex'));
   });
 
+  test('deduplicates remote Codex models after trimming IDs', () => {
+    const models = normalizeCodexModelsResponse({
+      models: [
+        {
+          slug: ' duplicate-model ',
+          display_name: 'First Duplicate',
+          visibility: 'list',
+          priority: 2,
+          context_window: 1000,
+        },
+        {
+          id: 'duplicate-model',
+          display_name: 'Second Duplicate',
+          visibility: 'list',
+          priority: 1,
+          context_window: 999999,
+        },
+        {
+          slug: 'unique-model',
+          display_name: 'Unique Model',
+          visibility: 'list',
+          priority: 3,
+        },
+      ],
+    });
+
+    assert.deepStrictEqual(models.map((model) => model.id), ['duplicate-model', 'unique-model']);
+    const duplicate = models.find((model) => model.id === 'duplicate-model');
+    assert.strictEqual(duplicate?.name, 'First Duplicate');
+    assert.strictEqual(duplicate?.maxInputTokens, 950);
+  });
+
   test('appends configured default model metadata when remote Codex catalog omits it', () => {
     const models = normalizeCodexModelsResponse({
       models: [

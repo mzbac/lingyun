@@ -21,6 +21,31 @@ export type SessionStoreOptions<TSession> = {
   log?: (message: string) => void;
 };
 
+function sessionsIndexEquals(a: SessionsIndex | undefined, b: SessionsIndex): boolean {
+  if (!a || a.version !== b.version || a.activeSessionId !== b.activeSessionId) return false;
+  if (!Array.isArray(a.order) || a.order.length !== b.order.length) return false;
+  for (let i = 0; i < b.order.length; i++) {
+    if (a.order[i] !== b.order[i]) return false;
+  }
+
+  const aMeta = a.sessionsMeta || {};
+  const bMeta = b.sessionsMeta || {};
+  for (const id of b.order) {
+    const left = aMeta[id];
+    const right = bMeta[id];
+    if (!left || !right) return false;
+    if (
+      left.title !== right.title ||
+      left.firstUserMessagePreview !== right.firstUserMessagePreview ||
+      left.createdAt !== right.createdAt ||
+      left.updatedAt !== right.updatedAt
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 export class SessionStore<
   TSession extends { id: string; title: string; firstUserMessagePreview?: string; createdAt: number; updatedAt: number },
 > {
@@ -62,12 +87,19 @@ export class SessionStore<
   async save(params: {
     sessionsById: Map<string, TSession>;
     activeSessionId: string;
-    order: string[];
+    order: Iterable<string>;
     dirtySessionIds?: Iterable<string>;
   }): Promise<void> {
+    const order: string[] = [];
+    for (const id of params.order) {
+      if (typeof id === 'string' && params.sessionsById.has(id)) {
+        order.push(id);
+      }
+    }
+
     const nextActive = params.sessionsById.has(params.activeSessionId)
       ? params.activeSessionId
-      : params.order.find(id => params.sessionsById.has(id));
+      : order[0];
     if (!nextActive) return;
 
     const maxSessions = Math.max(1, Number.isFinite(this.options.maxSessions) ? Math.floor(this.options.maxSessions) : 20);
@@ -76,11 +108,12 @@ export class SessionStore<
       Number.isFinite(this.options.maxSessionBytes) ? Math.floor(this.options.maxSessionBytes) : 2_000_000,
     );
 
-    const order = params.order
-      .filter(id => typeof id === 'string')
-      .filter(id => params.sessionsById.has(id));
-
-    const prunedOrder = order.length > maxSessions ? order.slice(order.length - maxSessions) : order;
+    const prunedOrder: string[] = [];
+    const firstPrunedIndex = Math.max(0, order.length - maxSessions);
+    for (let i = firstPrunedIndex; i < order.length; i++) {
+      const id = order[i];
+      if (id !== undefined) prunedOrder.push(id);
+    }
     const prunedSet = new Set(prunedOrder);
     if (!prunedSet.has(nextActive)) {
       if (prunedOrder.length > 0) {
@@ -89,8 +122,14 @@ export class SessionStore<
       prunedSet.add(nextActive);
     }
 
-    const finalOrder = prunedOrder.filter(id => prunedSet.has(id));
-    if (!finalOrder.includes(nextActive)) {
+    const finalOrder: string[] = [];
+    let hasNextActive = false;
+    for (const id of prunedOrder) {
+      if (!prunedSet.has(id)) continue;
+      finalOrder.push(id);
+      if (id === nextActive) hasNextActive = true;
+    }
+    if (!hasNextActive) {
       finalOrder.push(nextActive);
     }
 
@@ -113,28 +152,30 @@ export class SessionStore<
       sessionsMeta,
     };
 
-    const dirtyIds = params.dirtySessionIds
-      ? [...new Set([...params.dirtySessionIds].filter(id => typeof id === 'string'))]
-      : [...finalOrder];
-
-    const dirtyToWrite = dirtyIds.filter(id => prunedSet.has(id));
+    const dirtyToWrite: string[] = [];
+    if (params.dirtySessionIds) {
+      const seenDirtyIds = new Set<string>();
+      for (const id of params.dirtySessionIds) {
+        if (typeof id !== 'string' || seenDirtyIds.has(id) || !prunedSet.has(id)) continue;
+        seenDirtyIds.add(id);
+        dirtyToWrite.push(id);
+      }
+    } else {
+      for (const id of finalOrder) {
+        if (prunedSet.has(id)) dirtyToWrite.push(id);
+      }
+    }
 
     await this.enqueueWrite(async () => {
       await this.ensureSessionsDir();
 
       const previousIndex = await this.tryReadJson<SessionsIndex>(this.indexUri);
       const previousOrder = Array.isArray(previousIndex?.order) ? previousIndex.order : [];
-      const previousIds = new Set(previousOrder.filter((id): id is string => typeof id === 'string'));
       const currentIds = new Set(finalOrder);
-      const removedIds: string[] = [];
-
-      for (const id of previousIds) {
-        if (!currentIds.has(id)) {
-          removedIds.push(id);
-        }
-      }
-
-      for (const id of removedIds) {
+      const removedIds = new Set<string>();
+      for (const id of previousOrder) {
+        if (typeof id !== 'string' || currentIds.has(id) || removedIds.has(id)) continue;
+        removedIds.add(id);
         await this.tryDelete(this.getSessionUri(id));
       }
 
@@ -146,6 +187,7 @@ export class SessionStore<
         await this.writeJsonAtomic(this.getSessionUri(id), pruned);
       }
 
+      if (dirtyToWrite.length === 0 && sessionsIndexEquals(previousIndex, index)) return;
       await this.writeJsonAtomic(this.indexUri, index);
     });
   }

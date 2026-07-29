@@ -1,12 +1,32 @@
 import * as assert from 'assert';
+import * as vscode from 'vscode';
 
-import { createLingyunDiffUri, LingyunDiffContentProvider, parseLingyunDiffUri } from '../../ui/chat/diffContentProvider';
+import { createLingyunDiffUri, LingyunDiffContentProvider, LINGYUN_DIFF_SCHEME, parseLingyunDiffUri } from '../../ui/chat/diffContentProvider';
 
 suite('diffContentProvider', () => {
   test('creates and parses lingyun-diff URIs', () => {
-    const uri = createLingyunDiffUri({ toolCallId: 'tool-123', side: 'before', fileName: 'foo.ts' });
+    const uri = createLingyunDiffUri({ toolCallId: 'tool/123', side: 'before', fileName: 'foo.ts' });
     const parsed = parseLingyunDiffUri(uri);
-    assert.deepStrictEqual(parsed, { toolCallId: 'tool-123', side: 'before' });
+    assert.deepStrictEqual(parsed, { toolCallId: 'tool/123', side: 'before' });
+  });
+
+  test('parses diff URIs with repeated path separators', () => {
+    const uri = vscode.Uri.from({
+      scheme: LINGYUN_DIFF_SCHEME,
+      path: '/after//tool-123//foo.ts',
+    });
+
+    assert.deepStrictEqual(parseLingyunDiffUri(uri), { toolCallId: 'tool-123', side: 'after' });
+  });
+
+  test('sanitizes diff URI filenames from nested paths', () => {
+    const uri = createLingyunDiffUri({
+      toolCallId: 'tool-123',
+      side: 'before',
+      fileName: String.raw`C:\tmp\bad:name?.ts`,
+    });
+
+    assert.match(uri.path, /\/bad_name_\.ts$/);
   });
 
   test('serves before/after snapshot content', () => {
@@ -23,4 +43,3 @@ suite('diffContentProvider', () => {
     assert.strictEqual(provider.provideTextDocumentContent(afterUri), 'after\n');
   });
 });
-

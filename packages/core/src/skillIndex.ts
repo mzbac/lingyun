@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { expandHome, isSubPath } from './fsPath';
+import { expandHome, isSubPath, normalizeFsPath } from './fsPath';
 
 export type SkillInfo = {
   name: string;
@@ -28,6 +28,12 @@ type CacheState = {
   builtAt: number;
   promise: Promise<SkillIndex>;
   invalidated: boolean;
+};
+
+type NormalizedSkillSearchPath = {
+  input: string;
+  absPath: string;
+  isExternal: boolean;
 };
 
 const DEFAULT_CACHE_MAX_AGE_MS = 3000;
@@ -62,6 +68,30 @@ function resolveSkillDir(input: string, workspaceRoot?: string): { absPath: stri
     absPath,
     inWorkspace: workspaceRoot ? isSubPath(absPath, workspaceRoot) : false,
   };
+}
+
+function normalizeSkillSearchPaths(inputs: unknown, workspaceRoot?: string): NormalizedSkillSearchPath[] {
+  const values = Array.isArray(inputs) ? inputs : [];
+  const searchPaths: NormalizedSkillSearchPath[] = [];
+  const seenAbsPaths = new Set<string>();
+
+  for (const input of values) {
+    const trimmed = typeof input === 'string' ? input.trim() : '';
+    if (!trimmed) continue;
+
+    const resolved = resolveSkillDir(trimmed, workspaceRoot);
+    const key = normalizeFsPath(resolved.absPath);
+    if (seenAbsPaths.has(key)) continue;
+    seenAbsPaths.add(key);
+
+    searchPaths.push({
+      input: trimmed,
+      absPath: resolved.absPath,
+      isExternal: workspaceRoot ? !resolved.inWorkspace : path.isAbsolute(resolved.absPath),
+    });
+  }
+
+  return searchPaths;
 }
 
 function parseFrontmatterBlock(text: string): { frontmatter: string; body: string } | null {
@@ -251,9 +281,7 @@ export async function getSkillIndex(options: {
   maxSkills?: number;
 }): Promise<SkillIndex> {
   const workspaceRoot = options.workspaceRoot ? path.resolve(options.workspaceRoot) : undefined;
-  const searchPaths = (Array.isArray(options.searchPaths) ? options.searchPaths : [])
-    .map((p) => (typeof p === 'string' ? p.trim() : ''))
-    .filter(Boolean);
+  const searchPaths = normalizeSkillSearchPaths(options.searchPaths, workspaceRoot);
   const allowExternalPaths = !!options.allowExternalPaths;
 
   const cacheMaxAgeMs =
@@ -269,7 +297,7 @@ export async function getSkillIndex(options: {
   const key = JSON.stringify({
     workspaceRoot: workspaceRoot ?? '',
     allowExternalPaths,
-    searchPaths,
+    searchPaths: searchPaths.map((searchPath) => [searchPath.input, searchPath.absPath]),
     maxSkills,
   });
 
@@ -288,14 +316,16 @@ export async function getSkillIndex(options: {
 
     let truncated = false;
 
-    for (const input of searchPaths) {
+    for (const searchPath of searchPaths) {
       if (options.signal?.aborted) break;
+      if (byName.size >= maxSkills) {
+        truncated = true;
+        break;
+      }
 
-      const resolved = resolveSkillDir(input, workspaceRoot);
-      const absPath = resolved.absPath;
+      const { input, absPath } = searchPath;
 
-      const isExternalDir = workspaceRoot ? !isSubPath(absPath, workspaceRoot) : path.isAbsolute(absPath);
-      if (isExternalDir && !allowExternalPaths) {
+      if (searchPath.isExternal && !allowExternalPaths) {
         scannedDirs.push({
           input,
           absPath,

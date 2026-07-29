@@ -118,7 +118,7 @@ LingYun automatically compacts long sessions by default:
 {
   "lingyun.compaction.auto": true,
   "lingyun.compaction.prune": true,
-  "lingyun.compaction.toolOutputMode": "afterToolCall"
+  "lingyun.compaction.toolOutputMode": "onCompaction"
 }
 ```
 

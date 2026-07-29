@@ -105,6 +105,15 @@ function stripPunctuation(token: string): string {
   return out.trim();
 }
 
+function collectShellPathTokens(command: string): string[] {
+  const tokens: string[] = [];
+  for (const rawToken of tokenizeShellCommand(command)) {
+    const token = stripPunctuation(rawToken);
+    if (token) tokens.push(token);
+  }
+  return tokens;
+}
+
 function tokenizeShellCommand(command: string): string[] {
   const tokens: string[] = [];
   const s = String(command ?? '');
@@ -218,6 +227,23 @@ function isDynamicPathToken(token: string): boolean {
   return vars.some(name => PATH_HINT_ENV_VARS.has(name.toUpperCase()));
 }
 
+function stripMatchingShellQuotes(value: string): string {
+  if (value.length < 2) return value;
+  const first = value[0];
+  if ((first === '"' || first === "'") && value[value.length - 1] === first) {
+    return value.slice(1, -1);
+  }
+  return value;
+}
+
+function getOptionAssignmentPathCandidate(token: string): string | undefined {
+  if (!token.startsWith('-')) return undefined;
+  const assignmentIndex = token.indexOf('=');
+  if (assignmentIndex <= 1 || assignmentIndex === token.length - 1) return undefined;
+  const value = stripMatchingShellQuotes(token.slice(assignmentIndex + 1).trim());
+  return value || undefined;
+}
+
 function resolveSafeEnvValue(name: string, cwd: string): string | undefined {
   const upper = name.toUpperCase();
   if (!SAFE_PATH_ENV_VARS.has(upper)) return undefined;
@@ -277,7 +303,7 @@ export function evaluateShellPathAccess(
 ): ShellPathAccessEvaluation {
   const cwd = path.resolve(options.cwd);
   const workspaceRoot = path.resolve(options.workspaceRoot);
-  const tokens = tokenizeShellCommand(command).map(stripPunctuation).filter(Boolean);
+  const tokens = collectShellPathTokens(command);
 
   const candidates: string[] = [];
 
@@ -294,6 +320,12 @@ export function evaluateShellPathAccess(
     if (token.startsWith('>') || token.startsWith('<')) {
       const maybe = token.replace(/^[><]+/, '');
       if (maybe) candidates.push(maybe);
+      continue;
+    }
+
+    const optionAssignmentPath = getOptionAssignmentPathCandidate(token);
+    if (optionAssignmentPath && (isPathLikeToken(optionAssignmentPath) || isDynamicPathToken(optionAssignmentPath))) {
+      candidates.push(optionAssignmentPath);
       continue;
     }
 

@@ -99,6 +99,20 @@ function assertBlockedPendingPlanDirectAction(params: {
   assert.deepStrictEqual(processingEvents, []);
 }
 
+function createDeferred<T>(): {
+  promise: Promise<T>;
+  resolve(value: T): void;
+} {
+  let resolvePromise: (value: T) => void = () => {};
+  const promise = new Promise<T>((resolve) => {
+    resolvePromise = resolve;
+  });
+  return {
+    promise,
+    resolve: resolvePromise,
+  };
+}
+
 suite('Pending plan send', () => {
   test('handleUserMessage applies pending-plan clarifications through the shared mutation lifecycle', async () => {
     const provider = createPendingPlanController();
@@ -144,6 +158,43 @@ suite('Pending plan send', () => {
 
     const processingEvents = posted.filter(message => message?.type === 'processing');
     assert.deepStrictEqual(processingEvents.map(message => message.value), [true, false]);
+  });
+
+  test('handleUserMessage acknowledges pending-plan clarification after recording the follow-up', async () => {
+    const provider = createPendingPlanController();
+    const planMsg = createPendingPlanMessage();
+    installPendingPlanSession(provider, planMsg);
+    const planResult = createDeferred<string>();
+    let planStarted = false;
+    let accepted = 0;
+
+    provider.webviewApi.postMessage = () => {};
+    provider.inputHistoryApi.recordInputHistory = () => {};
+    provider.skillsApi.postUnknownSkillWarnings = async () => {};
+    provider.runnerInputApi.classifyPlanStatus = () => 'needs_input';
+    provider.queueManager.scheduleAutosendForSession = () => {};
+    provider.agent.plan = async () => {
+      planStarted = true;
+      return planResult.promise;
+    };
+
+    const handled = provider.runnerInputApi.handleUserMessage('Clarify deployment', {
+      onAccepted: () => {
+        accepted++;
+        assert.ok(provider.messages.some(message =>
+          message.role === 'user' &&
+          message.content === 'Clarify deployment' &&
+          message.turnId === planMsg.turnId
+        ));
+      },
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    assert.strictEqual(accepted, 1);
+    assert.strictEqual(planStarted, true);
+    planResult.resolve('Need more detail');
+    await handled;
+    assert.strictEqual(accepted, 1);
   });
 
   test('handleUserMessage clears stale pending-plan state and resumes the ordinary run flow', async () => {
@@ -728,6 +779,62 @@ suite('Pending plan send', () => {
       return 'done';
     };
     await provider.runnerPlanApi.executePendingPlan('plan-1');
+  });
+
+  test('executePendingPlan treats inline assumptions heading text as ordinary plan content', async () => {
+    const provider = createPendingPlanController();
+    const planMsg = createPendingPlanMessage({
+      content: '1. Keep the literal ## Assumptions (auto) text in docs.',
+      plan: { status: 'needs_input', task: 'Task' },
+    });
+    installPendingPlanSession(provider, planMsg);
+    provider.webviewApi.postMessage = () => {};
+    provider.queueManager.scheduleAutosendForSession = () => {};
+    provider.runnerCallbacksApi.createAgentCallbacks = () => ({}) as any;
+    provider.modeApi.setModeAndPersist = async (mode) => {
+      provider.mode = mode;
+    };
+
+    let approvedPlan = '';
+    provider.agent.execute = async (_callbacks, options) => {
+      approvedPlan = String(options?.approvedPlan || '');
+      return 'done';
+    };
+    await provider.runnerPlanApi.executePendingPlan('plan-1');
+
+    assert.match(approvedPlan, /Keep the literal ## Assumptions \(auto\) text in docs/);
+    assert.match(approvedPlan, /Proceed without further clarification/);
+    assert.strictEqual(approvedPlan.match(/## Assumptions \(auto\)/g)?.length, 2);
+  });
+
+  test('executePendingPlan does not duplicate an existing assumptions heading line', async () => {
+    const provider = createPendingPlanController();
+    const content = [
+      '1. Ship it',
+      '',
+      '## Assumptions (auto)',
+      '- Existing assumption.',
+    ].join('\n');
+    const planMsg = createPendingPlanMessage({
+      content,
+      plan: { status: 'needs_input', task: 'Task' },
+    });
+    installPendingPlanSession(provider, planMsg);
+    provider.webviewApi.postMessage = () => {};
+    provider.queueManager.scheduleAutosendForSession = () => {};
+    provider.runnerCallbacksApi.createAgentCallbacks = () => ({}) as any;
+    provider.modeApi.setModeAndPersist = async (mode) => {
+      provider.mode = mode;
+    };
+
+    let approvedPlan = '';
+    provider.agent.execute = async (_callbacks, options) => {
+      approvedPlan = String(options?.approvedPlan || '');
+      return 'done';
+    };
+    await provider.runnerPlanApi.executePendingPlan('plan-1');
+
+    assert.strictEqual(approvedPlan, content);
   });
 
   test('executePendingPlan restores plan state and posts turn error on execution failure', async () => {

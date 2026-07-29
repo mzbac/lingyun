@@ -51,16 +51,34 @@ function hasMemoryScaffoldingPayload(value: string | undefined): boolean {
   return hasRepositoryInstructionPayload(text) || hasSkillInstructionPayload(text);
 }
 
+function escapeMemoryArtifactRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+const GENERATED_MEMORY_ARTIFACT_FILE_RE = new RegExp(
+  `(?:^|/)(?:${[
+    MEMORY_MD_FILENAME,
+    MEMORY_SUMMARY_FILENAME,
+    RAW_MEMORIES_FILENAME,
+    STAGE1_OUTPUTS_FILE,
+  ].map(escapeMemoryArtifactRegex).join('|')})$`,
+  'i',
+);
+const GENERATED_MEMORY_TOPIC_ARTIFACT_RE = new RegExp(
+  `(?:^|/)${escapeMemoryArtifactRegex(MEMORY_TOPICS_DIR_NAME)}/[^/]+\\.md$`,
+  'i',
+);
+const GENERATED_MEMORY_ROLLOUT_SUMMARY_RE = new RegExp(
+  `(?:^|/)${escapeMemoryArtifactRegex(ROLLOUT_SUMMARIES_DIR_NAME)}/[^/]+\\.md$`,
+  'i',
+);
+
 function looksLikeGeneratedMemoryArtifactFilePath(value: string | undefined): boolean {
   const normalized = String(value || '').trim().replace(/\\/g, '/');
   if (!normalized) return false;
-  if (new RegExp(`(?:^|/)${MEMORY_MD_FILENAME.replace('.', '\\.')}$`, 'i').test(normalized)) return true;
-  if (new RegExp(`(?:^|/)${MEMORY_SUMMARY_FILENAME.replace('.', '\\.')}$`, 'i').test(normalized)) return true;
-  if (new RegExp(`(?:^|/)${RAW_MEMORIES_FILENAME.replace('.', '\\.')}$`, 'i').test(normalized)) return true;
-  if (new RegExp(`(?:^|/)${STAGE1_OUTPUTS_FILE.replace('.', '\\.')}$`, 'i').test(normalized)) return true;
-  if (new RegExp(`(?:^|/)${MEMORY_TOPICS_DIR_NAME}/[^/]+\\.md$`, 'i').test(normalized)) return true;
-  if (new RegExp(`(?:^|/)${ROLLOUT_SUMMARIES_DIR_NAME}/[^/]+\\.md$`, 'i').test(normalized)) return true;
-  return false;
+  return GENERATED_MEMORY_ARTIFACT_FILE_RE.test(normalized) ||
+    GENERATED_MEMORY_TOPIC_ARTIFACT_RE.test(normalized) ||
+    GENERATED_MEMORY_ROLLOUT_SUMMARY_RE.test(normalized);
 }
 
 function hasMemorySecretPayload(value: string | undefined): boolean {
@@ -108,16 +126,41 @@ export function uniqueLimited(values: string[], maxItems: number): string[] {
   const next: string[] = [];
   const seen = new Set<string>();
   for (const value of values) {
-    if (hasMemorySecretPayload(value)) continue;
-    if (hasGeneratedMemoryArtifactPayload(value)) continue;
-    if (hasDerivableCodebaseMemoryPayload(value)) continue;
-    const key = redactMemorySecrets(value).trim();
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    next.push(key);
-    if (next.length >= maxItems) break;
+    if (appendUniqueLimitedValue(next, seen, value, maxItems)) break;
   }
   return next;
+}
+
+function appendUniqueLimitedValue(next: string[], seen: Set<string>, value: string, maxItems: number): boolean {
+  if (hasMemorySecretPayload(value)) return false;
+  if (hasGeneratedMemoryArtifactPayload(value)) return false;
+  if (hasDerivableCodebaseMemoryPayload(value)) return false;
+  const key = redactMemorySecrets(value).trim();
+  if (!key || seen.has(key)) return false;
+  seen.add(key);
+  next.push(key);
+  return next.length >= maxItems;
+}
+
+function collectMemoryFocusValues(outputs: Stage1Output[], maxItems: number): string[] {
+  const focus: string[] = [];
+  const seen = new Set<string>();
+  for (const output of outputs) {
+    if (appendUniqueLimitedValue(focus, seen, output.structuredMemories[0]?.text || '', maxItems)) break;
+    if (appendUniqueLimitedValue(focus, seen, output.assistantOutcomes[0] || output.userIntents[0] || '', maxItems)) break;
+  }
+  return focus;
+}
+
+function collectStructuredMemoryLines(outputs: Stage1Output[], maxItems: number): string[] {
+  const structured: string[] = [];
+  const seen = new Set<string>();
+  for (const output of outputs) {
+    for (const item of output.structuredMemories) {
+      if (appendUniqueLimitedValue(structured, seen, `[${item.kind}] ${item.text}`, maxItems)) return structured;
+    }
+  }
+  return structured;
 }
 
 function slugify(input: string | undefined, maxLen: number): string {
@@ -261,15 +304,19 @@ function collectSessionSignals(session: PersistedSession, options?: { explicitOn
   structuredMemories: Stage1Output['structuredMemories'];
 } {
   const normalized = normalizeSessionSignals(session.signals, Date.now());
-  const structuredMemories = normalized.structuredMemories
-    .filter((item) => !hasMemoryScaffoldingPayload(item.text))
-    .filter((item) => !hasGeneratedMemoryArtifactPayload(item.text) && !hasGeneratedMemoryArtifactPayload(item.memoryKey))
-    .filter((item) => !hasMemorySecretPayload(item.text) && !hasMemorySecretPayload(item.memoryKey))
-    .filter((item) => !hasDerivableCodebaseMemoryPayload(item.text) && !hasDerivableCodebaseMemoryPayload(item.memoryKey))
-    .filter((item) => !options?.explicitOnly || isExplicitMemoryCandidate(item))
-    .slice(0, 16);
+  const structuredMemories: Stage1Output['structuredMemories'] = [];
+  const explicitOnly = !!options?.explicitOnly;
+  for (const item of normalized.structuredMemories) {
+    if (hasMemoryScaffoldingPayload(item.text)) continue;
+    if (hasGeneratedMemoryArtifactPayload(item.text) || hasGeneratedMemoryArtifactPayload(item.memoryKey)) continue;
+    if (hasMemorySecretPayload(item.text) || hasMemorySecretPayload(item.memoryKey)) continue;
+    if (hasDerivableCodebaseMemoryPayload(item.text) || hasDerivableCodebaseMemoryPayload(item.memoryKey)) continue;
+    if (explicitOnly && !isExplicitMemoryCandidate(item)) continue;
+    structuredMemories.push(item);
+    if (structuredMemories.length >= 16) break;
+  }
 
-  if (options?.explicitOnly) {
+  if (explicitOnly) {
     return {
       userIntents: [],
       assistantOutcomes: [],
@@ -711,15 +758,7 @@ export function renderMemoryFile(outputs: Stage1Output[]): string {
     return lines.join('\n');
   }
 
-  const focus = uniqueLimited(
-    outputs
-      .flatMap((output) => [
-        output.structuredMemories[0]?.text || '',
-        output.assistantOutcomes[0] || output.userIntents[0] || '',
-      ])
-      .filter(Boolean),
-    10,
-  );
+  const focus = collectMemoryFocusValues(outputs, 10);
 
   if (focus.length === 0) {
     lines.push('- No stable context extracted yet.');
@@ -731,10 +770,7 @@ export function renderMemoryFile(outputs: Stage1Output[]): string {
 
   lines.push('');
   lines.push('## Structured Memory Candidates');
-  const structured = uniqueLimited(
-    outputs.flatMap((output) => output.structuredMemories.map((item) => `[${item.kind}] ${item.text}`)),
-    16,
-  );
+  const structured = collectStructuredMemoryLines(outputs, 16);
   if (structured.length === 0) {
     lines.push('- No structured memories extracted yet.');
   } else {
@@ -745,7 +781,9 @@ export function renderMemoryFile(outputs: Stage1Output[]): string {
 
   lines.push('');
   lines.push('## Recent Sessions');
-  for (const output of outputs.slice(0, 20)) {
+  let recentSessions = 0;
+  for (const output of outputs) {
+    if (recentSessions >= 20) break;
     lines.push(`### ${output.title}`);
     lines.push(`- updated_at: ${toIso(output.sourceUpdatedAt)}`);
     lines.push(`- session_id: ${output.sessionId}`);
@@ -754,6 +792,7 @@ export function renderMemoryFile(outputs: Stage1Output[]): string {
     lines.push(`- structured_memory_count: ${output.structuredMemories.length}`);
     lines.push(`- rollout_summary: ${ROLLOUT_SUMMARIES_DIR_NAME}/${output.rolloutFile}`);
     lines.push('');
+    recentSessions++;
   }
 
   return redactMemorySecrets(lines.join('\n'));
@@ -774,15 +813,7 @@ export function renderMemorySummary(outputs: Stage1Output[]): string {
     return lines.join('\n');
   }
 
-  const focus = uniqueLimited(
-    outputs
-      .flatMap((output) => [
-        output.structuredMemories[0]?.text || '',
-        output.assistantOutcomes[0] || output.userIntents[0] || '',
-      ])
-      .filter(Boolean),
-    8,
-  );
+  const focus = collectMemoryFocusValues(outputs, 8);
 
   if (focus.length === 0) {
     lines.push('- No stable focus extracted yet.');
@@ -816,10 +847,13 @@ export function renderMemorySummary(outputs: Stage1Output[]): string {
 
   lines.push('');
   lines.push('## Latest Rollouts');
-  for (const output of outputs.slice(0, 12)) {
+  let latestRollouts = 0;
+  for (const output of outputs) {
+    if (latestRollouts >= 12) break;
     lines.push(
       `- ${toIso(output.sourceUpdatedAt)} | ${output.title} | ${ROLLOUT_SUMMARIES_DIR_NAME}/${output.rolloutFile}`,
     );
+    latestRollouts++;
   }
 
   lines.push('');

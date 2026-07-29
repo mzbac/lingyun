@@ -1,7 +1,11 @@
 import * as assert from 'assert';
 import * as vscode from 'vscode';
 
-import { loadAutoApprovedTools, persistAutoApprovedTools } from '../../ui/chat/autoApprovedToolsStore';
+import {
+  loadAutoApprovedTools,
+  persistAutoApprovedTools,
+  rememberAutoApprovedTool,
+} from '../../ui/chat/autoApprovedToolsStore';
 
 import { createChatTestExtensionContext, createStandaloneChatController } from './chatControllerHarness';
 
@@ -201,12 +205,88 @@ suite('Chat approvals service', () => {
     assert.deepStrictEqual((controller.context.globalState as any).get('autoApprovedTools'), ['grep']);
   });
 
+  test('markActiveStepStatus updates the active step message only', () => {
+    const controller = createStandaloneChatController();
+    const posted: unknown[] = [];
+    controller.webviewApi.postMessage = (message: unknown) => {
+      posted.push(message);
+    };
+    controller.messages.push(
+      {
+        id: 'step-1',
+        role: 'step',
+        content: '',
+        timestamp: 1,
+        step: { index: 1, status: 'running' },
+      },
+      {
+        id: 'assistant-1',
+        role: 'assistant',
+        content: 'done',
+        timestamp: 2,
+      },
+      {
+        id: 'step-2',
+        role: 'step',
+        content: '',
+        timestamp: 3,
+        step: { index: 2, status: 'running' },
+      },
+    );
+    controller.activeStepId = 'step-2';
+
+    controller.approvalsApi.markActiveStepStatus('canceled');
+
+    assert.strictEqual(controller.messages[0].step?.status, 'running');
+    assert.strictEqual(controller.messages[2].step?.status, 'canceled');
+    assert.deepStrictEqual(posted, [
+      { type: 'updateMessage', message: controller.messages[2] },
+    ]);
+  });
+
+  test('markActiveStepStatus ignores stale active step ids', () => {
+    const controller = createStandaloneChatController();
+    const posted: unknown[] = [];
+    controller.webviewApi.postMessage = (message: unknown) => {
+      posted.push(message);
+    };
+    controller.messages.push({
+      id: 'step-1',
+      role: 'step',
+      content: '',
+      timestamp: 1,
+      step: { index: 1, status: 'running' },
+    });
+    controller.activeStepId = 'missing-step';
+
+    controller.approvalsApi.markActiveStepStatus('done');
+
+    assert.strictEqual(controller.messages[0].step?.status, 'running');
+    assert.deepStrictEqual(posted, []);
+  });
+
   test('loadAutoApprovedTools normalizes malformed persisted values', () => {
     const loaded = loadAutoApprovedTools({
       get: () => [' grep ', '', 'read', 'grep', 42, '   '] as unknown as string[],
     });
 
     assert.deepStrictEqual([...loaded], ['grep', 'read']);
+  });
+
+  test('rememberAutoApprovedTool normalizes in place without duplicate additions', () => {
+    const autoApprovedTools = new Set([' grep ', 'read']);
+
+    assert.strictEqual(rememberAutoApprovedTool(autoApprovedTools, 'grep'), true);
+    assert.deepStrictEqual([...autoApprovedTools], ['grep', 'read']);
+
+    assert.strictEqual(rememberAutoApprovedTool(autoApprovedTools, ' read '), false);
+    assert.deepStrictEqual([...autoApprovedTools], ['grep', 'read']);
+
+    assert.strictEqual(rememberAutoApprovedTool(autoApprovedTools, 'bash'), true);
+    assert.deepStrictEqual([...autoApprovedTools], ['grep', 'read', 'bash']);
+
+    assert.strictEqual(rememberAutoApprovedTool(autoApprovedTools, '   '), false);
+    assert.deepStrictEqual([...autoApprovedTools], ['grep', 'read', 'bash']);
   });
 
   test('controller loads persisted auto-approved tools through the shared store contract', async () => {

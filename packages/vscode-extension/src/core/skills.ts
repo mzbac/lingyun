@@ -18,6 +18,7 @@ export type { SkillIndex, SkillInfo };
 let watcherState:
   | {
       workspaceRoot: string;
+      patternKey: string;
       patterns: Map<string, vscode.FileSystemWatcher>;
       extensionContext: vscode.ExtensionContext;
     }
@@ -40,15 +41,24 @@ function ensureWorkspaceWatchers(
   workspaceRoot: string,
   patterns: string[],
 ): void {
-  const normalizedPatterns = patterns
-    .map((p) => p.replace(/\\/g, '/').replace(/^\/+/, '').trim())
-    .filter(Boolean);
+  const normalizedPatterns: string[] = [];
+  const seenPatterns = new Set<string>();
+  for (const pattern of patterns) {
+    const normalized = pattern.replace(/\\/g, '/').replace(/^\/+/, '').trim();
+    if (!normalized || seenPatterns.has(normalized)) continue;
+    seenPatterns.add(normalized);
+    normalizedPatterns.push(normalized);
+  }
+
+  const sortedPatterns =
+    normalizedPatterns.length <= 1 ? normalizedPatterns : normalizedPatterns.slice().sort();
+  const patternKey = JSON.stringify(sortedPatterns);
 
   if (
     watcherState &&
     watcherState.workspaceRoot === workspaceRoot &&
     watcherState.extensionContext === extensionContext &&
-    Array.from(watcherState.patterns.keys()).sort().join('|') === normalizedPatterns.sort().join('|')
+    watcherState.patternKey === patternKey
   ) {
     return;
   }
@@ -74,7 +84,7 @@ function ensureWorkspaceWatchers(
     created.set(pattern, watcher);
   }
 
-  watcherState = { workspaceRoot, patterns: created, extensionContext };
+  watcherState = { workspaceRoot, patternKey, patterns: created, extensionContext };
   invalidateSkillIndexCache();
 }
 
@@ -87,9 +97,12 @@ export async function getSkillIndex(options: {
   watchWorkspace?: boolean;
 }): Promise<SkillIndex> {
   const workspaceRoot = options.workspaceRoot ? path.resolve(options.workspaceRoot) : undefined;
-  const searchPaths = (Array.isArray(options.searchPaths) ? options.searchPaths : [])
-    .map(p => (typeof p === 'string' ? p.trim() : ''))
-    .filter(Boolean);
+  const searchPaths: string[] = [];
+  const searchPathInputs = Array.isArray(options.searchPaths) ? options.searchPaths : [];
+  for (const input of searchPathInputs) {
+    const trimmed = typeof input === 'string' ? input.trim() : '';
+    if (trimmed) searchPaths.push(trimmed);
+  }
 
   const watchWorkspace = !!options.extensionContext && options.watchWorkspace !== false && !!workspaceRoot;
 

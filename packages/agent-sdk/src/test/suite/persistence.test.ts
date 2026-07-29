@@ -1,4 +1,5 @@
 import * as assert from 'assert';
+import * as fs from 'fs/promises';
 
 import {
   LingyunSession,
@@ -13,10 +14,17 @@ import {
 } from '../../index.js';
 
 type StoredRow = { snapshotJson: string; updatedAt: string };
+type FakeSqliteDriver = {
+  driver: SqliteDriver;
+  rows: Map<string, StoredRow>;
+  calls: string[];
+  rowWrites: { count: number };
+};
 
-function createFakeSqliteDriver(): { driver: SqliteDriver; rows: Map<string, StoredRow>; calls: string[] } {
+function createFakeSqliteDriver(): FakeSqliteDriver {
   const rows = new Map<string, StoredRow>();
   const calls: string[] = [];
+  const rowWrites = { count: 0 };
 
   const driver: SqliteDriver = {
     execute: async (sql: string, params?: unknown[]) => {
@@ -26,7 +34,18 @@ function createFakeSqliteDriver(): { driver: SqliteDriver; rows: Map<string, Sto
 
       if (sql.startsWith('INSERT INTO')) {
         const [sessionId, snapshotJson, updatedAt] = (params ?? []) as [string, string, string];
-        rows.set(String(sessionId), { snapshotJson: String(snapshotJson), updatedAt: String(updatedAt) });
+        const id = String(sessionId);
+        const nextRow = { snapshotJson: String(snapshotJson), updatedAt: String(updatedAt) };
+        const existing = rows.get(id);
+        if (
+          sql.includes('WHERE') &&
+          existing?.snapshotJson === nextRow.snapshotJson &&
+          existing?.updatedAt === nextRow.updatedAt
+        ) {
+          return;
+        }
+        rows.set(id, nextRow);
+        rowWrites.count++;
         return;
       }
 
@@ -67,7 +86,7 @@ function createFakeSqliteDriver(): { driver: SqliteDriver; rows: Map<string, Sto
     },
   };
 
-  return { driver, rows, calls };
+  return { driver, rows, calls, rowWrites };
 }
 
 suite('persistence', () => {
@@ -471,6 +490,70 @@ suite('persistence', () => {
     );
 
     assert.equal(rows.has('s1'), false);
+  });
+
+  test('SqliteSessionStore save skips identical row updates at the database layer', async () => {
+    const { driver, rows, calls, rowWrites } = createFakeSqliteDriver();
+    const store = new SqliteSessionStore(driver);
+
+    const snapshot: LingyunSessionSnapshot = {
+      version: 1,
+      savedAt: '2020-01-01T00:00:00.000Z',
+      sessionId: ' s1 ',
+      history: [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hello' }] }] as any,
+    };
+
+    await store.save(snapshot);
+    const firstRow = rows.get('s1');
+    assert.ok(firstRow, 'expected first save to persist a row');
+    assert.equal(rowWrites.count, 1);
+
+    await store.save(snapshot);
+    assert.strictEqual(rows.get('s1'), firstRow);
+    assert.equal(rowWrites.count, 1);
+
+    await store.save({ ...snapshot, savedAt: '2020-01-02T00:00:00.000Z' });
+    assert.notStrictEqual(rows.get('s1'), firstRow);
+    assert.equal(rowWrites.count, 2);
+
+    const insertSql = calls.find(sql => sql.startsWith('INSERT INTO'));
+    assert.match(
+      insertSql ?? '',
+      /WHERE lingyun_sessions\.snapshotJson IS NOT excluded\.snapshotJson OR lingyun_sessions\.updatedAt IS NOT excluded\.updatedAt/
+    );
+  });
+
+  test('SqliteSessionStore list skips malformed rows without filter-map arrays', async () => {
+    const driver: SqliteDriver = {
+      execute: async () => undefined,
+      queryOne: async () => undefined,
+      queryAll: async <T extends Record<string, unknown>>() =>
+        ([
+          { sessionId: 's1', updatedAt: '2020-01-02T00:00:00.000Z' },
+          { sessionId: 42, updatedAt: '2020-01-01T00:00:00.000Z' },
+          { sessionId: 's2', updatedAt: undefined },
+          { sessionId: 's3', updatedAt: '2020-01-03T00:00:00.000Z' },
+        ] as unknown as T[]),
+    };
+    const store = new SqliteSessionStore(driver);
+
+    assert.deepEqual(await store.list({ limit: 10 }), [
+      { sessionId: 's1', updatedAt: '2020-01-02T00:00:00.000Z' },
+      { sessionId: 's3', updatedAt: '2020-01-03T00:00:00.000Z' },
+    ]);
+
+    const source = await fs.readFile(new URL('../../../src/persistence/sqliteSessionStore.ts', import.meta.url), 'utf8');
+    const start = source.indexOf('async list(options?: { limit?: number; offset?: number })');
+    assert.ok(start >= 0, 'expected list implementation');
+    const end = source.indexOf('\n  async delete', start);
+    assert.ok(end > start, 'expected delete after list');
+    const section = source.slice(start, end);
+
+    assert.match(section, /const entries: LingyunSessionStoreEntry\[\] = \[\];/);
+    assert.match(section, /for \(const row of rows\)/);
+    assert.match(section, /entries\.push\(\{ sessionId: row\.sessionId, updatedAt: row\.updatedAt \}\);/);
+    assert.doesNotMatch(section, /\.filter\(/);
+    assert.doesNotMatch(section, /\.map\(/);
   });
 
   test('SqliteSessionStore requires snapshot session identity when saving', async () => {

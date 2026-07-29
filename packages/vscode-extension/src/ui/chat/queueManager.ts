@@ -2,7 +2,14 @@ import * as vscode from 'vscode';
 
 import type { ChatQueueHost } from './controllerPorts';
 import type { ChatController } from './controller';
-import type { ChatImageAttachment, ChatMessage, ChatQueuedInput, ChatSessionInfo, ChatUserInput } from './types';
+import type {
+  ChatImageAttachment,
+  ChatMessage,
+  ChatQueuedInput,
+  ChatSessionInfo,
+  ChatUserInput,
+  ChatUserMessageOptions,
+} from './types';
 
 const MAX_QUEUED_INPUTS = 50;
 const DEFAULT_MAX_RUNTIME_ATTACHMENT_BYTES = 96_000_000;
@@ -26,13 +33,16 @@ function getMaxRuntimeAttachmentBytes(): number {
 }
 
 function estimateAttachmentBytes(attachments: ChatImageAttachment[]): number {
-  return attachments.reduce((total, attachment) => {
-    if (!attachment) return total;
+  let total = 0;
+  for (let index = 0; index < attachments.length; index++) {
+    const attachment = attachments[index];
+    if (!attachment) continue;
     const dataUrl = typeof attachment.dataUrl === 'string' ? attachment.dataUrl.length : 0;
     const mediaType = typeof attachment.mediaType === 'string' ? attachment.mediaType.length : 0;
     const filename = typeof attachment.filename === 'string' ? attachment.filename.length : 0;
-    return total + dataUrl + mediaType + filename;
-  }, 0);
+    total += dataUrl + mediaType + filename;
+  }
+  return total;
 }
 
 export class ChatQueueManager {
@@ -76,11 +86,15 @@ export class ChatQueueManager {
       this.setAttachments(queued.id, payload.attachments);
     }
 
-    while (queue.length > MAX_QUEUED_INPUTS) {
-      const removed = queue.shift();
-      if (removed?.id) {
-        this.deleteAttachments(removed.id);
+    if (queue.length > MAX_QUEUED_INPUTS) {
+      const removeCount = queue.length - MAX_QUEUED_INPUTS;
+      for (let index = 0; index < removeCount; index++) {
+        const removed = queue[index];
+        if (removed?.id) {
+          this.deleteAttachments(removed.id);
+        }
       }
+      queue.splice(0, removeCount);
     }
 
     session.queuedInputs = queue;
@@ -96,7 +110,9 @@ export class ChatQueueManager {
 
   clearSession(session: ChatSessionInfo, options?: CommitOptions): void {
     this.cancelAutosendForSession(session.id);
+    const hadQueueArray = Array.isArray(session.queuedInputs);
     const queue = this.getQueuedInputs(session);
+    if (hadQueueArray && queue.length === 0) return;
     for (const item of queue) {
       if (item?.id) {
         this.deleteAttachments(item.id);
@@ -150,13 +166,20 @@ export class ChatQueueManager {
     await this.flushAutosendForSession(this.controller.activeSessionId);
   }
 
-  takeByIdFromActiveSession(id: string): ChatUserInput | undefined {
-    if (!id) return undefined;
+  takeByIdFromActiveSession(id: string): { input?: ChatUserInput; queueChanged: boolean } {
+    if (!id) return { queueChanged: false };
     const session = this.controller.getActiveSession();
     const queue = this.getQueuedInputs(session);
-    const index = queue.findIndex(item => item?.id === id);
-    if (index < 0) return undefined;
-    return this.takeAtIndex(session, index);
+    for (let index = 0; index < queue.length; index++) {
+      const item = queue[index];
+      if (item?.id === id) {
+        return {
+          input: this.takeAtIndex(session, index),
+          queueChanged: true,
+        };
+      }
+    }
+    return { queueChanged: false };
   }
 
   takeNextRunnableFromActiveSession(): ChatUserInput | undefined {
@@ -194,19 +217,23 @@ export class ChatQueueManager {
 
     const queue = this.getQueuedInputs(session);
     let removed = 0;
-    while (this.runtimeAttachmentBytes > maxBytes) {
-      const index = queue.findIndex(item => !!item?.id && this.attachmentsById.has(item.id));
-      if (index < 0) break;
-      const [item] = queue.splice(index, 1);
-      if (item?.id) {
+    let writeIndex = 0;
+    for (let readIndex = 0; readIndex < queue.length; readIndex++) {
+      const item = queue[readIndex];
+      if (this.runtimeAttachmentBytes > maxBytes && item?.id && this.attachmentsById.has(item.id)) {
         this.deleteAttachments(item.id);
         removed++;
+        continue;
       }
+      queue[writeIndex++] = item;
+    }
+    if (writeIndex < queue.length) {
+      queue.length = writeIndex;
     }
 
     session.queuedInputs = queue;
     if (removed > 0) {
-      this.postAttachmentBudgetWarning(removed);
+      this.postAttachmentBudgetWarning(removed, { persist: false });
     }
   }
 
@@ -256,11 +283,46 @@ export class ChatQueueManager {
   }
 
   private takeNextRunnable(session: ChatSessionInfo): ChatUserInput | undefined {
-    while (this.getQueuedInputs(session).length > 0) {
-      const next = this.takeAtIndex(session, 0);
-      if (next) return next;
+    const queue = this.getQueuedInputs(session);
+    let removeCount = 0;
+    let unavailableAttachmentCount = 0;
+    let next: ChatUserInput | undefined;
+
+    for (let index = 0; index < queue.length; index++) {
+      const item = queue[index];
+      removeCount++;
+      if (!item) continue;
+
+      const attachments = item.id ? this.attachmentsById.get(item.id) || [] : [];
+      const message = typeof item.message === 'string' ? item.message : '';
+      const hasContent = !!message.trim() || attachments.length > 0;
+      if (item.id) {
+        this.deleteAttachments(item.id);
+      }
+
+      if (!hasContent) {
+        if (item.attachmentCount > 0) {
+          unavailableAttachmentCount++;
+        }
+        continue;
+      }
+
+      next = {
+        message,
+        ...(attachments.length > 0 ? { attachments } : {}),
+      };
+      break;
     }
-    return undefined;
+
+    if (removeCount <= 0) return undefined;
+    queue.splice(0, removeCount);
+    session.queuedInputs = queue;
+
+    if (unavailableAttachmentCount > 0) {
+      this.postUnavailableAttachmentWarning(unavailableAttachmentCount, { persist: false });
+    }
+    this.commitActiveSession(session);
+    return next;
   }
 
   private takeAtIndex(session: ChatSessionInfo, index: number): ChatUserInput | undefined {
@@ -269,7 +331,8 @@ export class ChatQueueManager {
     if (!item) return undefined;
 
     const attachments = item.id ? this.attachmentsById.get(item.id) || [] : [];
-    const hasContent = !!item.message.trim() || attachments.length > 0;
+    const message = typeof item.message === 'string' ? item.message : '';
+    const hasContent = !!message.trim() || attachments.length > 0;
     const missingAttachments = !hasContent && item.attachmentCount > 0;
 
     queue.splice(index, 1);
@@ -277,21 +340,22 @@ export class ChatQueueManager {
     if (item.id) {
       this.deleteAttachments(item.id);
     }
-    this.commitActiveSession(session);
 
     if (missingAttachments) {
-      this.postUnavailableAttachmentWarning();
+      this.postUnavailableAttachmentWarning(1, { persist: false });
+      this.commitActiveSession(session);
       return undefined;
     }
+    this.commitActiveSession(session);
     if (!hasContent) return undefined;
 
     return {
-      message: item.message,
+      message,
       ...(attachments.length > 0 ? { attachments } : {}),
     };
   }
 
-  private postAttachmentBudgetWarning(removedCount: number): void {
+  private postAttachmentBudgetWarning(removedCount: number, options?: { persist?: boolean }): void {
     const label = removedCount === 1 ? 'message' : 'messages';
     const warningMsg: ChatMessage = {
       id: crypto.randomUUID(),
@@ -302,20 +366,26 @@ export class ChatQueueManager {
     };
     this.controller.messages.push(warningMsg);
     this.controller.postMessage({ type: 'message', message: warningMsg });
-    this.controller.persistActiveSession();
+    if (options?.persist !== false) {
+      this.controller.persistActiveSession();
+    }
   }
 
-  private postUnavailableAttachmentWarning(): void {
+  private postUnavailableAttachmentWarning(removedCount = 1, options?: { persist?: boolean }): void {
+    const content = removedCount === 1
+      ? 'LingYun: Removed a queued message because its image attachments are no longer available (likely due to reload). Resend it with images if still needed.'
+      : `LingYun: Removed ${removedCount} queued messages because their image attachments are no longer available (likely due to reload). Resend them with images if still needed.`;
     const warningMsg: ChatMessage = {
       id: crypto.randomUUID(),
       role: 'warning',
-      content:
-        'LingYun: Removed a queued message because its image attachments are no longer available (likely due to reload). Resend it with images if still needed.',
+      content,
       timestamp: Date.now(),
     };
     this.controller.messages.push(warningMsg);
     this.controller.postMessage({ type: 'message', message: warningMsg });
-    this.controller.persistActiveSession();
+    if (options?.persist !== false) {
+      this.controller.persistActiveSession();
+    }
   }
 
   private commitActiveSession(session: ChatSessionInfo, options?: CommitOptions): void {
@@ -349,7 +419,7 @@ export function createChatQueueManager(controller: ChatController): ChatQueueMan
     runner: {
       handleUserMessage: (
         content: string | ChatUserInput,
-        options?: { fromQueue?: boolean; synthetic?: boolean; displayContent?: string; forceBuild?: boolean }
+        options?: ChatUserMessageOptions
       ) => controller.runner.handleUserMessage(content, options),
     },
     getActiveSession: () => controller.sessionApi.getActiveSession(),
