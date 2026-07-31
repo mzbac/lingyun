@@ -965,6 +965,49 @@ suite('LingYun Agent SDK', () => {
     assert.strictEqual(llm.lastOptions?.maxOutputTokens, 12345);
   });
 
+  test('warns when the response reaches the configured output limit', async () => {
+    const llm = new MockLLMProvider();
+    const agent = new LingyunAgent(llm, { model: 'mock-model', maxOutputTokens: 321 }, new ToolRegistry());
+    const session = new LingyunSession();
+    llm.queueResponse({
+      kind: 'stream',
+      chunks: [
+        { type: 'text-start', id: 'text_0' },
+        { type: 'text-delta', id: 'text_0', delta: 'Partial response' },
+        { type: 'text-end', id: 'text_0' },
+        {
+          type: 'finish',
+          usage: usage({ outputTotal: 321 }),
+          finishReason: { unified: 'length', raw: 'length' },
+        },
+      ],
+    });
+
+    const callbackNotices: Array<{ level: string; message: string }> = [];
+    const eventNotices: Array<{ level: string; message: string }> = [];
+    const run = agent.run({
+      session,
+      input: 'Write a long response',
+      callbacks: {
+        onNotice: notice => {
+          callbackNotices.push(notice);
+        },
+      },
+    });
+    for await (const event of run.events) {
+      if (event.type === 'notice') eventNotices.push(event.notice);
+    }
+    const result = await run.done;
+
+    assert.strictEqual(result.text, 'Partial response');
+    assert.strictEqual(callbackNotices.length, 1);
+    assert.deepStrictEqual(eventNotices, callbackNotices);
+    assert.strictEqual(callbackNotices[0]?.level, 'warning');
+    assert.match(callbackNotices[0]?.message ?? '', /321-token output limit/);
+    assert.match(callbackNotices[0]?.message ?? '', /Fallback max output tokens/);
+    assert.match(callbackNotices[0]?.message ?? '', /ask the agent to continue/);
+  });
+
   test('passes xhigh reasoning effort for prefixed OpenAI-compatible GPT-5.5 Responses models', async () => {
     const llm = new MockOpenAICompatibleProvider();
     const agent = new LingyunAgent(

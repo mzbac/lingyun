@@ -5,6 +5,7 @@ import type { RunnerPlanningView } from './callbackContracts';
 import {
   appendDebugLog,
   applyCommonToolResultFields,
+  postAgentNotice,
   postTurnStatus,
   resolveToolCallUiPath,
   upsertTaskChildSession,
@@ -138,6 +139,9 @@ export function createPlanningCallbacks(
         }
       }
       postTurnStatus(view, planTurnId, status);
+    },
+    onNotice: notice => {
+      postAgentNotice(view, notice, { persist: persistSessions });
     },
     onAssistantToken: token => {
       buffered += token;

@@ -104,6 +104,38 @@ suite('Chat runner callbacks', () => {
     assert.ok(posted.some((message) => (message as any)?.type === 'complete'), 'expected completion event');
   });
 
+  test('runtime notices are shown as durable turn warnings', () => {
+    const controller = createStandaloneChatController();
+    const posted: unknown[] = [];
+
+    controller.view = {} as vscode.WebviewView;
+    controller.currentTurnId = 'turn-1';
+    controller.mode = 'build';
+    controller.currentModel = 'mock-model';
+    controller.webviewApi.postMessage = (message: unknown) => {
+      posted.push(message);
+    };
+    controller.sessionApi.isSessionPersistenceEnabled = () => false;
+    controller.sessionApi.getContextForUI = () => ({}) as any;
+
+    const callbacks = controller.runnerCallbacksApi.createAgentCallbacks();
+    callbacks.onNotice?.({ level: 'warning', message: 'Output limit reached.' });
+
+    const warning = controller.messages.find((message) => message.role === 'warning');
+    assert.ok(warning, 'expected a warning chat message');
+    assert.strictEqual(warning?.content, 'Output limit reached.');
+    assert.strictEqual(warning?.turnId, 'turn-1');
+    assert.ok(
+      posted.some(
+        (message) =>
+          (message as any)?.type === 'message' &&
+          (message as any)?.message?.role === 'warning' &&
+          (message as any)?.message?.content === 'Output limit reached.',
+      ),
+      'expected the warning to be posted to the webview',
+    );
+  });
+
   test('iteration end reconciles the latest assistant history message', async () => {
     const history = [
       { id: 'user-1', role: 'user', parts: [{ type: 'text', text: 'Original request' }] },

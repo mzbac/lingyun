@@ -53,16 +53,41 @@ function getTaskToolModelWarning(meta: RecordLike): string | undefined {
   return warning || undefined;
 }
 
-function emitWarningMessage(view: WarningMessageView, warning: string): void {
+function emitWarningMessage(view: WarningMessageView, warning: string): ChatMessage | undefined {
+  const content = String(warning || '').trim();
+  if (!content) return undefined;
+  for (let index = view.messages.length - 1; index >= 0; index -= 1) {
+    const existing = view.messages[index];
+    if (existing.turnId !== view.currentTurnId) continue;
+    if (existing.role === 'warning' && existing.content.trim() === content) {
+      return undefined;
+    }
+  }
+
   const msg: ChatMessage = {
     id: crypto.randomUUID(),
     role: 'warning',
-    content: warning,
+    content,
     timestamp: Date.now(),
     turnId: view.currentTurnId,
   };
   view.messages.push(msg);
   view.postMessage({ type: 'message', message: msg });
+  return msg;
+}
+
+type AgentNotice = Parameters<NonNullable<AgentCallbacks['onNotice']>>[0];
+
+export function postAgentNotice(
+  view: WarningMessageView & { persistActiveSession(): void },
+  notice: AgentNotice,
+  options?: { persist?: boolean },
+): void {
+  const message = typeof notice?.message === 'string' ? notice.message : '';
+  if (!emitWarningMessage(view, message)) return;
+  if (options?.persist) {
+    view.persistActiveSession();
+  }
 }
 
 function toAgentSessionStateFromSnapshot(snapshot: ReturnType<typeof tryParseSessionSnapshot>): AgentSessionState {

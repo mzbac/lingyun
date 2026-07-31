@@ -291,6 +291,7 @@ export async function runOnce(params: {
 
     let lastResponse = '';
     let syntheticResumeUserText = params.syntheticResumeUserText;
+    const maxOutputTokens = params.getMaxOutputTokens();
 
     const maxIterations =
       params.maxIterations === -1
@@ -397,7 +398,7 @@ export async function runOnce(params: {
             topP: (callParams as any).topP,
             topK: (callParams as any).topK,
             ...((callParams as any).options ? { providerOptions: (callParams as any).options } : {}),
-            maxOutputTokens: params.getMaxOutputTokens(),
+            maxOutputTokens,
             abortSignal: combined,
           });
 
@@ -715,7 +716,7 @@ export async function runOnce(params: {
       const modelLimit = params.getModelLimit(modelId);
       const reservedOutputTokens = getReservedOutputTokens({
         modelLimit,
-        maxOutputTokens: params.getMaxOutputTokens(),
+        maxOutputTokens,
       });
 
       if (
@@ -739,7 +740,7 @@ export async function runOnce(params: {
           providerBehavior,
           compactionConfig: params.compactionConfig,
           providerOptionParams,
-          maxOutputTokens: params.getMaxOutputTokens(),
+          maxOutputTokens,
         });
         continue;
       }
@@ -749,6 +750,19 @@ export async function runOnce(params: {
 
       const drained = await params.drainPendingInputs(session, callbacksSafe, signal);
       if (drained > 0) continue;
+
+      if (streamFinishReason === 'length') {
+        await invokeCallbackSafely(
+          callbacksSafe?.onNotice,
+          { label: 'onNotice output_limit', onDebug: callbacksSafe?.onDebug },
+          {
+            level: 'warning',
+            message:
+              `The response reached the ${maxOutputTokens}-token output limit and may be incomplete. ` +
+              'Open Generation settings and increase "Fallback max output tokens" (up to the model-supported limit), then ask the agent to continue.',
+          },
+        );
+      }
 
       await completeChat(assistantMessage.id, lastAssistantText, lastResponse);
       return lastResponse;

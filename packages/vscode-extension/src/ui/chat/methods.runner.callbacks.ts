@@ -15,7 +15,7 @@ import { currentTurnHasExternalMemoryContextAttempt, currentTurnIsMemoryExcluded
 import { createPlanningCallbacks } from './runner/planningCallbacks';
 import { createStepSnapshotCallbacks } from './runner/stepSnapshotCallbacks';
 import { createToolLifecycleCallbacks } from './runner/toolLifecycleCallbacks';
-import { appendDebugLog, postTurnStatus } from './runner/callbackUtils';
+import { appendDebugLog, postAgentNotice, postTurnStatus } from './runner/callbackUtils';
 import { createChatRunnerCallbacksDepsForController } from './runner/callbackControllerAdapter';
 
 /**
@@ -107,6 +107,9 @@ export function createChatRunnerCallbacksService(controller: ChatRunnerCallbacks
       onStatusChange: (status) => {
         executionState.resetStreamedContentForRetry(status);
         postTurnStatus(this, this.currentTurnId, status);
+      },
+      onNotice: (notice) => {
+        postAgentNotice(this, notice, { persist: persistSessions });
       },
       onRequestApproval: async (tc, def, approvalContext) => {
         executionState.postStepMsgIfNeeded();
