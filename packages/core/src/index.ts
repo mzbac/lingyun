@@ -186,6 +186,8 @@ export {
   applyOpenAICompatibleReasoningField,
 } from './modelMessages';
 
+export { transformOpenAICompatibleRequestBody } from './openaiCompatibleReplay';
+
 export type { ChatModelErrorContext } from './providerModelErrors';
 export { attachChatModelErrorMetadata, wrapChatModelErrors } from './providerModelErrors';
 export { isPrivateIpv4Address } from './ip';

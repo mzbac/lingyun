@@ -706,7 +706,7 @@ suite('AgentLoop', () => {
     assert.strictEqual(getMessageText(history[3]), 'Second');
   });
 
-  test('continue - replays reasoning_content + raw assistant text for openaiCompatible prompts', async () => {
+  test('continue - replays native reasoning and literal assistant text for openaiCompatible prompts', async () => {
     const openaiCompatible = new MockOpenAICompatibleProvider();
     agent = new AgentLoop(
       openaiCompatible,
@@ -716,8 +716,17 @@ suite('AgentLoop', () => {
     );
 
     openaiCompatible.setNextResponse({
-      kind: 'text',
-      content: '<think>hidden reasoning</think> Hello<tool_call>{}</tool_call>World',
+      kind: 'stream',
+      chunks: [
+        { type: 'reasoning-start' as const, id: 'r1' },
+        { type: 'reasoning-delta' as const, id: 'r1', delta: 'hidden reasoning ' },
+        { type: 'reasoning-end' as const, id: 'r1' },
+        { type: 'text-start' as const, id: 't1' },
+        { type: 'text-delta' as const, id: 't1', delta: ' literal </think> and ' },
+        { type: 'text-delta' as const, id: 't1', delta: '<think>source</think> stays visible\n' },
+        { type: 'text-end' as const, id: 't1' },
+        { type: 'finish' as const, usage: usage(), finishReason: { unified: 'stop', raw: 'stop' } },
+      ],
     });
     await agent.run('Hi');
 
@@ -727,7 +736,7 @@ suite('AgentLoop', () => {
     const prompt = openaiCompatible.lastPrompt as any[];
     const assistant = prompt.find((msg) => msg?.role === 'assistant');
     assert.ok(assistant, 'expected assistant message in prompt');
-    assert.strictEqual(assistant.providerOptions?.openaiCompatible?.reasoning_content, 'hidden reasoning');
+    assert.strictEqual(assistant.providerOptions?.openaiCompatible?.reasoning_content, 'hidden reasoning ');
     assert.ok(Array.isArray(assistant.content), 'expected multipart assistant content');
     assert.strictEqual(
       (assistant.content as any[]).some((part) => part?.type === 'reasoning'),
@@ -738,7 +747,7 @@ suite('AgentLoop', () => {
       .filter((part) => part?.type === 'text')
       .map((part) => part.text)
       .join('');
-    assert.strictEqual(assistantText, ' Hello<tool_call>{}</tool_call>World');
+    assert.strictEqual(assistantText, ' literal </think> and <think>source</think> stays visible\n');
   });
 
   test('continue - replays reasoning_text + raw assistant text for Copilot prompts', async () => {

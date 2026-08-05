@@ -1,6 +1,6 @@
 {
   "name": "@kooka/agent-sdk",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "type": "module",
   "sideEffects": false,
   "description": "Headless LingYun agent runtime for Node.js (tools + skills + plugins).",
@@ -41,7 +41,7 @@
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^2.0.30",
-    "@kooka/core": "^0.2.2",
+    "@kooka/core": "^0.2.3",
     "ai": "^6.0.86",
     "glob": "^13.0.6",
     "undici": "^7.25.0",

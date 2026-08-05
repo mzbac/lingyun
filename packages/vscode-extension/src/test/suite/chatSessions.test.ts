@@ -138,6 +138,195 @@ suite('Chat sessions facade', () => {
     assert.ok(sanitized.messages[0].toolCall?.diffUnavailableReason?.includes('privacy'));
   });
 
+  test('sanitizeSessionForStorage preserves unchanged exact replay artifacts byte-for-byte', () => {
+    const controller = createStandaloneChatController();
+    const reasoning = 'native reasoning with trailing space ';
+    const text = 'literal </think> and <think>source</think> stays visible\n';
+    const rawArguments = '{ "value" : 1.0, "text" : "\\u0061" }';
+    const session = createSession(controller, 'session-exact-replay', {
+      agentState: {
+        ...controller.sessionApi.getBlankAgentState(),
+        history: [
+          {
+            id: 'assistant-exact-replay',
+            role: 'assistant',
+            metadata: {
+              replay: { reasoning, text },
+            },
+            parts: [
+              { type: 'reasoning', text: reasoning, state: 'done' },
+              { type: 'text', text, state: 'done' },
+              {
+                type: 'dynamic-tool',
+                toolCallId: 'call-exact-1',
+                toolName: 'probe',
+                input: { value: 1, text: 'a' },
+                state: 'output-available',
+                output: { success: true, data: 'ok' },
+                callProviderMetadata: {
+                  openaiCompatible: {
+                    opaqueProviderField: 'keep-me',
+                    kookaReplay: {
+                      version: 1,
+                      toolCallId: 'call-exact-1',
+                      toolName: 'probe',
+                      rawArguments,
+                    },
+                  },
+                },
+              },
+            ],
+          } as any,
+        ],
+      },
+    });
+
+    const sanitized = sanitizeSessionForStorage(session);
+    const assistant = sanitized.agentState.history[0] as any;
+    const toolPart = assistant.parts.find((part: any) => part?.type === 'dynamic-tool');
+
+    assert.strictEqual(assistant.metadata?.replay?.reasoning, reasoning);
+    assert.strictEqual(assistant.metadata?.replay?.text, text);
+    assert.strictEqual(
+      toolPart?.callProviderMetadata?.openaiCompatible?.kookaReplay?.rawArguments,
+      rawArguments
+    );
+    assert.strictEqual(
+      toolPart?.callProviderMetadata?.openaiCompatible?.opaqueProviderField,
+      'keep-me'
+    );
+  });
+
+  test('sanitizeSessionForStorage atomically omits changed exact replay artifacts', () => {
+    const controller = createStandaloneChatController();
+    const secretReplay = {
+      reasoning: 'safe reasoning remains insufficient on its own',
+      text: 'token=replay-secret',
+    };
+    const secretRawArguments = '{ "token" : "marker-secret", "value" : 1.0 }';
+    const longReplay = {
+      reasoning: 'long replay',
+      text: 'x'.repeat(20_001),
+    };
+    const longRawArguments = `{ "payload" : "${'y'.repeat(20_001)}" }`;
+    const session = createSession(controller, 'session-changed-replay', {
+      agentState: {
+        ...controller.sessionApi.getBlankAgentState(),
+        history: [
+          {
+            id: 'assistant-redacted-replay',
+            role: 'assistant',
+            metadata: {
+              finishReason: 'stop',
+              replay: secretReplay,
+            },
+            parts: [
+              {
+                type: 'dynamic-tool',
+                toolCallId: 'call-secret-1',
+                toolName: 'probe',
+                input: { value: 1 },
+                state: 'output-available',
+                output: { success: true, data: 'ok' },
+                callProviderMetadata: {
+                  openaiCompatible: {
+                    opaqueProviderField: 'keep-redacted-sibling',
+                    kookaReplay: {
+                      version: 1,
+                      toolCallId: 'call-secret-1',
+                      toolName: 'probe',
+                      rawArguments: secretRawArguments,
+                    },
+                  },
+                  anotherProvider: { opaqueProviderField: 'keep-other-provider' },
+                },
+              },
+            ],
+          },
+          {
+            id: 'assistant-truncated-replay',
+            role: 'assistant',
+            metadata: {
+              finishReason: 'tool-calls',
+              replay: longReplay,
+            },
+            parts: [
+              {
+                type: 'dynamic-tool',
+                toolCallId: 'call-long-1',
+                toolName: 'probe',
+                input: { payload: 'normalized' },
+                state: 'output-available',
+                output: { success: true, data: 'ok' },
+                callProviderMetadata: {
+                  openaiCompatible: {
+                    opaqueProviderField: 'keep-truncated-sibling',
+                    kookaReplay: {
+                      version: 1,
+                      toolCallId: 'call-long-1',
+                      toolName: 'probe',
+                      rawArguments: longRawArguments,
+                    },
+                  },
+                },
+              },
+            ],
+          },
+        ] as any,
+      },
+    });
+
+    const sanitized = sanitizeSessionForStorage(session);
+    const redactedAssistant = sanitized.agentState.history[0] as any;
+    const redactedToolPart = redactedAssistant.parts[0];
+    const truncatedAssistant = sanitized.agentState.history[1] as any;
+    const truncatedToolPart = truncatedAssistant.parts[0];
+
+    assert.strictEqual(redactedAssistant.metadata?.replay, undefined);
+    assert.strictEqual(redactedAssistant.metadata?.finishReason, 'stop');
+    assert.strictEqual(
+      redactedToolPart.callProviderMetadata?.openaiCompatible?.kookaReplay,
+      undefined
+    );
+    assert.strictEqual(
+      redactedToolPart.callProviderMetadata?.openaiCompatible?.opaqueProviderField,
+      'keep-redacted-sibling'
+    );
+    assert.deepStrictEqual(
+      redactedToolPart.callProviderMetadata?.anotherProvider,
+      { opaqueProviderField: 'keep-other-provider' }
+    );
+
+    assert.strictEqual(truncatedAssistant.metadata?.replay, undefined);
+    assert.strictEqual(truncatedAssistant.metadata?.finishReason, 'tool-calls');
+    assert.strictEqual(
+      truncatedToolPart.callProviderMetadata?.openaiCompatible?.kookaReplay,
+      undefined
+    );
+    assert.strictEqual(
+      truncatedToolPart.callProviderMetadata?.openaiCompatible?.opaqueProviderField,
+      'keep-truncated-sibling'
+    );
+
+    assert.deepStrictEqual((session.agentState.history[0] as any).metadata.replay, secretReplay);
+    assert.strictEqual(
+      (session.agentState.history[0] as any)
+        .parts[0].callProviderMetadata.openaiCompatible.kookaReplay.rawArguments,
+      secretRawArguments
+    );
+    assert.deepStrictEqual((session.agentState.history[1] as any).metadata.replay, longReplay);
+    assert.strictEqual(
+      (session.agentState.history[1] as any)
+        .parts[0].callProviderMetadata.openaiCompatible.kookaReplay.rawArguments,
+      longRawArguments
+    );
+
+    const stored = JSON.stringify(sanitized);
+    assert.ok(!stored.includes('replay-secret'));
+    assert.ok(!stored.includes('marker-secret'));
+    assert.ok(!stored.includes('TRUNCATED FOR STORAGE'));
+  });
+
   test('pruneSessionForStorage keeps newest messages within the byte budget', () => {
     const controller = createStandaloneChatController();
     const messages = Array.from({ length: 30 }, (_unused, index) => ({

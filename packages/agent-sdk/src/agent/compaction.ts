@@ -178,7 +178,9 @@ export async function compactSessionInternal(params: {
     const rawModel = await params.llm.getModel(params.modelId);
     const compactionModel = wrapLanguageModel({
       model: rawModel as any,
-      middleware: [extractReasoningMiddleware({ tagName: 'think', startWithReasoning: false })],
+      middleware: params.llm.id === 'openaiCompatible'
+        ? []
+        : [extractReasoningMiddleware({ tagName: 'think', startWithReasoning: false })],
     });
 
     const effective = normalizeSyntheticContextMessageRoles(getEffectiveHistory(params.session.history));
@@ -218,7 +220,9 @@ export async function compactSessionInternal(params: {
     const summaryTextRaw = await stream.text;
     const summaryUsage = await stream.usage;
     const finishReason = await stream.finishReason;
-    const summaryText = stripThinkBlocks(String(summaryTextRaw || '')).trim();
+    const summaryText = params.llm.id === 'openaiCompatible'
+      ? String(summaryTextRaw || '')
+      : stripThinkBlocks(String(summaryTextRaw || '')).trim();
 
     const summaryMessage = createAssistantHistoryMessage();
     const summaryTokens = extractUsageTokens(summaryUsage);
@@ -228,7 +232,7 @@ export async function compactSessionInternal(params: {
       summary: true,
       ...(summaryTokens ? { tokens: summaryTokens } : {}),
     };
-    if (summaryText) {
+    if (summaryText.trim()) {
       summaryMessage.parts.push({ type: 'text', text: summaryText, state: 'done' });
     }
     params.session.history.push(summaryMessage);

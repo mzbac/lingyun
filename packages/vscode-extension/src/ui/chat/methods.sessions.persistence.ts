@@ -245,6 +245,109 @@ function sanitizeGenericStorageValue(value: unknown, depth = 0): unknown {
   return out;
 }
 
+function asStorageRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function hasOwnStorageKey(record: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(record, key);
+}
+
+function storageValuesEqual(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+
+  if (Array.isArray(left) || Array.isArray(right)) {
+    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) {
+      return false;
+    }
+    for (let index = 0; index < left.length; index++) {
+      if ((index in left) !== (index in right)) return false;
+      if (index in left && !storageValuesEqual(left[index], right[index])) return false;
+    }
+    return true;
+  }
+
+  const leftRecord = asStorageRecord(left);
+  const rightRecord = asStorageRecord(right);
+  if (!leftRecord || !rightRecord) return false;
+
+  const leftKeys = Object.keys(leftRecord);
+  const rightKeys = Object.keys(rightRecord);
+  if (leftKeys.length !== rightKeys.length) return false;
+  for (const key of leftKeys) {
+    if (!hasOwnStorageKey(rightRecord, key)) return false;
+    if (!storageValuesEqual(leftRecord[key], rightRecord[key])) return false;
+  }
+  return true;
+}
+
+function removeChangedExactReplayArtifacts(originalState: unknown, sanitizedState: unknown): void {
+  const originalHistory = asStorageRecord(originalState)?.history;
+  const sanitizedHistory = asStorageRecord(sanitizedState)?.history;
+  if (!Array.isArray(originalHistory) || !Array.isArray(sanitizedHistory)) return;
+
+  const messageCount = Math.min(originalHistory.length, sanitizedHistory.length);
+  for (let messageIndex = 0; messageIndex < messageCount; messageIndex++) {
+    const originalMessage = asStorageRecord(originalHistory[messageIndex]);
+    const sanitizedMessage = asStorageRecord(sanitizedHistory[messageIndex]);
+    if (!originalMessage || !sanitizedMessage) continue;
+
+    const originalMetadata = asStorageRecord(originalMessage.metadata);
+    const sanitizedMetadata = asStorageRecord(sanitizedMessage.metadata);
+    if (originalMetadata && hasOwnStorageKey(originalMetadata, 'replay')) {
+      const replayUnchanged = !!sanitizedMetadata
+        && hasOwnStorageKey(sanitizedMetadata, 'replay')
+        && storageValuesEqual(originalMetadata.replay, sanitizedMetadata.replay);
+      if (!replayUnchanged && sanitizedMetadata) {
+        delete sanitizedMetadata.replay;
+      }
+    }
+
+    const originalParts = originalMessage.parts;
+    const sanitizedParts = sanitizedMessage.parts;
+    if (!Array.isArray(originalParts) || !Array.isArray(sanitizedParts)) continue;
+
+    const partCount = Math.min(originalParts.length, sanitizedParts.length);
+    for (let partIndex = 0; partIndex < partCount; partIndex++) {
+      const originalPart = asStorageRecord(originalParts[partIndex]);
+      const sanitizedPart = asStorageRecord(sanitizedParts[partIndex]);
+      if (!originalPart || !sanitizedPart) continue;
+
+      const originalCallMetadata = asStorageRecord(originalPart.callProviderMetadata);
+      const originalOpenAICompatible = asStorageRecord(originalCallMetadata?.openaiCompatible);
+      if (!originalOpenAICompatible || !hasOwnStorageKey(originalOpenAICompatible, 'kookaReplay')) {
+        continue;
+      }
+
+      const sanitizedCallMetadata = asStorageRecord(sanitizedPart.callProviderMetadata);
+      const sanitizedOpenAICompatible = asStorageRecord(sanitizedCallMetadata?.openaiCompatible);
+      const markerUnchanged = !!sanitizedOpenAICompatible
+        && hasOwnStorageKey(sanitizedOpenAICompatible, 'kookaReplay')
+        && storageValuesEqual(
+          originalOpenAICompatible.kookaReplay,
+          sanitizedOpenAICompatible.kookaReplay
+        );
+      if (markerUnchanged || !sanitizedOpenAICompatible) continue;
+
+      delete sanitizedOpenAICompatible.kookaReplay;
+      if (Object.keys(sanitizedOpenAICompatible).length === 0 && sanitizedCallMetadata) {
+        delete sanitizedCallMetadata.openaiCompatible;
+      }
+      if (sanitizedCallMetadata && Object.keys(sanitizedCallMetadata).length === 0) {
+        delete sanitizedPart.callProviderMetadata;
+      }
+    }
+  }
+}
+
+function sanitizeAgentStateForStorage(agentState: AgentSessionState): AgentSessionState {
+  const sanitized = sanitizeGenericStorageValue(agentState) as AgentSessionState;
+  removeChangedExactReplayArtifacts(agentState, sanitized);
+  return sanitized;
+}
+
 function sanitizeToolArgValue(key: string, value: unknown, depth = 0): unknown {
   if (depth > 20) return '[omitted:depth]';
   const normalizedKey = normalizeStorageKey(key);
@@ -341,7 +444,7 @@ export function sanitizeSessionForStorage(session: ChatSessionInfo): ChatSession
       : undefined,
     signals: sanitizeGenericStorageValue(session.signals) as ChatSessionInfo['signals'],
     messages: sanitizeMessagesForStorage(session.messages),
-    agentState: sanitizeGenericStorageValue(session.agentState) as AgentSessionState,
+    agentState: sanitizeAgentStateForStorage(session.agentState),
     queuedInputs: session.queuedInputs
       ? sanitizeGenericStorageValue(session.queuedInputs) as ChatSessionInfo['queuedInputs']
       : undefined,

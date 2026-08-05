@@ -3408,13 +3408,49 @@ suite('LingYun Agent SDK', () => {
     assert.strictEqual(currentTokens.cacheRead, previousFootprint, 'assistant token accounting should show a cache read on the second post-compaction plan turn');
   });
 
-  test('prompt - replays reasoning_content + raw assistant text for openaiCompatible providers', async () => {
+  test('compaction preserves native OpenAI-compatible content byte-for-byte', async () => {
+    const llm = new MockOpenAICompatibleProvider();
+    const registry = new ToolRegistry();
+    const session = new LingyunSession();
+    const literalSummary = '  lone </think> and paired <think>source</think> stay visible\n';
+    const agent = new LingyunAgent(llm, { model: 'mock-model' }, registry, {
+      allowExternalPaths: false,
+      skills: { enabled: false },
+    });
+
+    llm.queueResponse({ kind: 'text', content: 'history to compact' });
+    await agent.run({ session, input: 'start' }).done;
+
+    llm.queueResponse({ kind: 'text', content: literalSummary });
+    await agent.compactSession(session);
+
+    const summary = session.getHistory().find((message) =>
+      message.role === 'assistant' && message.metadata?.summary === true
+    );
+    assert.ok(summary, 'expected a compaction summary message');
+    assert.strictEqual(
+      getMessageText(summary),
+      literalSummary,
+      'compaction must not parse, strip, or trim native OpenAI-compatible content',
+    );
+  });
+
+  test('prompt - replays native reasoning and literal assistant text for openaiCompatible providers', async () => {
     const llm = new MockOpenAICompatibleProvider();
     const registry = new ToolRegistry();
 
     llm.queueResponse({
-      kind: 'text',
-      content: '<think>hidden reasoning</think> Hello<tool_call>{}</tool_call>World',
+      kind: 'stream',
+      chunks: [
+        { type: 'reasoning-start' as const, id: 'r1' },
+        { type: 'reasoning-delta' as const, id: 'r1', delta: 'hidden reasoning ' },
+        { type: 'reasoning-end' as const, id: 'r1' },
+        { type: 'text-start' as const, id: 't1' },
+        { type: 'text-delta' as const, id: 't1', delta: ' literal </think> and ' },
+        { type: 'text-delta' as const, id: 't1', delta: '<think>source</think> stays visible\n' },
+        { type: 'text-end' as const, id: 't1' },
+        { type: 'finish' as const, usage: usage(), finishReason: { unified: 'stop', raw: 'stop' } },
+      ],
     });
     llm.queueResponse({ kind: 'text', content: 'ok' });
 
@@ -3429,7 +3465,7 @@ suite('LingYun Agent SDK', () => {
     const prompt = llm.lastPrompt as any[];
     const assistant = prompt.find((msg) => msg?.role === 'assistant');
     assert.ok(assistant, 'expected assistant message in prompt');
-    assert.strictEqual(assistant.providerOptions?.openaiCompatible?.reasoning_content, 'hidden reasoning');
+    assert.strictEqual(assistant.providerOptions?.openaiCompatible?.reasoning_content, 'hidden reasoning ');
     assert.ok(Array.isArray(assistant.content), 'expected multipart assistant content');
     assert.strictEqual(
       (assistant.content as any[]).some((part) => part?.type === 'reasoning'),
@@ -3440,7 +3476,7 @@ suite('LingYun Agent SDK', () => {
       .filter((part) => part?.type === 'text')
       .map((part) => part.text)
       .join('');
-    assert.strictEqual(assistantText, ' Hello<tool_call>{}</tool_call>World');
+    assert.strictEqual(assistantText, ' literal </think> and <think>source</think> stays visible\n');
   });
 
   test('prompt helpers preserve replay metadata while removing reasoning from provider payloads', () => {
@@ -3825,7 +3861,7 @@ suite('LingYun Agent SDK', () => {
     assert.strictEqual(assistantText, 'hello');
   });
 
-  test('prompt - does not replay DeepSeek reasoning_content when thinking is enabled', async () => {
+  test('prompt - replays DeepSeek reasoning_content exactly when thinking is enabled', async () => {
     const llm = new MockOpenAICompatibleProvider();
     const registry = new ToolRegistry();
 
@@ -3833,10 +3869,10 @@ suite('LingYun Agent SDK', () => {
       kind: 'stream',
       chunks: [
         { type: 'reasoning-start' as const, id: 'r1' },
-        { type: 'reasoning-delta' as const, id: 'r1', delta: 'hidden reasoning' },
+        { type: 'reasoning-delta' as const, id: 'r1', delta: 'hidden reasoning ' },
         { type: 'reasoning-end' as const, id: 'r1' },
         { type: 'text-start' as const, id: 't1' },
-        { type: 'text-delta' as const, id: 't1', delta: 'hello' },
+        { type: 'text-delta' as const, id: 't1', delta: ' hello' },
         { type: 'text-end' as const, id: 't1' },
         { type: 'finish' as const, usage: usage(), finishReason: { unified: 'stop', raw: 'stop' } },
       ],
@@ -3860,7 +3896,7 @@ suite('LingYun Agent SDK', () => {
     const firstAssistant = session.getHistory().find((msg) => msg.role === 'assistant');
     assert.ok(firstAssistant, 'expected assistant history');
     assert.strictEqual(
-      firstAssistant.parts.some((part: any) => part?.type === 'reasoning' && part.text === 'hidden reasoning'),
+      firstAssistant.parts.some((part: any) => part?.type === 'reasoning' && part.text === 'hidden reasoning '),
       true,
       'enabled thinking should still store live reasoning for display/history',
     );
@@ -3871,18 +3907,18 @@ suite('LingYun Agent SDK', () => {
     const prompt = llm.lastPrompt as any[];
     const assistant = prompt.find((msg) => msg?.role === 'assistant');
     assert.ok(assistant, 'expected assistant message in prompt');
-    assert.strictEqual(assistant.providerOptions?.openaiCompatible?.reasoning_content, undefined);
+    assert.strictEqual(assistant.providerOptions?.openaiCompatible?.reasoning_content, 'hidden reasoning ');
     assert.ok(Array.isArray(assistant.content), 'expected multipart assistant content');
     assert.strictEqual(
       (assistant.content as any[]).some((part) => part?.type === 'reasoning'),
       false,
-      'DeepSeek reasoning should not be replayed into later prompts',
+      'DeepSeek reasoning should be lifted into reasoning_content rather than duplicated as a part',
     );
     const assistantText = (assistant.content as any[])
       .filter((part) => part?.type === 'text')
       .map((part) => part.text)
       .join('');
-    assert.strictEqual(assistantText, 'hello');
+    assert.strictEqual(assistantText, ' hello');
   });
 
   test('resume - copilot Claude prompts append a synthetic trailing user turn without persisting it', async () => {
@@ -3971,6 +4007,224 @@ suite('LingYun Agent SDK', () => {
       assert.deepStrictEqual(consoleErrors, []);
     } finally {
       console.error = originalConsoleError;
+    }
+  });
+
+  test('retries reset captured OpenAI-compatible tool argument bytes between attempts', async () => {
+    const llm = new MockOpenAICompatibleProvider();
+    const registry = new ToolRegistry();
+    const retryArguments = '{ "attempt" : "second", "value" : 1.0 }';
+    registry.registerTool(
+      {
+        id: 'probe',
+        name: 'Probe',
+        description: 'Return a deterministic probe result.',
+        parameters: {
+          type: 'object',
+          properties: {
+            attempt: { type: 'string' },
+            value: { type: 'number' },
+          },
+          required: ['attempt', 'value'],
+        },
+        execution: { type: 'function', handler: 'test.probe' },
+      },
+      async (input) => ({ success: true, data: input }),
+    );
+
+    llm.queueResponse({
+      kind: 'stream',
+      chunks: [
+        {
+          type: 'raw' as const,
+          rawValue: {
+            choices: [{
+              delta: {
+                tool_calls: [{
+                  index: 0,
+                  id: 'call-probe-retry',
+                  function: { name: 'probe', arguments: 'FIRST-RAW-ATTEMPT-' },
+                }],
+              },
+            }],
+          },
+        },
+        { type: 'tool-input-start' as const, id: 'call-probe-retry', toolName: 'probe' },
+        { type: 'tool-input-delta' as const, id: 'call-probe-retry', delta: 'FIRST-ATTEMPT-' },
+        {
+          type: 'error' as const,
+          error: Object.assign(new Error('retry tool stream'), {
+            name: 'ProviderHttpError',
+            status: 503,
+            retryAfterMs: 1,
+          }),
+        },
+      ],
+    });
+    llm.queueResponse({
+      kind: 'stream',
+      chunks: [
+        {
+          type: 'raw' as const,
+          rawValue: {
+            choices: [{
+              delta: {
+                tool_calls: [{
+                  index: 0,
+                  id: 'call-probe-retry',
+                  function: { name: 'probe', arguments: retryArguments },
+                }],
+              },
+            }],
+          },
+        },
+        { type: 'tool-input-start' as const, id: 'call-probe-retry', toolName: 'probe' },
+        { type: 'tool-input-delta' as const, id: 'call-probe-retry', delta: retryArguments },
+        { type: 'tool-input-end' as const, id: 'call-probe-retry' },
+        {
+          type: 'tool-call' as const,
+          toolCallId: 'call-probe-retry',
+          toolName: 'probe',
+          input: retryArguments,
+        },
+        { type: 'finish' as const, usage: usage(), finishReason: { unified: 'tool-calls', raw: 'tool_calls' } },
+      ],
+    });
+    llm.queueResponse({ kind: 'text', content: 'done' });
+
+    const agent = new LingyunAgent(llm, { model: 'mock-model', maxRetries: 1 }, registry, {
+      allowExternalPaths: false,
+      skills: { enabled: false },
+    });
+    const session = new LingyunSession();
+    await agent.run({ session, input: 'Use the probe tool.' }).done;
+
+    assert.strictEqual(llm.callCount, 3);
+    const toolAssistant = session.getHistory().find((message) =>
+      message.role === 'assistant' && message.parts.some((part: any) => part?.type === 'dynamic-tool')
+    );
+    assert.ok(toolAssistant, 'expected the retried tool call in assistant history');
+    const toolPart = toolAssistant.parts.find((part: any) => part?.type === 'dynamic-tool') as any;
+    assert.strictEqual(
+      toolPart?.callProviderMetadata?.openaiCompatible?.kookaReplay?.rawArguments,
+      retryArguments,
+    );
+  });
+
+  test('captures exact parallel OpenAI-compatible tool arguments with and without indexes', async () => {
+    const scenarios = [
+      { name: 'indexed', indexed: true },
+      { name: 'no-index', indexed: false },
+    ] as const;
+
+    for (const scenario of scenarios) {
+      const llm = new MockOpenAICompatibleProvider();
+      const registry = new ToolRegistry();
+      const firstArguments = '{ "value" : 1.0 }';
+      const secondArguments = '{ "value" : 2.0 }';
+      registry.registerTool(
+        {
+          id: 'probe',
+          name: 'Probe',
+          description: 'Return a deterministic probe result.',
+          parameters: {
+            type: 'object',
+            properties: { value: { type: 'number' } },
+            required: ['value'],
+          },
+          execution: { type: 'function', handler: 'test.probe' },
+        },
+        async (input) => ({ success: true, data: input }),
+      );
+
+      const firstRawCall = {
+        ...(scenario.indexed ? { index: 0 } : {}),
+        id: `call-${scenario.name}-first`,
+        function: { name: 'probe', arguments: firstArguments },
+      };
+      const secondRawCall = {
+        ...(scenario.indexed ? { index: 1 } : {}),
+        id: `call-${scenario.name}-second`,
+        function: { name: 'probe', arguments: secondArguments },
+      };
+      const rawParts: LanguageModelV3StreamPart[] = scenario.indexed
+        ? [{
+            type: 'raw',
+            rawValue: {
+              choices: [
+                { delta: { tool_calls: [firstRawCall, secondRawCall] } },
+                { delta: { tool_calls: [{ ...firstRawCall, function: { name: 'probe', arguments: 'IGNORED' } }] } },
+              ],
+            },
+          }]
+        : [firstRawCall, secondRawCall].map((toolCall) => ({
+            type: 'raw' as const,
+            rawValue: {
+              choices: [
+                { delta: { tool_calls: [toolCall] } },
+                { delta: { tool_calls: [{ ...toolCall, function: { name: 'probe', arguments: 'IGNORED' } }] } },
+              ],
+            },
+          }));
+
+      const processedParts: LanguageModelV3StreamPart[] = [];
+      for (const [toolCallId, rawArguments] of [
+        [`call-${scenario.name}-first`, firstArguments],
+        [`call-${scenario.name}-second`, secondArguments],
+      ] as const) {
+        processedParts.push(
+          { type: 'tool-input-start', id: toolCallId, toolName: 'probe' },
+          { type: 'tool-input-delta', id: toolCallId, delta: rawArguments },
+          { type: 'tool-input-end', id: toolCallId },
+          {
+            type: 'tool-call',
+            toolCallId,
+            toolName: 'probe',
+            input: rawArguments,
+            ...(toolCallId === 'call-no-index-first'
+              ? { providerMetadata: { openaiCompatible: 'MALFORMED' } as any }
+              : {}),
+          },
+        );
+      }
+
+      llm.queueResponse({
+        kind: 'stream',
+        chunks: [
+          ...rawParts,
+          ...processedParts,
+          { type: 'finish', usage: usage(), finishReason: { unified: 'tool-calls', raw: 'tool_calls' } },
+        ],
+      });
+      llm.queueResponse({ kind: 'text', content: 'done' });
+
+      const agent = new LingyunAgent(llm, { model: 'mock-model' }, registry, {
+        allowExternalPaths: false,
+        skills: { enabled: false },
+      });
+      const session = new LingyunSession();
+      await agent.run({ session, input: 'Use both probe calls.' }).done;
+
+      const toolParts = session.getHistory().flatMap((message) =>
+        message.role === 'assistant'
+          ? message.parts.filter((part: any) => part?.type === 'dynamic-tool')
+          : []
+      ) as any[];
+      assert.strictEqual(toolParts.length, 2, `${scenario.name}: expected two tool calls`);
+      const replayById = new Map(toolParts.map((part) => [
+        part.toolCallId,
+        part.callProviderMetadata?.openaiCompatible?.kookaReplay?.rawArguments,
+      ]));
+      assert.strictEqual(replayById.get(`call-${scenario.name}-first`), firstArguments);
+      assert.strictEqual(replayById.get(`call-${scenario.name}-second`), secondArguments);
+      if (!scenario.indexed) {
+        const firstToolPart = toolParts.find((part) => part.toolCallId === 'call-no-index-first');
+        assert.deepStrictEqual(
+          Object.keys(firstToolPart.callProviderMetadata?.openaiCompatible ?? {}),
+          ['kookaReplay'],
+          'malformed provider metadata must not be spread into replay state',
+        );
+      }
     }
   });
 

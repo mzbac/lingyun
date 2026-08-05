@@ -254,6 +254,63 @@ suite('persistence', () => {
     assert.equal(parsed.history.length, 1);
   });
 
+  test('serialized snapshots preserve exact OpenAI-compatible replay state', () => {
+    const rawArguments = '{ "value" : 1.0, "text" : "\\u0061" }';
+    const reasoning = 'native reasoning with trailing space ';
+    const text = ' literal </think> and <think>source</think> stays visible\n';
+    const session = new LingyunSession({
+      sessionId: 'openai-compatible-replay',
+      history: [
+        {
+          id: 'assistant-replay',
+          role: 'assistant',
+          metadata: {
+            replay: { reasoning, text },
+          },
+          parts: [
+            { type: 'reasoning', text: reasoning, state: 'done' },
+            { type: 'text', text, state: 'done' },
+            {
+              type: 'dynamic-tool',
+              toolCallId: 'call-probe-1',
+              toolName: 'probe',
+              input: { value: 1, text: 'a' },
+              state: 'output-available',
+              output: { success: true, data: 'ok' },
+              callProviderMetadata: {
+                openaiCompatible: {
+                  opaqueProviderField: 'keep-me',
+                  kookaReplay: {
+                    version: 1,
+                    toolCallId: 'call-probe-1',
+                    toolName: 'probe',
+                    rawArguments,
+                  },
+                },
+              },
+            },
+          ],
+        },
+      ] as any,
+    });
+
+    const parsed = parseSessionSnapshot(serializeSessionSnapshot(snapshotSession(session)));
+    const restored = restoreSession(parsed);
+    const assistant = restored.getHistory()[0] as any;
+    const toolPart = assistant.parts.find((part: any) => part?.type === 'dynamic-tool');
+
+    assert.strictEqual(assistant.metadata?.replay?.reasoning, reasoning);
+    assert.strictEqual(assistant.metadata?.replay?.text, text);
+    assert.strictEqual(
+      toolPart?.callProviderMetadata?.openaiCompatible?.kookaReplay?.rawArguments,
+      rawArguments,
+    );
+    assert.strictEqual(
+      toolPart?.callProviderMetadata?.openaiCompatible?.opaqueProviderField,
+      'keep-me',
+    );
+  });
+
   test('tryParseSessionSnapshot tolerates partially malformed optional fields', () => {
     const parsed = tryParseSessionSnapshot({
       version: 1,

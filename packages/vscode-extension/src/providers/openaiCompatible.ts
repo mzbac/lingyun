@@ -1,6 +1,6 @@
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import type { FetchFunction } from '@ai-sdk/provider-utils';
-import { shouldUseResponsesApiForModelId } from '@kooka/core';
+import { shouldUseResponsesApiForModelId, transformOpenAICompatibleRequestBody } from '@kooka/core';
 import type { LLMProvider } from '../core/types';
 import { normalizeResponsesStreamModel } from '../core/utils/normalizeResponsesStream';
 import { wrapChatModelErrors } from './chatModelErrors';
@@ -281,6 +281,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
       apiKey: this.apiKey,
       fetch: this.fetchFn,
       includeUsage: true,
+      transformRequestBody: transformOpenAICompatibleRequestBody,
     });
   }
 

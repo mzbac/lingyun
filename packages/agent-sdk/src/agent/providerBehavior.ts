@@ -127,7 +127,9 @@ export function createProviderBehavior(llmId: string): ProviderBehavior {
   }
 
   function shouldReplayOpenAICompatibleReasoning(modelId: string, params: ChatProviderOptionParams): boolean {
-    if (isOpenAICompatibleThinkingDisabled(modelId, params)) return false;
+    const think = getOpenAICompatibleThinkValue(modelId, params);
+    if (think === false) return false;
+    if (think === true) return true;
     return !isDeepSeekNonReasoningChatModel(modelId) && !isDeepSeekReasoningModel(modelId);
   }
 

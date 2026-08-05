@@ -2,6 +2,7 @@ import {
   extractReasoningMiddleware,
   wrapLanguageModel,
   type ModelMessage,
+  type ProviderMetadata,
   type TextStreamPart,
 } from 'ai';
 
@@ -49,6 +50,112 @@ type PluginManagerLike = {
 
 type UsageTokens = NonNullable<ReturnType<typeof extractUsageTokens>>;
 type AccountedGoalAtIterationStart = { id: string; status: 'active' | 'budgetLimited' };
+type RawOpenAICompatibleToolInput = { toolName?: string; rawArguments: string };
+type RawOpenAICompatibleToolInputCapture = {
+  byIndex: Map<number, RawOpenAICompatibleToolInput>;
+  byId: Map<string, RawOpenAICompatibleToolInput>;
+  nextIndex: number;
+};
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function asProviderMetadata(value: unknown): ProviderMetadata | undefined {
+  const metadata = asRecord(value);
+  if (!metadata) return undefined;
+
+  for (const providerName in metadata) {
+    if (!Object.prototype.hasOwnProperty.call(metadata, providerName)) continue;
+    if (!asRecord(metadata[providerName])) return undefined;
+  }
+
+  return metadata as ProviderMetadata;
+}
+
+function appendRawOpenAICompatibleToolInputs(
+  rawValue: unknown,
+  capture: RawOpenAICompatibleToolInputCapture,
+): void {
+  const choices = asRecord(rawValue)?.choices;
+  if (!Array.isArray(choices)) return;
+
+  // AI SDK consumes only the first completion choice. Capturing ignored
+  // choices would contaminate the replay bytes for the accepted response.
+  const delta = asRecord(asRecord(choices[0])?.delta);
+  const toolCalls = delta?.tool_calls;
+  if (!Array.isArray(toolCalls)) return;
+
+  for (const toolCallValue of toolCalls) {
+    const toolCall = asRecord(toolCallValue);
+    if (!toolCall) continue;
+
+    const toolCallId = typeof toolCall.id === 'string' && toolCall.id ? toolCall.id : undefined;
+    const rawIndex = toolCall.index;
+    const explicitIndex = typeof rawIndex === 'number' && Number.isSafeInteger(rawIndex) && rawIndex >= 0
+      ? rawIndex
+      : undefined;
+
+    let captured = toolCallId ? capture.byId.get(toolCallId) : undefined;
+    if (!captured && explicitIndex !== undefined) {
+      captured = capture.byIndex.get(explicitIndex);
+    }
+    if (!captured) {
+      let index = explicitIndex;
+      if (index === undefined) {
+        index = capture.nextIndex;
+        while (capture.byIndex.has(index)) index++;
+      }
+      captured = { rawArguments: '' };
+      capture.byIndex.set(index, captured);
+      capture.nextIndex = Math.max(capture.nextIndex, index + 1);
+    } else if (explicitIndex !== undefined) {
+      capture.byIndex.set(explicitIndex, captured);
+      capture.nextIndex = Math.max(capture.nextIndex, explicitIndex + 1);
+    }
+
+    if (toolCallId) {
+      capture.byId.set(toolCallId, captured);
+    }
+
+    const fn = asRecord(toolCall.function);
+    if (typeof fn?.name === 'string' && fn.name) captured.toolName = fn.name;
+    if (typeof fn?.arguments === 'string') captured.rawArguments += fn.arguments;
+  }
+}
+
+function attachOpenAICompatibleToolReplayMetadata(
+  message: ReturnType<typeof createAssistantHistoryMessage>,
+  exactById: Map<string, RawOpenAICompatibleToolInput>,
+  processedById: Map<string, RawOpenAICompatibleToolInput>,
+): void {
+  for (const part of message.parts as any[]) {
+    if (!part || part.type !== 'dynamic-tool') continue;
+    const toolCallId = String(part.toolCallId || '');
+    const toolName = String(part.toolName || '');
+    if (!toolCallId || !toolName) continue;
+
+    const captured = exactById.get(toolCallId) ?? processedById.get(toolCallId);
+    if (!captured || (captured.toolName && captured.toolName !== toolName)) continue;
+
+    const existingCallProviderMetadata = asRecord(part.callProviderMetadata) ?? {};
+    const existingOpenAICompatible = asRecord(existingCallProviderMetadata.openaiCompatible) ?? {};
+    part.callProviderMetadata = {
+      ...existingCallProviderMetadata,
+      openaiCompatible: {
+        ...existingOpenAICompatible,
+        kookaReplay: {
+          version: 1,
+          toolCallId,
+          toolName,
+          rawArguments: captured.rawArguments,
+        },
+      },
+    };
+  }
+}
 
 function usageTokenDeltaForGoal(tokens: UsageTokens | undefined): number {
   if (!tokens) return 0;
@@ -209,7 +316,9 @@ export async function runOnce(params: {
 
   try {
     const callbacksSafe = callbacks;
-    const modelMiddleware = [extractReasoningMiddleware({ tagName: 'think', startWithReasoning: false })];
+    const modelMiddleware = llm.id === 'openaiCompatible'
+      ? []
+      : [extractReasoningMiddleware({ tagName: 'think', startWithReasoning: false })];
     const wrapModel = (rawModel: unknown) =>
       wrapLanguageModel({
         model: rawModel as any,
@@ -386,6 +495,12 @@ export async function runOnce(params: {
 
         let sawToolCall = false;
         let sawFinishPart = false;
+        const processedToolInputs = new Map<string, RawOpenAICompatibleToolInput>();
+        const exactToolInputs: RawOpenAICompatibleToolInputCapture = {
+          byIndex: new Map(),
+          byId: new Map(),
+          nextIndex: 0,
+        };
 
         try {
           const streamAdapter = providerBehavior.createStreamAdapter(modelId);
@@ -398,6 +513,7 @@ export async function runOnce(params: {
             topP: (callParams as any).topP,
             topK: (callParams as any).topK,
             ...((callParams as any).options ? { providerOptions: (callParams as any).options } : {}),
+            ...(llm.id === 'openaiCompatible' ? { includeRawChunks: true } : {}),
             maxOutputTokens,
             abortSignal: combined,
           });
@@ -442,6 +558,33 @@ export async function runOnce(params: {
                 }
                 break;
               }
+              case 'tool-input-start': {
+                if (llm.id === 'openaiCompatible') {
+                  processedToolInputs.set(String(part.id), {
+                    toolName: String(part.toolName),
+                    rawArguments: '',
+                  });
+                }
+                break;
+              }
+              case 'tool-input-delta': {
+                if (llm.id === 'openaiCompatible') {
+                  const rawToolInput = processedToolInputs.get(String(part.id));
+                  if (rawToolInput) {
+                    rawToolInput.rawArguments += String(part.delta ?? '');
+                  }
+                }
+                break;
+              }
+              case 'raw': {
+                if (llm.id === 'openaiCompatible') {
+                  appendRawOpenAICompatibleToolInputs(
+                    part.rawValue,
+                    exactToolInputs,
+                  );
+                }
+                break;
+              }
               case 'tool-call': {
                 sawToolCall = true;
                 const toolName = String(part.toolName);
@@ -462,11 +605,27 @@ export async function runOnce(params: {
                   );
                 }
 
-                upsertDynamicToolCall(assistantMessage, {
+                const toolPart = upsertDynamicToolCall(assistantMessage, {
                   toolName,
                   toolCallId,
                   input: part.input,
                 });
+                if (llm.id === 'openaiCompatible') {
+                  const existingCallProviderMetadata = asProviderMetadata(toolPart.callProviderMetadata) ?? {};
+                  const incomingProviderMetadata = asProviderMetadata(part.providerMetadata);
+                  if (incomingProviderMetadata && Object.keys(incomingProviderMetadata).length > 0) {
+                    const existingOpenAICompatible = existingCallProviderMetadata.openaiCompatible ?? {};
+                    const incomingOpenAICompatible = incomingProviderMetadata.openaiCompatible ?? {};
+                    toolPart.callProviderMetadata = {
+                      ...existingCallProviderMetadata,
+                      ...incomingProviderMetadata,
+                      openaiCompatible: {
+                        ...existingOpenAICompatible,
+                        ...incomingOpenAICompatible,
+                      },
+                    };
+                  }
+                }
                 break;
               }
               case 'tool-result': {
@@ -555,6 +714,14 @@ export async function runOnce(params: {
               default:
                 break;
             }
+          }
+
+          if (llm.id === 'openaiCompatible') {
+            attachOpenAICompatibleToolReplayMetadata(
+              assistantMessage,
+              exactToolInputs.byId,
+              processedToolInputs,
+            );
           }
 
           streamFinishReason = await stream.finishReason;
@@ -660,7 +827,9 @@ export async function runOnce(params: {
         ...(tokens ? { tokens } : {}),
       };
 
-      const cleanedText = stripToolBlocks(stripThinkBlocks(attemptText)).trim();
+      const cleanedText = llm.id === 'openaiCompatible'
+        ? attemptText
+        : stripToolBlocks(stripThinkBlocks(attemptText)).trim();
       let keptPartCount = 0;
       for (const part of assistantMessage.parts) {
         const partType = (part as any).type;
@@ -671,7 +840,7 @@ export async function runOnce(params: {
       assistantMessage.parts.length = keptPartCount;
 
       let finalText = cleanedText;
-      if (!finalText && mode === 'plan' && attemptReasoning.trim()) {
+      if (!finalText.trim() && mode === 'plan' && attemptReasoning.trim()) {
         finalText = extractPlanFromReasoning(attemptReasoning) ?? '';
       }
       if (finalText) {

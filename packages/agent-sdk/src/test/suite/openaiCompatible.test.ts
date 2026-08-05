@@ -6,9 +6,16 @@ import https from 'node:https';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import { isPrivateIpv4Address } from '@kooka/core';
+import { isPrivateIpv4Address, transformOpenAICompatibleRequestBody } from '@kooka/core';
 import { timeoutSignal } from '../../abort.js';
-import { LingyunAgent, LingyunSession, OpenAICompatibleProvider, ToolRegistry } from '../../index.js';
+import {
+  LingyunAgent,
+  LingyunSession,
+  OpenAICompatibleProvider,
+  ToolRegistry,
+  restoreSession,
+  snapshotSession,
+} from '../../index.js';
 
 function createSelfSignedLocalhostCert(): { key: Buffer; cert: Buffer; cleanup: () => void } | undefined {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lingyun-sdk-selfsigned-'));
@@ -125,6 +132,279 @@ suite('OpenAICompatibleProvider fetch', () => {
       llm.dispose();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
+  });
+
+  test('preserves the exact Chat Completions prefix across tools, snapshots, and user turns', async () => {
+    const modelId = 'deepseek-v4-flash';
+    const argumentObject = '{ "value" : 1.0, "text" : "\\u0061" }';
+    const rawArguments = `${argumentObject}  \n`;
+    const toolReasoning = 'tool reasoning with trailing space ';
+    const toolText = ' tool text keeps <think>literal source</think> and </think> intact\n';
+    const finalReasoning = 'final reasoning with trailing space ';
+    const finalText = ' final text keeps <think>literal source</think> intact\n';
+    const bodies: Array<Record<string, any>> = [];
+
+    function chunk(id: string, delta: Record<string, unknown>, finishReason: string | null = null): string {
+      return `data: ${JSON.stringify({
+        id,
+        object: 'chat.completion.chunk',
+        created: 1,
+        model: modelId,
+        choices: [{ index: 0, delta, logprobs: null, finish_reason: finishReason }],
+      })}\n\n`;
+    }
+
+    function finish(requestIndex: number): string {
+      return [
+        `data: ${JSON.stringify({
+          id: `chatcmpl-${requestIndex}`,
+          object: 'chat.completion.chunk',
+          created: 1,
+          model: modelId,
+          choices: [],
+          usage: {
+            prompt_tokens: 20,
+            completion_tokens: 5,
+            total_tokens: 25,
+            prompt_tokens_details: { cached_tokens: requestIndex === 0 ? 0 : 20 },
+          },
+        })}\n\n`,
+        'data: [DONE]\n\n',
+      ].join('');
+    }
+
+    const server = http.createServer((req, res) => {
+      if (req.url !== '/v1/chat/completions') {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'not found' }));
+        return;
+      }
+
+      const chunks: Buffer[] = [];
+      req.on('data', (value) => chunks.push(Buffer.from(value)));
+      req.on('end', () => {
+        const requestIndex = bodies.push(JSON.parse(Buffer.concat(chunks).toString('utf8'))) - 1;
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+
+        if (requestIndex === 0) {
+          res.end([
+            chunk('chatcmpl-tool', { role: 'assistant', reasoning_content: toolReasoning }),
+            chunk('chatcmpl-tool', { content: toolText }),
+            chunk('chatcmpl-tool', {
+              tool_calls: [{
+                index: 0,
+                id: 'call-probe-1',
+                type: 'function',
+                // This first chunk is already valid JSON. AI SDK emits the
+                // processed tool call here, before the provider sends the
+                // trailing whitespace bytes in the next raw SSE chunk.
+                function: { name: 'probe', arguments: argumentObject },
+              }],
+            }),
+            chunk('chatcmpl-tool', {
+              tool_calls: [{
+                index: 0,
+                function: { arguments: rawArguments.slice(argumentObject.length) },
+              }],
+            }),
+            chunk('chatcmpl-tool', {}, 'tool_calls'),
+            finish(requestIndex),
+          ].join(''));
+          return;
+        }
+
+        if (requestIndex === 1) {
+          res.end([
+            chunk('chatcmpl-final', { role: 'assistant', reasoning_content: finalReasoning }),
+            chunk('chatcmpl-final', { content: finalText }),
+            chunk('chatcmpl-final', {}, 'stop'),
+            finish(requestIndex),
+          ].join(''));
+          return;
+        }
+
+        res.end([
+          chunk('chatcmpl-follow-up', { role: 'assistant', content: 'follow-up complete' }),
+          chunk('chatcmpl-follow-up', {}, 'stop'),
+          finish(requestIndex),
+        ].join(''));
+      });
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      server.close();
+      assert.fail('Expected server to bind to a TCP port');
+    }
+
+    const llm = new OpenAICompatibleProvider({ baseURL: `http://127.0.0.1:${address.port}/v1` });
+    const registry = new ToolRegistry();
+    registry.registerTool(
+      {
+        id: 'probe',
+        name: 'Probe',
+        description: 'Return a deterministic probe result.',
+        parameters: {
+          type: 'object',
+          properties: {
+            value: { type: 'number' },
+            text: { type: 'string' },
+          },
+          required: ['value', 'text'],
+        },
+        execution: { type: 'function', handler: 'test.probe' },
+      },
+      async (input) => ({ success: true, data: input }),
+    );
+    const agent = new LingyunAgent(
+      llm,
+      { model: modelId, maxOutputTokens: 64, systemPrompt: 'Stable cache-prefix prompt.' },
+      registry,
+      {
+        allowExternalPaths: false,
+        skills: { enabled: false },
+        openaiCompatible: { thinking: 'enabled' },
+      },
+    );
+    let session = new LingyunSession({ sessionId: 'cache-prefix-session' });
+
+    try {
+      const firstRun = agent.run({ session, input: 'Use the probe tool.' });
+      for await (const _event of firstRun.events) {
+        // drain
+      }
+      await firstRun.done;
+
+      session = restoreSession(snapshotSession(session));
+      const followUp = agent.run({ session, input: 'Now answer the follow-up.' });
+      for await (const _event of followUp.events) {
+        // drain
+      }
+      await followUp.done;
+
+      assert.strictEqual(bodies.length, 3);
+      const [initialBody, toolContinuationBody, followUpBody] = bodies;
+      assert.ok(initialBody && toolContinuationBody && followUpBody);
+
+      const configuration = ({ messages: _messages, ...rest }: Record<string, any>) => rest;
+      assert.strictEqual(JSON.stringify(configuration(toolContinuationBody)), JSON.stringify(configuration(initialBody)));
+      assert.strictEqual(JSON.stringify(configuration(followUpBody)), JSON.stringify(configuration(initialBody)));
+
+      const initialMessages = initialBody.messages as Array<Record<string, any>>;
+      const continuationMessages = toolContinuationBody.messages as Array<Record<string, any>>;
+      const followUpMessages = followUpBody.messages as Array<Record<string, any>>;
+      assert.strictEqual(
+        JSON.stringify(continuationMessages.slice(0, initialMessages.length)),
+        JSON.stringify(initialMessages),
+      );
+
+      const toolAssistant = continuationMessages[initialMessages.length];
+      assert.strictEqual(toolAssistant?.role, 'assistant');
+      assert.strictEqual(toolAssistant?.reasoning_content, toolReasoning);
+      assert.strictEqual(toolAssistant?.content, toolText);
+      assert.strictEqual(toolAssistant?.tool_calls?.[0]?.function?.arguments, rawArguments);
+      assert.strictEqual(JSON.stringify(toolAssistant).includes('kookaReplay'), false);
+
+      assert.strictEqual(
+        JSON.stringify(followUpMessages.slice(0, continuationMessages.length)),
+        JSON.stringify(continuationMessages),
+      );
+      const finalAssistant = followUpMessages[continuationMessages.length];
+      assert.strictEqual(finalAssistant?.role, 'assistant');
+      assert.strictEqual(finalAssistant?.reasoning_content, finalReasoning);
+      assert.strictEqual(finalAssistant?.content, finalText);
+      assert.strictEqual(followUpMessages.at(-1)?.content, 'Now answer the follow-up.');
+    } finally {
+      llm.dispose();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  test('never leaks invalid OpenAI-compatible tool replay markers', () => {
+    const body = {
+      messages: [
+        {
+          role: 'assistant',
+          kookaReplay: { version: 1 },
+          tool_calls: [
+            {
+              id: 'call-mismatch',
+              type: 'function',
+              function: { name: 'probe', arguments: '{"value":1}' },
+              kookaReplay: {
+                version: 1,
+                toolCallId: 'call-mismatch',
+                toolName: 'probe',
+                rawArguments: '{ "value": 2.0 }',
+              },
+            },
+            {
+              id: 'call-malformed',
+              type: 'function',
+              function: { name: 'probe', arguments: '{"value":1}' },
+              kookaReplay: {
+                version: 1,
+                toolCallId: 'call-malformed',
+                toolName: 'probe',
+                rawArguments: '{not-json',
+              },
+            },
+          ],
+        },
+        {
+          role: 'tool',
+          tool_calls: [{
+            id: 'call-tool-role',
+            type: 'function',
+            function: { name: 'probe', arguments: '{"value":1}' },
+            kookaReplay: {
+              version: 1,
+              toolCallId: 'call-tool-role',
+              toolName: 'probe',
+              rawArguments: '{ "value": 1.0 }',
+            },
+          }],
+        },
+      ],
+    };
+
+    const transformed = transformOpenAICompatibleRequestBody(body);
+    assert.notStrictEqual(transformed, body);
+    assert.strictEqual(JSON.stringify(transformed).includes('kookaReplay'), false);
+    assert.strictEqual((transformed.messages as any[])[0]?.tool_calls?.[0]?.function?.arguments, '{"value":1}');
+    assert.strictEqual((transformed.messages as any[])[0]?.tool_calls?.[1]?.function?.arguments, '{"value":1}');
+    assert.strictEqual((transformed.messages as any[])[1]?.tool_calls?.[0]?.function?.arguments, '{"value":1}');
+    assert.strictEqual(JSON.stringify(body).includes('kookaReplay'), true, 'the transformer must not mutate caller-owned input');
+  });
+
+  test('preserves exact empty OpenAI-compatible tool arguments only for normalized empty objects', () => {
+    const makeBody = (rawArguments: string, normalizedArguments: string) => ({
+      messages: [{
+        role: 'assistant',
+        tool_calls: [{
+          id: 'call-empty',
+          type: 'function',
+          function: { name: 'probe', arguments: normalizedArguments },
+          kookaReplay: {
+            version: 1,
+            toolCallId: 'call-empty',
+            toolName: 'probe',
+            rawArguments,
+          },
+        }],
+      }],
+    });
+
+    for (const rawArguments of ['', '  \n']) {
+      const transformed = transformOpenAICompatibleRequestBody(makeBody(rawArguments, '{}'));
+      assert.strictEqual((transformed.messages as any[])[0]?.tool_calls?.[0]?.function?.arguments, rawArguments);
+      assert.strictEqual(JSON.stringify(transformed).includes('kookaReplay'), false);
+    }
+
+    const mismatched = transformOpenAICompatibleRequestBody(makeBody('  ', '{"value":1}'));
+    assert.strictEqual((mismatched.messages as any[])[0]?.tool_calls?.[0]?.function?.arguments, '{"value":1}');
+    assert.strictEqual(JSON.stringify(mismatched).includes('kookaReplay'), false);
   });
 
   test('trims OpenAI-compatible string options before provider construction', async () => {

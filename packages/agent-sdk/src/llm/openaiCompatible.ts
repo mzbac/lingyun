@@ -1,7 +1,7 @@
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import type { FetchFunction } from '@ai-sdk/provider-utils';
 import { Agent, fetch as undiciFetch } from 'undici';
-import { wrapChatModelErrors } from '@kooka/core';
+import { transformOpenAICompatibleRequestBody, wrapChatModelErrors } from '@kooka/core';
 
 import type { LLMModelInfo, LLMProvider } from '../types.js';
 import { combineAbortSignals, timeoutSignal } from '../abort.js';
@@ -319,6 +319,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
       apiKey: this.apiKey,
       fetch: this.fetchFn,
       includeUsage: true,
+      transformRequestBody: transformOpenAICompatibleRequestBody,
     });
   }
 

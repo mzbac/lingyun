@@ -234,6 +234,80 @@ suite('OpenAICompatibleProvider fetch', () => {
     }
   });
 
+  test('restores exact replayed tool arguments in Chat Completions requests without leaking the marker', async () => {
+    const rawArguments = '{ "value": 1.0, "text": "\\u0061" }';
+    let observedUrl = '';
+    let observedBody: Record<string, any> | undefined;
+    const server = http.createServer((req, res) => {
+      observedUrl = req.url || '';
+      const chunks: Buffer[] = [];
+      req.on('data', chunk => chunks.push(Buffer.from(chunk)));
+      req.on('end', () => {
+        observedBody = JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, any>;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          id: 'chatcmpl_replay_1',
+          object: 'chat.completion',
+          created: 0,
+          model: 'local-model',
+          choices: [{
+            index: 0,
+            message: { role: 'assistant', content: 'ok' },
+            finish_reason: 'stop',
+          }],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        }));
+      });
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      server.close();
+      assert.fail('Expected server to bind to a TCP port');
+    }
+
+    const provider = new OpenAICompatibleProvider({
+      baseURL: `http://127.0.0.1:${address.port}/v1`,
+    });
+
+    try {
+      const model = (await provider.getModel('local-model')) as any;
+      await model.doGenerate({
+        prompt: [{
+          role: 'assistant',
+          content: [{
+            type: 'tool-call',
+            toolCallId: 'call-probe-1',
+            toolName: 'probe',
+            input: { value: 1, text: 'a' },
+            providerOptions: {
+              openaiCompatible: {
+                kookaReplay: {
+                  version: 1,
+                  toolCallId: 'call-probe-1',
+                  toolName: 'probe',
+                  rawArguments,
+                },
+              },
+            },
+          }],
+        }],
+      });
+
+      assert.strictEqual(observedUrl, '/v1/chat/completions');
+      const messages = observedBody?.messages;
+      assert.ok(Array.isArray(messages));
+      const toolCalls = messages[0]?.tool_calls;
+      assert.ok(Array.isArray(toolCalls));
+      assert.strictEqual(toolCalls[0]?.function?.arguments, rawArguments);
+      assert.strictEqual(JSON.stringify(observedBody).includes('kookaReplay'), false);
+    } finally {
+      provider.dispose();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   test('trims requested model IDs and falls back to the configured default for blank IDs', async () => {
     const provider = new OpenAICompatibleProvider({
       baseURL: 'http://127.0.0.1:0',
