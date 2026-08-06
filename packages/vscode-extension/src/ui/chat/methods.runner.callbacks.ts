@@ -30,7 +30,9 @@ export function createChatRunnerCallbacksService(controller: ChatRunnerCallbacks
   const runtime = controller as ChatRunnerCallbacksRuntime;
   const service = bindChatControllerService(runtime, {
     createPlanningCallbacks(this: ChatRunnerCallbacksRuntime, planMsg: ChatMessage): AgentCallbacks {
-      return createPlanningCallbacks(this, planMsg);
+      const showThinking =
+        vscode.workspace.getConfiguration('lingyun').get<boolean>('showThinking', true) ?? true;
+      return createPlanningCallbacks(this, planMsg, { showThinking });
     },
 
   createAgentCallbacks(this: ChatRunnerCallbacksRuntime): AgentCallbacks {

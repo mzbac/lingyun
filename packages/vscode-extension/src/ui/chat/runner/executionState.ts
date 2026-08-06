@@ -4,6 +4,7 @@ import type { AgentCallbacks } from '../../../core/types';
 import { cleanAssistantPreamble } from '../utils';
 import type { ChatMessage } from '../types';
 import type { RunnerConversationView } from './callbackContracts';
+import { createThoughtStream } from './thoughtStream';
 
 type ExecutionStateParams = {
   view: RunnerConversationView;
@@ -52,18 +53,16 @@ export function createChatExecutionState(params: ExecutionStateParams): ChatExec
 
   let stepMsg: ChatMessage | undefined;
   let stepPosted = false;
-  let thoughtMsg: ChatMessage | undefined;
-  let thoughtBuffer = '';
-  let thoughtTokensSeen = 0;
-  let thoughtCharsSeen = 0;
-  let loggedFirstThought = false;
   let assistantMsg: ChatMessage | undefined;
   let assistantStarted = false;
   const tokenBuffersByMessageId = new Map<string, TokenBuffer>();
-
-  debug(
-    `[Thinking] callbacks created showThinking=${String(showThinking)} mode=${view.mode} turn=${view.currentTurnId ?? ''}`,
-  );
+  const thoughtStream = createThoughtStream({
+    view,
+    showThinking,
+    getTurnId: () => view.currentTurnId,
+    getStepId: () => view.activeStepId,
+    debug: (message) => debug(`${message} mode=${view.mode}`),
+  });
 
   function ensureStepMsg(): ChatMessage {
     if (stepMsg) return stepMsg;
@@ -125,6 +124,7 @@ export function createChatExecutionState(params: ExecutionStateParams): ChatExec
   }
 
   function flushAllTokenBuffers(): void {
+    thoughtStream.flush();
     for (const messageId of tokenBuffersByMessageId.keys()) {
       flushTokenBuffer(messageId);
     }
@@ -152,47 +152,7 @@ export function createChatExecutionState(params: ExecutionStateParams): ChatExec
   }
 
   function pushThought(text: string): void {
-    if (!text) return;
-
-    thoughtTokensSeen += 1;
-    thoughtCharsSeen += text.length;
-    if (!loggedFirstThought) {
-      loggedFirstThought = true;
-      debug(
-        `[Thinking] first token len=${String(text.length)} trimmedLen=${String(text.trim().length)} showThinking=${String(showThinking)} step=${view.activeStepId ?? ''}`,
-      );
-    }
-
-    if (!showThinking) return;
-
-    // Local servers sometimes emit "<think>\n" as a separate chunk, which creates an
-    // empty-looking Thinking block. Buffer whitespace until we see a real character.
-    if (!thoughtMsg) {
-      thoughtBuffer += text;
-      const normalized = thoughtBuffer.replace(/\[REDACTED\]/g, '').trim();
-      if (!normalized) return;
-
-      thoughtMsg = {
-        id: crypto.randomUUID(),
-        role: 'thought',
-        content: normalized,
-        timestamp: Date.now(),
-        turnId: view.currentTurnId,
-        stepId: view.activeStepId,
-      };
-      thoughtBuffer = '';
-      debug(
-        `[Thinking] created thoughtId=${thoughtMsg.id} initialChars=${String(normalized.length)} step=${view.activeStepId ?? ''}`,
-      );
-      view.messages.push(thoughtMsg);
-      view.postMessage({ type: 'message', message: thoughtMsg });
-      return;
-    }
-
-    const safe = text.replace(/\[REDACTED\]/g, '');
-    if (!safe) return;
-    thoughtMsg.content += safe;
-    queueToken(thoughtMsg.id, safe);
+    thoughtStream.push(text);
   }
 
   function pushAssistant(text: string): void {
@@ -267,8 +227,7 @@ export function createChatExecutionState(params: ExecutionStateParams): ChatExec
     stepMsg = undefined;
     view.activeStepId = undefined;
     stepPosted = false;
-    thoughtMsg = undefined;
-    thoughtBuffer = '';
+    thoughtStream.startNewSegment();
     assistantMsg = undefined;
     assistantStarted = false;
   }
@@ -276,12 +235,7 @@ export function createChatExecutionState(params: ExecutionStateParams): ChatExec
   function resetStreamedContentForRetry(status: AgentStatusEvent): void {
     if (status?.type !== 'retry') return;
 
-    thoughtBuffer = '';
-    if (thoughtMsg && thoughtMsg.turnId === view.currentTurnId) {
-      discardTokenBuffer(thoughtMsg.id);
-      thoughtMsg.content = '';
-      view.postMessage({ type: 'updateMessage', message: thoughtMsg });
-    }
+    thoughtStream.resetForRetry(status);
     if (assistantMsg && assistantMsg.turnId === view.currentTurnId) {
       discardTokenBuffer(assistantMsg.id);
       assistantMsg.content = '';
@@ -299,9 +253,7 @@ export function createChatExecutionState(params: ExecutionStateParams): ChatExec
       view.postMessage({ type: 'updateMessage', message: stepMsg });
     }
     if (debugLlm) {
-      debug(
-        `[Thinking] end tokens=${String(thoughtTokensSeen)} chars=${String(thoughtCharsSeen)} created=${String(!!thoughtMsg)} bufferChars=${String(thoughtBuffer.length)}`,
-      );
+      thoughtStream.logSummary();
     }
   }
 

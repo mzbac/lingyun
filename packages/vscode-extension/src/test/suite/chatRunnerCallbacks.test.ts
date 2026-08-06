@@ -277,6 +277,223 @@ suite('Chat runner callbacks', () => {
     assert.strictEqual(planUpdate?.message.content, '1. Ship it');
   });
 
+  test('planning callbacks stream visible reasoning beside the plan card', async () => {
+    const config = vscode.workspace.getConfiguration('lingyun');
+    const previousShowThinking = config.get('showThinking');
+    await config.update('showThinking', true, vscode.ConfigurationTarget.Global);
+
+    try {
+      const controller = createStandaloneChatController();
+      const posted: unknown[] = [];
+      const planMsg: ChatMessage = {
+        id: 'plan-1',
+        role: 'plan',
+        content: 'Planning...',
+        timestamp: Date.now(),
+        turnId: 'turn-1',
+        plan: { status: 'generating', task: 'Task' },
+      };
+
+      controller.view = {} as vscode.WebviewView;
+      controller.currentTurnId = 'turn-1';
+      controller.mode = 'plan';
+      controller.currentModel = 'mock-model';
+      controller.webviewApi.postMessage = (message: unknown) => {
+        posted.push(message);
+      };
+      controller.sessionApi.isSessionPersistenceEnabled = () => false;
+      controller.sessionApi.getContextForUI = () => ({}) as any;
+      controller.messages.push(planMsg);
+
+      const callbacks = controller.runnerCallbacksApi.createPlanningCallbacks(planMsg);
+      callbacks.onIterationStart?.(1);
+      callbacks.onThoughtToken?.(' \n[REDACTED]');
+      callbacks.onThoughtToken?.('reasoning');
+      callbacks.onThoughtToken?.(' more');
+      callbacks.onComplete?.('1. Ship it');
+
+      const thoughts = controller.messages.filter((message) => message.role === 'thought');
+      assert.strictEqual(thoughts.length, 1);
+      assert.strictEqual(thoughts[0]?.content, 'reasoning more');
+      assert.strictEqual(thoughts[0]?.turnId, 'turn-1');
+      assert.strictEqual(thoughts[0]?.stepId, undefined, 'plan reasoning should remain visible outside collapsed Activity');
+      assert.strictEqual(planMsg.content, 'Planning...', 'reasoning must not leak into plan content');
+      assert.ok(
+        posted.some(
+          (message) =>
+            (message as any)?.type === 'message' &&
+            (message as any)?.message?.id === thoughts[0]?.id
+        ),
+        'expected a visible thought message',
+      );
+      assert.ok(
+        posted.some(
+          (message) =>
+            (message as any)?.type === 'token' &&
+            (message as any)?.messageId === thoughts[0]?.id &&
+            (message as any)?.token === ' more'
+        ),
+        'expected pending reasoning tokens to flush before completion',
+      );
+    } finally {
+      await config.update('showThinking', previousShowThinking, vscode.ConfigurationTarget.Global);
+    }
+  });
+
+  test('planning callbacks honor disabled thinking display', async () => {
+    const config = vscode.workspace.getConfiguration('lingyun');
+    const previousShowThinking = config.get('showThinking');
+    await config.update('showThinking', false, vscode.ConfigurationTarget.Global);
+
+    try {
+      const controller = createStandaloneChatController();
+      const posted: unknown[] = [];
+      const planMsg: ChatMessage = {
+        id: 'plan-1',
+        role: 'plan',
+        content: 'Planning...',
+        timestamp: Date.now(),
+        turnId: 'turn-1',
+        plan: { status: 'generating', task: 'Task' },
+      };
+
+      controller.view = {} as vscode.WebviewView;
+      controller.currentTurnId = 'turn-1';
+      controller.mode = 'plan';
+      controller.currentModel = 'mock-model';
+      controller.webviewApi.postMessage = (message: unknown) => {
+        posted.push(message);
+      };
+      controller.sessionApi.isSessionPersistenceEnabled = () => false;
+      controller.sessionApi.getContextForUI = () => ({}) as any;
+      controller.messages.push(planMsg);
+
+      const callbacks = controller.runnerCallbacksApi.createPlanningCallbacks(planMsg);
+      callbacks.onIterationStart?.(1);
+      callbacks.onThoughtToken?.('hidden reasoning');
+      callbacks.onComplete?.('1. Ship it');
+
+      assert.strictEqual(controller.messages.filter((message) => message.role === 'thought').length, 0);
+      assert.ok(
+        !posted.some(
+          (message) =>
+            (message as any)?.type === 'message' &&
+            (message as any)?.message?.role === 'thought'
+        ),
+        'disabled thinking should not post a thought message',
+      );
+    } finally {
+      await config.update('showThinking', previousShowThinking, vscode.ConfigurationTarget.Global);
+    }
+  });
+
+  test('planning callbacks keep reasoning from separate iterations in separate blocks', async () => {
+    const config = vscode.workspace.getConfiguration('lingyun');
+    const previousShowThinking = config.get('showThinking');
+    await config.update('showThinking', true, vscode.ConfigurationTarget.Global);
+
+    try {
+      const controller = createStandaloneChatController();
+      const planMsg: ChatMessage = {
+        id: 'plan-1',
+        role: 'plan',
+        content: 'Planning...',
+        timestamp: Date.now(),
+        turnId: 'turn-1',
+        plan: { status: 'generating', task: 'Task' },
+      };
+
+      controller.view = {} as vscode.WebviewView;
+      controller.currentTurnId = 'turn-1';
+      controller.mode = 'plan';
+      controller.currentModel = 'mock-model';
+      controller.webviewApi.postMessage = () => {};
+      controller.sessionApi.isSessionPersistenceEnabled = () => false;
+      controller.sessionApi.getContextForUI = () => ({}) as any;
+      controller.messages.push(planMsg);
+
+      const callbacks = controller.runnerCallbacksApi.createPlanningCallbacks(planMsg);
+      callbacks.onIterationStart?.(1);
+      callbacks.onThoughtToken?.('first pass');
+      await callbacks.onIterationEnd?.(1);
+      callbacks.onIterationStart?.(2);
+      callbacks.onThoughtToken?.('second pass');
+      callbacks.onComplete?.('1. Ship it');
+
+      const thoughts = controller.messages.filter((message) => message.role === 'thought');
+      assert.deepStrictEqual(thoughts.map((message) => message.content), ['first pass', 'second pass']);
+    } finally {
+      await config.update('showThinking', previousShowThinking, vscode.ConfigurationTarget.Global);
+    }
+  });
+
+  test('planning callbacks discard queued reasoning when a request retries', async () => {
+    const config = vscode.workspace.getConfiguration('lingyun');
+    const previousShowThinking = config.get('showThinking');
+    await config.update('showThinking', true, vscode.ConfigurationTarget.Global);
+
+    try {
+      const controller = createStandaloneChatController();
+      const posted: unknown[] = [];
+      const planMsg: ChatMessage = {
+        id: 'plan-1',
+        role: 'plan',
+        content: 'Planning...',
+        timestamp: Date.now(),
+        turnId: 'turn-1',
+        plan: { status: 'generating', task: 'Task' },
+      };
+
+      controller.view = {} as vscode.WebviewView;
+      controller.currentTurnId = 'turn-1';
+      controller.mode = 'plan';
+      controller.currentModel = 'mock-model';
+      controller.webviewApi.postMessage = (message: unknown) => {
+        posted.push(message);
+      };
+      controller.sessionApi.isSessionPersistenceEnabled = () => false;
+      controller.sessionApi.getContextForUI = () => ({}) as any;
+      controller.messages.push(planMsg);
+
+      const callbacks = controller.runnerCallbacksApi.createPlanningCallbacks(planMsg);
+      callbacks.onIterationStart?.(1);
+      callbacks.onThoughtToken?.('stale');
+      callbacks.onThoughtToken?.(' queued');
+      callbacks.onStatusChange?.({ type: 'retry', attempt: 1, nextRetryTime: Date.now() });
+
+      const thought = controller.messages.find((message) => message.role === 'thought');
+      assert.ok(thought, 'expected the retry to reset the existing thought block');
+      assert.strictEqual(thought?.content, '');
+
+      await new Promise(resolve => setTimeout(resolve, 40));
+      assert.ok(
+        !posted.some(
+          (message) =>
+            (message as any)?.type === 'token' &&
+            (message as any)?.messageId === thought?.id &&
+            (message as any)?.token.includes('queued')
+        ),
+        'stale queued reasoning must not arrive after retry',
+      );
+
+      callbacks.onThoughtToken?.('fresh');
+      callbacks.onComplete?.('1. Ship it');
+
+      assert.strictEqual(thought?.content, 'fresh');
+      assert.ok(
+        posted.some(
+          (message) =>
+            (message as any)?.type === 'token' &&
+            (message as any)?.messageId === thought?.id &&
+            (message as any)?.token === 'fresh'
+        ),
+        'retry reasoning should resume in the reset thought block',
+      );
+    } finally {
+      await config.update('showThinking', previousShowThinking, vscode.ConfigurationTarget.Global);
+    }
+  });
+
   test('planning callbacks keep failed plans out of the generating state without posting duplicate error UI', () => {
     const controller = createStandaloneChatController();
     const posted: unknown[] = [];

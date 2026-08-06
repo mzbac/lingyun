@@ -17,10 +17,16 @@ import {
   isPlanPlaceholderText,
 } from './runCoordinatorPendingPlan';
 import { findToolMessageByApprovalId } from '../toolMessageLookup';
+import { createThoughtStream } from './thoughtStream';
+
+type PlanningCallbacksOptions = {
+  showThinking: boolean;
+};
 
 export function createPlanningCallbacks(
   view: RunnerPlanningView,
-  planMsg: ChatMessage
+  planMsg: ChatMessage,
+  options: PlanningCallbacksOptions,
 ): AgentCallbacks {
   const persistSessions = view.isSessionPersistenceEnabled();
   const planContainerId = planMsg.id;
@@ -30,6 +36,14 @@ export function createPlanningCallbacks(
 
   let buffered = '';
   let flushHandle: NodeJS.Timeout | undefined;
+  const thoughtStream = createThoughtStream({
+    view,
+    showThinking: options.showThinking,
+    getTurnId: () => planTurnId,
+    // Keep plan reasoning visible beside the card. Plan Activity is collapsed by
+    // default, so nesting via stepId would make live reasoning appear missing.
+    debug: (message) => appendDebugLog(view, `${message} mode=plan`),
+  });
 
   const postPlanUpdate = () => {
     view.postMessage({ type: 'updateMessage', message: planMsg });
@@ -121,7 +135,14 @@ export function createPlanningCallbacks(
   };
 
   return {
+    onIterationStart: () => {
+      thoughtStream.startNewSegment();
+    },
     onIterationEnd: () => {
+      thoughtStream.flush();
+      if (persistSessions) {
+        view.persistActiveSession();
+      }
       // Keep the global context indicator in sync during plan loops (usage updates per turn).
       view.postMessage({ type: 'context', context: view.getContextForUI() });
     },
@@ -130,6 +151,7 @@ export function createPlanningCallbacks(
     },
     onStatusChange: status => {
       if (status?.type === 'retry') {
+        thoughtStream.resetForRetry(status);
         buffered = '';
         clearScheduledFlush();
         planMsg.content = planPlaceholderText;
@@ -148,7 +170,11 @@ export function createPlanningCallbacks(
       planMsg.content = cleanAssistantPreamble(buffered);
       scheduleFlush();
     },
+    onThoughtToken: token => {
+      thoughtStream.push(token);
+    },
     onToolCall: (tc: ToolCall, def: ToolDefinition) => {
+      thoughtStream.flush();
       const { path } = resolveToolCallUiPath(view, tc, def);
 
       const existing = findToolMessageByApprovalId({
@@ -194,9 +220,11 @@ export function createPlanningCallbacks(
       }
     },
     onToolBlocked: (tc: ToolCall, def: ToolDefinition, reason: string) => {
+      thoughtStream.flush();
       upsertToolError(tc, def, reason);
     },
     onToolResult: (tc, result) => {
+      thoughtStream.flush();
       const toolMsg = findToolMessageByApprovalId({
         messages: view.messages,
         approvalId: tc.id,
@@ -231,13 +259,20 @@ export function createPlanningCallbacks(
       return await view.requestInlineApproval(tc, def, planContainerId, approvalContext);
     },
     onComplete: () => {
+      thoughtStream.flush();
+      thoughtStream.logSummary();
       flushPendingPlanUpdate();
       if (planTurnId) {
         view.postMessage({ type: 'turnStatus', turnId: planTurnId, status: { type: 'done' } });
       }
       view.postMessage({ type: 'context', context: view.getContextForUI() });
+      if (persistSessions) {
+        view.persistActiveSession();
+      }
     },
     onError: error => {
+      thoughtStream.flush();
+      thoughtStream.logSummary();
       // Terminal plan-run errors are surfaced by the run coordinator after agent.plan() rejects.
       // This callback only keeps the plan card itself out of the stale "generating" state.
       const wasCanceled = isCancellationError(error, { abortRequested: view.abortRequested });

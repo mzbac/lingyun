@@ -46,7 +46,7 @@ suite('Chat execution state', () => {
   });
 
   test('flushes all pending thought and assistant token buffers before completion', async () => {
-    const { view, posted } = createView();
+    const { view, messages, posted } = createView();
     const state = createChatExecutionState({
       view,
       showThinking: true,
@@ -65,6 +65,10 @@ suite('Chat execution state', () => {
     assert.deepStrictEqual(
       tokens.map(message => message?.token),
       [' more', 'answer'],
+    );
+    assert.strictEqual(
+      messages.find(message => message.role === 'thought')?.content,
+      'thinking more',
     );
 
     await new Promise(resolve => setTimeout(resolve, 40));
