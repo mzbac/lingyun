@@ -1052,13 +1052,13 @@ suite('LingYun Agent SDK', () => {
     assert.strictEqual(llm.lastOptions?.providerOptions?.openai?.reasoningSummary, 'auto');
   });
 
-  test('passes xhigh reasoning effort for Codex subscription Responses models', async () => {
+  test('passes max reasoning effort for Codex subscription Responses models', async () => {
     const llm = new MockCodexSubscriptionProvider();
     const agent = new LingyunAgent(
       llm,
       { model: 'gpt-5.3-codex' },
       new ToolRegistry(),
-      { reasoning: { effort: 'xhigh' } },
+      { reasoning: { effort: 'max' } },
     );
     const session = new LingyunSession();
     llm.queueResponse({ kind: 'text', content: 'ok' });
@@ -1069,9 +1069,9 @@ suite('LingYun Agent SDK', () => {
     }
     await run.done;
 
-    assert.strictEqual(llm.lastOptions?.providerOptions?.codexSubscription?.reasoningEffort, 'xhigh');
+    assert.strictEqual(llm.lastOptions?.providerOptions?.codexSubscription?.reasoningEffort, 'max');
     assert.strictEqual(llm.lastOptions?.providerOptions?.codexSubscription?.reasoningSummary, 'auto');
-    assert.strictEqual(llm.lastOptions?.providerOptions?.openai?.reasoningEffort, 'xhigh');
+    assert.strictEqual(llm.lastOptions?.providerOptions?.openai?.reasoningEffort, 'max');
     assert.strictEqual(llm.lastOptions?.providerOptions?.openai?.reasoningSummary, 'auto');
   });
 

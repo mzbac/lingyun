@@ -74,7 +74,7 @@ Copilot is the default provider:
 }
 ```
 
-`lingyun.copilot.reasoningEffort` defaults to `high` and is used for GPT-5-family Copilot requests.
+`lingyun.copilot.reasoningEffort` defaults to `high` and accepts an empty value (`Off` in the UI), `low`, `medium`, `high`, `xhigh`, or `max` for GPT-5-family Copilot and Codex Subscription requests.
 
 ### ChatGPT Codex Subscription
 

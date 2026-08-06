@@ -6268,7 +6268,7 @@ suite('Chat Render Perf Guards', () => {
 	    assert.match(bootstrapSource, /function\s+setAttributeValue\(/);
 	    assert.match(bootstrapSource, /const MODEL_DISPLAY_LIMIT = 160;/);
 	    assert.match(contextSource, /let modelHeaderRenderKey = '';/);
-	    assert.ok(contextSource.includes("const MODEL_HEADER_REASONING_EFFORTS = ['', 'low', 'medium', 'high', 'xhigh'];"));
+	    assert.ok(contextSource.includes("const MODEL_HEADER_REASONING_EFFORTS = ['', 'low', 'medium', 'high', 'xhigh', 'max'];"));
 			    assert.match(contextSource, /function\s+normalizeModelHeaderState\(state\)/);
 			    assert.match(contextSource, /function\s+isModelHeaderRenderKeyCurrent\(renderKey\)/);
 			    assert.match(contextSource, /function\s+isModelHeaderStateCurrent\(state\)/);
@@ -6280,7 +6280,7 @@ suite('Chat Render Perf Guards', () => {
 		    assert.match(renderKeySection, /appendCompactContextRenderKeyPart\(key, state\.label\);/);
 		    assert.match(renderKeySection, /return finishCompactRenderKey\(key\);/);
 		    assert.doesNotMatch(contextSource, /function appendModelHeaderRenderKeyPart\(/);
-		    assert.doesNotMatch(contextSource, /const allowedReasoningEfforts = \['', 'low', 'medium', 'high', 'xhigh'\];/);
+		    assert.doesNotMatch(contextSource, /const allowedReasoningEfforts = \['', 'low', 'medium', 'high', 'xhigh', 'max'\];/);
 		    assert.match(headerSection, /function updateNormalizedModelHeader\(modelHeaderState, renderKey\)/);
 		    assert.match(headerSection, /const nextRenderKey = typeof renderKey === 'string' && renderKey \? renderKey : getModelHeaderRenderKeyForState\(modelHeaderState\);/);
 		    assert.match(headerSection, /const displayLabel = getModelDisplayText\(label\);/);

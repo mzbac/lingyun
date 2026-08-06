@@ -13,7 +13,7 @@ import type { ChatSessionsService } from './methods.sessions';
 import type { ChatWebviewService } from './methods.webview';
 
 const MAX_RECENT_MODELS = 10;
-const REASONING_EFFORT_VALUES = new Set(['', 'low', 'medium', 'high', 'xhigh']);
+const REASONING_EFFORT_VALUES = new Set(['', 'low', 'medium', 'high', 'xhigh', 'max']);
 const MODEL_PICKER_NAME_COLLATOR = new Intl.Collator(undefined, { sensitivity: 'base' });
 
 type ModelLoadTask = {
@@ -494,7 +494,7 @@ export function createChatModelsService(controller: ChatModelsDeps): ChatModelsS
 
       const normalized = normalizeReasoningEffortForConfig(reasoningEffort);
       if (normalized === undefined) {
-        postInputNotice(this, 'Unsupported reasoning effort. Choose off, low, medium, high, or xhigh.');
+        postInputNotice(this, 'Unsupported reasoning effort. Choose off, low, medium, high, xhigh, or max.');
         await service.postModelState();
         return;
       }

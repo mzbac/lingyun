@@ -2,7 +2,7 @@
   "name": "lingyun",
   "displayName": "LingYun",
   "description": "Agentic AI assistant for VS Code",
-  "version": "2.6.3",
+  "version": "2.6.4",
   "publisher": "mzbac",
   "icon": "images/icon.png",
   "license": "MIT",
@@ -149,7 +149,8 @@
             "low",
             "medium",
             "high",
-            "xhigh"
+            "xhigh",
+            "max"
           ],
           "description": "Reasoning effort hint to send for GPT-5 family models on Copilot and Codex Subscription. Set to empty to disable."
         },

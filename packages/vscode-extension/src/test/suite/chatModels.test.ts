@@ -127,6 +127,41 @@ suite('Chat models service', () => {
     }
   });
 
+  test('setReasoningEffort accepts max and posts model state', async () => {
+    const config = vscode.workspace.getConfiguration('lingyun');
+    const previousEffort = config.get('copilot.reasoningEffort');
+
+    try {
+      const controller = createStandaloneChatController();
+      const posted: unknown[] = [];
+
+      controller.currentModel = 'gpt-5.4';
+      controller.availableModels = [{ id: 'gpt-5.4', name: 'GPT-5.4' } as any];
+      controller.webviewApi.postMessage = (message: unknown) => {
+        posted.push(message);
+      };
+
+      await controller.modelApi.setReasoningEffort('max');
+
+      assert.strictEqual(getLingyunConfigValue('copilot.reasoningEffort'), 'max');
+      assert.deepStrictEqual(posted, [
+        {
+          type: 'modelState',
+          model: 'gpt-5.4',
+          label: 'GPT-5.4',
+          isFavorite: false,
+          reasoningEffort: 'max',
+        },
+      ]);
+    } finally {
+      if (previousEffort === undefined) {
+        await config.update('copilot.reasoningEffort', undefined, vscode.ConfigurationTarget.Global);
+      } else {
+        await config.update('copilot.reasoningEffort', previousEffort, vscode.ConfigurationTarget.Global);
+      }
+    }
+  });
+
   test('setReasoningEffort preserves empty value as disabled', async () => {
     const config = vscode.workspace.getConfiguration('lingyun');
     const previousEffort = config.get('copilot.reasoningEffort');

@@ -5894,6 +5894,7 @@ suite('Chat Webview Assets', () => {
     assert.ok(providerAuthPrimaryTag, 'expected provider auth primary button');
     assert.match(html, /<span\b[^>]*\bid="modelPickerLabel"[^>]*\bclass="model-picker-label"[^>]*>Loading…[^<]*<\/span>/);
     assert.match(html, /<span class="model-select-caret" aria-hidden="true">▾<\/span>/);
+    assert.match(html, /<option value="max">Max<\/option>/);
     assert.match(html, /\.model-picker-label\s*\{[\s\S]*?flex:\s*1;[\s\S]*?min-width:\s*0;[\s\S]*?text-overflow:\s*ellipsis;/);
     assert.match(html, /\.model-select-caret\s*\{[\s\S]*?flex-shrink:\s*0;/);
     assert.doesNotMatch(html, /id="modelPickerLabel"[^>]*\bstyle=/);

@@ -202,7 +202,7 @@
 		    }
 
 	    let modelHeaderRenderKey = '';
-	    const MODEL_HEADER_REASONING_EFFORTS = ['', 'low', 'medium', 'high', 'xhigh'];
+	    const MODEL_HEADER_REASONING_EFFORTS = ['', 'low', 'medium', 'high', 'xhigh', 'max'];
 
 	    function normalizeModelHeaderState(state) {
 	      const modelId = state && (state.model || state.id) ? String(state.model || state.id) : '';

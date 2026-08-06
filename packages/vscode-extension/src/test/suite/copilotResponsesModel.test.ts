@@ -171,7 +171,7 @@ suite('CopilotResponsesModel', () => {
     assert.doesNotMatch(toolOutputSection + instructionSection + toolsSection + errorMessageSection + terminatedSection, /\.filter\(Boolean\)/);
   });
 
-  test('serializes xhigh reasoning effort for GPT-5.5 responses requests', async () => {
+  test('serializes xhigh and max reasoning effort for GPT-5.5 responses requests', async () => {
     const originalFetch = globalThis.fetch;
     let capturedBody: Record<string, unknown> | undefined;
 
@@ -191,23 +191,25 @@ suite('CopilotResponsesModel', () => {
         headers: {},
       });
 
-      await model.doStream({
-        prompt: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
-        providerOptions: {
-          openai: { reasoningEffort: 'xhigh' },
-          copilot: { reasoningEffort: 'xhigh' },
-        },
-        tools: [],
-        toolChoice: undefined,
-        temperature: 0.2,
-        topP: undefined,
-        maxOutputTokens: 16,
-      } as any);
+      for (const reasoningEffort of ['xhigh', 'max']) {
+        await model.doStream({
+          prompt: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+          providerOptions: {
+            openai: { reasoningEffort },
+            copilot: { reasoningEffort },
+          },
+          tools: [],
+          toolChoice: undefined,
+          temperature: 0.2,
+          topP: undefined,
+          maxOutputTokens: 16,
+        } as any);
 
-      assert.strictEqual(capturedBody?.model, 'gpt-5.5');
-      assert.deepStrictEqual(capturedBody?.include, ['reasoning.encrypted_content']);
-      assert.deepStrictEqual(capturedBody?.reasoning, { effort: 'xhigh' });
-      assert.strictEqual(capturedBody?.temperature, 1);
+        assert.strictEqual(capturedBody?.model, 'gpt-5.5');
+        assert.deepStrictEqual(capturedBody?.include, ['reasoning.encrypted_content']);
+        assert.deepStrictEqual(capturedBody?.reasoning, { effort: reasoningEffort });
+        assert.strictEqual(capturedBody?.temperature, 1);
+      }
     } finally {
       globalThis.fetch = originalFetch;
     }

@@ -445,10 +445,10 @@ suite('AgentLoop', () => {
     }
   });
 
-  test('run - passes configured xhigh reasoningEffort for Codex Subscription GPT-5 models', async () => {
+  test('run - passes configured max reasoningEffort for Codex Subscription GPT-5 models', async () => {
     const config = vscode.workspace.getConfiguration('lingyun');
     const previousEffort = config.get('copilot.reasoningEffort');
-    await config.update('copilot.reasoningEffort', 'xhigh', vscode.ConfigurationTarget.Global);
+    await config.update('copilot.reasoningEffort', 'max', vscode.ConfigurationTarget.Global);
 
     try {
       const codexLLM = new MockCodexSubscriptionProvider();
@@ -458,9 +458,9 @@ suite('AgentLoop', () => {
       await agent.run('Hi');
 
       const options = codexLLM.lastCallOptions as any;
-      assert.strictEqual(options?.providerOptions?.codexSubscription?.reasoningEffort, 'xhigh');
+      assert.strictEqual(options?.providerOptions?.codexSubscription?.reasoningEffort, 'max');
       assert.strictEqual(options?.providerOptions?.codexSubscription?.reasoningSummary, 'auto');
-      assert.strictEqual(options?.providerOptions?.openai?.reasoningEffort, 'xhigh');
+      assert.strictEqual(options?.providerOptions?.openai?.reasoningEffort, 'max');
       assert.strictEqual(options?.providerOptions?.openai?.reasoningSummary, 'auto');
     } finally {
       if (previousEffort === undefined) {
