@@ -18,7 +18,6 @@ import type { ChatModelsService } from './methods.models';
 import type { ChatRevertService } from './methods.revert';
 import type { ChatRunnerCallbacksService } from './methods.runner.callbacks';
 import type { ChatRunnerInputService } from './methods.runner.input';
-import type { ChatRunnerPlanService } from './methods.runner.plan';
 import type { ChatSessionsService } from './methods.sessions';
 import type { ChatSkillsService } from './methods.skills';
 import type { ChatWebviewService } from './methods.webview';
@@ -98,7 +97,6 @@ export class ChatController {
   revertApi!: ChatRevertService;
   runnerCallbacksApi!: ChatRunnerCallbacksService;
   runnerInputApi!: ChatRunnerInputService;
-  runnerPlanApi!: ChatRunnerPlanService;
   sessionApi!: ChatSessionsService;
   skillsApi!: ChatSkillsService;
   webviewApi!: ChatWebviewService;

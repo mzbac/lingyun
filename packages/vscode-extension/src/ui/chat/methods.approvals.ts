@@ -18,7 +18,7 @@ import type { PendingApprovalEntry } from './controllerPorts';
 import { bindChatControllerService } from './controllerService';
 import type { ChatSessionsService } from './methods.sessions';
 import type { ChatWebviewService } from './methods.webview';
-import { findApprovalToolMessage } from './toolMessageLookup';
+import { findApprovalToolMessage, upsertToolMessage } from './toolMessageLookup';
 import type { ChatMode, ChatMessage } from './types';
 import { formatWorkspacePathForUI } from './utils';
 
@@ -276,47 +276,28 @@ export function createChatApprovalsService(controller: ChatApprovalsDeps): ChatA
 
       const approvalId = tc.id;
       const stepId = parentMessageId ?? this.activeStepId;
-      const existing = findApprovalToolMessage({
-        messages: this.messages,
-        approvalId,
-        stepId,
-      });
-      if (existing?.toolCall) {
-        existing.toolCall.status = 'pending';
-        existing.toolCall.isProtected = manualApproval || existing.toolCall.isProtected;
-        existing.toolCall.approvalReason = approvalContext?.reason || existing.toolCall.approvalReason;
-        this.webviewApi.postMessage({ type: 'updateTool', message: existing });
-      } else {
-        let uiPath: string | undefined;
-        try {
-          const args = JSON.parse(tc.function.arguments || '{}');
-          uiPath = (args as any).filePath || (args as any).path || (args as any).workdir;
-        } catch {
-          // Ignore parse errors.
-        }
-        uiPath = formatWorkspacePathForUI(uiPath);
 
-        const toolMsg: ChatMessage = {
-          id: crypto.randomUUID(),
-          role: 'tool',
-          content: '',
-          timestamp: Date.now(),
-          turnId: this.currentTurnId,
-          stepId,
-          toolCall: {
-            id: def.id,
-            name: def.name,
-            args: tc.function.arguments,
-            status: 'pending',
-            approvalId,
-            path: uiPath,
-            isProtected: manualApproval || undefined,
-            approvalReason: approvalContext?.reason,
-          },
-        };
-        this.messages.push(toolMsg);
-        this.webviewApi.postMessage({ type: 'message', message: toolMsg });
+      let uiPath: string | undefined;
+      try {
+        const args = JSON.parse(tc.function.arguments || '{}');
+        uiPath = (args as any).filePath || (args as any).path || (args as any).workdir;
+      } catch {
+        // Ignore parse errors.
       }
+      uiPath = formatWorkspacePathForUI(uiPath);
+
+      upsertToolMessage({
+        view: { messages: this.messages, postMessage: (message) => this.webviewApi.postMessage(message) },
+        tc,
+        def,
+        status: 'pending',
+        turnId: this.currentTurnId,
+        stepId,
+        path: uiPath,
+        isProtected: manualApproval,
+        approvalReason: approvalContext?.reason,
+        lookupScope: { currentTurnId: this.currentTurnId, currentStepId: stepId },
+      });
 
       return new Promise((resolve) => {
         this.pendingApprovals.set(approvalId, {

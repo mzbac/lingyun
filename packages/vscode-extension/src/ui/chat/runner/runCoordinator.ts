@@ -24,6 +24,7 @@ import {
 } from './runCoordinatorPendingPlan';
 import { findLatestToolMessageByApprovalId } from '../toolMessageLookup';
 import { postInputNotice } from '../inputNotice';
+import { enterRunState, exitRunState } from './runState';
 import {
   createBudgetLimitedPrompt,
   createGoalContinuationPrompt,
@@ -177,20 +178,7 @@ export class RunCoordinator {
   constructor(private readonly controller: RunCoordinatorHost) {}
 
   private finalizeRun(params?: { postProcessingSignal?: boolean; keepAbortFlag?: boolean; suppressQueueAutosend?: boolean }): void {
-    const c = this.controller;
-    const sessionId = c.activeSessionId;
-    c.isProcessing = false;
-    if (!params?.keepAbortFlag) {
-      c.abortRequested = false;
-    }
-    c.autoApproveThisRun = false;
-    c.pendingApprovals.clear();
-    c.postApprovalState();
-    if (params?.postProcessingSignal !== false) {
-      c.postMessage({ type: 'processing', value: false });
-    }
-    c.persistActiveSession();
-    c.queueManager.scheduleAutosendForSession(sessionId, { suppress: params?.suppressQueueAutosend });
+    exitRunState(this.controller, params);
   }
 
   /**
@@ -202,11 +190,7 @@ export class RunCoordinator {
    * - approval state must be reposted whenever processing begins
    */
   private activateRun(): void {
-    const c = this.controller;
-    c.isProcessing = true;
-    c.abortRequested = false;
-    c.autoApproveThisRun = false;
-    c.postApprovalState();
+    enterRunState(this.controller);
   }
 
   private enqueueQueuedInput(params: { normalized: NormalizedUserInput; displayContent?: string }): void {

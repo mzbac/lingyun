@@ -1,5 +1,5 @@
-import type { RunCoordinatorHost } from '../controllerPorts';
 import type { ChatMessage } from '../types';
+import { enterRunState, exitRunState, type RunStateHost } from './runState';
 
 export type PlanMessageKind = 'initial' | 'update';
 
@@ -28,20 +28,6 @@ export function getPlanFailureText(params: { kind: PlanMessageKind; wasCanceled:
   }
   return params.kind === 'update' ? '(Plan update failed)' : '(Plan generation failed)';
 }
-
-type PendingPlanRunView = Pick<
-  RunCoordinatorHost,
-  | 'activeSessionId'
-  | 'abortRequested'
-  | 'postApprovalState'
-  | 'postMessage'
-  | 'persistActiveSession'
-  | 'pendingApprovals'
-  | 'queueManager'
-> & {
-  isProcessing: boolean;
-  autoApproveThisRun: boolean;
-};
 
 /**
  * Owns pending-plan lifecycle knowledge shared across initial planning,
@@ -122,27 +108,17 @@ export function postPlanPendingState(
   });
 }
 
-export function beginPendingPlanUpdateRun(view: PendingPlanRunView): void {
-  view.isProcessing = true;
-  view.abortRequested = false;
-  view.autoApproveThisRun = false;
-  view.postApprovalState();
+export function beginPendingPlanUpdateRun(view: RunStateHost): void {
+  enterRunState(view);
 }
 
 export function finishPendingPlanUpdateRun(
-  view: PendingPlanRunView,
+  view: RunStateHost,
   params: { currentPlanMessageId?: string; wasCanceled: boolean },
 ): void {
-  view.isProcessing = false;
-  view.abortRequested = false;
-  view.postMessage({ type: 'processing', value: false });
+  exitRunState(view, { suppressQueueAutosend: params.wasCanceled });
   postPlanPendingState(view, {
     active: true,
     planMessageId: params.currentPlanMessageId,
   });
-  view.autoApproveThisRun = false;
-  view.pendingApprovals.clear();
-  view.postApprovalState();
-  view.persistActiveSession();
-  view.queueManager.scheduleAutosendForSession(view.activeSessionId, { suppress: params.wasCanceled });
 }

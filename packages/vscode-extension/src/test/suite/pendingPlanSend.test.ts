@@ -306,7 +306,7 @@ suite('Pending plan send', () => {
       return 'Need more detail';
     };
 
-    await provider.runnerPlanApi.revisePendingPlan('plan-1', 'Clarify deployment');
+    await provider.runnerInputApi.revisePendingPlan('plan-1', 'Clarify deployment');
 
     assert.deepStrictEqual(recordedInputs, ['Clarify deployment']);
     assert.deepStrictEqual(warnedSkills, [{ content: 'Clarify deployment', turnId: 'turn-1' }]);
@@ -349,7 +349,7 @@ suite('Pending plan send', () => {
     };
     provider.runnerInputApi.classifyPlanStatus = () => 'needs_input';
 
-    await provider.runnerPlanApi.revisePendingPlan('plan-1', 'Clarify deployment');
+    await provider.runnerInputApi.revisePendingPlan('plan-1', 'Clarify deployment');
 
     assert.deepStrictEqual(recordedInputs, ['Clarify deployment']);
     assert.ok(session.pendingPlan);
@@ -381,7 +381,7 @@ suite('Pending plan send', () => {
       return 'done';
     };
 
-    await provider.runnerPlanApi.revisePendingPlan('different-id', 'Clarify deployment');
+    await provider.runnerInputApi.revisePendingPlan('different-id', 'Clarify deployment');
 
     assert.strictEqual(planCalled, false);
     assert.deepStrictEqual(recordedInputs, []);
@@ -422,7 +422,7 @@ suite('Pending plan send', () => {
       return 'done';
     };
 
-    await provider.runnerPlanApi.revisePendingPlan('plan-missing', 'Clarify deployment');
+    await provider.runnerInputApi.revisePendingPlan('plan-missing', 'Clarify deployment');
 
     assert.strictEqual(planCalled, false);
     assert.deepStrictEqual(recordedInputs, ['Clarify deployment']);
@@ -454,7 +454,7 @@ suite('Pending plan send', () => {
       throw new Error('plan failed');
     };
 
-    await provider.runnerPlanApi.revisePendingPlan('plan-1', 'Retry safely');
+    await provider.runnerInputApi.revisePendingPlan('plan-1', 'Retry safely');
 
     assert.deepStrictEqual(session.pendingPlan, { task: 'Task', planMessageId: 'plan-1' });
     assert.deepStrictEqual(scheduledAutosends, [{ sessionId: 'session-1', suppress: false }]);
@@ -501,7 +501,7 @@ suite('Pending plan send', () => {
       throw new Error('plan failed');
     };
 
-    await provider.runnerPlanApi.revisePendingPlan('plan-1', 'Retry safely');
+    await provider.runnerInputApi.revisePendingPlan('plan-1', 'Retry safely');
 
     const turnStatus = posted.find(message => (message as any)?.type === 'turnStatus') as any;
     assert.ok(turnStatus);
@@ -536,7 +536,7 @@ suite('Pending plan send', () => {
       throw new Error('request canceled');
     };
 
-    await provider.runnerPlanApi.revisePendingPlan('plan-1', 'Retry safely');
+    await provider.runnerInputApi.revisePendingPlan('plan-1', 'Retry safely');
 
     assert.deepStrictEqual(session.pendingPlan, { task: 'Task', planMessageId: 'plan-1' });
     assert.deepStrictEqual(scheduledAutosends, [{ sessionId: 'session-1', suppress: true }]);
@@ -581,7 +581,7 @@ suite('Pending plan send', () => {
       throw new Error('Agent aborted');
     };
 
-    await provider.runnerPlanApi.revisePendingPlan('plan-1', 'Retry safely');
+    await provider.runnerInputApi.revisePendingPlan('plan-1', 'Retry safely');
 
     assert.deepStrictEqual(session.pendingPlan, { task: 'Task', planMessageId: 'plan-1' });
     assert.deepStrictEqual(scheduledAutosends, [{ sessionId: 'session-1', suppress: true }]);
@@ -635,7 +635,7 @@ suite('Pending plan send', () => {
       assert.strictEqual(options?.approvedPlan, '1. Ship it');
       return 'done';
     };
-    await provider.runnerPlanApi.executePendingPlan('plan-1');
+    await provider.runnerInputApi.executePendingPlan('plan-1');
 
     assert.strictEqual(approvalStatePosts, 2);
     assert.strictEqual(planMsg.plan?.status, 'done');
@@ -681,7 +681,7 @@ suite('Pending plan send', () => {
       assert.strictEqual(options?.approvedPlan, '1. Ship it');
       return 'done';
     };
-    await provider.runnerPlanApi.executePendingPlan('plan-1');
+    await provider.runnerInputApi.executePendingPlan('plan-1');
 
     assert.strictEqual(planMsg.plan?.status, 'done');
     assert.strictEqual(planMsg.plan?.task, 'Task');
@@ -712,7 +712,7 @@ suite('Pending plan send', () => {
       return 'done';
     };
 
-    await provider.runnerPlanApi.executePendingPlan('different-id');
+    await provider.runnerInputApi.executePendingPlan('different-id');
 
     assert.strictEqual(executeCalled, false);
     assertBlockedPendingPlanDirectAction({
@@ -748,7 +748,7 @@ suite('Pending plan send', () => {
       return 'done';
     };
 
-    await provider.runnerPlanApi.executePendingPlan('plan-missing');
+    await provider.runnerInputApi.executePendingPlan('plan-missing');
 
     assert.strictEqual(executeCalled, false);
     assertBlockedPendingPlanDirectAction({
@@ -778,7 +778,7 @@ suite('Pending plan send', () => {
       assert.match(options?.approvedPlan || '', /Proceed without further clarification/);
       return 'done';
     };
-    await provider.runnerPlanApi.executePendingPlan('plan-1');
+    await provider.runnerInputApi.executePendingPlan('plan-1');
   });
 
   test('executePendingPlan treats inline assumptions heading text as ordinary plan content', async () => {
@@ -800,7 +800,7 @@ suite('Pending plan send', () => {
       approvedPlan = String(options?.approvedPlan || '');
       return 'done';
     };
-    await provider.runnerPlanApi.executePendingPlan('plan-1');
+    await provider.runnerInputApi.executePendingPlan('plan-1');
 
     assert.match(approvedPlan, /Keep the literal ## Assumptions \(auto\) text in docs/);
     assert.match(approvedPlan, /Proceed without further clarification/);
@@ -832,7 +832,7 @@ suite('Pending plan send', () => {
       approvedPlan = String(options?.approvedPlan || '');
       return 'done';
     };
-    await provider.runnerPlanApi.executePendingPlan('plan-1');
+    await provider.runnerInputApi.executePendingPlan('plan-1');
 
     assert.strictEqual(approvedPlan, content);
   });
@@ -861,7 +861,7 @@ suite('Pending plan send', () => {
     provider.agent.execute = async () => {
       throw new Error('execution failed');
     };
-    await provider.runnerPlanApi.executePendingPlan('plan-1');
+    await provider.runnerInputApi.executePendingPlan('plan-1');
 
     assert.strictEqual(provider.mode, 'plan');
     assert.strictEqual(planMsg.plan?.status, 'needs_input');

@@ -5,7 +5,6 @@ import { createChatModelsService } from './methods.models';
 import { createChatRevertServiceForController } from './methods.revert';
 import { createChatRunnerCallbacksServiceForController } from './methods.runner.callbacks';
 import { createChatRunnerInputService } from './methods.runner.input';
-import { createChatRunnerPlanService } from './methods.runner.plan';
 import { createChatSessionsServiceForController } from './methods.sessions';
 import { createChatSkillsService } from './methods.skills';
 import { createChatWebviewServiceForController } from './methods.webview';
@@ -25,7 +24,6 @@ export function installChatControllerComposition(controller: ChatController): vo
   controller.revertApi = createChatRevertServiceForController(controller);
   controller.runnerCallbacksApi = createChatRunnerCallbacksServiceForController(controller);
   controller.runnerInputApi = createChatRunnerInputService(controller);
-  controller.runnerPlanApi = createChatRunnerPlanService(controller);
 
   controller.queueManager = createChatQueueManager(controller);
   controller.runner = createRunCoordinatorForController(controller);

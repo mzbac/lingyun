@@ -16,7 +16,7 @@ import {
   getPlanPlaceholderText,
   isPlanPlaceholderText,
 } from './runCoordinatorPendingPlan';
-import { findToolMessageByApprovalId } from '../toolMessageLookup';
+import { findToolMessageByApprovalId, upsertToolMessage } from '../toolMessageLookup';
 import { createThoughtStream } from './thoughtStream';
 
 type PlanningCallbacksOptions = {
@@ -96,38 +96,17 @@ export function createPlanningCallbacks(
   };
 
   const upsertToolError = (tc: ToolCall, def: ToolDefinition, reason: string) => {
-    const existing = findToolMessageByApprovalId({
-      messages: view.messages,
-      approvalId: tc.id,
-      planningContainerId: planContainerId,
+    const { path } = resolveToolCallUiPath(view, tc, def, { includeWorkdir: true });
+    upsertToolMessage({
+      view,
+      tc,
+      def,
+      status: 'error',
+      stepId: planContainerId,
+      path,
+      result: reason,
+      lookupScope: { planningContainerId: planContainerId },
     });
-
-    if (existing?.toolCall) {
-      existing.toolCall.status = 'error';
-      existing.toolCall.result = reason;
-      view.postMessage({ type: 'updateTool', message: existing });
-    } else {
-      const { path } = resolveToolCallUiPath(view, tc, def, { includeWorkdir: true });
-
-      const toolMsg: ChatMessage = {
-        id: crypto.randomUUID(),
-        role: 'tool',
-        content: '',
-        timestamp: Date.now(),
-        stepId: planContainerId,
-        toolCall: {
-          id: def.id,
-          name: def.name,
-          args: tc.function.arguments,
-          status: 'error',
-          approvalId: tc.id,
-          path,
-          result: reason,
-        },
-      };
-      view.messages.push(toolMsg);
-      view.postMessage({ type: 'message', message: toolMsg });
-    }
 
     if (persistSessions) {
       view.persistActiveSession();
@@ -177,44 +156,16 @@ export function createPlanningCallbacks(
       thoughtStream.flush();
       const { path } = resolveToolCallUiPath(view, tc, def);
 
-      const existing = findToolMessageByApprovalId({
-        messages: view.messages,
-        approvalId: tc.id,
-        planningContainerId: planContainerId,
-      });
-
-      if (existing?.toolCall) {
-        existing.toolCall.id = def.id;
-        existing.toolCall.name = def.name;
-        existing.toolCall.args = tc.function.arguments;
-        if (path) existing.toolCall.path = path;
-        if (existing.toolCall.status !== 'pending' && existing.toolCall.status !== 'rejected') {
-          existing.toolCall.status = 'running';
-        }
-        view.postMessage({ type: 'updateTool', message: existing });
-        if (persistSessions) {
-          view.persistActiveSession();
-        }
-        return;
-      }
-
-      const toolMsg: ChatMessage = {
-        id: crypto.randomUUID(),
-        role: 'tool',
-        content: '',
-        timestamp: Date.now(),
+      upsertToolMessage({
+        view,
+        tc,
+        def,
+        status: 'running',
         stepId: planContainerId,
-        toolCall: {
-          id: def.id,
-          name: def.name,
-          args: tc.function.arguments,
-          status: 'running',
-          approvalId: tc.id,
-          path,
-        },
-      };
-      view.messages.push(toolMsg);
-      view.postMessage({ type: 'message', message: toolMsg });
+        path,
+        lookupScope: { planningContainerId: planContainerId },
+        preservePendingOrRejected: true,
+      });
       if (persistSessions) {
         view.persistActiveSession();
       }

@@ -8,13 +8,19 @@ export interface ChatRunnerInputService {
   sendMessage(content: string): void;
   handleUserMessage(content: string | ChatUserInput, options?: ChatUserMessageOptions): Promise<void>;
   retryToolCall(approvalId: string): Promise<void>;
+  executePendingPlan(planMessageId?: string): Promise<void>;
+  cancelPendingPlan(planMessageId: string): Promise<void>;
+  revisePendingPlan(planMessageId: string, instructions: string): Promise<void>;
   isPlanFirstEnabled(): boolean;
   classifyPlanStatus(plan: string): 'draft' | 'needs_input';
 }
 
 export interface ChatRunnerInputDeps {
   view?: vscode.WebviewView;
-  runner: Pick<RunCoordinator, 'handleUserMessage' | 'retryToolCall'>;
+  runner: Pick<
+    RunCoordinator,
+    'handleUserMessage' | 'retryToolCall' | 'executePendingPlan' | 'cancelPendingPlan' | 'revisePendingPlan'
+  >;
 }
 
 function hasWhitespacePrefixSeparator(value: string, index: number): boolean {
@@ -61,6 +67,18 @@ export function createChatRunnerInputService(controller: ChatRunnerInputDeps): C
 
     async retryToolCall(this: ChatRunnerInputDeps, approvalId: string): Promise<void> {
       await this.runner.retryToolCall(approvalId);
+    },
+
+    async executePendingPlan(this: ChatRunnerInputDeps, planMessageId?: string): Promise<void> {
+      await this.runner.executePendingPlan(planMessageId);
+    },
+
+    async cancelPendingPlan(this: ChatRunnerInputDeps, planMessageId: string): Promise<void> {
+      await this.runner.cancelPendingPlan(planMessageId);
+    },
+
+    async revisePendingPlan(this: ChatRunnerInputDeps, planMessageId: string, instructions: string): Promise<void> {
+      await this.runner.revisePendingPlan(planMessageId, instructions);
     },
 
     isPlanFirstEnabled(this: ChatRunnerInputDeps): boolean {

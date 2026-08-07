@@ -25,7 +25,7 @@ import {
   resolveToolCallUiPath,
   upsertTaskChildSession,
 } from './callbackUtils';
-import { findToolMessageByApprovalId } from '../toolMessageLookup';
+import { findToolMessageByApprovalId, upsertToolMessage } from '../toolMessageLookup';
 import { currentTurnIsMemoryExcluded } from './memoryTurn';
 
 const MAX_TOOL_DIFF_FILE_BYTES = 400_000;
@@ -162,46 +162,18 @@ export function createToolLifecycleCallbacks(params: {
       if (path) recordFileTouch(view.signals, path);
     }
 
-    const existing = findToolMessage(tc.id);
-    if (existing?.toolCall) {
-      existing.toolCall.id = def.id;
-      existing.toolCall.name = def.name;
-      existing.toolCall.args = tc.function.arguments;
-      if (path) existing.toolCall.path = path;
-      if (externalContext) existing.toolCall.memoryContextSource = externalContext;
-      if (existing.toolCall.status !== 'pending' && existing.toolCall.status !== 'rejected') {
-        existing.toolCall.status = 'running';
-      }
-      if (!existing.stepId && view.activeStepId) {
-        existing.stepId = view.activeStepId;
-      }
-      view.postMessage({ type: 'updateTool', message: existing });
-      persistIfEnabled();
-      return;
-    }
-
-    const toolMsg: ChatMessage = {
-      id: crypto.randomUUID(),
-      role: 'tool',
-      content: '',
-      timestamp: Date.now(),
+    upsertToolMessage({
+      view,
+      tc,
+      def,
+      status: 'running',
       turnId: view.currentTurnId,
       stepId: view.activeStepId,
-      toolCall: {
-        id: def.id,
-        name: def.name,
-        args: tc.function.arguments,
-        // IMPORTANT: Only mark a tool as "pending approval" when the agent core actually
-        // requests approval (onRequestApproval). Avoid UI heuristics that can disagree with
-        // the core permission system / autoApprove settings.
-        status: 'running',
-        approvalId: tc.id,
-        path,
-        memoryContextSource: externalContext,
-      },
-    };
-    view.messages.push(toolMsg);
-    view.postMessage({ type: 'message', message: toolMsg });
+      path,
+      memoryContextSource: externalContext,
+      lookupScope: { currentTurnId: view.currentTurnId },
+      preservePendingOrRejected: true,
+    });
     persistIfEnabled();
 
     if (EDIT_TOOL_IDS.has(def.id) && typeof filePathRaw === 'string' && filePathRaw.trim()) {
@@ -228,37 +200,20 @@ export function createToolLifecycleCallbacks(params: {
     view.toolDiffBeforeByToolCallId.delete(tc.id);
     view.toolDiffSnapshotsByToolCallId.delete(tc.id);
 
-    const existing = findToolMessage(tc.id, { currentStepOnly: true });
-    if (existing?.toolCall) {
-      existing.toolCall.status = 'error';
-      existing.toolCall.result = reason;
-      view.postMessage({ type: 'updateTool', message: existing });
-      persistIfEnabled();
-      return;
-    }
-
     const { path } = resolveToolCallUiPath(view, tc, def, { includeWorkdir: true });
     const externalContext = externalMemoryContextSource(def, tc);
-    const toolMsg: ChatMessage = {
-      id: crypto.randomUUID(),
-      role: 'tool',
-      content: '',
-      timestamp: Date.now(),
+    upsertToolMessage({
+      view,
+      tc,
+      def,
+      status: 'error',
       turnId: view.currentTurnId,
       stepId: view.activeStepId,
-      toolCall: {
-        id: def.id,
-        name: def.name,
-        args: tc.function.arguments,
-        status: 'error',
-        approvalId: tc.id,
-        path,
-        result: reason,
-        memoryContextSource: externalContext,
-      },
-    };
-    view.messages.push(toolMsg);
-    view.postMessage({ type: 'message', message: toolMsg });
+      path,
+      result: reason,
+      memoryContextSource: externalContext,
+      lookupScope: { currentTurnId: view.currentTurnId, currentStepId: view.activeStepId },
+    });
     persistIfEnabled();
   }
 
