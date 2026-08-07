@@ -3,7 +3,7 @@
 
 <head>
   <meta http-equiv="Content-Security-Policy"
-    content="default-src 'none'; img-src {{CSP_SOURCE}} data:; style-src {{CSP_SOURCE}} 'unsafe-inline'; script-src 'nonce-{{NONCE}}';">
+    content="default-src 'none'; img-src {{CSP_SOURCE}} data:; style-src {{CSP_SOURCE}} 'unsafe-inline'; script-src 'nonce-{{NONCE}}' {{CSP_SCRIPT_EXTRA}};">
   <style>
     * {
       box-sizing: border-box;

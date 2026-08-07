@@ -9,7 +9,7 @@ This project is still in active development with no production users. Prefer bre
 
 - No legacy compatibility: delete/replace old paths instead of layering.
 - Minimal duplication: centralize shared logic (prompt shaping, tool formatting, approvals, streaming glue).
-- Persisted state: no migrations; users/devs can clear via `LingYun: Clear Saved Sessions`.
+- Persisted state: index schema `3` is written; `2–3` are accepted on read (older migrated in memory); unreadable/unsupported indexes and files are preserved on disk, never auto-deleted. Users can clear via `LingYun: Clear Saved Sessions`.
 - No sensitive info: never log/write API keys, private base URLs, or internal IPs.
 
 ## Current Architecture (Source of Truth)
@@ -50,7 +50,8 @@ This project is still in active development with no production users. Prefer bre
 
 - Session persistence is enabled by default: `lingyun.sessions.persist` (default `true`).
 - Stored under VS Code extension storage (`context.storageUri/sessions/`, fallback `context.globalStorageUri/sessions/`).
-- Schema is hard-reset on mismatch (no migrations).
+- Index schema: `SessionStore` (`packages/vscode-extension/src/core/sessionStore.ts`) writes `version: 3`; accepts `2–3` on read and migrates older indexes in memory (rewritten as `3` on the next save). Unreadable or unsupported indexes are reported to the caller (`SessionStoreLoad.indexValid === false`) and are never deleted.
+- Data-loss guard: session files are only pruned (deleted) when the store has successfully loaded the previous index; a load failure or schema mismatch keeps all files on disk untouched, and the chat UI shows a notice instead of silently dropping history.
 
 ## Context Window / Compaction
 

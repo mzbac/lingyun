@@ -52,7 +52,9 @@ export function createTokenBatcher(params: {
     },
 
     flushAll(): void {
-      for (const targetId of [...buffers.keys()]) {
+      // Map iterators tolerate deleting the current entry, so there is no need
+      // to snapshot the key array before clearing every buffer.
+      for (const targetId of buffers.keys()) {
         clearBuffer(targetId);
       }
     },
@@ -68,7 +70,7 @@ export function createTokenBatcher(params: {
     },
 
     discardAll(): void {
-      for (const targetId of [...buffers.keys()]) {
+      for (const targetId of buffers.keys()) {
         const buffer = buffers.get(targetId);
         if (!buffer) continue;
         if (buffer.timer) {

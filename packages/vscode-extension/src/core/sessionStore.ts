@@ -14,6 +14,22 @@ export type SessionsIndex = {
   sessionsMeta: Record<string, SessionMeta>;
 };
 
+/**
+ * Result of `SessionStore.loadAll()` when an index file exists on disk.
+ *
+ * `indexValid` is `false` when the index could not be parsed or belongs to an
+ * unsupported schema version. In that case `sessionsById` is empty and callers
+ * must NOT treat the store as authoritative (a later save will keep the old
+ * files on disk instead of pruning them).
+ */
+export type SessionStoreLoad<TSession> = {
+  index: SessionsIndex;
+  sessionsById: Map<string, TSession>;
+  indexValid: boolean;
+  /** Set when the on-disk index used an older schema that was accepted (e.g. version 2). */
+  migratedFromVersion?: number;
+};
+
 export type SessionStoreOptions<TSession> = {
   maxSessions: number;
   maxSessionBytes: number;
@@ -23,27 +39,54 @@ export type SessionStoreOptions<TSession> = {
 
 function sessionsIndexEquals(a: SessionsIndex | undefined, b: SessionsIndex): boolean {
   if (!a || a.version !== b.version || a.activeSessionId !== b.activeSessionId) return false;
-  if (!Array.isArray(a.order) || a.order.length !== b.order.length) return false;
-  for (let i = 0; i < b.order.length; i++) {
-    if (a.order[i] !== b.order[i]) return false;
-  }
+  return sameSessionOrder(a.order, b.order);
+}
 
-  const aMeta = a.sessionsMeta || {};
-  const bMeta = b.sessionsMeta || {};
-  for (const id of b.order) {
-    const left = aMeta[id];
-    const right = bMeta[id];
-    if (!left || !right) return false;
-    if (
-      left.title !== right.title ||
-      left.firstUserMessagePreview !== right.firstUserMessagePreview ||
-      left.createdAt !== right.createdAt ||
-      left.updatedAt !== right.updatedAt
-    ) {
-      return false;
-    }
+function sameSessionOrder(a: readonly string[] | undefined, b: readonly string[] | undefined): boolean {
+  if (!Array.isArray(a) || a.length !== (b?.length ?? 0)) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b?.[i]) return false;
   }
   return true;
+}
+
+const CURRENT_INDEX_VERSION = 3 as const;
+/** Schema versions we accept when reading; older ones are migrated in memory and rewritten on the next save. */
+const READABLE_INDEX_VERSIONS = new Set<number>([2, CURRENT_INDEX_VERSION]);
+
+function normalizeSessionsIndex(raw: unknown): SessionsIndex | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const candidate = raw as Record<string, unknown>;
+  if (!READABLE_INDEX_VERSIONS.has(candidate.version as number)) return undefined;
+  if (!Array.isArray(candidate.order) || typeof candidate.activeSessionId !== 'string') return undefined;
+
+  const order: string[] = [];
+  for (const id of candidate.order) {
+    if (typeof id === 'string' && id.trim()) order.push(id);
+  }
+
+  const sessionsMeta: Record<string, SessionMeta> = {};
+  const rawMeta = candidate.sessionsMeta;
+  if (rawMeta && typeof rawMeta === 'object') {
+    for (const id of order) {
+      const meta = (rawMeta as Record<string, unknown>)[id];
+      if (!meta || typeof meta !== 'object') continue;
+      const m = meta as Record<string, unknown>;
+      sessionsMeta[id] = {
+        title: typeof m.title === 'string' ? m.title : '',
+        firstUserMessagePreview: typeof m.firstUserMessagePreview === 'string' ? m.firstUserMessagePreview : undefined,
+        createdAt: typeof m.createdAt === 'number' ? m.createdAt : 0,
+        updatedAt: typeof m.updatedAt === 'number' ? m.updatedAt : 0,
+      };
+    }
+  }
+
+  return {
+    version: CURRENT_INDEX_VERSION,
+    activeSessionId: candidate.activeSessionId,
+    order,
+    sessionsMeta,
+  };
 }
 
 export class SessionStore<
@@ -55,6 +98,14 @@ export class SessionStore<
   private readonly encoder = new TextEncoder();
   private readonly decoder = new TextDecoder('utf-8');
 
+  /**
+   * The order of the index that was last read successfully by this store.
+   * Session files are only pruned (deleted) when the on-disk index still
+   * matches this snapshot; otherwise the store is not authoritative about what
+   * previously existed and must not delete anything.
+   */
+  private lastLoadedIndexOrder: string[] | undefined;
+
   constructor(
     private readonly baseUri: vscode.Uri,
     private readonly options: SessionStoreOptions<TSession>,
@@ -63,25 +114,44 @@ export class SessionStore<
     this.indexUri = vscode.Uri.joinPath(this.sessionsDir, 'index.json');
   }
 
-  async loadAll(): Promise<{ index: SessionsIndex; sessionsById: Map<string, TSession> } | undefined> {
-    const index = await this.tryReadJson<SessionsIndex>(this.indexUri);
-    if (!index || index.version !== 3 || !Array.isArray(index.order) || typeof index.activeSessionId !== 'string') {
+  async loadAll(): Promise<SessionStoreLoad<TSession> | undefined> {
+    if (!(await this.pathExists(this.indexUri))) {
+      // Fresh store: nothing persisted yet (not an error).
       return undefined;
+    }
+
+    const raw = await this.tryReadJson<unknown>(this.indexUri);
+    const index = normalizeSessionsIndex(raw);
+    if (!index) {
+      // Index exists but is unreadable or from an unsupported schema version.
+      // Do not treat the store as authoritative: a later save must keep the
+      // existing files on disk instead of pruning them.
+      this.lastLoadedIndexOrder = undefined;
+      return {
+        index: { version: CURRENT_INDEX_VERSION, activeSessionId: '', order: [], sessionsMeta: {} },
+        sessionsById: new Map<string, TSession>(),
+        indexValid: false,
+      };
     }
 
     const sessionsById = new Map<string, TSession>();
     for (const id of index.order) {
-      if (typeof id !== 'string' || !id.trim()) continue;
       const session = await this.tryReadJson<TSession>(this.getSessionUri(id));
       if (!session || typeof session.id !== 'string' || session.id !== id) continue;
       sessionsById.set(id, session);
     }
 
-    if (sessionsById.size === 0) {
-      return undefined;
-    }
+    // Only claim authority when we actually recovered sessions. An index that
+    // lists sessions whose files are all missing/unreadable must not trigger
+    // pruning of those files on the next save.
+    this.lastLoadedIndexOrder = sessionsById.size > 0 ? [...index.order] : undefined;
 
-    return { index, sessionsById };
+    return {
+      index,
+      sessionsById,
+      indexValid: true,
+      migratedFromVersion: raw && typeof raw === 'object' && (raw as Record<string, unknown>).version === 2 ? 2 : undefined,
+    };
   }
 
   async save(params: {
@@ -146,7 +216,7 @@ export class SessionStore<
     }
 
     const index: SessionsIndex = {
-      version: 3,
+      version: CURRENT_INDEX_VERSION,
       activeSessionId: nextActive,
       order: finalOrder,
       sessionsMeta,
@@ -169,14 +239,24 @@ export class SessionStore<
     await this.enqueueWrite(async () => {
       await this.ensureSessionsDir();
 
-      const previousIndex = await this.tryReadJson<SessionsIndex>(this.indexUri);
-      const previousOrder = Array.isArray(previousIndex?.order) ? previousIndex.order : [];
+      const previousIndex = normalizeSessionsIndex(await this.tryReadJson<unknown>(this.indexUri));
+      const previousOrder = previousIndex ? previousIndex.order : [];
       const currentIds = new Set(finalOrder);
+
+      // Only prune files when this store successfully loaded the previous index
+      // and the on-disk index still matches what we loaded. Otherwise the save
+      // is not authoritative about earlier sessions (e.g. a schema mismatch or
+      // a corrupt index after an extension update) and deleting files would
+      // permanently destroy history.
+      const canPrune =
+        this.lastLoadedIndexOrder !== undefined && sameSessionOrder(this.lastLoadedIndexOrder, previousOrder);
       const removedIds = new Set<string>();
-      for (const id of previousOrder) {
-        if (typeof id !== 'string' || currentIds.has(id) || removedIds.has(id)) continue;
-        removedIds.add(id);
-        await this.tryDelete(this.getSessionUri(id));
+      if (canPrune) {
+        for (const id of previousOrder) {
+          if (typeof id !== 'string' || currentIds.has(id) || removedIds.has(id)) continue;
+          removedIds.add(id);
+          await this.tryDelete(this.getSessionUri(id));
+        }
       }
 
       for (const id of dirtyToWrite) {
@@ -187,13 +267,18 @@ export class SessionStore<
         await this.writeJsonAtomic(this.getSessionUri(id), pruned);
       }
 
-      if (dirtyToWrite.length === 0 && sessionsIndexEquals(previousIndex, index)) return;
+      if (dirtyToWrite.length === 0 && sessionsIndexEquals(previousIndex, index)) {
+        this.lastLoadedIndexOrder = [...finalOrder];
+        return;
+      }
       await this.writeJsonAtomic(this.indexUri, index);
+      this.lastLoadedIndexOrder = [...finalOrder];
     });
   }
 
   async clear(): Promise<void> {
     await this.enqueueWrite(async () => {
+      this.lastLoadedIndexOrder = undefined;
       try {
         await vscode.workspace.fs.delete(this.sessionsDir, { recursive: true, useTrash: false });
       } catch {
@@ -204,6 +289,15 @@ export class SessionStore<
 
   private getSessionUri(sessionId: string): vscode.Uri {
     return vscode.Uri.joinPath(this.sessionsDir, `${sessionId}.json`);
+  }
+
+  private async pathExists(uri: vscode.Uri): Promise<boolean> {
+    try {
+      await vscode.workspace.fs.stat(uri);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private async ensureSessionsDir(): Promise<void> {

@@ -213,22 +213,23 @@ suite('Chat Render Perf Guards', () => {
 
   test('chat approval active step updates scan without find callbacks', () => {
     const source = fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/methods.approvals.ts'), 'utf8');
-    const helperStart = source.indexOf('function findMessageById');
+    const lookupSource = fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/toolMessageLookup.ts'), 'utf8');
+    const helperStart = lookupSource.indexOf('export function findChatMessageById');
     assert.ok(helperStart >= 0, 'expected local message id lookup helper');
-    const helperEnd = source.indexOf('export function createChatApprovalsService', helperStart);
-    assert.ok(helperEnd > helperStart, 'expected approvals service after message id helper');
-    const helperSection = source.slice(helperStart, helperEnd);
+    const helperEnd = lookupSource.indexOf('export function upsertToolMessage', helperStart);
+    assert.ok(helperEnd > helperStart, 'expected tool message upsert helper after message id helper');
+    const helperSection = lookupSource.slice(helperStart, helperEnd);
     const methodStart = source.indexOf('markActiveStepStatus(this: ChatApprovalsDeps');
     assert.ok(methodStart >= 0, 'expected active step status helper');
     const methodEnd = source.indexOf('  });', methodStart);
     assert.ok(methodEnd > methodStart, 'expected service object close after active step status helper');
     const methodSection = source.slice(methodStart, methodEnd);
 
-    assert.match(helperSection, /for \(let i = 0; i < messages\.length; i\+\+\)/);
-    assert.match(helperSection, /const message = messages\[i\];/);
-    assert.match(helperSection, /if \(message\?\.id === messageId\) return message;/);
-    assert.match(methodSection, /const stepMsg = findMessageById\(this\.messages, this\.activeStepId\);/);
+    assert.match(helperSection, /for \(const message of messages\)/);
+    assert.match(helperSection, /if \(message\.id === messageId\) return message;/);
+    assert.match(methodSection, /const stepMsg = findChatMessageById\(this\.messages, this\.activeStepId\);/);
     assert.doesNotMatch(methodSection, /\.find\(/);
+    assert.doesNotMatch(helperSection, /\.find\(/);
   });
 
   test('chat controller service binding avoids Object.entries snapshots', () => {
@@ -307,7 +308,7 @@ suite('Chat Render Perf Guards', () => {
     );
     const equivalentRecallSection = section('function hasEquivalentRecentMemoryRecall', 'function shouldSkipAutoRecallForQuery');
     const optOutStripSection = section('function stripMemoryRecallContextForCurrentRun', 'function hasMemoryContradictionConflicts');
-    const contradictionSection = section('function hasMemoryContradictionConflicts', 'function memoryHitLastConfirmedAt');
+    const contradictionSection = section('function hasMemoryContradictionConflicts', 'function durableCategoryPriority');
     const recentToolSection = section('function recentToolNamesFromSession', 'function memoryHitTools');
     const toolSection = section('function memoryHitTools', 'function queryMentionsActiveToolMemory');
     const activeToolSection = section('function shouldSuppressActiveToolUsageMemory', 'function currentStateReferenceVsProjectOrder');
@@ -4497,15 +4498,33 @@ suite('Chat Render Perf Guards', () => {
 
   test('execution state flushes token buffers without key snapshot allocation', () => {
     const source = fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/runner/executionState.ts'), 'utf8');
+    const batcherSource = fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/runner/tokenBatcher.ts'), 'utf8');
     const flushStart = source.indexOf('function flushAllTokenBuffers');
     assert.ok(flushStart >= 0, 'expected token buffer flush helper');
     const flushEnd = source.indexOf('function discardTokenBuffer', flushStart);
     assert.ok(flushEnd > flushStart, 'expected discard helper after flush helper');
     const flushSection = source.slice(flushStart, flushEnd);
 
-    assert.match(flushSection, /for \(const messageId of tokenBuffersByMessageId\.keys\(\)\)/);
-    assert.match(flushSection, /flushTokenBuffer\(messageId\)/);
-    assert.doesNotMatch(flushSection, /\[\.\.\.tokenBuffersByMessageId\.keys\(\)\]/);
+    // Per-target buffers moved into the shared token batcher; the flush-all
+    // path delegates to it instead of snapshotting [...keys()] in this file.
+    assert.match(flushSection, /thoughtStream\.flush\(\);/);
+    assert.match(flushSection, /tokenBatcher\.flushAll\(\);/);
+    assert.doesNotMatch(flushSection, /\[\.\.\./);
+
+    const batcherFlushAllStart = batcherSource.indexOf('flushAll(): void {');
+    assert.ok(batcherFlushAllStart >= 0, 'expected batcher flush-all helper');
+    const batcherFlushAllEnd = batcherSource.indexOf('discard(targetId: string): void {', batcherFlushAllStart);
+    assert.ok(batcherFlushAllEnd > batcherFlushAllStart, 'expected batcher discard helper after flush-all');
+    const batcherFlushAllSection = batcherSource.slice(batcherFlushAllStart, batcherFlushAllEnd);
+    assert.match(batcherFlushAllSection, /for \(const targetId of buffers\.keys\(\)\)/);
+    assert.doesNotMatch(batcherFlushAllSection, /\[\.\.\.buffers\.keys\(\)\]/);
+
+    const batcherDiscardAllStart = batcherSource.indexOf('discardAll(): void {');
+    assert.ok(batcherDiscardAllStart >= 0, 'expected batcher discard-all helper');
+    const batcherDiscardAllEnd = batcherSource.indexOf('};', batcherDiscardAllStart);
+    assert.ok(batcherDiscardAllEnd > batcherDiscardAllStart, 'expected batcher object close after discard-all');
+    const batcherDiscardAllSection = batcherSource.slice(batcherDiscardAllStart, batcherDiscardAllEnd);
+    assert.doesNotMatch(batcherDiscardAllSection, /\[\.\.\.buffers\.keys\(\)\]/);
   });
 
   test('session settings state updates avoid duplicate checked value and title writes', () => {
@@ -10764,7 +10783,7 @@ suite('Chat Render Perf Guards', () => {
     assert.match(saveSection, /for \(let i = firstPrunedIndex; i < order\.length; i\+\+\)/);
     assert.match(saveSection, /for \(const id of params\.dirtySessionIds\)/);
     assert.match(saveSection, /const removedIds = new Set<string>\(\);/);
-    assert.match(saveSection, /if \(dirtyToWrite\.length === 0 && sessionsIndexEquals\(previousIndex, index\)\) return;/);
+    assert.match(saveSection, /if \(dirtyToWrite\.length === 0 && sessionsIndexEquals\(previousIndex, index\)\) \{/);
     assert.match(flushSection, /const dirtyIds = this\.dirtySessionIds;/);
     assert.match(flushSection, /this\.dirtySessionIds = new Set<string>\(\);/);
     assert.match(flushSection, /const sessionIdsToPersist =/);

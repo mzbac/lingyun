@@ -227,13 +227,19 @@ suite('SessionStore', () => {
     }
   });
 
-  test('handles corrupted json gracefully', async () => {
+  test('reports an unreadable index and never deletes files for it', async () => {
     const dir = makeTempDir();
     try {
       const sessionsDir = path.join(dir, 'sessions');
       fs.mkdirSync(sessionsDir, { recursive: true });
 
+      // Simulate a previous version's storage: a session file on disk but an
+      // index the current code cannot parse (corrupt or schema mismatch).
       fs.writeFileSync(path.join(sessionsDir, 'index.json'), '{ not json');
+      fs.writeFileSync(
+        path.join(sessionsDir, 'old-session.json'),
+        JSON.stringify({ id: 'old-session', title: 'Old', createdAt: 1, updatedAt: 1, messages: [{ content: 'hi' }] })
+      );
 
       const store = new SessionStore<TestSession>(vscode.Uri.file(dir), {
         maxSessions: 20,
@@ -241,7 +247,124 @@ suite('SessionStore', () => {
       });
 
       const loaded = await store.loadAll();
-      assert.strictEqual(loaded, undefined);
+      assert.ok(loaded, 'expected an informative load result for an existing but unreadable index');
+      assert.strictEqual(loaded?.indexValid, false);
+      assert.strictEqual(loaded?.sessionsById.size, 0);
+
+      // A save after the failed load (e.g. the new version starting a fresh
+      // session) must NOT delete the old session files.
+      const fresh: TestSession = { id: 'fresh', title: 'Fresh', createdAt: 2, updatedAt: 2, messages: [] };
+      await store.save({
+        sessionsById: new Map([['fresh', fresh]]),
+        activeSessionId: 'fresh',
+        order: ['fresh'],
+        dirtySessionIds: ['fresh'],
+      });
+
+      assert.strictEqual(fs.existsSync(path.join(sessionsDir, 'old-session.json')), true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('loads and migrates a version 2 index', async () => {
+    const dir = makeTempDir();
+    try {
+      const sessionsDir = path.join(dir, 'sessions');
+      fs.mkdirSync(sessionsDir, { recursive: true });
+
+      fs.writeFileSync(
+        path.join(sessionsDir, 'index.json'),
+        JSON.stringify({
+          version: 2,
+          activeSessionId: 's1',
+          order: ['s1', 's2'],
+          sessionsMeta: {
+            s1: { title: 'Session 1', createdAt: 1, updatedAt: 2 },
+            s2: { title: 'Session 2', createdAt: 3, updatedAt: 4 },
+          },
+        })
+      );
+      fs.writeFileSync(
+        path.join(sessionsDir, 's1.json'),
+        JSON.stringify({ id: 's1', title: 'Session 1', createdAt: 1, updatedAt: 2, messages: [{ content: 'a' }] })
+      );
+      fs.writeFileSync(
+        path.join(sessionsDir, 's2.json'),
+        JSON.stringify({ id: 's2', title: 'Session 2', createdAt: 3, updatedAt: 4, messages: [{ content: 'b' }] })
+      );
+
+      const store = new SessionStore<TestSession>(vscode.Uri.file(dir), {
+        maxSessions: 20,
+        maxSessionBytes: 2_000_000,
+      });
+
+      const loaded = await store.loadAll();
+      assert.ok(loaded);
+      assert.strictEqual(loaded?.indexValid, true);
+      assert.strictEqual(loaded?.migratedFromVersion, 2);
+      assert.strictEqual(loaded?.index.version, 3);
+      assert.strictEqual(loaded?.sessionsById.size, 2);
+      assert.strictEqual(loaded?.sessionsById.get('s1')?.messages[0].content, 'a');
+
+      // The next save rewrites the index at the current schema version.
+      await store.save({
+        sessionsById: loaded.sessionsById,
+        activeSessionId: loaded.index.activeSessionId,
+        order: loaded.index.order,
+      });
+      const rewritten = JSON.parse(fs.readFileSync(path.join(sessionsDir, 'index.json'), 'utf8'));
+      assert.strictEqual(rewritten.version, 3);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('prunes files only after a successful load', async () => {
+    const dir = makeTempDir();
+    try {
+      const store = new SessionStore<TestSession>(vscode.Uri.file(dir), {
+        maxSessions: 20,
+        maxSessionBytes: 2_000_000,
+      });
+
+      const now = Date.now();
+      const sessionsById = new Map<string, TestSession>();
+      for (const id of ['s1', 's2', 's3']) {
+        sessionsById.set(id, {
+          id,
+          title: id,
+          createdAt: now,
+          updatedAt: now,
+          messages: [{ content: id }],
+        });
+      }
+
+      // First save without any prior load: the index is written, but the store
+      // is not authoritative yet, so nothing is deleted from disk.
+      await store.save({
+        sessionsById,
+        activeSessionId: 's1',
+        order: ['s1', 's2', 's3'],
+        dirtySessionIds: ['s1', 's2', 's3'],
+      });
+      assert.strictEqual(fs.existsSync(path.join(dir, 'sessions', 's1.json')), true);
+
+      const loaded = await store.loadAll();
+      assert.ok(loaded);
+      assert.deepStrictEqual(loaded?.index.order, ['s1', 's2', 's3']);
+
+      // After a successful load, saving a smaller set prunes the removed files.
+      const smaller = new Map<string, TestSession>([['s3', sessionsById.get('s3')!]]);
+      await store.save({
+        sessionsById: smaller,
+        activeSessionId: 's3',
+        order: ['s3'],
+        dirtySessionIds: ['s3'],
+      });
+      assert.strictEqual(fs.existsSync(path.join(dir, 'sessions', 's1.json')), false);
+      assert.strictEqual(fs.existsSync(path.join(dir, 'sessions', 's2.json')), false);
+      assert.strictEqual(fs.existsSync(path.join(dir, 'sessions', 's3.json')), true);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

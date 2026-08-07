@@ -913,7 +913,7 @@ export class WorkspaceMemories {
     if (durableKey && action !== 'confirm' && this.storageRootUri) {
       const store = new SessionStore<PersistedSession>(this.storageRootUri, getSessionStoreOptions());
       const loaded = await store.loadAll();
-      if (loaded) {
+      if (loaded?.indexValid) {
         const dirtySessionIds = new Set<string>();
         const clusterSessionIds = new Set<string>([
           ...clusterRecords.map((record) => record.sessionId),

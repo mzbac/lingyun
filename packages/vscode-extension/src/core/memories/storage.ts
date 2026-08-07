@@ -311,7 +311,7 @@ export async function loadPersistedSessions(
   });
 
   const loaded = await store.loadAll();
-  if (!loaded) return [];
+  if (!loaded || !loaded.indexValid) return [];
 
   const sessions: PersistedSession[] = [];
   for (const id of loaded.index.order) {

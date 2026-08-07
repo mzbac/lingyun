@@ -11,7 +11,7 @@ import { cloneAgentHistoryMessages, getAgentHistoryStats, parseUserHistoryInput 
 import type { AgentSessionState } from '../../core/agent';
 import { WorkspaceMemories } from '../../core/memories';
 import { redactSensitive } from '../../core/agent/debug';
-import { appendErrorLog } from '../../core/logger';
+import { appendErrorLog, appendLog } from '../../core/logger';
 import { resolveModelIdWithWorkspaceDefaults } from '../../core/modelSelection';
 import { normalizeSessionSignals } from '../../core/sessionSignals';
 import { SessionStore } from '../../core/sessionStore';
@@ -849,6 +849,27 @@ export function createChatSessionPersistenceService(
           const loaded = await store.loadAll();
           if (!loaded) return;
 
+          if (!loaded.indexValid) {
+            appendErrorLog(
+              this.outputChannel,
+              'Saved sessions index is unreadable or from an unsupported schema version. Existing session files were kept on disk and will not be overwritten or deleted.',
+              new Error('SessionStore.loadAll: invalid sessions index'),
+              { tag: 'Sessions' },
+            );
+            postInputNotice(
+              this,
+              'Could not restore saved sessions (storage index is unreadable or from an unsupported version). Your old session files were kept on disk.',
+            );
+            return;
+          }
+
+          if (loaded.migratedFromVersion !== undefined) {
+            appendLog(this.outputChannel, `Migrated saved sessions index from schema version ${loaded.migratedFromVersion}.`, {
+              level: 'info',
+              tag: 'Sessions',
+            });
+          }
+
           const nextSessions = new Map<string, ChatSessionInfo>();
           for (const id of loaded.index.order) {
             const session = loaded.sessionsById.get(id);
@@ -901,10 +922,23 @@ export function createChatSessionPersistenceService(
       }
 
       this.sessionStore = undefined;
-      this.getOrCreateSessionStore();
+      const store = this.getOrCreateSessionStore();
 
       if (!this.sessionsLoadedFromDisk) {
         await this.ensureSessionsLoaded();
+      } else if (store) {
+        // Recreating the store instance discards its in-memory load state.
+        // Re-read the index so the fresh store is authoritative for pruning
+        // again (and surface diagnostics if the index is unreadable).
+        const loaded = await store.loadAll();
+        if (loaded && !loaded.indexValid) {
+          appendErrorLog(
+            this.outputChannel,
+            'Saved sessions index is unreadable or from an unsupported schema version. Existing session files were kept on disk and will not be overwritten or deleted.',
+            new Error('SessionStore.loadAll: invalid sessions index'),
+            { tag: 'Sessions' },
+          );
+        }
       }
       if (!this.inputHistoryLoadedFromDisk) {
         await this.ensureInputHistoryLoaded();

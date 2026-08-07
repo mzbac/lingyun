@@ -534,12 +534,22 @@ export async function activate(
   return createAPI();
 }
 
-export function deactivate(): void {
+export function deactivate(): void | Promise<void> {
   void disposeWebSession();
-  if (extensionState) {
-    extensionState.dispose();
-    extensionState = undefined;
-  }
+
+  if (!extensionState) return;
+
+  // VS Code reloads the window right after an extension update. Flush any
+  // debounced session/input-history writes before the old host is torn down,
+  // otherwise the last few seconds of changes are lost.
+  const flushPromise = extensionState.chatProvider?.controller?.sessionApi
+    ? extensionState.chatProvider.controller.sessionApi.flushSessionSave().catch(() => {})
+    : undefined;
+
+  extensionState.dispose();
+  extensionState = undefined;
+
+  return flushPromise;
 }
 
 export function getChatWebviewHandshakeStateForTesting(): {
@@ -554,6 +564,23 @@ export function getChatWebviewHandshakeStateForTesting(): {
     visible: controller?.view?.visible ?? false,
     initAcked: controller?.initAcked ?? false,
     webviewClientInstanceId: controller?.webviewClientInstanceId,
+  };
+}
+
+/**
+ * Test-only bridge into the live chat webview DOM. Returns `undefined` when the
+ * chat view has never been opened. Evaluations are only honored by the renderer
+ * when the extension host runs in `ExtensionMode.Test`.
+ */
+export function getChatWebviewTestHarnessForTesting(): {
+  evaluateInWebview(expression: string): Promise<unknown>;
+  postMessage(message: unknown): void;
+} | undefined {
+  const controller = extensionState?.chatProvider?.controller;
+  if (!controller?.webviewApi?.evaluateInWebview) return undefined;
+  return {
+    evaluateInWebview: (expression) => controller.webviewApi.evaluateInWebview(expression),
+    postMessage: (message) => controller.webviewApi.postMessage(message),
   };
 }
 

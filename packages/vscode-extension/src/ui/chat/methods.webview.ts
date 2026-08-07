@@ -219,6 +219,12 @@ export interface ChatWebviewService {
   disconnectProvider(): Promise<void>;
   postMessage(message: unknown): void;
   getHtml(webview: vscode.Webview): string;
+  /**
+   * Test-only bridge: evaluates a JS expression inside the chat webview DOM and
+   * resolves with the (JSON-serializable) result. Only functional in
+   * `ExtensionMode.Test`; the renderer ignores the request otherwise.
+   */
+  evaluateInWebview(expression: string): Promise<unknown>;
 }
 
 export interface ChatWebviewDeps {
@@ -589,6 +595,33 @@ type DeferredTodoTask = {
 const deferredWebviewTasks = new WeakMap<ChatWebviewRuntime, DeferredWebviewTask>();
 const deferredTodoTasks = new WeakMap<ChatWebviewRuntime, DeferredTodoTask>();
 
+type WebviewTestEvalEntry = {
+  resolve(value: unknown): void;
+  reject(error: Error): void;
+  timer: NodeJS.Timeout;
+};
+
+const webviewTestEvalEntries = new WeakMap<ChatWebviewRuntime, Map<string, WebviewTestEvalEntry>>();
+
+function getWebviewTestEvalEntries(runtime: ChatWebviewRuntime): Map<string, WebviewTestEvalEntry> {
+  let entries = webviewTestEvalEntries.get(runtime);
+  if (!entries) {
+    entries = new Map<string, WebviewTestEvalEntry>();
+    webviewTestEvalEntries.set(runtime, entries);
+  }
+  return entries;
+}
+
+function rejectPendingWebviewTestEvals(runtime: ChatWebviewRuntime, reason: string): void {
+  const entries = webviewTestEvalEntries.get(runtime);
+  if (!entries) return;
+  for (const entry of entries.values()) {
+    clearTimeout(entry.timer);
+    entry.reject(new Error(reason));
+  }
+  entries.clear();
+}
+
 function logDeferredWebviewTaskFailure(
   runtime: ChatWebviewRuntime,
   label: string,
@@ -725,6 +758,7 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
         this.initAcked = false;
         this.webviewClientInstanceId = undefined;
         resetWebviewCrashToastState(this);
+        rejectPendingWebviewTestEvals(this, 'Chat webview was disposed before the test eval completed');
         if (this.initInterval) {
           clearInterval(this.initInterval);
           this.initInterval = undefined;
@@ -737,6 +771,22 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
         const messageType = getWebviewMessageType(data);
         try {
         switch (messageType) {
+          case '__testEvalResult': {
+            // Test-only DOM bridge response from the renderer.
+            const payload = data as Record<string, unknown>;
+            const id = typeof payload.id === 'string' ? payload.id : '';
+            if (!id) break;
+            const entry = getWebviewTestEvalEntries(this).get(id);
+            if (!entry) break;
+            getWebviewTestEvalEntries(this).delete(id);
+            clearTimeout(entry.timer);
+            if (payload.ok) {
+              entry.resolve(payload.value);
+            } else {
+              entry.reject(new Error(typeof payload.error === 'string' ? payload.error : 'Webview test eval failed'));
+            }
+            break;
+          }
           case 'newSession':
             try {
               await this.createNewSession();
@@ -3321,12 +3371,46 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
     this.view?.webview.postMessage(message);
   },
 
+  evaluateInWebview(this: ChatWebviewRuntime, expression: string): Promise<unknown> {
+    const view = this.view;
+    if (!view) {
+      return Promise.reject(new Error('Chat webview is not open'));
+    }
+
+    const id = crypto.randomUUID();
+    return new Promise<unknown>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        getWebviewTestEvalEntries(this).delete(id);
+        reject(new Error(`Timed out evaluating in chat webview: ${expression.slice(0, 120)}`));
+      }, 15_000);
+
+      getWebviewTestEvalEntries(this).set(id, {
+        resolve: (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+        timer,
+      });
+
+      view.webview.postMessage({ type: '__testEval', id, expression });
+    });
+  },
+
   getHtml(this: ChatWebviewRuntime, webview: vscode.Webview): string {
     const nonce = getNonce();
     const version = String((this.context as any)?.extension?.packageJSON?.version || '');
     const versionSuffix = version ? `(${version})` : '';
 
     let scripts = renderBrowserChatProtocolBootstrapScript(nonce);
+    if (this.context.extensionMode === vscode.ExtensionMode.Test) {
+      // Enable the renderer-side __testEval bridge used by the e2e webview
+      // tests. Production webviews never get this flag.
+      scripts = `<script nonce="${nonce}">window.__LINGYUN_TEST_MODE__ = true;</script>\n${scripts}`;
+    }
     for (const parts of CHAT_WEBVIEW_SCRIPT_PARTS) {
       const uri = webview.asWebviewUri(
         vscode.Uri.joinPath(this.context.extensionUri, 'media', ...parts)
@@ -3342,6 +3426,7 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
 
     return template
       .replace(/{{CSP_SOURCE}}/g, webview.cspSource)
+      .replace(/{{CSP_SCRIPT_EXTRA}}/g, this.context.extensionMode === vscode.ExtensionMode.Test ? "'unsafe-eval'" : '')
       .replace(/{{NONCE}}/g, nonce)
       .replace(/{{SCRIPTS}}/g, scripts)
       .replace(/{{LOGO_URI}}/g, String(logoUri))
