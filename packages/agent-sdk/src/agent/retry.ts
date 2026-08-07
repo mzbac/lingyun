@@ -1,7 +1,7 @@
-export const RETRY_INITIAL_DELAY_MS = 2000;
-export const RETRY_BACKOFF_FACTOR = 2;
-export const RETRY_MAX_DELAY_NO_HEADERS_MS = 30_000;
-export const RETRY_MAX_DELAY_MS = 2_147_483_647; // max 32-bit signed integer for setTimeout
+const RETRY_INITIAL_DELAY_MS = 2000;
+const RETRY_BACKOFF_FACTOR = 2;
+const RETRY_MAX_DELAY_NO_HEADERS_MS = 30_000;
+const RETRY_MAX_DELAY_MS = 2_147_483_647; // max 32-bit signed integer for setTimeout
 
 function createAbortError(): Error {
   const err = new Error('Aborted');

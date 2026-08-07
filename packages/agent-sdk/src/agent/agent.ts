@@ -22,6 +22,7 @@ import {
   redactFsPathForPrompt,
   resolveBuiltinSubagent,
   selectSkillsForText,
+  DEFAULT_COMPACTION_CONFIG,
   type AgentHistoryMessage,
   type CompactionConfig,
   type ModelLimit,
@@ -299,13 +300,7 @@ export class LingyunAgent {
 
     this.modelLimits = runtime?.modelLimits;
 
-    const baseCompaction: CompactionConfig = {
-      auto: true,
-      prune: true,
-      pruneProtectTokens: 40_000,
-      pruneMinimumTokens: 20_000,
-      toolOutputMode: 'onCompaction',
-    };
+    const baseCompaction = DEFAULT_COMPACTION_CONFIG;
     const c = runtime?.compaction ?? {};
     this.compactionConfig = {
       auto: c.auto ?? baseCompaction.auto,

@@ -47,7 +47,7 @@ function getLastAssistantMode(history: readonly AgentHistoryMessage[]): 'build' 
   return undefined;
 }
 
-export function getLastPromptMode(history: readonly AgentHistoryMessage[]): 'build' | 'plan' | undefined {
+function getLastPromptMode(history: readonly AgentHistoryMessage[]): 'build' | 'plan' | undefined {
   return getLastExplicitMode(history) ?? getLastAssistantMode(history);
 }
 
