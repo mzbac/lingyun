@@ -1,5 +1,6 @@
 import type { AgentCallbacks } from '../../../core/types';
 import type { ChatMessage } from '../types';
+import { createTokenBatcher } from './tokenBatcher';
 
 type AgentStatusEvent = Parameters<NonNullable<AgentCallbacks['onStatusChange']>>[0];
 
@@ -15,8 +16,6 @@ type ThoughtStreamParams = {
   getStepId?(): string | undefined;
   debug(message: string): void;
 };
-
-const TOKEN_FLUSH_INTERVAL_MS = 25;
 
 export interface ThoughtStream {
   push(text: string): void;
@@ -37,43 +36,33 @@ export function createThoughtStream(params: ThoughtStreamParams): ThoughtStream 
 
   let thoughtMsg: ChatMessage | undefined;
   let thoughtBuffer = '';
-  let pendingToken = '';
-  let flushTimer: NodeJS.Timeout | undefined;
   let thoughtTokensSeen = 0;
   let thoughtCharsSeen = 0;
   let loggedFirstThought = false;
+  const tokenBatcher = createTokenBatcher({
+    flushMs: 25,
+    flush: (messageId, token) => view.postMessage({ type: 'token', messageId, token }),
+  });
 
   debug(
     `[Thinking] callbacks created showThinking=${String(showThinking)} turn=${getTurnId() ?? ''}`,
   );
 
   function flush(): void {
-    if (flushTimer) {
-      clearTimeout(flushTimer);
-      flushTimer = undefined;
+    if (thoughtMsg) {
+      tokenBatcher.flush(thoughtMsg.id);
     }
-    if (!thoughtMsg || !pendingToken) return;
-
-    const token = pendingToken;
-    pendingToken = '';
-    view.postMessage({ type: 'token', messageId: thoughtMsg.id, token });
   }
 
   function discardPendingToken(): void {
-    if (flushTimer) {
-      clearTimeout(flushTimer);
-      flushTimer = undefined;
+    if (thoughtMsg) {
+      tokenBatcher.discard(thoughtMsg.id);
     }
-    pendingToken = '';
   }
 
   function queueToken(token: string): void {
-    pendingToken += token;
-    if (flushTimer) return;
-    flushTimer = setTimeout(() => {
-      flushTimer = undefined;
-      flush();
-    }, TOKEN_FLUSH_INTERVAL_MS);
+    if (!thoughtMsg) return;
+    tokenBatcher.push(thoughtMsg.id, token);
   }
 
   function push(text: string): void {

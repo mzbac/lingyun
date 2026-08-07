@@ -5,6 +5,7 @@ import { cleanAssistantPreamble } from '../utils';
 import type { ChatMessage } from '../types';
 import type { RunnerConversationView } from './callbackContracts';
 import { createThoughtStream } from './thoughtStream';
+import { createTokenBatcher } from './tokenBatcher';
 
 type ExecutionStateParams = {
   view: RunnerConversationView;
@@ -15,13 +16,6 @@ type ExecutionStateParams = {
 };
 
 type AgentStatusEvent = Parameters<NonNullable<AgentCallbacks['onStatusChange']>>[0];
-
-const TOKEN_FLUSH_INTERVAL_MS = 25;
-
-type TokenBuffer = {
-  token: string;
-  timer?: NodeJS.Timeout;
-};
 
 function findLatestAssistantMessage(history: AgentHistoryMessage[]): AgentHistoryMessage | undefined {
   for (let i = history.length - 1; i >= 0; i--) {
@@ -55,7 +49,10 @@ export function createChatExecutionState(params: ExecutionStateParams): ChatExec
   let stepPosted = false;
   let assistantMsg: ChatMessage | undefined;
   let assistantStarted = false;
-  const tokenBuffersByMessageId = new Map<string, TokenBuffer>();
+  const tokenBatcher = createTokenBatcher({
+    flushMs: 25,
+    flush: (messageId, token) => view.postMessage({ type: 'token', messageId, token }),
+  });
   const thoughtStream = createThoughtStream({
     view,
     showThinking,
@@ -114,41 +111,20 @@ export function createChatExecutionState(params: ExecutionStateParams): ChatExec
   }
 
   function flushTokenBuffer(messageId: string): void {
-    const buffer = tokenBuffersByMessageId.get(messageId);
-    if (!buffer) return;
-    if (buffer.timer) clearTimeout(buffer.timer);
-    tokenBuffersByMessageId.delete(messageId);
-    if (buffer.token) {
-      view.postMessage({ type: 'token', messageId, token: buffer.token });
-    }
+    tokenBatcher.flush(messageId);
   }
 
   function flushAllTokenBuffers(): void {
     thoughtStream.flush();
-    for (const messageId of tokenBuffersByMessageId.keys()) {
-      flushTokenBuffer(messageId);
-    }
+    tokenBatcher.flushAll();
   }
 
   function discardTokenBuffer(messageId: string): void {
-    const buffer = tokenBuffersByMessageId.get(messageId);
-    if (!buffer) return;
-    if (buffer.timer) clearTimeout(buffer.timer);
-    tokenBuffersByMessageId.delete(messageId);
+    tokenBatcher.discard(messageId);
   }
 
   function queueToken(messageId: string, token: string): void {
-    const existing = tokenBuffersByMessageId.get(messageId);
-    if (existing) {
-      existing.token += token;
-      return;
-    }
-
-    const buffer: TokenBuffer = { token };
-    buffer.timer = setTimeout(() => {
-      flushTokenBuffer(messageId);
-    }, TOKEN_FLUSH_INTERVAL_MS);
-    tokenBuffersByMessageId.set(messageId, buffer);
+    tokenBatcher.push(messageId, token);
   }
 
   function pushThought(text: string): void {

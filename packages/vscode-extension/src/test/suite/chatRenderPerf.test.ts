@@ -1234,8 +1234,9 @@ suite('Chat Render Perf Guards', () => {
   });
 
   test('webview html script assembly avoids per-call map spread arrays', () => {
-    const source = fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/methods.webview.ts'), 'utf8');
-    const constantStart = source.indexOf('const CHAT_WEBVIEW_SCRIPT_PARTS = [');
+    const settingsSource = fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/webviewSettings.ts'), 'utf8');
+    const source = settingsSource + '\n' + fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/methods.webview.ts'), 'utf8');
+    const constantStart = settingsSource.indexOf('const CHAT_WEBVIEW_SCRIPT_PARTS = [');
     assert.ok(constantStart >= 0, 'expected fixed webview script list to be module-scoped');
 
     const getHtmlStart = source.indexOf('getHtml(this: ChatWebviewRuntime');
@@ -5185,7 +5186,8 @@ suite('Chat Render Perf Guards', () => {
 	  });
 
 	  test('extension settings normalizers avoid entry arrays while enforcing caps', () => {
-	    const source = fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/methods.webview.ts'), 'utf8');
+	    const settingsSource = fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/webviewSettings.ts'), 'utf8');
+    const source = settingsSource + '\n' + fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/methods.webview.ts'), 'utf8');
 	    const helperSection = (startPattern: string, endPattern: string) => {
 	      const start = source.indexOf(startPattern);
 	      assert.ok(start >= 0, 'expected ' + startPattern);
@@ -5272,7 +5274,8 @@ suite('Chat Render Perf Guards', () => {
 	  });
 
 	  test('extension settings list normalizers share scanner without split arrays', () => {
-	    const webviewSource = fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/methods.webview.ts'), 'utf8');
+	    const settingsSource = fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/webviewSettings.ts'), 'utf8');
+    const webviewSource = settingsSource + '\n' + fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/methods.webview.ts'), 'utf8');
     const helperSection = (startPattern: string, endPattern: string) => {
       const start = webviewSource.indexOf(startPattern);
       assert.ok(start >= 0, 'expected ' + startPattern);
@@ -6700,7 +6703,8 @@ suite('Chat Render Perf Guards', () => {
   });
 
   test('generation settings backend skips unchanged writes before config updates', () => {
-    const source = fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/methods.webview.ts'), 'utf8');
+    const settingsSource = fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/webviewSettings.ts'), 'utf8');
+    const source = settingsSource + '\n' + fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/methods.webview.ts'), 'utf8');
     const helperStart = source.indexOf('function generationSettingsEqual');
     assert.ok(helperStart >= 0, 'expected generation settings equality helper');
     const helperEnd = source.indexOf('function getMemoryAutoRecallEnabled', helperStart);
@@ -6725,7 +6729,8 @@ suite('Chat Render Perf Guards', () => {
   });
 
   test('model limits backend skips unchanged writes before config update', () => {
-    const source = fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/methods.webview.ts'), 'utf8');
+    const settingsSource = fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/webviewSettings.ts'), 'utf8');
+    const source = settingsSource + '\n' + fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/methods.webview.ts'), 'utf8');
     const helperStart = source.indexOf('function modelLimitsEqual');
     assert.ok(helperStart >= 0, 'expected model limits equality helper');
     const helperEnd = source.indexOf('function getNumberSetting', helperStart);
@@ -6751,7 +6756,8 @@ suite('Chat Render Perf Guards', () => {
   });
 
   test('sessions persist backend skips unchanged writes and refreshes before config update', () => {
-    const source = fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/methods.webview.ts'), 'utf8');
+    const settingsSource = fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/webviewSettings.ts'), 'utf8');
+    const source = settingsSource + '\n' + fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/methods.webview.ts'), 'utf8');
     const methodStart = source.indexOf('async setSessionsPersist');
     assert.ok(methodStart >= 0, 'expected setSessionsPersist method');
     const methodEnd = source.indexOf('async setSessionRetentionLimits', methodStart);
@@ -6774,7 +6780,8 @@ suite('Chat Render Perf Guards', () => {
   });
 
   test('session retention backend skips unchanged writes and refreshes before config updates', () => {
-    const source = fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/methods.webview.ts'), 'utf8');
+    const settingsSource = fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/webviewSettings.ts'), 'utf8');
+    const source = settingsSource + '\n' + fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/methods.webview.ts'), 'utf8');
     const helperStart = source.indexOf('function getSessionRetentionLimits');
     assert.ok(helperStart >= 0, 'expected session retention state helper');
     const helperEnd = source.indexOf('type ToolRuntimeLimits', helperStart);
@@ -6803,7 +6810,8 @@ suite('Chat Render Perf Guards', () => {
   });
 
   test('simple webview settings backend skips unchanged default writes before config updates', () => {
-    const source = fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/methods.webview.ts'), 'utf8');
+    const settingsSource = fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/webviewSettings.ts'), 'utf8');
+    const source = settingsSource + '\n' + fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/methods.webview.ts'), 'utf8');
     const methodSection = (startText: string, endText: string): string => {
       const start = source.indexOf(startText);
       assert.ok(start >= 0, `expected section start: ${startText}`);
@@ -6871,7 +6879,8 @@ suite('Chat Render Perf Guards', () => {
   });
 
   test('diagnostics and plugin settings backend skip unchanged grouped writes before config updates', () => {
-    const source = fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/methods.webview.ts'), 'utf8');
+    const settingsSource = fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/webviewSettings.ts'), 'utf8');
+    const source = settingsSource + '\n' + fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/methods.webview.ts'), 'utf8');
     const section = (startText: string, endText: string): string => {
       const start = source.indexOf(startText);
       assert.ok(start >= 0, `expected section start: ${startText}`);
@@ -6909,7 +6918,8 @@ suite('Chat Render Perf Guards', () => {
   });
 
   test('provider settings backend skips unchanged writes before config updates', () => {
-    const source = fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/methods.webview.ts'), 'utf8');
+    const settingsSource = fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/webviewSettings.ts'), 'utf8');
+    const source = settingsSource + '\n' + fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/methods.webview.ts'), 'utf8');
     const section = (startText: string, endText: string): string => {
       const start = source.indexOf(startText);
       assert.ok(start >= 0, `expected section start: ${startText}`);
@@ -6945,7 +6955,8 @@ suite('Chat Render Perf Guards', () => {
   });
 
   test('workspace instruction and compaction prune backends skip unchanged writes before config updates', () => {
-    const source = fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/methods.webview.ts'), 'utf8');
+    const settingsSource = fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/webviewSettings.ts'), 'utf8');
+    const source = settingsSource + '\n' + fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/methods.webview.ts'), 'utf8');
     const section = (startText: string, endText: string): string => {
       const start = source.indexOf(startText);
       assert.ok(start >= 0, `expected section start: ${startText}`);
@@ -6999,7 +7010,8 @@ suite('Chat Render Perf Guards', () => {
   });
 
   test('skills and subagent backends skip unchanged writes before config updates', () => {
-    const source = fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/methods.webview.ts'), 'utf8');
+    const settingsSource = fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/webviewSettings.ts'), 'utf8');
+    const source = settingsSource + '\n' + fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/methods.webview.ts'), 'utf8');
     const section = (startText: string, endText: string): string => {
       const start = source.indexOf(startText);
       assert.ok(start >= 0, `expected section start: ${startText}`);
@@ -7063,7 +7075,8 @@ suite('Chat Render Perf Guards', () => {
   });
 
   test('memory grouped settings backend skips unchanged grouped writes before config updates', () => {
-    const source = fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/methods.webview.ts'), 'utf8');
+    const settingsSource = fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/webviewSettings.ts'), 'utf8');
+    const source = settingsSource + '\n' + fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/methods.webview.ts'), 'utf8');
     const methodSection = (startText: string, endText: string): string => {
       const start = source.indexOf(startText);
       assert.ok(start >= 0, `expected section start: ${startText}`);
@@ -7107,7 +7120,8 @@ suite('Chat Render Perf Guards', () => {
   });
 
   test('tool runtime limits backend skips unchanged grouped writes before config updates', () => {
-    const source = fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/methods.webview.ts'), 'utf8');
+    const settingsSource = fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/webviewSettings.ts'), 'utf8');
+    const source = settingsSource + '\n' + fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/methods.webview.ts'), 'utf8');
     const helperStart = source.indexOf('function toolRuntimeLimitsEqual');
     assert.ok(helperStart >= 0, 'expected tool runtime equality helper');
     const helperEnd = source.indexOf('type CompactionToolOutputMode', helperStart);
@@ -7132,7 +7146,8 @@ suite('Chat Render Perf Guards', () => {
   });
 
   test('tool filter backend skips unchanged writes and catalog rebuild before config update', () => {
-    const source = fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/methods.webview.ts'), 'utf8');
+    const settingsSource = fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/webviewSettings.ts'), 'utf8');
+    const source = settingsSource + '\n' + fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/methods.webview.ts'), 'utf8');
     const helperStart = source.indexOf('function stringListsEqual');
     assert.ok(helperStart >= 0, 'expected string-list equality helper');
     const helperEnd = source.indexOf('function collectRequiredParameterNames', helperStart);
@@ -7160,7 +7175,8 @@ suite('Chat Render Perf Guards', () => {
   });
 
   test('settings backend list length checks scan without callback arrays', () => {
-    const source = fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/methods.webview.ts'), 'utf8');
+    const settingsSource = fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/webviewSettings.ts'), 'utf8');
+    const source = settingsSource + '\n' + fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/methods.webview.ts'), 'utf8');
     const section = (startText: string, endText: string): string => {
       const start = source.indexOf(startText);
       assert.ok(start >= 0, `expected section start: ${startText}`);
@@ -8067,7 +8083,8 @@ suite('Chat Render Perf Guards', () => {
 				  });
 
 	  test('backend tool catalog builder avoids separate filter and map passes', () => {
-	    const webviewSource = fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/methods.webview.ts'), 'utf8');
+	    const settingsSource = fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/webviewSettings.ts'), 'utf8');
+    const webviewSource = settingsSource + '\n' + fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/methods.webview.ts'), 'utf8');
 	    const requiredStart = webviewSource.indexOf('function collectRequiredParameterNames');
 	    assert.ok(requiredStart >= 0, 'expected required-parameter collector');
 	    const reasonStart = webviewSource.indexOf('function collectManualToolConfirmationReasons', requiredStart);
@@ -8127,7 +8144,8 @@ suite('Chat Render Perf Guards', () => {
 		  });
 
   test('provider auth toast messages scan first non-empty line without split map chains', () => {
-    const webviewSource = fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/methods.webview.ts'), 'utf8');
+    const settingsSource = fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/webviewSettings.ts'), 'utf8');
+    const webviewSource = settingsSource + '\n' + fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/methods.webview.ts'), 'utf8');
     const toastStart = webviewSource.indexOf('function getToastErrorMessage');
     assert.ok(toastStart >= 0, 'expected toast error formatter');
     const scannerStart = webviewSource.indexOf('function getFirstNonEmptyTrimmedLine', toastStart);
@@ -8252,15 +8270,15 @@ suite('Chat Render Perf Guards', () => {
   });
 
   test('OpenAI-compatible token metadata lookup scans keys without value arrays', () => {
-    const source = fs.readFileSync(path.resolve(__dirname, '../../../src/providers/openaiCompatible.ts'), 'utf8');
+    const source = fs.readFileSync(path.resolve(__dirname, '../../../../core/src/openaiCompatibleModels.ts'), 'utf8');
     const lookupStart = source.indexOf('function positiveFiniteNumber');
     assert.ok(lookupStart >= 0, 'expected positive finite number helper');
     const lookupEnd = source.indexOf('function getOpenAICompatibleMaxInputTokens', lookupStart);
     assert.ok(lookupEnd > lookupStart, 'expected token metadata lookup helpers before provider token getters');
     const lookupSection = source.slice(lookupStart, lookupEnd);
     const inputGetterStart = lookupEnd;
-    const outputGetterEnd = source.indexOf('function isUnsupportedModelListStatus', inputGetterStart);
-    assert.ok(outputGetterEnd > inputGetterStart, 'expected model-list status helpers after provider token getters');
+    const outputGetterEnd = source.indexOf('export function validOpenAICompatibleModelRecord', inputGetterStart);
+    assert.ok(outputGetterEnd > inputGetterStart, 'expected model record validator after provider token getters');
     const getterSection = source.slice(inputGetterStart, outputGetterEnd);
 
     assert.match(source, /const OPENAI_COMPATIBLE_NESTED_METADATA_KEYS = \[/);
