@@ -35,7 +35,7 @@
   },
   "dependencies": {
     "ai": "^6.0.86",
-    "undici": "^7.25.0"
+    "undici": "^7.28.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
