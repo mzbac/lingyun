@@ -831,6 +831,44 @@ suite('Chat sessions facade', () => {
     }
   });
 
+  test('flushSessionSave can replace the dirty-session set through the facade', async () => {
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri;
+    assert.ok(root, 'Workspace folder must be available for chat session tests');
+
+    const config = vscode.workspace.getConfiguration('lingyun');
+    const previousPersist = config.get('sessions.persist');
+    await config.update('sessions.persist', true, vscode.ConfigurationTarget.Global);
+
+    const storageRoot = vscode.Uri.joinPath(root!, '.lingyun-test-storage', 'chat-sessions-dirty-set');
+    await vscode.workspace.fs.createDirectory(storageRoot);
+
+    try {
+      const controller = createStandaloneChatController({
+        context: createWritableChatTestExtensionContext(storageRoot),
+      });
+      const originalDirtySessionIds = controller.dirtySessionIds;
+      let saveCalls = 0;
+      controller.sessionStore = {
+        save: async () => {
+          saveCalls++;
+        },
+      } as any;
+
+      await controller.sessionApi.flushSessionSave();
+
+      assert.strictEqual(saveCalls, 1);
+      assert.notStrictEqual(controller.dirtySessionIds, originalDirtySessionIds);
+      assert.deepStrictEqual([...controller.dirtySessionIds], []);
+    } finally {
+      if (previousPersist === undefined) {
+        await config.update('sessions.persist', undefined, vscode.ConfigurationTarget.Global);
+      } else {
+        await config.update('sessions.persist', previousPersist, vscode.ConfigurationTarget.Global);
+      }
+      await vscode.workspace.fs.delete(storageRoot, { recursive: true, useTrash: false });
+    }
+  });
+
   test('setSessionsPersist skips default true persistence and refresh while resyncing state', async () => {
     const config = vscode.workspace.getConfiguration('lingyun');
     const previousPersist = config.inspect<boolean>('sessions.persist')?.globalValue;

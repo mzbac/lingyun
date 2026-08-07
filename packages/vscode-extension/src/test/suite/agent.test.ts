@@ -1602,7 +1602,7 @@ suite('AgentLoop', () => {
     const state = agent.exportState();
     assert.deepStrictEqual(state.pendingInputs, ['queued follow-up']);
     assert.deepStrictEqual(state.mentionedSkills, ['skill-1']);
-    assert.deepStrictEqual(state.systemPromptSnapshot, ['Base system prompt', 'Tool context']);
+    assert.deepStrictEqual(state.systemPromptSnapshot, ['  Base system prompt  ', 'Tool context']);
     assert.deepStrictEqual(state.stats, {
       totalMessages: 1,
       userMessages: 1,

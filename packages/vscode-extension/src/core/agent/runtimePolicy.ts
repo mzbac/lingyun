@@ -1078,7 +1078,11 @@ export class VsCodeAgentRuntimePolicy implements LingyunAgentRuntimePolicy {
   }
 
   private async prepareRuntime(ctx: LingyunAgentRuntimeContext): Promise<PreparedRuntime> {
-    await this.refreshInstructions();
+    // A new session must observe instruction files created after an earlier
+    // session cached the same lookup path. Established sessions replay their
+    // persisted system prompt snapshot in the SDK, so refreshing discovery
+    // cannot rewrite an already-sent provider prefix.
+    await this.refreshInstructions(!ctx.session.getSystemPromptSnapshot()?.length);
 
     const cfg = vscode.workspace.getConfiguration('lingyun');
     const allowExternalPaths =
@@ -1131,7 +1135,7 @@ export class VsCodeAgentRuntimePolicy implements LingyunAgentRuntimePolicy {
     return workspaceFolder?.uri ?? getPrimaryWorkspaceFolderUri();
   }
 
-  private async refreshInstructions(): Promise<void> {
+  private async refreshInstructions(force = false): Promise<void> {
     const workspaceRoot = this.getWorkspaceRootForContext();
     const activeEditor = vscode.window.activeTextEditor;
 
@@ -1158,7 +1162,7 @@ export class VsCodeAgentRuntimePolicy implements LingyunAgentRuntimePolicy {
       JSON.stringify(instructionFileSettings),
     ].join('|');
 
-    if (this.instructionsKey === key) return;
+    if (!force && this.instructionsKey === key) return;
     this.instructionsKey = key;
 
     try {

@@ -400,7 +400,7 @@ suite('persistence', () => {
 
     assert.ok(parsed);
     assert.equal(parsed?.sessionId, 'child-1');
-    assert.deepEqual(parsed?.systemPromptSnapshot, ['Base system prompt']);
+    assert.deepEqual(parsed?.systemPromptSnapshot, ['  Base system prompt  ']);
     assert.deepEqual(parsed?.stats, {
       totalMessages: 1,
       userMessages: 1,

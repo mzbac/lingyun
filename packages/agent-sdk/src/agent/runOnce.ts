@@ -370,8 +370,16 @@ export async function runOnce(params: {
 
     let model: any = await loadModelWithAuthRetry();
 
-    const systemParts = await params.composeSystemPrompt(modelId, { signal });
-    session.setSystemPromptSnapshot(systemParts);
+    // The initial system prompt is part of the provider's live cache prefix.
+    // Re-composing it on a follow-up can silently rewrite that prefix when
+    // workspace instructions, skills, or settings change between turns.
+    const systemPromptSnapshot = session.getSystemPromptSnapshot();
+    const systemParts = systemPromptSnapshot?.length
+      ? systemPromptSnapshot
+      : await params.composeSystemPrompt(modelId, { signal });
+    if (!systemPromptSnapshot?.length) {
+      session.setSystemPromptSnapshot(systemParts);
+    }
     const tools = params.filterTools(await registry.getTools());
     const toolNameToDefinition = new Map<string, ToolDefinition>();
 

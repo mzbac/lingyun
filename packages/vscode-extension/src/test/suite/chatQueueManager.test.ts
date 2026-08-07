@@ -518,7 +518,7 @@ suite('Chat queue manager', () => {
 
     const state = provider.sessionApi.normalizeLoadedAgentState(raw);
 
-    assert.deepStrictEqual(state.systemPromptSnapshot, ['Base prompt']);
+    assert.deepStrictEqual(state.systemPromptSnapshot, ['  Base prompt  ']);
     assert.strictEqual(state.stats?.totalMessages, 2);
     assert.strictEqual(state.stats?.toolCallCount, 1);
     assert.strictEqual(state.stats?.completedToolCallCount, 1);

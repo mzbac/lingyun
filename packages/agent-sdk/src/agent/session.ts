@@ -196,8 +196,7 @@ export function normalizeSystemPromptSnapshot(value: unknown): string[] | undefi
   const parts: string[] = [];
   for (const part of value) {
     if (typeof part !== 'string') continue;
-    const trimmed = part.trim();
-    if (trimmed) parts.push(trimmed);
+    if (part.trim()) parts.push(part);
   }
   return parts.length > 0 ? parts : undefined;
 }

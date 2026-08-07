@@ -205,6 +205,9 @@ function createChatSessionPersistenceDeps(
     get dirtySessionIds() {
       return controller.dirtySessionIds;
     },
+    set dirtySessionIds(value) {
+      controller.dirtySessionIds = value;
+    },
     get inputHistoryEntries() {
       return controller.inputHistoryEntries;
     },
@@ -488,6 +491,9 @@ function createChatSessionsDepsForController(controller: ChatController): ChatSe
     },
     get dirtySessionIds() {
       return controller.dirtySessionIds;
+    },
+    set dirtySessionIds(value) {
+      controller.dirtySessionIds = value;
     },
     get inputHistoryEntries() {
       return controller.inputHistoryEntries;

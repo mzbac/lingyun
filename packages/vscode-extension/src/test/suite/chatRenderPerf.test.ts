@@ -505,6 +505,22 @@ suite('Chat Render Perf Guards', () => {
     assert.doesNotMatch(exploreSection, /\.filter\(Boolean\)/);
   });
 
+  test('runtime refreshes instruction discovery before creating a new session prompt snapshot', () => {
+    const source = fs.readFileSync(path.resolve(__dirname, '../../../src/core/agent/runtimePolicy.ts'), 'utf8');
+    const prepareStart = source.indexOf('private async prepareRuntime');
+    const prepareEnd = source.indexOf('private getWorkspaceRootForContext', prepareStart);
+    const refreshStart = source.indexOf('private async refreshInstructions');
+    const refreshEnd = source.indexOf('private composeSystemPromptText', refreshStart);
+    assert.ok(prepareStart >= 0 && prepareEnd > prepareStart, 'expected runtime preparation section');
+    assert.ok(refreshStart >= 0 && refreshEnd > refreshStart, 'expected instruction refresh section');
+
+    const prepareSection = source.slice(prepareStart, prepareEnd);
+    const refreshSection = source.slice(refreshStart, refreshEnd);
+    assert.match(prepareSection, /refreshInstructions\(!ctx\.session\.getSystemPromptSnapshot\(\)\?\.length\)/);
+    assert.match(refreshSection, /private async refreshInstructions\(force = false\)/);
+    assert.match(refreshSection, /if \(!force && this\.instructionsKey === key\) return;/);
+  });
+
   test('runtime preparation avoids conditional object spread allocations', () => {
     const source = fs.readFileSync(path.resolve(__dirname, '../../../src/core/agent/runtimePolicy.ts'), 'utf8');
     const section = (startText: string, endText: string): string => {

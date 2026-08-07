@@ -1323,7 +1323,7 @@ suite('LingYun Agent SDK', () => {
       { transientContext: 'memoryRecall', text: 'remember me' },
       { transientContext: 'goal', text: 'finish the goal' },
     ]);
-    assert.deepStrictEqual(session.getSystemPromptSnapshot(), ['Base system prompt', 'Plugin context']);
+    assert.deepStrictEqual(session.getSystemPromptSnapshot(), ['  Base system prompt  ', 'Plugin context']);
   });
 
   test('LingyunSession system prompt snapshot normalization avoids chained arrays', async () => {
@@ -1336,6 +1336,7 @@ suite('LingYun Agent SDK', () => {
 
     assert.match(section, /const parts: string\[\] = \[\];/);
     assert.match(section, /for \(const part of value\)/);
+    assert.match(section, /if \(part\.trim\(\)\) parts\.push\(part\);/);
     assert.doesNotMatch(section, /\.map\(/);
     assert.doesNotMatch(section, /\.filter\(/);
   });
@@ -1682,14 +1683,14 @@ suite('LingYun Agent SDK', () => {
     });
   });
 
-  test('prompt cache - prompt artifacts stay out of model input and do not affect reuse', async () => {
-    const staleArtifact = 'STALE_PROMPT_ARTIFACT_SHOULD_NOT_REACH_MODEL';
+  test('prompt cache - restored system prompt snapshots remain exact across follow-up turns', async () => {
+    const frozenSystemPrompt = '  FROZEN_SYSTEM_PROMPT_FROM_THE_FIRST_REQUEST\n';
     const llm = new CacheAwareMockLLMProvider();
     const registry = new ToolRegistry();
-    const session = new LingyunSession({ systemPromptSnapshot: [staleArtifact] });
+    const session = new LingyunSession({ systemPromptSnapshot: [frozenSystemPrompt] });
     const agent = new LingyunAgent(
       llm,
-      { model: 'mock-model', systemPrompt: 'Live cacheable system prompt.' },
+      { model: 'mock-model', systemPrompt: 'Newly recomposed system prompt.' },
       registry,
       { allowExternalPaths: false, skills: { enabled: false } },
     );
@@ -1699,17 +1700,16 @@ suite('LingYun Agent SDK', () => {
       // drain
     }
 
-    session.setSystemPromptSnapshot([staleArtifact]);
-
     llm.queueResponse({ kind: 'text', content: 'second' });
     for await (const _event of agent.run({ session, input: 'follow up' }).events) {
       // drain
     }
 
     const prompts = JSON.stringify(llm.promptHistory);
-    assert.ok(prompts.includes('Live cacheable system prompt.'), 'live system prompt should be sent to the model');
-    assert.ok(!prompts.includes(staleArtifact), 'persisted prompt artifacts should not be sent to the model');
-    assertSecondTurnCacheReuse(llm, session, 'prompt artifacts');
+    assert.ok(prompts.includes(frozenSystemPrompt), 'the persisted system prompt should be replayed exactly');
+    assert.ok(!prompts.includes('Newly recomposed system prompt.'), 'follow-ups must not replace the cached system prefix');
+    assert.deepStrictEqual(session.getSystemPromptSnapshot(), [frozenSystemPrompt]);
+    assertSecondTurnCacheReuse(llm, session, 'restored system prompt snapshot');
   });
 
   test('createHistoryForModel repairs tool-call/result pair integrity for model replay', () => {
@@ -2682,7 +2682,7 @@ suite('LingYun Agent SDK', () => {
     assert.strictEqual(modeReminders[0]?.metadata?.modeReminder?.kind, 'plan');
   });
 
-  test('prompt cache invalidation - changing systemPrompt invalidates the prompt prefix', async () => {
+  test('prompt cache - changing systemPrompt does not rewrite an established session prefix', async () => {
     const llm = new CacheAwareMockLLMProvider();
     const registry = new ToolRegistry();
     const session = new LingyunSession();
@@ -2713,14 +2713,11 @@ suite('LingYun Agent SDK', () => {
     const firstPrompt = JSON.stringify(llm.promptHistory[0] ?? '');
     const secondPrompt = JSON.stringify(llm.promptHistory[1] ?? '');
     assert.ok(!firstPrompt.includes('Custom cache-sensitive system prompt.'), 'first prompt should use the default system prompt');
-    assert.ok(secondPrompt.includes('Custom cache-sensitive system prompt.'), 'second prompt should include the custom system prompt');
-    assertSecondTurnCacheInvalidation(llm, session, 'systemPrompt change', {
-      promptPrefixPreserved: false,
-      toolOrderingPreserved: true,
-    });
+    assert.ok(!secondPrompt.includes('Custom cache-sensitive system prompt.'), 'follow-up should retain the first system prompt');
+    assertSecondTurnCacheReuse(llm, session, 'frozen systemPrompt');
   });
 
-  test('prompt cache - restoring a previous systemPrompt can reuse an older cached baseline', async () => {
+  test('prompt cache - repeated systemPrompt changes stay deferred for the session', async () => {
     const llm = new CacheAwareMockLLMProvider();
     const registry = new ToolRegistry();
     const session = new LingyunSession();
@@ -2753,11 +2750,10 @@ suite('LingYun Agent SDK', () => {
       // drain
     }
 
-    assertCacheInvalidationBetweenTurns(llm, session, 1, 'systemPrompt change still invalidates immediately', {
-      promptPrefixPreserved: false,
-      toolOrderingPreserved: true,
-    });
-    assertCacheReuseAgainstTurn(llm, session, 2, 0, 'restored default systemPrompt baseline');
+    const prompts = JSON.stringify(llm.promptHistory);
+    assert.ok(!prompts.includes('Custom cache-sensitive system prompt.'), 'the initial system prompt must remain frozen');
+    assertCacheReuseBetweenTurns(llm, session, 1, 'first deferred systemPrompt change');
+    assertCacheReuseBetweenTurns(llm, session, 2, 'second deferred systemPrompt change');
   });
 
   test('prompt cache invalidation - changing toolFilter invalidates via tool set drift', async () => {
@@ -2937,7 +2933,7 @@ suite('LingYun Agent SDK', () => {
     assertCacheReuseAgainstTurn(llm, session, 2, 0, 'restored wide toolFilter baseline');
   });
 
-  test('prompt cache invalidation - allowExternalPaths can invalidate via the available-skills catalog', async () => {
+  test('prompt cache - allowExternalPaths does not rewrite the established skills catalog', async () => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'lingyun-sdk-test-skill-catalog-workspace-'));
     const externalSkillRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'lingyun-sdk-test-skill-catalog-external-'));
     const skillDir = path.join(externalSkillRoot, 'ext-skill');
@@ -2988,20 +2984,17 @@ suite('LingYun Agent SDK', () => {
         'first prompt should not list the external skill when external paths are disabled',
       );
       assert.ok(
-        secondPrompt.includes('external-cache-skill'),
-        'second prompt should list the external skill when external paths are enabled',
+        !secondPrompt.includes('external-cache-skill'),
+        'follow-up should preserve the first request skills catalog',
       );
-      assertSecondTurnCacheInvalidation(llm, session, 'allowExternalPaths-driven skills catalog change', {
-        promptPrefixPreserved: false,
-        toolOrderingPreserved: true,
-      });
+      assertSecondTurnCacheReuse(llm, session, 'frozen skills catalog');
     } finally {
       await fs.rm(workspaceRoot, { recursive: true, force: true });
       await fs.rm(externalSkillRoot, { recursive: true, force: true });
     }
   });
 
-  test('prompt cache - toggling the external skill catalog back to a previous state reuses the matching cached baseline', async () => {
+  test('prompt cache - toggling the external skill catalog never replaces the initial snapshot', async () => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'lingyun-sdk-test-skill-catalog-toggle-workspace-'));
     const externalSkillRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'lingyun-sdk-test-skill-catalog-toggle-external-'));
     const skillDir = path.join(externalSkillRoot, 'ext-skill');
@@ -3062,16 +3055,12 @@ suite('LingYun Agent SDK', () => {
       }
 
       assertCacheReuseBetweenTurns(llm, session, 1, 'steady-state external skill catalog');
-      assertCacheInvalidationBetweenTurns(llm, session, 2, 'blocking external skill catalog', {
-        promptPrefixPreserved: false,
-        toolOrderingPreserved: true,
-      });
-      assertCacheReuseBetweenTurns(llm, session, 3, 'steady-state blocked external skill catalog');
-      assertCacheReuseAgainstTurn(llm, session, 4, 1, 'restored external skill catalog baseline');
-      assert.strictEqual(
-        llm.cacheReadSourceIndexHistory[4],
-        1,
-        're-enabling external skills should reuse the latest matching cached allowed baseline',
+      assertCacheReuseBetweenTurns(llm, session, 2, 'first deferred external skill setting change');
+      assertCacheReuseBetweenTurns(llm, session, 3, 'steady-state deferred external skill setting');
+      assertCacheReuseBetweenTurns(llm, session, 4, 'restored external skill setting');
+      assert.ok(
+        llm.promptHistory.every((prompt) => JSON.stringify(prompt).includes('external-cache-skill')),
+        'every turn should retain the initial skills catalog',
       );
     } finally {
       await fs.rm(workspaceRoot, { recursive: true, force: true });
