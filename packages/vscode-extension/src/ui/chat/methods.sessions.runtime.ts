@@ -369,6 +369,12 @@ export function createChatSessionRuntimeService(
       await this.persistence.ensureSessionsLoaded();
       if (backendTransitionTokens.get(this) !== transitionToken) return;
 
+      // Persisted sessions can carry a model that was selected under a different
+      // provider (or before the current configuration). ensureSessionsLoaded()
+      // restores `currentModel` from the saved session, which can shadow the
+      // configured model here. Re-resolve AFTER the restore so the configured
+      // model always wins at startup and on provider switches.
+      this.currentModel = resolveConfiguredModelId(this.llmProvider?.id) || this.currentModel;
       for (const session of this.sessions.values()) {
         session.currentModel = this.currentModel;
       }

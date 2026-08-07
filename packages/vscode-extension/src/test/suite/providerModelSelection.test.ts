@@ -1,10 +1,13 @@
 import * as assert from 'assert';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import * as vscode from 'vscode';
 
 import type { AgentLoop, AgentSessionState } from '../../core/agent';
 import { resolveModelIdForProvider } from '../../core/modelSelection';
 import { ChatController } from '../../ui/chat';
-import { createChatTestExtensionContext } from './chatControllerHarness';
+import { createChatTestExtensionContext, createWritableChatTestExtensionContext } from './chatControllerHarness';
 
 function createBlankAgentState(): AgentSessionState {
   return {
@@ -151,5 +154,77 @@ suite('Chat controller codex provider integration', () => {
         assert.strictEqual(controller.sessionApi.getActiveSession().currentModel, 'gpt-5.4');
       },
     );
+  });
+
+  test('setBackend re-applies the configured model after restoring a persisted session with a stale model', async () => {
+    const storageRoot = vscode.Uri.file(await fs.promises.mkdtemp(path.join(os.tmpdir(), 'lingyun-test-stale-model-')));
+    const context = createWritableChatTestExtensionContext(storageRoot);
+
+    // Simulate a session persisted before the provider/model switch: it still
+    // remembers a gpt-5.x model that the current OpenAI-compatible server rejects.
+    const staleSessionId = 'stale-session-1';
+    const sessionsDir = vscode.Uri.joinPath(storageRoot, 'sessions');
+    await vscode.workspace.fs.createDirectory(sessionsDir);
+    await vscode.workspace.fs.writeFile(
+      vscode.Uri.joinPath(sessionsDir, 'index.json'),
+      Buffer.from(
+        JSON.stringify({
+          version: 3,
+          activeSessionId: staleSessionId,
+          order: [staleSessionId],
+          sessionsMeta: {
+            [staleSessionId]: { title: 'Stale', createdAt: 1, updatedAt: 1 },
+          },
+        }),
+      ),
+    );
+    await vscode.workspace.fs.writeFile(
+      vscode.Uri.joinPath(sessionsDir, `${staleSessionId}.json`),
+      Buffer.from(
+        JSON.stringify({
+          id: staleSessionId,
+          title: 'Stale',
+          createdAt: 1,
+          updatedAt: 1,
+          currentModel: 'gpt-5.3-codex',
+          mode: 'build',
+          stepCounter: 0,
+        }),
+      ),
+    );
+
+    try {
+      await withProviderConfig(
+        {
+          llmProvider: 'openaiCompatible',
+          model: 'deepseek-v4-flash',
+          'sessions.persist': true,
+        },
+        async () => {
+          const controller = new ChatController(context, createMockAgent(), {
+            id: 'openaiCompatible',
+            name: 'OpenAI-Compatible',
+          } as any);
+
+          await controller.sessionApi.setBackend(createMockAgent(), {
+            id: 'openaiCompatible',
+            name: 'OpenAI-Compatible',
+          } as any);
+
+          assert.strictEqual(
+            controller.currentModel,
+            'deepseek-v4-flash',
+            'the configured model should win over the stale persisted session model',
+          );
+          assert.strictEqual(
+            controller.sessionApi.getActiveSession().currentModel,
+            'deepseek-v4-flash',
+            'the restored session should adopt the configured model',
+          );
+        },
+      );
+    } finally {
+      await fs.promises.rm(storageRoot.fsPath, { recursive: true, force: true });
+    }
   });
 });
