@@ -27,6 +27,7 @@ import type {
 } from './types';
 import { bindChatControllerService } from './controllerService';
 import { createLingyunDiffUri } from './diffContentProvider';
+import './webviewTestBuild'; // declares globalThis.LINGYUN_TEST_BUILD
 import type { ChatRevertService } from './methods.revert';
 import type { ChatSessionsService } from './methods.sessions';
 import type { ChatSkillsService } from './methods.skills';
@@ -442,17 +443,51 @@ function renderBrowserChatProtocolBootstrapScript(nonce: string): string {
 }
 
 /**
+ * Test-only implementation of `evaluateInWebview`. Only ever referenced from
+ * the `globalThis.LINGYUN_TEST_BUILD === true &&` attach below, so esbuild
+ * removes it from the production bundle.
+ */
+function evaluateInWebviewTestImpl(runtime: ChatWebviewRuntime, expression: string): Promise<unknown> {
+  const view = runtime.view;
+  if (!view) {
+    return Promise.reject(new Error('Chat webview is not open'));
+  }
+
+  const id = crypto.randomUUID();
+  return new Promise<unknown>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      getWebviewTestEvalEntries(runtime).delete(id);
+      reject(new Error(`Timed out evaluating in chat webview: ${expression.slice(0, 120)}`));
+    }, 15_000);
+
+    getWebviewTestEvalEntries(runtime).set(id, {
+      resolve: (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      reject: (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+      timer,
+    });
+
+    view.webview.postMessage({ type: '__testEval', id, expression });
+  });
+}
+
+/**
  * Test-only webview DOM bridge used by the e2e suite. This code never ships in
- * the production webview bundle: it is injected by `getHtml()` only when the
- * extension host runs in `ExtensionMode.Test`, and production HTML keeps the
- * strict CSP (no `'unsafe-eval'`), so `new Function` cannot run there.
+ * the production bundle: it is injected by `getHtml()` only when the extension
+ * host runs in `ExtensionMode.Test`, and the production build strips it (the
+ * only reference is behind `globalThis.LINGYUN_TEST_BUILD === true`).
  *
  * The bridge is load-inert (it only sets a flag and registers a listener) and
- * never calls `acquireVsCodeApi()` itself — the webview sandbox allows the API
- * to be acquired exactly once (bootstrap.js owns it) and replaces
- * `window.parent`, so the only way to post a result back is to reuse the API
- * that bootstrap.js exposed via `window.__lingyunChatBridge` under the
- * test-only flag.
+ * posts results back via the bare `vscode` identifier: bootstrap.js declares
+ * `let vscode` at the top level of a classic script, which lives in the shared
+ * global lexical environment, so this inline script can reference it without
+ * touching the production renderer bundle or re-acquiring the VS Code API
+ * (which can only be acquired once per webview).
  */
 function renderWebviewTestBridgeScript(nonce: string): string {
   const source = `
@@ -461,13 +496,11 @@ function renderWebviewTestBridgeScript(nonce: string): string {
       window.addEventListener('message', (e) => {
         const data = e && e.data;
         if (!data || data.type !== '__testEval' || typeof data.id !== 'string' || typeof data.expression !== 'string') return;
-        const vsCodeApi = window.__lingyunChatBridge;
-        if (!vsCodeApi) return;
         try {
           const result = new Function('"use strict"; return (' + data.expression + ');')();
-          vsCodeApi.postMessage({ type: '__testEvalResult', id: data.id, ok: true, value: result });
+          vscode.postMessage({ type: '__testEvalResult', id: data.id, ok: true, value: result });
         } catch (evalErr) {
-          vsCodeApi.postMessage({ type: '__testEvalResult', id: data.id, ok: false, error: String(evalErr && evalErr.message ? evalErr.message : evalErr) });
+          vscode.postMessage({ type: '__testEvalResult', id: data.id, ok: false, error: String(evalErr && evalErr.message ? evalErr.message : evalErr) });
         }
       });
     })();`;
@@ -655,6 +688,26 @@ function rejectPendingWebviewTestEvals(runtime: ChatWebviewRuntime, reason: stri
   entries.clear();
 }
 
+/**
+ * Test-only handler for renderer `__testEvalResult` messages. Referenced only
+ * from the `globalThis.LINGYUN_TEST_BUILD === true &&` guard in the message
+ * switch, so esbuild removes it from the production bundle.
+ */
+function handleWebviewTestEvalResult(runtime: ChatWebviewRuntime, data: unknown): void {
+  const payload = data as Record<string, unknown>;
+  const id = typeof payload.id === 'string' ? payload.id : '';
+  if (!id) return;
+  const entry = getWebviewTestEvalEntries(runtime).get(id);
+  if (!entry) return;
+  getWebviewTestEvalEntries(runtime).delete(id);
+  clearTimeout(entry.timer);
+  if (payload.ok) {
+    entry.resolve(payload.value);
+  } else {
+    entry.reject(new Error(typeof payload.error === 'string' ? payload.error : 'Webview test eval failed'));
+  }
+}
+
 function logDeferredWebviewTaskFailure(
   runtime: ChatWebviewRuntime,
   label: string,
@@ -791,7 +844,8 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
         this.initAcked = false;
         this.webviewClientInstanceId = undefined;
         resetWebviewCrashToastState(this);
-        rejectPendingWebviewTestEvals(this, 'Chat webview was disposed before the test eval completed');
+        globalThis.LINGYUN_TEST_BUILD === true &&
+          rejectPendingWebviewTestEvals(this, 'Chat webview was disposed before the test eval completed');
         if (this.initInterval) {
           clearInterval(this.initInterval);
           this.initInterval = undefined;
@@ -803,23 +857,14 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
       webviewView.webview.onDidReceiveMessage(async (data) => {
         const messageType = getWebviewMessageType(data);
         try {
+        // Test-only DOM bridge response from the renderer. The production build
+        // folds the guard to false and removes the whole branch (including the
+        // `__testEvalResult` string) via minify.
+        if (globalThis.LINGYUN_TEST_BUILD === true && messageType === '__testEvalResult') {
+          handleWebviewTestEvalResult(this, data);
+          return;
+        }
         switch (messageType) {
-          case '__testEvalResult': {
-            // Test-only DOM bridge response from the renderer.
-            const payload = data as Record<string, unknown>;
-            const id = typeof payload.id === 'string' ? payload.id : '';
-            if (!id) break;
-            const entry = getWebviewTestEvalEntries(this).get(id);
-            if (!entry) break;
-            getWebviewTestEvalEntries(this).delete(id);
-            clearTimeout(entry.timer);
-            if (payload.ok) {
-              entry.resolve(payload.value);
-            } else {
-              entry.reject(new Error(typeof payload.error === 'string' ? payload.error : 'Webview test eval failed'));
-            }
-            break;
-          }
           case 'newSession':
             try {
               await this.createNewSession();
@@ -3404,46 +3449,15 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
     this.view?.webview.postMessage(message);
   },
 
-  evaluateInWebview(this: ChatWebviewRuntime, expression: string): Promise<unknown> {
-    const view = this.view;
-    if (!view) {
-      return Promise.reject(new Error('Chat webview is not open'));
-    }
-
-    const id = crypto.randomUUID();
-    return new Promise<unknown>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        getWebviewTestEvalEntries(this).delete(id);
-        reject(new Error(`Timed out evaluating in chat webview: ${expression.slice(0, 120)}`));
-      }, 15_000);
-
-      getWebviewTestEvalEntries(this).set(id, {
-        resolve: (value) => {
-          clearTimeout(timer);
-          resolve(value);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-        timer,
-      });
-
-      view.webview.postMessage({ type: '__testEval', id, expression });
-    });
-  },
-
   getHtml(this: ChatWebviewRuntime, webview: vscode.Webview): string {
     const nonce = getNonce();
     const version = String((this.context as any)?.extension?.packageJSON?.version || '');
     const versionSuffix = version ? `(${version})` : '';
 
     let scripts = renderBrowserChatProtocolBootstrapScript(nonce);
-    if (this.context.extensionMode === vscode.ExtensionMode.Test) {
-      // Inject the test-only eval bridge used by the e2e webview tests.
-      // Production webviews never get this script (and their CSP forbids eval).
-      scripts = `${renderWebviewTestBridgeScript(nonce)}\n${scripts}`;
-    }
+    globalThis.LINGYUN_TEST_BUILD === true &&
+      this.context.extensionMode === vscode.ExtensionMode.Test &&
+      (scripts = `${renderWebviewTestBridgeScript(nonce)}\n${scripts}`);
     for (const parts of CHAT_WEBVIEW_SCRIPT_PARTS) {
       const uri = webview.asWebviewUri(
         vscode.Uri.joinPath(this.context.extensionUri, 'media', ...parts)
@@ -3459,15 +3473,24 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
 
     return template
       .replace(/{{CSP_SOURCE}}/g, webview.cspSource)
-      .replace(/{{CSP_SCRIPT_EXTRA}}/g, this.context.extensionMode === vscode.ExtensionMode.Test ? "'unsafe-eval'" : '')
+      .replace(
+        /{{CSP_SCRIPT_EXTRA}}/g,
+        globalThis.LINGYUN_TEST_BUILD === true && this.context.extensionMode === vscode.ExtensionMode.Test
+          ? "'unsafe-eval'"
+          : ''
+      )
       .replace(/{{NONCE}}/g, nonce)
       .replace(/{{SCRIPTS}}/g, scripts)
       .replace(/{{LOGO_URI}}/g, String(logoUri))
       .replace(/{{VERSION_SUFFIX}}/g, versionSuffix);
   },
   });
+  globalThis.LINGYUN_TEST_BUILD === true &&
+    ((service as unknown as { evaluateInWebview(expression: string): Promise<unknown> }).evaluateInWebview = (
+      expression: string
+    ) => evaluateInWebviewTestImpl(runtime, expression));
   Object.assign(runtime, service);
-  return service;
+  return service as unknown as ChatWebviewService;
 }
 
 function createChatWebviewDepsForController(controller: ChatController): ChatWebviewDeps {

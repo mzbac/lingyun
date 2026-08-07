@@ -9,6 +9,11 @@ import * as path from 'path';
 import Mocha from 'mocha';
 import { glob } from 'glob';
 
+// Enable the extension's test-only hooks (the webview e2e DOM bridge). This
+// runs in the extension host before the extension activates; the production
+// esbuild bundle defines this global as `false` and strips the hooks.
+(globalThis as { LINGYUN_TEST_BUILD?: boolean }).LINGYUN_TEST_BUILD = true;
+
 export async function run(): Promise<void> {
   const grep = process.env.LINGYUN_TEST_GREP;
   const mocha = new Mocha({

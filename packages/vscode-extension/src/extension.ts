@@ -15,6 +15,7 @@ import { CopilotProvider } from './providers/copilot';
 import { CodexSubscriptionProvider } from './providers/codexSubscription';
 import { OpenAICompatibleProvider } from './providers/openaiCompatible';
 import { WorkspaceToolProvider, createSampleToolsConfig } from './providers/workspace';
+import './ui/chat/webviewTestBuild'; // declares globalThis.LINGYUN_TEST_BUILD
 import type { LLMProvider } from './core/types';
 
 import { registerBuiltinTools } from './tools/builtin';
@@ -569,19 +570,20 @@ export function getChatWebviewHandshakeStateForTesting(): {
 
 /**
  * Test-only bridge into the live chat webview DOM. Returns `undefined` when the
- * chat view has never been opened. Evaluations are only honored by the renderer
- * when the extension host runs in `ExtensionMode.Test`.
+ * chat view has never been opened, and always in the production build (the
+ * `globalThis.LINGYUN_TEST_BUILD === true` guard folds to false at bundle time).
  */
 export function getChatWebviewTestHarnessForTesting(): {
   evaluateInWebview(expression: string): Promise<unknown>;
   postMessage(message: unknown): void;
 } | undefined {
   const controller = extensionState?.chatProvider?.controller;
-  if (!controller?.webviewApi?.evaluateInWebview) return undefined;
-  return {
-    evaluateInWebview: (expression) => controller.webviewApi.evaluateInWebview(expression),
-    postMessage: (message) => controller.webviewApi.postMessage(message),
-  };
+  return globalThis.LINGYUN_TEST_BUILD === true && controller?.webviewApi?.evaluateInWebview
+    ? {
+        evaluateInWebview: (expression) => controller.webviewApi.evaluateInWebview(expression),
+        postMessage: (message) => controller.webviewApi.postMessage(message),
+      }
+    : undefined;
 }
 
 function createAPI(): LingyunAPI {

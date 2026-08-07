@@ -85,11 +85,18 @@ const options = {
   platform: 'node',
   format: 'cjs',
   target: 'node24',
+  minify: true,
   sourcemap: true,
   metafile: true,
   external: ['vscode'],
   define: {
     'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV || 'production'),
+    // The shipped bundle never contains the webview e2e test hooks: this makes
+    // WEBVIEW_TEST_HOOKS_ENABLED fold to false, dead-code-eliminating the test
+    // eval bridge (methods.webview.ts) and the test harness accessor
+    // (extension.ts). The tsc test build leaves the global undefined and the
+    // test runner (dist/test/suite/index.js) sets it to true.
+    'globalThis.LINGYUN_TEST_BUILD': 'false',
   },
   logLevel: 'info',
 };
