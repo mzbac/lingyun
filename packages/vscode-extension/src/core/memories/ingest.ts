@@ -122,15 +122,6 @@ function filterMemorySignalValues(values: string[], maxItems: number): string[] 
   return next;
 }
 
-export function uniqueLimited(values: string[], maxItems: number): string[] {
-  const next: string[] = [];
-  const seen = new Set<string>();
-  for (const value of values) {
-    if (appendUniqueLimitedValue(next, seen, value, maxItems)) break;
-  }
-  return next;
-}
-
 function appendUniqueLimitedValue(next: string[], seen: Set<string>, value: string, maxItems: number): boolean {
   if (hasMemorySecretPayload(value)) return false;
   if (hasGeneratedMemoryArtifactPayload(value)) return false;

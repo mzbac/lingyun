@@ -881,11 +881,11 @@ suite('OpenAICompatibleProvider fetch', () => {
   });
 
   test('fetch header helpers avoid key-array and entry-array scans', () => {
-    const source = fs.readFileSync(new URL('../../../src/llm/openaiCompatible.ts', import.meta.url), 'utf8');
+    const source = fs.readFileSync(new URL('../../../../core/src/httpFetch.ts', import.meta.url), 'utf8');
     const start = source.indexOf('const hasOwnHeader = Object.prototype.hasOwnProperty;');
     assert.ok(start >= 0, 'expected header ownership helper');
-    const end = source.indexOf('\ntype FetchWithDefaults', start);
-    assert.ok(end > start, 'expected fetch defaults type after header helpers');
+    const end = source.indexOf('\nfunction abortSignalReason', start);
+    assert.ok(end > start, 'expected abort signal helper after header helpers');
     const section = source.slice(start, end);
 
     assert.match(section, /for \(const existing in headers\)/);

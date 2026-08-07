@@ -886,11 +886,11 @@ function hitText(hit: MemorySearchHit): string {
   return hit.durableEntry ? durableSearchText(hit.durableEntry) : hit.record.text;
 }
 
-function hitTimestamp(hit: MemorySearchHit): number {
+export function hitTimestamp(hit: MemorySearchHit): number {
   return hit.durableEntry?.lastConfirmedAt ?? hit.record.lastConfirmedAt;
 }
 
-function hitClusterKey(hit: MemorySearchHit): string {
+export function hitClusterKey(hit: MemorySearchHit): string {
   return String(hit.durableEntry?.key || hit.record.memoryKey || '').trim();
 }
 

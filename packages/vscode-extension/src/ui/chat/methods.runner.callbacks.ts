@@ -1,10 +1,9 @@
-import * as vscode from 'vscode';
-
 import type { AgentCallbacks } from '../../core/types';
 import { deriveStructuredMemoriesFromText, hasExternalMemoryContext, recordAssistantOutcome, recordStructuredMemory } from '../../core/sessionSignals';
 import { getDebugSettings } from '../../core/debugSettings';
 import { appendErrorLog, appendLog } from '../../core/logger';
 import { bindChatControllerService } from './controllerService';
+import { getShowThinkingEnabled } from './webviewSettings';
 import type { ChatMessage } from './types';
 import type { ChatController } from './controller';
 import type { ChatRunnerCallbacksDeps, ChatRunnerCallbacksService } from './runner/callbackContracts';
@@ -30,14 +29,12 @@ export function createChatRunnerCallbacksService(controller: ChatRunnerCallbacks
   const runtime = controller as ChatRunnerCallbacksRuntime;
   const service = bindChatControllerService(runtime, {
     createPlanningCallbacks(this: ChatRunnerCallbacksRuntime, planMsg: ChatMessage): AgentCallbacks {
-      const showThinking =
-        vscode.workspace.getConfiguration('lingyun').get<boolean>('showThinking', true) ?? true;
+      const showThinking = getShowThinkingEnabled();
       return createPlanningCallbacks(this, planMsg, { showThinking });
     },
 
   createAgentCallbacks(this: ChatRunnerCallbacksRuntime): AgentCallbacks {
-    const showThinking =
-      vscode.workspace.getConfiguration('lingyun').get<boolean>('showThinking', true) ?? true;
+    const showThinking = getShowThinkingEnabled();
     const debugLlm = getDebugSettings().llm;
     const persistSessions = this.isSessionPersistenceEnabled();
 

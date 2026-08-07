@@ -50,6 +50,41 @@ export function normalizeCandidatePath(raw: string): string {
 export const MAX_WEBVIEW_IMAGE_ATTACHMENTS = 8;
 export const MAX_WEBVIEW_IMAGE_DATA_URL_LENGTH = 12_000_000;
 export const MAX_WEBVIEW_IMAGE_FILENAME_LENGTH = 512;
+/**
+ * Canonical webview image-attachment protocol: `data:image/…` URLs only,
+ * bounded by the three MAX_WEBVIEW_IMAGE_* limits above. This is the single
+ * owner of the rule; callers that re-validate attachments (e.g. the runner's
+ * user-input normalization) must go through here instead of re-implementing it.
+ */
+export function normalizeImageAttachments(raw: unknown): ChatImageAttachment[] {
+  if (!Array.isArray(raw)) return [];
+
+  const normalized: ChatImageAttachment[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+
+    const record = item as Record<string, unknown>;
+    const mediaType = typeof record.mediaType === 'string' ? record.mediaType.trim() : '';
+    const dataUrl = typeof record.dataUrl === 'string' ? record.dataUrl.trim() : '';
+    const filenameRaw = typeof record.filename === 'string'
+      ? record.filename.trim().slice(0, MAX_WEBVIEW_IMAGE_FILENAME_LENGTH)
+      : '';
+
+    if (!mediaType.toLowerCase().startsWith('image/')) continue;
+    if (!dataUrl.startsWith('data:image/')) continue;
+    if (dataUrl.length > MAX_WEBVIEW_IMAGE_DATA_URL_LENGTH) continue;
+
+    normalized.push({
+      mediaType,
+      dataUrl,
+      ...(filenameRaw ? { filename: filenameRaw } : {}),
+    });
+
+    if (normalized.length >= MAX_WEBVIEW_IMAGE_ATTACHMENTS) break;
+  }
+
+  return normalized;
+}
 export const MAX_WEBVIEW_COMPOSER_SUBMISSION_ID_LENGTH = 160;
 export const LLM_PROVIDER_IDS = new Set(['copilot', 'codexSubscription', 'openaiCompatible']);
 export const TOOL_CATALOG_ID_COLLATOR = new Intl.Collator();
@@ -1037,33 +1072,7 @@ export async function updateBooleanWebviewSetting(params: {
 }
 
 export function parseWebviewImageAttachments(raw: unknown): ChatImageAttachment[] {
-  if (!Array.isArray(raw)) return [];
-
-  const normalized: ChatImageAttachment[] = [];
-  for (const item of raw) {
-    if (!item || typeof item !== 'object') continue;
-
-    const record = item as Record<string, unknown>;
-    const mediaType = typeof record.mediaType === 'string' ? record.mediaType.trim() : '';
-    const dataUrl = typeof record.dataUrl === 'string' ? record.dataUrl.trim() : '';
-    const filenameRaw = typeof record.filename === 'string'
-      ? record.filename.trim().slice(0, MAX_WEBVIEW_IMAGE_FILENAME_LENGTH)
-      : '';
-
-    if (!mediaType.toLowerCase().startsWith('image/')) continue;
-    if (!dataUrl.startsWith('data:image/')) continue;
-    if (dataUrl.length > MAX_WEBVIEW_IMAGE_DATA_URL_LENGTH) continue;
-
-    normalized.push({
-      mediaType,
-      dataUrl,
-      ...(filenameRaw ? { filename: filenameRaw } : {}),
-    });
-
-    if (normalized.length >= MAX_WEBVIEW_IMAGE_ATTACHMENTS) break;
-  }
-
-  return normalized;
+  return normalizeImageAttachments(raw);
 }
 
 export function parseComposerSubmissionId(raw: unknown): string {
@@ -1078,7 +1087,7 @@ export function getToastErrorMessage(error: unknown, llmProviderId?: string): st
   return firstLine || 'Unknown error';
 }
 
-export function getFirstNonEmptyTrimmedLine(value: string): string | undefined {
+function getFirstNonEmptyTrimmedLine(value: string): string | undefined {
   let lineStart = 0;
   for (let i = 0; i <= value.length; i++) {
     if (i < value.length && value.charCodeAt(i) !== 10) continue;

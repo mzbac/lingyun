@@ -33,6 +33,7 @@ import {
   shouldCompactLaterProjectPriorContext,
   shouldPreferCurrentStateDurablePointerFirst,
 } from '../memories/currentState';
+import { hitClusterKey, hitTimestamp } from '../memories/search';
 
 import type { ConsolidatedMemoryEntry } from '../memories/model';
 import { getConfiguredOpenAICompatibleThinking, getConfiguredReasoningEffort } from '../reasoningEffort';
@@ -264,14 +265,6 @@ function hasMemoryContradictionConflicts(hits: Awaited<ReturnType<WorkspaceMemor
     if (invalidated.has(hit.record.id)) return true;
   }
   return false;
-}
-
-function memoryHitLastConfirmedAt(hit: Awaited<ReturnType<WorkspaceMemories['searchMemory']>>['hits'][number]): number {
-  return hit.durableEntry?.lastConfirmedAt ?? hit.record.lastConfirmedAt;
-}
-
-function memoryHitClusterKey(hit: Awaited<ReturnType<WorkspaceMemories['searchMemory']>>['hits'][number]): string {
-  return String(hit.durableEntry?.key || hit.record.memoryKey || '').trim();
 }
 
 function durableCategoryPriority(category: string | undefined): number {
@@ -910,7 +903,7 @@ function selectAutoRecallHits(
     const scoreDiff = b.score - a.score;
     if (scoreDiff !== 0) return scoreDiff;
     if (a.source !== b.source) return a.source === 'durable' ? -1 : 1;
-    return memoryHitLastConfirmedAt(b) - memoryHitLastConfirmedAt(a);
+    return hitTimestamp(b) - hitTimestamp(a);
   });
 
   const sortedDurableMatches = durableMatches;
@@ -927,7 +920,7 @@ function selectAutoRecallHits(
     if (Math.abs(scoreDiff) > 0.35) return scoreDiff;
     const categoryOrder = durableCategoryPriority(a.durableEntry?.category) - durableCategoryPriority(b.durableEntry?.category);
     if (categoryOrder !== 0) return categoryOrder;
-    return memoryHitLastConfirmedAt(b) - memoryHitLastConfirmedAt(a);
+    return hitTimestamp(b) - hitTimestamp(a);
   });
 
   const sortedSupplementalPool = usingDurablePool ? rawMatches : matchHits;
@@ -938,12 +931,12 @@ function selectAutoRecallHits(
     if (supportOrder !== 0) return supportOrder;
     const scoreDiff = b.score - a.score;
     if (scoreDiff !== 0) return scoreDiff;
-    return memoryHitLastConfirmedAt(b) - memoryHitLastConfirmedAt(a);
+    return hitTimestamp(b) - hitTimestamp(a);
   });
 
   const maybeSelect = (hit: (typeof matchHits)[number]): boolean => {
     if (seenRecordIds.has(hit.record.id)) return false;
-    const clusterKey = memoryHitClusterKey(hit);
+    const clusterKey = hitClusterKey(hit);
     const sameClusterCovered = clusterKey && coveredDurableKeys.has(clusterKey);
     if (sameClusterCovered) {
       if (hit.source === 'durable') {
@@ -1306,7 +1299,7 @@ export class VsCodeAgentRuntimePolicy implements LingyunAgentRuntimePolicy {
     for (const hit of search.hits) {
       if (hit.reason !== 'match') continue;
       hasMatchHit = true;
-      const lastConfirmedAt = memoryHitLastConfirmedAt(hit);
+      const lastConfirmedAt = hitTimestamp(hit);
       const freshness = hit.durableEntry?.freshness ?? hit.record.staleness;
       if (lastConfirmedAt < ageCutoffMs || freshness === 'invalidated' || hit.score < memoriesConfig.autoRecallMinScore) continue;
       eligibleMatchHits.push(hit);
@@ -1397,7 +1390,7 @@ export class VsCodeAgentRuntimePolicy implements LingyunAgentRuntimePolicy {
       const confidence = hit.durableEntry?.confidence ?? hit.record.confidence;
       const freshness = hit.durableEntry?.freshness ?? hit.record.staleness;
       const scope = hit.durableEntry?.scope ?? hit.record.scope;
-      const lastConfirmedAt = memoryHitLastConfirmedAt(hit);
+      const lastConfirmedAt = hitTimestamp(hit);
       const files = hit.durableEntry?.filesTouched ?? hit.record.filesTouched;
       const tools = hit.durableEntry?.toolsUsed ?? hit.record.toolsUsed;
       const hasLeadingReferencePointer = selectedHasReferencePointer(precedingHits);

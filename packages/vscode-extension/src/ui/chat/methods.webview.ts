@@ -764,9 +764,7 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
             const character = Number.isFinite(characterRaw) ? Math.max(1, Math.floor(characterRaw)) : 1;
             if (!filePathRaw || !line) break;
 
-            const allowExternalPaths =
-              vscode.workspace.getConfiguration('lingyun').get<boolean>('security.allowExternalPaths', false) ??
-              false;
+            const allowExternalPaths = getAllowExternalPathsEnabled();
 
             try {
               const normalized = normalizeCandidatePath(filePathRaw);
@@ -822,9 +820,7 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
               break;
             }
 
-            const allowExternalPaths =
-              vscode.workspace.getConfiguration('lingyun').get<boolean>('security.allowExternalPaths', false) ??
-              false;
+            const allowExternalPaths = getAllowExternalPathsEnabled();
 
             const results: Array<{ raw: string; ok: boolean; path?: string }> = [];
             const seen = new Set<string>();
@@ -887,9 +883,7 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
               break;
             }
 
-            const allowExternalPaths =
-              vscode.workspace.getConfiguration('lingyun').get<boolean>('security.allowExternalPaths', false) ??
-              false;
+            const allowExternalPaths = getAllowExternalPathsEnabled();
             if (!allowExternalPaths && snapshot.isExternal) {
               postInputNotice(this, 'External paths are disabled. Enable Allow external paths in chat settings to view this diff.');
               break;

@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import type { FetchFunction } from '@ai-sdk/provider-utils';
-import { isCopilotResponsesModelId } from '@kooka/core';
+import { createFetchWithStreamingDefaults, isCopilotResponsesModelId } from '@kooka/core';
 import type { LLMProvider } from '../core/types';
 import { getDebugSettings } from '../core/debugSettings';
 import { appendErrorLog } from '../core/logger';
@@ -9,7 +9,6 @@ import { normalizeResponsesStreamModel } from '../core/utils/normalizeResponsesS
 import { wrapChatModelErrors } from './chatModelErrors';
 import { createCopilotResponsesModel } from './copilotResponsesModel';
 import type { ModelInfo } from './modelCatalog';
-import { createFetchWithStreamingDefaults } from './openaiFetch';
 import { createProviderHttpError, fetchProviderResponse, isProviderAuthError, parseProviderJsonResponse, readProviderResponseBody } from './providerErrors';
 
 const COPILOT_TOKEN_URL = 'https://api.github.com/copilot_internal/v2/token';

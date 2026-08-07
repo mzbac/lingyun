@@ -1,5 +1,23 @@
-import type { FetchFunction } from '@ai-sdk/provider-utils';
+/**
+ * Shared HTTP fetch machinery (undici) used by both @kooka/agent-sdk and the
+ * VS Code extension.
+ *
+ * Owns the knowledge that would otherwise be duplicated per package:
+ * - Case-insensitive header merging (`setHeader`/`hasHeader`/`mergeHeaders`)
+ * - Request-input introspection (`isRequestInput`/`inputHeaders`/`requestInputUrl`/`requestInputInit`)
+ * - Timeout + combined abort-signal helpers
+ * - `createFetchWithStreamingDefaults`: an undici fetch whose Agent allows
+ *   long-lived streaming SSE responses (bodyTimeout/headersTimeout = 0) and
+ *   sets `accept-encoding: identity` unless the caller already specified one.
+ *
+ * The fetch returned by `createFetchWithStreamingDefaults` is intentionally
+ * the only timeout source: request lifetime is bounded by the AbortSignal
+ * timeout, never by undici's header/body timeouts.
+ */
 import { Agent, fetch as undiciFetch } from 'undici';
+
+/** Structural `FetchFunction` (avoids a direct dep on `@ai-sdk/provider-utils`). */
+export type LingyunFetch = (input: unknown, init?: unknown) => Promise<Response>;
 
 const hasOwnHeader = Object.prototype.hasOwnProperty;
 
@@ -127,7 +145,7 @@ export function createTimeoutSignal(timeoutMs: number): AbortSignal {
   return controller.signal;
 }
 
-function combineAbortSignals(signals: AbortSignal[]): AbortSignal {
+export function combineAbortSignals(signals: AbortSignal[]): AbortSignal {
   const abortSignalExt = AbortSignal as typeof AbortSignal & {
     any?: (signals: AbortSignal[]) => AbortSignal;
   };
@@ -152,15 +170,15 @@ function combineAbortSignals(signals: AbortSignal[]): AbortSignal {
   return controller.signal;
 }
 
-export type FetchWithStreamingDefaults = { fetch: FetchFunction; dispose: () => void };
+export function normalizeBaseURL(input: string): string {
+  return input.replace(/\/+$/, '');
+}
+
+export type FetchWithStreamingDefaults = { fetch: LingyunFetch; dispose: () => void };
 
 export type FetchWithStreamingDefaultsOptions = {
   allowInsecureTLS?: boolean;
 };
-
-export function normalizeBaseURL(input: string): string {
-  return input.replace(/\/+$/, '');
-}
 
 export function createFetchWithStreamingDefaults(
   timeoutMs?: number,
@@ -169,19 +187,21 @@ export function createFetchWithStreamingDefaults(
   const timeoutValue = typeof timeoutMs === 'number' && Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 0;
   const dispatcher = new Agent({
     // Streaming model responses can legitimately spend a long time before headers.
-    // Use LingYun's AbortSignal timeout below as the single request timeout source.
+    // Use the AbortSignal timeout below as the single request timeout source.
     bodyTimeout: 0,
     headersTimeout: 0,
     ...(options?.allowInsecureTLS ? { connect: { rejectUnauthorized: false } } : {}),
   });
   const fetchUndici = undiciFetch as unknown as (input: unknown, init?: unknown) => Promise<unknown>;
 
-  const fetchFn: FetchFunction = (input, init?) => {
-    const requestDefaults = requestInputInit(input);
+  const fetchFn: LingyunFetch = (input, init) => {
+    const requestInput = input as string | URL | Request;
+    const initRecord = (init ?? {}) as RequestInit & { headers?: unknown; signal?: AbortSignal };
+    const requestDefaults = requestInputInit(requestInput);
     const headers: Record<string, string> = {};
 
-    mergeHeaders(headers, inputHeaders(input));
-    mergeHeaders(headers, init?.headers);
+    mergeHeaders(headers, inputHeaders(requestInput));
+    mergeHeaders(headers, initRecord.headers);
 
     // Some Responses and local OpenAI-compatible endpoints misbehave with compressed SSE streams.
     if (!hasHeader(headers, 'accept-encoding')) {
@@ -190,7 +210,7 @@ export function createFetchWithStreamingDefaults(
 
     const signals: AbortSignal[] = [];
     if (requestDefaults.signal) signals.push(requestDefaults.signal);
-    if (init?.signal) signals.push(init.signal);
+    if (initRecord.signal) signals.push(initRecord.signal);
 
     if (timeoutValue > 0) {
       signals.push(createTimeoutSignal(timeoutValue));
@@ -199,12 +219,12 @@ export function createFetchWithStreamingDefaults(
     const signal = signals.length > 0 ? combineAbortSignals(signals) : undefined;
     const requestInit = {
       ...requestDefaults,
-      ...(init ?? {}),
+      ...initRecord,
       dispatcher: dispatcher as unknown,
       headers,
       ...(signal ? { signal } : {}),
     };
-    return fetchUndici(requestInputUrl(input), requestInit) as Promise<Response>;
+    return fetchUndici(requestInputUrl(requestInput), requestInit) as Promise<Response>;
   };
 
   return { fetch: fetchFn, dispose: () => dispatcher.close() };

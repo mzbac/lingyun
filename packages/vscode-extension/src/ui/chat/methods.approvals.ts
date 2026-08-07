@@ -18,7 +18,8 @@ import type { PendingApprovalEntry } from './controllerPorts';
 import { bindChatControllerService } from './controllerService';
 import type { ChatSessionsService } from './methods.sessions';
 import type { ChatWebviewService } from './methods.webview';
-import { findApprovalToolMessage, upsertToolMessage } from './toolMessageLookup';
+import { findApprovalToolMessage, findChatMessageById, upsertToolMessage } from './toolMessageLookup';
+import { getAutoApproveEnabled } from './webviewSettings';
 import type { ChatMode, ChatMessage } from './types';
 import { formatWorkspacePathForUI } from './utils';
 
@@ -89,15 +90,6 @@ function postAutoApprovedToolsState(controller: Pick<ChatApprovalsDeps, 'autoApp
     type: 'autoApprovedToolsState',
     autoApprovedTools: getAutoApprovedToolIds(controller.autoApprovedTools),
   });
-}
-
-function findMessageById(messages: ChatMessage[], messageId: string | undefined): ChatMessage | undefined {
-  if (!messageId) return undefined;
-  for (let i = 0; i < messages.length; i++) {
-    const message = messages[i];
-    if (message?.id === messageId) return message;
-  }
-  return undefined;
 }
 
 export function createChatApprovalsService(controller: ChatApprovalsDeps): ChatApprovalsService {
@@ -266,10 +258,7 @@ export function createChatApprovalsService(controller: ChatApprovalsDeps): ChatA
       approvalContext?: AgentApprovalContext
     ): Promise<boolean> {
       const manualApproval = isManualApprovalContext(approvalContext);
-      const globalAutoApprove =
-        this.mode === 'build'
-          ? (vscode.workspace.getConfiguration('lingyun').get<boolean>('autoApprove', false) ?? false)
-          : false;
+      const globalAutoApprove = this.mode === 'build' ? getAutoApproveEnabled() : false;
       if (!manualApproval && globalAutoApprove) return Promise.resolve(true);
       if (!manualApproval && this.mode === 'build' && this.autoApprovedTools.has(def.id)) return Promise.resolve(true);
       if (!manualApproval && this.autoApproveThisRun) return Promise.resolve(true);
@@ -312,7 +301,7 @@ export function createChatApprovalsService(controller: ChatApprovalsDeps): ChatA
 
     markActiveStepStatus(this: ChatApprovalsDeps, status: 'running' | 'done' | 'error' | 'canceled'): void {
       if (!this.activeStepId) return;
-      const stepMsg = findMessageById(this.messages, this.activeStepId);
+      const stepMsg = findChatMessageById(this.messages, this.activeStepId);
       if (!stepMsg?.step) return;
       stepMsg.step.status = status;
       this.webviewApi.postMessage({ type: 'updateMessage', message: stepMsg });

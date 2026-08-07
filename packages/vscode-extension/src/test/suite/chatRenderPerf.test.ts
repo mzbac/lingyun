@@ -10254,6 +10254,7 @@ suite('Chat Render Perf Guards', () => {
 	  });
 
   test('run coordinator pending-plan lookup scans messages without find callbacks', () => {
+    const lookupSource = fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/toolMessageLookup.ts'), 'utf8');
     const source = fs.readFileSync(path.resolve(__dirname, '../../../src/ui/chat/runner/runCoordinator.ts'), 'utf8');
     const section = (startText: string, endText: string): string => {
       const start = source.indexOf(startText);
@@ -10263,12 +10264,16 @@ suite('Chat Render Perf Guards', () => {
       return source.slice(start, end);
     };
 
-    const helperSection = section('function findChatMessageById', 'function normalizeUserInput');
+    const helperStart = lookupSource.indexOf('export function findChatMessageById');
+    assert.ok(helperStart >= 0, 'expected findChatMessageById in toolMessageLookup');
+    const helperEnd = lookupSource.indexOf('export function upsertToolMessage', helperStart);
+    assert.ok(helperEnd > helperStart, 'expected end of findChatMessageById helper');
+    const helperSection = lookupSource.slice(helperStart, helperEnd);
     const resolveSection = section('private resolvePendingPlanMessage', 'private async handlePendingPlanUserInput');
     const cancelSection = section('async cancelPendingPlan', 'async revisePendingPlan');
 
     assert.match(helperSection, /for \(const message of messages\)/);
-    assert.match(helperSection, /if \(message\.id === id\) return message;/);
+    assert.match(helperSection, /if \(message\.id === messageId\) return message;/);
     assert.match(resolveSection, /findChatMessageById\(c\.messages, params\.pendingPlan\.planMessageId\)/);
     assert.match(cancelSection, /findChatMessageById\(c\.messages, planMessageId\)/);
     assert.doesNotMatch(helperSection + resolveSection + cancelSection, /\.find\(/);

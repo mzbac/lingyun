@@ -1,8 +1,10 @@
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import type { FetchFunction } from '@ai-sdk/provider-utils';
 import {
+  createFetchWithStreamingDefaults,
   getOpenAICompatibleMaxInputTokens,
   getOpenAICompatibleMaxOutputTokens,
+  normalizeBaseURL,
   shouldUseResponsesApiForModelId,
   stringMetadata,
   transformOpenAICompatibleRequestBody,
@@ -13,7 +15,6 @@ import type { LLMProvider } from '../core/types';
 import { normalizeResponsesStreamModel } from '../core/utils/normalizeResponsesStream';
 import { wrapChatModelErrors } from './chatModelErrors';
 import { createFallbackModelInfo, type ModelInfo } from './modelCatalog';
-import { createFetchWithStreamingDefaults, normalizeBaseURL } from './openaiFetch';
 import { createOpenAICompatibleResponsesModel } from './openaiCompatibleResponsesModel';
 import { createProviderHttpError, fetchProviderResponse, isProviderAbortError, isProviderAuthError, parseProviderJsonResponse, readProviderResponseBody } from './providerErrors';
 

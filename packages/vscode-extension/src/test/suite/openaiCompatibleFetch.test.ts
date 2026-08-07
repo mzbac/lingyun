@@ -6,7 +6,7 @@ import https from 'node:https';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import { createFetchWithStreamingDefaults, createTimeoutSignal } from '../../providers/openaiFetch';
+import { createFetchWithStreamingDefaults, createTimeoutSignal } from '@kooka/core';
 import { OpenAICompatibleProvider } from '../../providers/openaiCompatible';
 import { fetchProviderResponse } from '../../providers/providerErrors';
 
@@ -666,7 +666,7 @@ suite('OpenAICompatibleProvider fetch', () => {
   });
 
   test('fetch header helpers avoid key-array and entry-array scans', () => {
-    const source = fs.readFileSync(path.resolve(__dirname, '../../../src/providers/openaiFetch.ts'), 'utf8');
+    const source = fs.readFileSync(path.resolve(__dirname, '../../../../core/src/httpFetch.ts'), 'utf8');
     const start = source.indexOf('const hasOwnHeader = Object.prototype.hasOwnProperty;');
     assert.ok(start >= 0, 'expected header ownership helper');
     const end = source.indexOf('\nfunction abortSignalReason', start);

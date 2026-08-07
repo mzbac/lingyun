@@ -45,11 +45,15 @@ export function createPlanningCallbacks(
     debug: (message) => appendDebugLog(view, `${message} mode=plan`),
   });
 
-  const postPlanUpdate = () => {
-    view.postMessage({ type: 'updateMessage', message: planMsg });
+  const persistIfEnabled = () => {
     if (persistSessions) {
       view.persistActiveSession();
     }
+  };
+
+  const postPlanUpdate = () => {
+    view.postMessage({ type: 'updateMessage', message: planMsg });
+    persistIfEnabled();
   };
 
   const clearScheduledFlush = () => {
@@ -108,9 +112,7 @@ export function createPlanningCallbacks(
       lookupScope: { planningContainerId: planContainerId },
     });
 
-    if (persistSessions) {
-      view.persistActiveSession();
-    }
+    persistIfEnabled();
   };
 
   return {
@@ -119,9 +121,7 @@ export function createPlanningCallbacks(
     },
     onIterationEnd: () => {
       thoughtStream.flush();
-      if (persistSessions) {
-        view.persistActiveSession();
-      }
+      persistIfEnabled();
       // Keep the global context indicator in sync during plan loops (usage updates per turn).
       view.postMessage({ type: 'context', context: view.getContextForUI() });
     },
@@ -135,9 +135,7 @@ export function createPlanningCallbacks(
         clearScheduledFlush();
         planMsg.content = planPlaceholderText;
         view.postMessage({ type: 'updateMessage', message: planMsg });
-        if (persistSessions) {
-          view.persistActiveSession();
-        }
+        persistIfEnabled();
       }
       postTurnStatus(view, planTurnId, status);
     },
@@ -166,9 +164,7 @@ export function createPlanningCallbacks(
         lookupScope: { planningContainerId: planContainerId },
         preservePendingOrRejected: true,
       });
-      if (persistSessions) {
-        view.persistActiveSession();
-      }
+      persistIfEnabled();
     },
     onToolBlocked: (tc: ToolCall, def: ToolDefinition, reason: string) => {
       thoughtStream.flush();
@@ -201,9 +197,7 @@ export function createPlanningCallbacks(
         if (Array.isArray(maybeTodos)) {
           view.postMessage({ type: 'todos', todos: maybeTodos });
         }
-        if (persistSessions) {
-          view.persistActiveSession();
-        }
+        persistIfEnabled();
       }
     },
     onRequestApproval: async (tc, def, approvalContext) => {
@@ -217,9 +211,7 @@ export function createPlanningCallbacks(
         view.postMessage({ type: 'turnStatus', turnId: planTurnId, status: { type: 'done' } });
       }
       view.postMessage({ type: 'context', context: view.getContextForUI() });
-      if (persistSessions) {
-        view.persistActiveSession();
-      }
+      persistIfEnabled();
     },
     onError: error => {
       thoughtStream.flush();

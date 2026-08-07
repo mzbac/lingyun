@@ -12,8 +12,7 @@ import type {
 } from '@ai-sdk/provider';
 import type { FetchFunction } from '@ai-sdk/provider-utils';
 import { Buffer } from 'buffer';
-import { normalizeTemperatureForModel } from '@kooka/core';
-import { normalizeBaseURL } from './openaiFetch';
+import { normalizeBaseURL, normalizeTemperatureForModel } from '@kooka/core';
 import { classifyProviderTransportError, createProviderHttpError, createProviderResponseMetadata, fetchProviderResponse, readProviderResponseBody, sanitizeProviderDiagnosticCause, type ProviderResponseMetadata } from './providerErrors';
 import { redactSensitive } from '../core/agent/debug';
 

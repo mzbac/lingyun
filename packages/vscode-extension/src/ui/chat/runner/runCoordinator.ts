@@ -22,7 +22,8 @@ import {
   finishPendingPlanUpdateRun,
   postPlanPendingState,
 } from './runCoordinatorPendingPlan';
-import { findLatestToolMessageByApprovalId } from '../toolMessageLookup';
+import { findChatMessageById, findLatestToolMessageByApprovalId } from '../toolMessageLookup';
+import { normalizeImageAttachments } from '../webviewSettings';
 import { postInputNotice } from '../inputNotice';
 import { enterRunState, exitRunState } from './runState';
 import {
@@ -32,9 +33,6 @@ import {
   parseGoalSlashCommand,
   type GoalSlashCommand,
 } from '../goals';
-
-const MAX_USER_IMAGE_ATTACHMENTS = 8;
-const MAX_USER_IMAGE_DATA_URL_LENGTH = 12_000_000;
 
 const ASSUMPTIONS_HEADING = '## Assumptions (auto)';
 const ASSUMPTIONS_NOTE =
@@ -106,13 +104,6 @@ type PreparedPendingPlanTarget =
 type ReadyPendingPlanTarget = Extract<PreparedPendingPlanTarget, { kind: 'ready' }>;
 type PendingPlanDirectAction = 'execute' | 'revise';
 
-function findChatMessageById(messages: readonly ChatMessage[], id: string): ChatMessage | undefined {
-  for (const message of messages) {
-    if (message.id === id) return message;
-  }
-  return undefined;
-}
-
 function normalizeUserInput(content: string | ChatUserInput): NormalizedUserInput {
   const message =
     typeof content === 'string' ? content : typeof content.message === 'string' ? content.message : '';
@@ -120,34 +111,15 @@ function normalizeUserInput(content: string | ChatUserInput): NormalizedUserInpu
 
   const attachmentsRaw = typeof content === 'object' && content ? content.attachments : undefined;
   const agentInput: UserHistoryInputPart[] = text ? [{ type: 'text', text }] : [];
-  const imageAttachments: NonNullable<ChatUserInput['attachments']> = [];
+  const imageAttachments = normalizeImageAttachments(attachmentsRaw);
 
-  if (Array.isArray(attachmentsRaw)) {
-    for (const attachment of attachmentsRaw) {
-      if (!attachment || typeof attachment !== 'object') continue;
-
-      const mediaType = typeof attachment.mediaType === 'string' ? attachment.mediaType.trim() : '';
-      const dataUrl = typeof attachment.dataUrl === 'string' ? attachment.dataUrl.trim() : '';
-      const filename = typeof attachment.filename === 'string' ? attachment.filename.trim() : '';
-
-      if (!mediaType.toLowerCase().startsWith('image/')) continue;
-      if (!dataUrl.startsWith('data:image/')) continue;
-      if (dataUrl.length > MAX_USER_IMAGE_DATA_URL_LENGTH) continue;
-
-      agentInput.push({
-        type: 'file',
-        mediaType,
-        ...(filename ? { filename } : {}),
-        url: dataUrl,
-      });
-      imageAttachments.push({
-        mediaType,
-        dataUrl,
-        ...(filename ? { filename } : {}),
-      });
-
-      if (imageAttachments.length >= MAX_USER_IMAGE_ATTACHMENTS) break;
-    }
+  for (const attachment of imageAttachments) {
+    agentInput.push({
+      type: 'file',
+      mediaType: attachment.mediaType,
+      ...(attachment.filename ? { filename: attachment.filename } : {}),
+      url: attachment.dataUrl,
+    });
   }
 
   const attachmentCount = imageAttachments.length;

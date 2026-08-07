@@ -200,3 +200,13 @@ export {
 export type { ChatModelErrorContext } from './providerModelErrors';
 export { attachChatModelErrorMetadata, wrapChatModelErrors } from './providerModelErrors';
 export { isPrivateIpv4Address } from './ip';
+
+export {
+  combineAbortSignals,
+  createFetchWithStreamingDefaults,
+  createTimeoutSignal,
+  normalizeBaseURL,
+  type FetchWithStreamingDefaults,
+  type FetchWithStreamingDefaultsOptions,
+  type LingyunFetch,
+} from './httpFetch';

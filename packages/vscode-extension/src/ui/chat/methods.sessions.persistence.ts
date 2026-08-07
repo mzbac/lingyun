@@ -19,6 +19,7 @@ import { bindChatControllerService } from './controllerService';
 import { postInputNotice } from './inputNotice';
 import { compareSessionRecency } from './sessionOrdering';
 import { createDefaultSessionTitle, createSessionPreview } from './sessionTitle';
+import { getSessionsMaxSessionBytes, getSessionsMaxSessions, getSessionsPersistEnabled } from './webviewSettings';
 import type { ChatMessage, ChatSessionInfo } from './types';
 import type { PendingApprovalEntry } from './controllerPorts';
 import type { ChatSessionRuntimeService } from './methods.sessions.runtime';
@@ -539,24 +540,15 @@ export function createChatSessionPersistenceService(
   const runtime = controller as ChatSessionPersistenceRuntime;
   const service = bindChatControllerService(runtime, {
     isSessionPersistenceEnabled(this: ChatSessionPersistenceRuntime): boolean {
-      return (
-        vscode.workspace.getConfiguration('lingyun').get<boolean>('sessions.persist', true) ?? true
-      );
+      return getSessionsPersistEnabled();
     },
 
     getSessionPersistenceLimits(
       this: ChatSessionPersistenceRuntime
     ): { maxSessions: number; maxSessionBytes: number } {
-      const config = vscode.workspace.getConfiguration('lingyun');
-      const maxSessions = config.get<number>('sessions.maxSessions', 20) ?? 20;
-      const maxSessionBytes = config.get<number>('sessions.maxSessionBytes', 2_000_000) ?? 2_000_000;
-
       return {
-        maxSessions: Math.max(1, Number.isFinite(maxSessions) ? Math.floor(maxSessions) : 20),
-        maxSessionBytes: Math.max(
-          1_000,
-          Number.isFinite(maxSessionBytes) ? Math.floor(maxSessionBytes) : 2_000_000
-        ),
+        maxSessions: getSessionsMaxSessions(),
+        maxSessionBytes: getSessionsMaxSessionBytes(),
       };
     },
 

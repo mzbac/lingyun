@@ -10,7 +10,7 @@ import {
   normalizeCodexModelsResponse,
 } from './codexSubscriptionModels';
 import { OpenAIAccountAuth } from './openaiAccountAuth';
-import { createFetchWithStreamingDefaults } from './openaiFetch';
+import { createFetchWithStreamingDefaults } from '@kooka/core';
 import type { ModelInfo } from './modelCatalog';
 import type { LLMProviderWithUi, ProviderAuthStatus } from './providerUi';
 import { appendErrorLog } from '../core/logger';

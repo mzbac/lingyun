@@ -68,6 +68,18 @@ export type ToolMessageLookupScope = {
   planningContainerId?: string;
 };
 
+/** Linear scan for a message by id; undefined id (or no match) yields undefined. */
+export function findChatMessageById(
+  messages: readonly ChatMessage[],
+  messageId: string | undefined,
+): ChatMessage | undefined {
+  if (!messageId) return undefined;
+  for (const message of messages) {
+    if (message.id === messageId) return message;
+  }
+  return undefined;
+}
+
 /**
  * Upserts the chat tool message for a tool call: finds the existing message by
  * approvalId (scoped by turn/step/plan container) and updates it, otherwise
