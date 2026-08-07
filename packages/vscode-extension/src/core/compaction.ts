@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import type { CompactionConfig, ModelLimit } from '@kooka/core';
+import { DEFAULT_COMPACTION_CONFIG, type CompactionConfig, type ModelLimit } from '@kooka/core';
 
 export type { CompactionConfig, ModelLimit } from '@kooka/core';
 export {
@@ -8,6 +8,7 @@ export {
   COMPACTION_MARKER_TEXT,
   COMPACTION_PROMPT_TEXT,
   COMPACTION_SYSTEM_PROMPT,
+  DEFAULT_COMPACTION_CONFIG,
   createHistoryForCompactionPrompt,
   createHistoryForModel,
   extractUsageTokens,
@@ -35,10 +36,12 @@ function normalizeConfigKeyPart(value: unknown): string | undefined {
 export function getCompactionConfig(): CompactionConfig {
   const cfg = vscode.workspace.getConfiguration('lingyun');
 
-  const auto = cfg.get<boolean>('compaction.auto') ?? true;
-  const prune = cfg.get<boolean>('compaction.prune') ?? true;
-  const pruneProtectTokens = Math.max(0, cfg.get<number>('compaction.pruneProtectTokens') ?? 40_000);
-  const pruneMinimumTokens = Math.max(0, cfg.get<number>('compaction.pruneMinimumTokens') ?? 20_000);
+  const auto = cfg.get<boolean>('compaction.auto') ?? DEFAULT_COMPACTION_CONFIG.auto;
+  const prune = cfg.get<boolean>('compaction.prune') ?? DEFAULT_COMPACTION_CONFIG.prune;
+  const pruneProtectTokens =
+    Math.max(0, cfg.get<number>('compaction.pruneProtectTokens') ?? DEFAULT_COMPACTION_CONFIG.pruneProtectTokens);
+  const pruneMinimumTokens =
+    Math.max(0, cfg.get<number>('compaction.pruneMinimumTokens') ?? DEFAULT_COMPACTION_CONFIG.pruneMinimumTokens);
   const toolOutputModeRaw = cfg.get<unknown>('compaction.toolOutputMode');
   const toolOutputMode = toolOutputModeRaw === 'afterToolCall' ? 'afterToolCall' : 'onCompaction';
 

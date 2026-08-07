@@ -1,7 +1,7 @@
 import { convertToModelMessages, extractReasoningMiddleware, streamText, wrapLanguageModel } from 'ai';
 import type { LLMProvider } from './types';
 import { createUserHistoryMessage, isCopilotResponsesModelId, normalizeTemperatureForModel, stripThinkBlocks } from '@kooka/core';
-import { streamTextWithLingyunDefaults } from './streamText';
+import { streamTextWithLingyunDefaults } from '@kooka/agent-sdk';
 
 const DEFAULT_TITLE_PREFIX = 'New session - ';
 const TITLE_SYSTEM_PROMPT = `You are a title generator. You output ONLY a thread title. Nothing else.

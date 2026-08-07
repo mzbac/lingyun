@@ -1,7 +1,5 @@
 import * as os from 'node:os';
-import * as crypto from 'crypto';
-import type { ToolResult } from '../types';
-import { TOOL_ERROR_CODES, isPrivateIpv4Address } from '@kooka/core';
+import { isPrivateIpv4Address } from '@kooka/core';
 
 export type DebugRedactionLevel = 'full' | 'secrets-only';
 
@@ -174,59 +172,6 @@ export function formatDetailedErrorForDebug(error: unknown, options?: DebugForma
   }
 
   return lines.join('\n');
-}
-
-export function formatToolFailureForDebug(result: ToolResult, options?: DebugFormatOptions): string {
-  const redactionLevel = options?.redactionLevel ?? 'full';
-  const errorCode = result.metadata?.errorCode ? String(result.metadata.errorCode) : '';
-  const errorType = result.metadata?.errorType ? String(result.metadata.errorType) : '';
-  const label = errorCode || errorType;
-  const errorRaw = result.error ? String(result.error) : 'Unknown error';
-  const error = truncateForDebug(redactSensitive(errorRaw, { redactionLevel }), 500);
-
-  const extra: string[] = [];
-  if (result.metadata && typeof result.metadata === 'object') {
-    const meta = result.metadata as Record<string, unknown>;
-    if (label === TOOL_ERROR_CODES.external_paths_disabled) {
-      const settingKey = typeof meta.blockedSettingKey === 'string' ? meta.blockedSettingKey : '';
-      if (settingKey) extra.push(`setting=${settingKey}`);
-
-      const blockedPathsRaw = meta.blockedPaths;
-      if (Array.isArray(blockedPathsRaw)) {
-        const paths = blockedPathsRaw
-          .filter((p): p is string => typeof p === 'string' && !!p.trim())
-          .slice(0, 5)
-          .map(p => truncateForDebug(redactSensitive(p, { redactionLevel }), 120));
-        if (paths.length) {
-          const suffix = blockedPathsRaw.length > paths.length ? ',…' : '';
-          extra.push(`paths=${paths.join(',')}${suffix}`);
-        }
-      }
-    }
-  }
-  if (label.startsWith('edit_') && result.metadata) {
-    const meta = result.metadata as Record<string, unknown>;
-    const oldLen = typeof meta.oldStringLength === 'number' ? meta.oldStringLength : undefined;
-    const sha = typeof meta.oldStringSha256 === 'string' ? meta.oldStringSha256 : undefined;
-    const hasLinePrefix = meta.hasLinePrefix === true;
-    const hasFileTags = meta.hasFileTags === true;
-
-    if (typeof oldLen === 'number') {
-      extra.push(`oldLen=${String(oldLen)}`);
-    }
-    if (typeof sha === 'string' && sha) {
-      extra.push(`oldSha=${sha.slice(0, 12)}`);
-    }
-    if (hasLinePrefix) {
-      extra.push('hasLinePrefix');
-    }
-    if (hasFileTags) {
-      extra.push('hasFileTags');
-    }
-  }
-
-  const parts = [label, truncateForDebug(error, 500), extra.length ? `(${extra.join(' ')})` : ''].filter(Boolean);
-  return parts.join(': ');
 }
 
 export function summarizeToolArgsForDebug(args: unknown, options?: DebugFormatOptions): string {
@@ -417,19 +362,4 @@ function formatErrorMessageForDebug(error: unknown, options?: { includeName?: bo
   if (!options?.includeName) return message;
   const name = getErrorName(error);
   return name && name !== 'UnknownError' ? `${name}: ${message}` : message;
-}
-
-export function sha256Hex(value: string): string {
-  return crypto.createHash('sha256').update(value, 'utf8').digest('hex');
-}
-
-export function hashJsonLines(items: unknown[]): { sha256: string; bytes: number } {
-  const hash = crypto.createHash('sha256');
-  let bytes = 0;
-  for (const item of items) {
-    const line = JSON.stringify(item) + '\n';
-    hash.update(line, 'utf8');
-    bytes += Buffer.byteLength(line, 'utf8');
-  }
-  return { sha256: hash.digest('hex'), bytes };
 }

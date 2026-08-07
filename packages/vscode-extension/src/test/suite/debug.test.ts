@@ -154,7 +154,7 @@ suite('Debug Redaction', () => {
 
   test('debug redaction uses shared allocation-light private IPv4 classifier', () => {
     const debugSource = fs.readFileSync(path.resolve(__dirname, '../../../src/core/agent/debug.ts'), 'utf8');
-    assert.match(debugSource, /import \{ TOOL_ERROR_CODES, isPrivateIpv4Address \} from '@kooka\/core';/);
+    assert.match(debugSource, /import \{ isPrivateIpv4Address \} from '@kooka\/core';/);
     assert.match(debugSource, /isPrivateIpv4Address\(match\)/);
     assert.doesNotMatch(debugSource, /function isPrivateIpv4/);
     assert.doesNotMatch(debugSource, /split\('\.'\)\.map/);

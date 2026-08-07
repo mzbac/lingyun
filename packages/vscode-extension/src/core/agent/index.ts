@@ -74,10 +74,6 @@ function isAbortError(error: unknown): boolean {
   return /abort/i.test(String(error));
 }
 
-function goalAccountableTokenTotal(stats: AgentHistoryStats): number {
-  return Math.max(0, Math.floor(stats.totalInputTokens + stats.totalOutputTokens));
-}
-
 function defaultEditedGoalStatus(status: LingyunThreadGoalStatus | undefined): LingyunThreadGoalStatus {
   return status === 'paused' || status === 'blocked' || status === 'usageLimited' ? status : 'active';
 }
@@ -380,14 +376,7 @@ export class AgentLoop {
     this.activeAbortController = undefined;
   }
 
-  private async withRun<T>(fn: (signal: AbortSignal) => Promise<T>, options?: { accountGoal?: boolean }): Promise<T> {
-    const startedAt = Date.now();
-    const statsBefore = this.session.getStats();
-    const activeGoalId =
-      options?.accountGoal === true &&
-      (this.session.threadGoal?.status === 'active' || this.session.threadGoal?.status === 'budgetLimited')
-        ? this.session.threadGoal.id
-        : undefined;
+  private async withRun<T>(fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
     const signal = this.startRun();
     try {
       return await fn(signal);
@@ -399,30 +388,8 @@ export class AgentLoop {
       }
       throw error;
     } finally {
-      this.accountActiveGoalUsage(startedAt, goalAccountableTokenTotal(statsBefore), activeGoalId);
       this.endRun();
     }
-  }
-
-  private accountActiveGoalUsage(startedAt: number, goalTokensBefore: number, activeGoalId: string | undefined): void {
-    if (!activeGoalId) return;
-    const goal = this.session.threadGoal;
-    if (!goal || goal.id !== activeGoalId) return;
-
-    const elapsedSeconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
-    const totalTokensAfter = goalAccountableTokenTotal(this.session.getStats());
-    const tokenDelta = Math.max(0, totalTokensAfter - Math.max(0, goalTokensBefore));
-    if (elapsedSeconds === 0 && tokenDelta === 0) return;
-
-    goal.tokensUsed = Math.max(0, Math.floor(goal.tokensUsed + tokenDelta));
-    goal.timeUsedSeconds = Math.max(0, Math.floor(goal.timeUsedSeconds + elapsedSeconds));
-    goal.status = resolveThreadGoalStatusAfterBudgetLimit({
-      currentStatus: goal.status,
-      requestedStatus: goal.status,
-      tokenBudget: goal.tokenBudget,
-      tokensUsed: goal.tokensUsed,
-    });
-    goal.updatedAt = Date.now();
   }
 
   async plan(task: UserHistoryInput, callbacks?: AgentCallbacks): Promise<string> {
@@ -440,7 +407,7 @@ export class AgentLoop {
       });
       const result = await run.done;
       return String(result.text || '').trim();
-    }, { accountGoal: false });
+    });
   }
 
   async execute(callbacks?: AgentCallbacks, options?: { approvedPlan?: string }): Promise<string> {
@@ -531,7 +498,7 @@ export class AgentLoop {
 
     await this.withRun(async () => {
       await this.agent.compactSession(this.session, undefined, { modelId: this.config.model, auto: false });
-    }, { accountGoal: false });
+    });
   }
 
   abort(): void {
