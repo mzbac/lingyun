@@ -18,6 +18,7 @@ import { WorkspaceToolProvider, createSampleToolsConfig } from './providers/work
 import type { LLMProvider } from './core/types';
 
 import { registerBuiltinTools } from './tools/builtin';
+import { disposeWebSession } from './tools/builtin/web';
 
 import { PluginManager } from './core/hooks/pluginManager';
 import { PluginToolProvider } from './core/hooks/pluginToolProvider';
@@ -534,6 +535,7 @@ export async function activate(
 }
 
 export function deactivate(): void {
+  void disposeWebSession();
   if (extensionState) {
     extensionState.dispose();
     extensionState = undefined;

@@ -19,6 +19,20 @@ import { skillHandler, skillTool } from './skill';
 import { taskHandler, taskTool } from './task';
 import { todoreadHandler, todoreadTool } from './todoread';
 import { todowriteHandler, todowriteTool } from './todowrite';
+import {
+  googleSearchHandler,
+  googleSearchTool,
+  visitPageHandler,
+  visitPageTool,
+  webClickHandler,
+  webClickTool,
+  webReadHandler,
+  webReadTool,
+  webScreenshotHandler,
+  webScreenshotTool,
+  webTypeHandler,
+  webTypeTool,
+} from './web';
 import { writeHandler, writeTool } from './write';
 
 export function registerBuiltinTools(): vscode.Disposable[] {
@@ -46,6 +60,12 @@ export function registerBuiltinTools(): vscode.Disposable[] {
     toolRegistry.registerTool(getMemoryTool, getMemoryHandler),
     toolRegistry.registerTool(maintainMemoryTool, maintainMemoryHandler),
     toolRegistry.registerTool(updateMemoryTool, updateMemoryHandler),
+    toolRegistry.registerTool(googleSearchTool, googleSearchHandler),
+    toolRegistry.registerTool(visitPageTool, visitPageHandler),
+    toolRegistry.registerTool(webReadTool, webReadHandler),
+    toolRegistry.registerTool(webClickTool, webClickHandler),
+    toolRegistry.registerTool(webTypeTool, webTypeHandler),
+    toolRegistry.registerTool(webScreenshotTool, webScreenshotHandler),
     backgroundTerminalManager,
   ];
 }

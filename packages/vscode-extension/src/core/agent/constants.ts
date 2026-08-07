@@ -21,6 +21,12 @@ const STATUS_MESSAGES: Record<string, string> = {
   task: 'Delegating work',
   todowrite: 'Planning',
   todoread: 'Reading todo',
+  google_search: 'Searching the web',
+  visit_page: 'Opening page',
+  web_read: 'Reading rendered page',
+  web_click: 'Clicking element',
+  web_type: 'Typing text',
+  web_screenshot: 'Capturing screenshot',
   think: 'Thinking',
   reasoning: 'Thinking',
 };
