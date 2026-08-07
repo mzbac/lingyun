@@ -8,10 +8,12 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as os from 'os';
+import { appendErrorLog } from '../../core/logger';
 import { createToolFilterMatcher, normalizeToolFilterSetting } from '../../core/toolFilter';
 import { toolRegistry } from '../../core/registry';
 import type { MemoryDropResult, MemoryUpdateResult } from '../../core/memories';
 import { formatErrorForUser } from './utils';
+import { postInputNotice } from './inputNotice';
 import type { ChatImageAttachment } from './types';
 
 export function stripWrappingQuotes(value: string): string {
@@ -968,6 +970,70 @@ export function getCompactionToolOutputMode(): CompactionToolOutputMode {
 
 export function normalizeCompactionToolOutputMode(mode: string): CompactionToolOutputMode | undefined {
   return mode === 'onCompaction' || mode === 'afterToolCall' ? mode : undefined;
+}
+
+export type WebviewSettingsRuntime = {
+  isProcessing: boolean;
+  outputChannel?: vscode.OutputChannel;
+  postMessage(message: unknown): void;
+};
+
+/**
+ * Shared "persist a boolean webview setting" flow used by all simple boolean
+ * setters (plan-first, auto-approve, external paths, skills, thinking, ...).
+ *
+ * Owns the hidden protocol once:
+ * - block the write while a run is processing (and repost current state)
+ * - skip the config write when the value is unchanged (avoids webview state
+ *   storms from redundant configuration-change events)
+ * - post the new state after a successful write, or log + repost current
+ *   state on failure
+ *
+ * `onChanged` runs after the write attempt (success or failure) so callers
+ * can refresh caches before reposting state.
+ */
+export async function updateBooleanWebviewSetting(params: {
+  runtime: WebviewSettingsRuntime;
+  configKey: string;
+  stateType: string;
+  stateField: string;
+  getCurrent(): boolean;
+  enabled: boolean;
+  blockNotice: string;
+  failureNotice: string;
+  logLabel: string;
+  extraState?(): Promise<Record<string, unknown>> | Record<string, unknown>;
+  onChanged?(): void | Promise<void>;
+}): Promise<void> {
+  const { runtime } = params;
+  const postState = async (value: boolean): Promise<void> => {
+    const extra = params.extraState ? await params.extraState() : undefined;
+    runtime.postMessage({ type: params.stateType, [params.stateField]: value, ...(extra || {}) });
+  };
+
+  if (runtime.isProcessing) {
+    postInputNotice(runtime, params.blockNotice);
+    await postState(params.getCurrent());
+    return;
+  }
+
+  const next = !!params.enabled;
+  const current = params.getCurrent();
+  if (next === current) {
+    await postState(current);
+    return;
+  }
+
+  try {
+    await vscode.workspace.getConfiguration('lingyun').update(params.configKey, next, true);
+    await params.onChanged?.();
+    await postState(next);
+  } catch (error) {
+    appendErrorLog(runtime.outputChannel, params.logLabel, error, { tag: 'Webview' });
+    postInputNotice(runtime, params.failureNotice);
+    await params.onChanged?.();
+    await postState(params.getCurrent());
+  }
 }
 
 export function parseWebviewImageAttachments(raw: unknown): ChatImageAttachment[] {

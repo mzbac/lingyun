@@ -6820,53 +6820,69 @@ suite('Chat Render Perf Guards', () => {
       return source.slice(start, end);
     };
     const booleanCases = [
-      ['async setPlanFirst', 'async setAutoApprove', 'getPlanFirstEnabled', "update('planFirst', next, true)", 'planFirst: current'],
-      ['async setAutoApprove', 'async setAllowExternalPaths', 'getAutoApproveEnabled', "update('autoApprove', next, true)", 'autoApprove: current'],
+      ['async setPlanFirst', 'async setAutoApprove', 'getPlanFirstEnabled', 'planFirst', 'planFirstState', 'planFirst'],
+      ['async setAutoApprove', 'async setAllowExternalPaths', 'getAutoApproveEnabled', 'autoApprove', 'autoApproveState', 'autoApprove'],
       [
         'async setAllowExternalPaths',
         'async setBlockGitPush',
         'getAllowExternalPathsEnabled',
-        "update('security.allowExternalPaths', next, true)",
-        'allowExternalPaths: current',
+        'security.allowExternalPaths',
+        'allowExternalPathsState',
+        'allowExternalPaths',
       ],
-	      ['async setBlockGitPush', 'async setDebugSettings', 'getBlockGitPushEnabled', "update('security.blockGitPush', next, true)", 'blockGitPush: current'],
-	      ['async setSkillsEnabled', 'async setSkillSearchPaths', 'getSkillsEnabled', "update('skills.enabled', next, true)", 'skillsEnabled: current'],
-	      ['async setShowThinking', 'async setMemoriesFeatureEnabled', 'getShowThinkingEnabled', "update('showThinking', next, true)", 'showThinking: current'],
+      ['async setBlockGitPush', 'async setDebugSettings', 'getBlockGitPushEnabled', 'security.blockGitPush', 'blockGitPushState', 'blockGitPush'],
+      ['async setSkillsEnabled', 'async setSkillSearchPaths', 'getSkillsEnabled', 'skills.enabled', 'skillsEnabledState', 'skillsEnabled'],
+      ['async setShowThinking', 'async setMemoriesFeatureEnabled', 'getShowThinkingEnabled', 'showThinking', 'showThinkingState', 'showThinking'],
       [
         'async setMemoriesFeatureEnabled',
         'async setMemoryAutoRecall',
         'getMemoriesFeatureEnabled',
-        "update('features.memories', next, true)",
-        'memoriesFeatureEnabled: current',
+        'features.memories',
+        'memoriesFeatureState',
+        'memoriesFeatureEnabled',
       ],
       [
         'async setMemoryAutoRecall',
         'async setMemoryAutoRecallBudget',
         'getMemoryAutoRecallEnabled',
-        "update('memories.autoRecall', next, true)",
-        'memoryAutoRecall: current',
-	      ],
-	      [
-	        'async setExplorePrepass',
-	        'async setExplorePrepassMaxChars',
-	        'getExplorePrepassEnabled',
-	        "update('subagents.explorePrepass.enabled', next, true)",
-	        'explorePrepass: current',
-	      ],
-	      ['async setAutoCompaction', 'async setCompactionPruneSettings', 'getAutoCompactionEnabled', "update('compaction.auto', next, true)", 'autoCompaction: current'],
-	    ];
+        'memories.autoRecall',
+        'memoryAutoRecallState',
+        'memoryAutoRecall',
+      ],
+      [
+        'async setExplorePrepass',
+        'async setExplorePrepassMaxChars',
+        'getExplorePrepassEnabled',
+        'subagents.explorePrepass.enabled',
+        'explorePrepassState',
+        'explorePrepass',
+      ],
+      ['async setAutoCompaction', 'async setCompactionPruneSettings', 'getAutoCompactionEnabled', 'compaction.auto', 'autoCompactionState', 'autoCompaction'],
+    ];
 
-    for (const [startText, endText, getter, updateCall, stateFragment] of booleanCases) {
+    for (const [startText, endText, getter, configKey, stateType, stateField] of booleanCases) {
       const section = methodSection(startText, endText);
-      assert.match(section, /const next = !!enabled;/);
-      assert.match(section, new RegExp(`const current = ${getter}\\(\\);`));
-      assert.match(section, /if \(next === current\) \{/);
-      assert.ok(section.includes(stateFragment), `expected unchanged state post for ${startText}`);
-      assert.ok(
-        section.indexOf('next === current') < section.indexOf(updateCall),
-        `expected unchanged guard before config write for ${startText}`
-      );
+      assert.match(section, /updateBooleanWebviewSetting\(\{/);
+      assert.ok(section.includes(`configKey: '${configKey}'`), `expected config key for ${startText}`);
+      assert.ok(section.includes(`stateType: '${stateType}'`), `expected state type for ${startText}`);
+      assert.ok(section.includes(`stateField: '${stateField}'`), `expected state field for ${startText}`);
+      assert.ok(section.includes(`getCurrent: ${getter}`), `expected current-state getter for ${startText}`);
     }
+
+    // The unchanged-write guard lives once in the shared helper.
+    const helperStart = settingsSource.indexOf('function updateBooleanWebviewSetting');
+    assert.ok(helperStart >= 0, 'expected boolean settings helper');
+    const helperEnd = settingsSource.indexOf('export function parseWebviewImageAttachments', helperStart);
+    assert.ok(helperEnd > helperStart, 'expected webview image helper after boolean settings helper');
+    const helperSection = settingsSource.slice(helperStart, helperEnd);
+    assert.match(helperSection, /const next = !!params\.enabled;/);
+    assert.match(helperSection, /const current = params\.getCurrent\(\);/);
+    assert.match(helperSection, /if \(next === current\) \{/);
+    assert.match(helperSection, /update\(params\.configKey, next, true\)/);
+    assert.ok(
+      helperSection.indexOf('next === current') < helperSection.indexOf('update(params.configKey, next, true)'),
+      'expected unchanged guard before config write in shared helper'
+    );
 
     const compactionModeSection = methodSection('async setCompactionToolOutputMode', 'async setModelLimits');
     assert.match(compactionModeSection, /const current = getCompactionToolOutputMode\(\);/);

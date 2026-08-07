@@ -160,6 +160,7 @@ import {
   parseWebviewImageAttachments,
   parseComposerSubmissionId,
   getToastErrorMessage,
+  updateBooleanWebviewSetting,
 } from './webviewSettings';
 
 
@@ -1894,99 +1895,59 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
   },
 
   async setPlanFirst(this: ChatWebviewRuntime, enabled: boolean): Promise<void> {
-    if (this.isProcessing) {
-      postInputNotice(this, 'Stop the current task before changing plan-first behavior.');
-      this.postMessage({ type: 'planFirstState', planFirst: getPlanFirstEnabled() });
-      return;
-    }
-
-    const next = !!enabled;
-    const current = getPlanFirstEnabled();
-    if (next === current) {
-      this.postMessage({ type: 'planFirstState', planFirst: current });
-      return;
-    }
-
-    try {
-      await vscode.workspace.getConfiguration('lingyun').update('planFirst', next, true);
-      this.postMessage({ type: 'planFirstState', planFirst: next });
-    } catch (error) {
-      appendErrorLog(this.outputChannel, 'Failed to persist plan-first setting', error, { tag: 'Webview' });
-      postInputNotice(this, 'Failed to update plan-first behavior. See logs for details.');
-      this.postMessage({ type: 'planFirstState', planFirst: getPlanFirstEnabled() });
-    }
+    await updateBooleanWebviewSetting({
+      runtime: this,
+      configKey: 'planFirst',
+      stateType: 'planFirstState',
+      stateField: 'planFirst',
+      getCurrent: getPlanFirstEnabled,
+      enabled,
+      blockNotice: 'Stop the current task before changing plan-first behavior.',
+      failureNotice: 'Failed to update plan-first behavior. See logs for details.',
+      logLabel: 'Failed to persist plan-first setting',
+    });
   },
 
   async setAutoApprove(this: ChatWebviewRuntime, enabled: boolean): Promise<void> {
-    if (this.isProcessing) {
-      postInputNotice(this, 'Stop the current task before changing tool safety behavior.');
-      this.postMessage({ type: 'autoApproveState', autoApprove: getAutoApproveEnabled() });
-      return;
-    }
-
-    const next = !!enabled;
-    const current = getAutoApproveEnabled();
-    if (next === current) {
-      this.postMessage({ type: 'autoApproveState', autoApprove: current });
-      return;
-    }
-
-    try {
-      await vscode.workspace.getConfiguration('lingyun').update('autoApprove', next, true);
-      this.postMessage({ type: 'autoApproveState', autoApprove: next });
-    } catch (error) {
-      appendErrorLog(this.outputChannel, 'Failed to persist auto-approve setting', error, { tag: 'Webview' });
-      postInputNotice(this, 'Failed to update tool safety behavior. See logs for details.');
-      this.postMessage({ type: 'autoApproveState', autoApprove: getAutoApproveEnabled() });
-    }
+    await updateBooleanWebviewSetting({
+      runtime: this,
+      configKey: 'autoApprove',
+      stateType: 'autoApproveState',
+      stateField: 'autoApprove',
+      getCurrent: getAutoApproveEnabled,
+      enabled,
+      blockNotice: 'Stop the current task before changing tool safety behavior.',
+      failureNotice: 'Failed to update tool safety behavior. See logs for details.',
+      logLabel: 'Failed to persist auto-approve setting',
+    });
   },
 
   async setAllowExternalPaths(this: ChatWebviewRuntime, enabled: boolean): Promise<void> {
-    if (this.isProcessing) {
-      postInputNotice(this, 'Stop the current task before changing external path access.');
-      this.postMessage({ type: 'allowExternalPathsState', allowExternalPaths: getAllowExternalPathsEnabled() });
-      return;
-    }
-
-    const next = !!enabled;
-    const current = getAllowExternalPathsEnabled();
-    if (next === current) {
-      this.postMessage({ type: 'allowExternalPathsState', allowExternalPaths: current });
-      return;
-    }
-
-    try {
-      await vscode.workspace.getConfiguration('lingyun').update('security.allowExternalPaths', next, true);
-      this.postMessage({ type: 'allowExternalPathsState', allowExternalPaths: next });
-    } catch (error) {
-      appendErrorLog(this.outputChannel, 'Failed to persist external path access setting', error, { tag: 'Webview' });
-      postInputNotice(this, 'Failed to update external path access. See logs for details.');
-      this.postMessage({ type: 'allowExternalPathsState', allowExternalPaths: getAllowExternalPathsEnabled() });
-    }
+    await updateBooleanWebviewSetting({
+      runtime: this,
+      configKey: 'security.allowExternalPaths',
+      stateType: 'allowExternalPathsState',
+      stateField: 'allowExternalPaths',
+      getCurrent: getAllowExternalPathsEnabled,
+      enabled,
+      blockNotice: 'Stop the current task before changing external path access.',
+      failureNotice: 'Failed to update external path access. See logs for details.',
+      logLabel: 'Failed to persist external path access setting',
+    });
   },
 
   async setBlockGitPush(this: ChatWebviewRuntime, enabled: boolean): Promise<void> {
-    if (this.isProcessing) {
-      postInputNotice(this, 'Stop the current task before changing git push protection.');
-      this.postMessage({ type: 'blockGitPushState', blockGitPush: getBlockGitPushEnabled() });
-      return;
-    }
-
-    const next = !!enabled;
-    const current = getBlockGitPushEnabled();
-    if (next === current) {
-      this.postMessage({ type: 'blockGitPushState', blockGitPush: current });
-      return;
-    }
-
-    try {
-      await vscode.workspace.getConfiguration('lingyun').update('security.blockGitPush', next, true);
-      this.postMessage({ type: 'blockGitPushState', blockGitPush: next });
-    } catch (error) {
-      appendErrorLog(this.outputChannel, 'Failed to persist git push protection setting', error, { tag: 'Webview' });
-      postInputNotice(this, 'Failed to update git push protection. See logs for details.');
-      this.postMessage({ type: 'blockGitPushState', blockGitPush: getBlockGitPushEnabled() });
-    }
+    await updateBooleanWebviewSetting({
+      runtime: this,
+      configKey: 'security.blockGitPush',
+      stateType: 'blockGitPushState',
+      stateField: 'blockGitPush',
+      getCurrent: getBlockGitPushEnabled,
+      enabled,
+      blockNotice: 'Stop the current task before changing git push protection.',
+      failureNotice: 'Failed to update git push protection. See logs for details.',
+      logLabel: 'Failed to persist git push protection setting',
+    });
   },
 
   async setDebugSettings(this: ChatWebviewRuntime, settings: Partial<DebugSettingsUi>): Promise<void> {
@@ -2326,45 +2287,19 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
   },
 
   async setSkillsEnabled(this: ChatWebviewRuntime, enabled: boolean): Promise<void> {
-    if (this.isProcessing) {
-      postInputNotice(this, 'Stop the current task before changing skills behavior.');
-      this.postMessage({
-        type: 'skillsEnabledState',
-        skillsEnabled: getSkillsEnabled(),
-        skills: await this.getSkillNamesForUI(),
-      });
-      return;
-    }
-
-    const next = !!enabled;
-    const current = getSkillsEnabled();
-    if (next === current) {
-      this.postMessage({
-        type: 'skillsEnabledState',
-        skillsEnabled: current,
-        skills: await this.getSkillNamesForUI(),
-      });
-      return;
-    }
-
-    try {
-      await vscode.workspace.getConfiguration('lingyun').update('skills.enabled', next, true);
-      this.skillNamesForUiPromise = undefined;
-      this.postMessage({
-        type: 'skillsEnabledState',
-        skillsEnabled: next,
-        skills: await this.getSkillNamesForUI(),
-      });
-    } catch (error) {
-      appendErrorLog(this.outputChannel, 'Failed to persist skills enabled setting', error, { tag: 'Webview' });
-      postInputNotice(this, 'Failed to update skills behavior. See logs for details.');
-      this.skillNamesForUiPromise = undefined;
-      this.postMessage({
-        type: 'skillsEnabledState',
-        skillsEnabled: getSkillsEnabled(),
-        skills: await this.getSkillNamesForUI(),
-      });
-    }
+    await updateBooleanWebviewSetting({
+      runtime: this,
+      configKey: 'skills.enabled',
+      stateType: 'skillsEnabledState',
+      stateField: 'skillsEnabled',
+      getCurrent: getSkillsEnabled,
+      enabled,
+      blockNotice: 'Stop the current task before changing skills behavior.',
+      failureNotice: 'Failed to update skills behavior. See logs for details.',
+      logLabel: 'Failed to persist skills enabled setting',
+      extraState: async () => ({ skills: await this.getSkillNamesForUI() }),
+      onChanged: () => { this.skillNamesForUiPromise = undefined; },
+    });
   },
 
   async setSkillSearchPaths(this: ChatWebviewRuntime, paths: SkillSearchPaths): Promise<void> {
@@ -2538,80 +2473,45 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
   },
 
   async setShowThinking(this: ChatWebviewRuntime, enabled: boolean): Promise<void> {
-    if (this.isProcessing) {
-      postInputNotice(this, 'Stop the current task before changing thinking display.');
-      this.postMessage({ type: 'showThinkingState', showThinking: getShowThinkingEnabled() });
-      return;
-    }
-
-    const next = !!enabled;
-    const current = getShowThinkingEnabled();
-    if (next === current) {
-      this.postMessage({ type: 'showThinkingState', showThinking: current });
-      return;
-    }
-
-    try {
-      await vscode.workspace.getConfiguration('lingyun').update('showThinking', next, true);
-      this.postMessage({ type: 'showThinkingState', showThinking: next });
-    } catch (error) {
-      appendErrorLog(this.outputChannel, 'Failed to persist show-thinking setting', error, { tag: 'Webview' });
-      postInputNotice(this, 'Failed to update thinking display. See logs for details.');
-      this.postMessage({ type: 'showThinkingState', showThinking: getShowThinkingEnabled() });
-    }
+    await updateBooleanWebviewSetting({
+      runtime: this,
+      configKey: 'showThinking',
+      stateType: 'showThinkingState',
+      stateField: 'showThinking',
+      getCurrent: getShowThinkingEnabled,
+      enabled,
+      blockNotice: 'Stop the current task before changing thinking display.',
+      failureNotice: 'Failed to update thinking display. See logs for details.',
+      logLabel: 'Failed to persist show-thinking setting',
+    });
   },
 
   async setMemoriesFeatureEnabled(this: ChatWebviewRuntime, enabled: boolean): Promise<void> {
-    const postCurrentState = () => this.postMessage({
-      type: 'memoriesFeatureState',
-      memoriesFeatureEnabled: getMemoriesFeatureEnabled(),
+    await updateBooleanWebviewSetting({
+      runtime: this,
+      configKey: 'features.memories',
+      stateType: 'memoriesFeatureState',
+      stateField: 'memoriesFeatureEnabled',
+      getCurrent: getMemoriesFeatureEnabled,
+      enabled,
+      blockNotice: 'Stop the current task before changing memory features.',
+      failureNotice: 'Failed to update memory features. See logs for details.',
+      logLabel: 'Failed to persist memories feature setting',
     });
-
-    if (this.isProcessing) {
-      postInputNotice(this, 'Stop the current task before changing memory features.');
-      postCurrentState();
-      return;
-    }
-
-    const next = !!enabled;
-    const current = getMemoriesFeatureEnabled();
-    if (next === current) {
-      this.postMessage({ type: 'memoriesFeatureState', memoriesFeatureEnabled: current });
-      return;
-    }
-
-    try {
-      await vscode.workspace.getConfiguration('lingyun').update('features.memories', next, true);
-      this.postMessage({ type: 'memoriesFeatureState', memoriesFeatureEnabled: next });
-    } catch (error) {
-      appendErrorLog(this.outputChannel, 'Failed to persist memories feature setting', error, { tag: 'Webview' });
-      postInputNotice(this, 'Failed to update memory features. See logs for details.');
-      postCurrentState();
-    }
   },
 
   async setMemoryAutoRecall(this: ChatWebviewRuntime, enabled: boolean): Promise<void> {
-    if (this.isProcessing) {
-      postInputNotice(this, 'Stop the current task before changing memory recall behavior.');
-      this.postMessage({ type: 'memoryAutoRecallState', memoryAutoRecall: getMemoryAutoRecallEnabled() });
-      return;
-    }
-
-    const next = !!enabled;
-    const current = getMemoryAutoRecallEnabled();
-    if (next === current) {
-      this.postMessage({ type: 'memoryAutoRecallState', memoryAutoRecall: current });
-      return;
-    }
-
-    try {
-      await vscode.workspace.getConfiguration('lingyun').update('memories.autoRecall', next, true);
-      this.postMessage({ type: 'memoryAutoRecallState', memoryAutoRecall: next });
-    } catch (error) {
-      appendErrorLog(this.outputChannel, 'Failed to persist memory auto-recall setting', error, { tag: 'Webview' });
-      postInputNotice(this, 'Failed to update memory recall behavior. See logs for details.');
-      this.postMessage({ type: 'memoryAutoRecallState', memoryAutoRecall: getMemoryAutoRecallEnabled() });
-    }
+    await updateBooleanWebviewSetting({
+      runtime: this,
+      configKey: 'memories.autoRecall',
+      stateType: 'memoryAutoRecallState',
+      stateField: 'memoryAutoRecall',
+      getCurrent: getMemoryAutoRecallEnabled,
+      enabled,
+      blockNotice: 'Stop the current task before changing memory recall behavior.',
+      failureNotice: 'Failed to update memory recall behavior. See logs for details.',
+      logLabel: 'Failed to persist memory auto-recall setting',
+    });
   },
 
   async setMemoryAutoRecallBudget(this: ChatWebviewRuntime, budget: Partial<MemoryAutoRecallBudget>): Promise<void> {
@@ -3025,27 +2925,18 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
   },
 
   async setExplorePrepass(this: ChatWebviewRuntime, enabled: boolean): Promise<void> {
-    if (this.isProcessing) {
-      postInputNotice(this, 'Stop the current task before changing explore prepass behavior.');
-      this.postMessage({ type: 'explorePrepassState', explorePrepass: getExplorePrepassEnabled(), explorePrepassMaxChars: getExplorePrepassMaxChars() });
-      return;
-    }
-
-    const next = !!enabled;
-    const current = getExplorePrepassEnabled();
-    if (next === current) {
-      this.postMessage({ type: 'explorePrepassState', explorePrepass: current, explorePrepassMaxChars: getExplorePrepassMaxChars() });
-      return;
-    }
-
-    try {
-      await vscode.workspace.getConfiguration('lingyun').update('subagents.explorePrepass.enabled', next, true);
-      this.postMessage({ type: 'explorePrepassState', explorePrepass: next, explorePrepassMaxChars: getExplorePrepassMaxChars() });
-    } catch (error) {
-      appendErrorLog(this.outputChannel, 'Failed to persist explore prepass setting', error, { tag: 'Webview' });
-      postInputNotice(this, 'Failed to update explore prepass behavior. See logs for details.');
-      this.postMessage({ type: 'explorePrepassState', explorePrepass: getExplorePrepassEnabled(), explorePrepassMaxChars: getExplorePrepassMaxChars() });
-    }
+    await updateBooleanWebviewSetting({
+      runtime: this,
+      configKey: 'subagents.explorePrepass.enabled',
+      stateType: 'explorePrepassState',
+      stateField: 'explorePrepass',
+      getCurrent: getExplorePrepassEnabled,
+      enabled,
+      blockNotice: 'Stop the current task before changing explore prepass behavior.',
+      failureNotice: 'Failed to update explore prepass behavior. See logs for details.',
+      logLabel: 'Failed to persist explore prepass setting',
+      extraState: async () => ({ explorePrepassMaxChars: getExplorePrepassMaxChars() }),
+    });
   },
 
   async setExplorePrepassMaxChars(this: ChatWebviewRuntime, maxChars: number): Promise<void> {
@@ -3138,27 +3029,17 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
   },
 
   async setAutoCompaction(this: ChatWebviewRuntime, enabled: boolean): Promise<void> {
-    if (this.isProcessing) {
-      postInputNotice(this, 'Stop the current task before changing auto-compaction behavior.');
-      this.postMessage({ type: 'autoCompactionState', autoCompaction: getAutoCompactionEnabled() });
-      return;
-    }
-
-    const next = !!enabled;
-    const current = getAutoCompactionEnabled();
-    if (next === current) {
-      this.postMessage({ type: 'autoCompactionState', autoCompaction: current });
-      return;
-    }
-
-    try {
-      await vscode.workspace.getConfiguration('lingyun').update('compaction.auto', next, true);
-      this.postMessage({ type: 'autoCompactionState', autoCompaction: next });
-    } catch (error) {
-      appendErrorLog(this.outputChannel, 'Failed to persist auto-compaction setting', error, { tag: 'Webview' });
-      postInputNotice(this, 'Failed to update auto-compaction behavior. See logs for details.');
-      this.postMessage({ type: 'autoCompactionState', autoCompaction: getAutoCompactionEnabled() });
-    }
+    await updateBooleanWebviewSetting({
+      runtime: this,
+      configKey: 'compaction.auto',
+      stateType: 'autoCompactionState',
+      stateField: 'autoCompaction',
+      getCurrent: getAutoCompactionEnabled,
+      enabled,
+      blockNotice: 'Stop the current task before changing auto-compaction behavior.',
+      failureNotice: 'Failed to update auto-compaction behavior. See logs for details.',
+      logLabel: 'Failed to persist auto-compaction setting',
+    });
   },
 
   async setCompactionPruneSettings(this: ChatWebviewRuntime, settings: Partial<CompactionPruneSettings>): Promise<void> {
