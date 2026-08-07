@@ -1706,7 +1706,10 @@ suite('LingYun Agent SDK', () => {
     }
 
     const prompts = JSON.stringify(llm.promptHistory);
-    assert.ok(prompts.includes(frozenSystemPrompt), 'the persisted system prompt should be replayed exactly');
+    assert.ok(
+      prompts.includes(JSON.stringify(frozenSystemPrompt)),
+      'the persisted system prompt should be replayed exactly',
+    );
     assert.ok(!prompts.includes('Newly recomposed system prompt.'), 'follow-ups must not replace the cached system prefix');
     assert.deepStrictEqual(session.getSystemPromptSnapshot(), [frozenSystemPrompt]);
     assertSecondTurnCacheReuse(llm, session, 'restored system prompt snapshot');
