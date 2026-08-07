@@ -9,7 +9,6 @@ import {
   stringMetadata,
   transformOpenAICompatibleRequestBody,
   validOpenAICompatibleModelRecord,
-  type OpenAICompatibleModelRecord,
 } from '@kooka/core';
 import type { LLMProvider } from '../core/types';
 import { normalizeResponsesStreamModel } from '../core/utils/normalizeResponsesStream';

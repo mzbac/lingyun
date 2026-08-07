@@ -1,7 +1,6 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
 import { readTodos } from '../../core/todo';
 import { toolRegistry } from '../../core/registry';
 import { summarizeToolArgsForDebug } from '../../core/agent/debug';
@@ -844,8 +843,9 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
         this.initAcked = false;
         this.webviewClientInstanceId = undefined;
         resetWebviewCrashToastState(this);
-        globalThis.LINGYUN_TEST_BUILD === true &&
+        if (globalThis.LINGYUN_TEST_BUILD === true) {
           rejectPendingWebviewTestEvals(this, 'Chat webview was disposed before the test eval completed');
+        }
         if (this.initInterval) {
           clearInterval(this.initInterval);
           this.initInterval = undefined;
@@ -3455,9 +3455,9 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
     const versionSuffix = version ? `(${version})` : '';
 
     let scripts = renderBrowserChatProtocolBootstrapScript(nonce);
-    globalThis.LINGYUN_TEST_BUILD === true &&
-      this.context.extensionMode === vscode.ExtensionMode.Test &&
-      (scripts = `${renderWebviewTestBridgeScript(nonce)}\n${scripts}`);
+    if (globalThis.LINGYUN_TEST_BUILD === true && this.context.extensionMode === vscode.ExtensionMode.Test) {
+      scripts = `${renderWebviewTestBridgeScript(nonce)}\n${scripts}`;
+    }
     for (const parts of CHAT_WEBVIEW_SCRIPT_PARTS) {
       const uri = webview.asWebviewUri(
         vscode.Uri.joinPath(this.context.extensionUri, 'media', ...parts)
@@ -3485,10 +3485,11 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
       .replace(/{{VERSION_SUFFIX}}/g, versionSuffix);
   },
   });
-  globalThis.LINGYUN_TEST_BUILD === true &&
-    ((service as unknown as { evaluateInWebview(expression: string): Promise<unknown> }).evaluateInWebview = (
+  if (globalThis.LINGYUN_TEST_BUILD === true) {
+    (service as unknown as { evaluateInWebview(expression: string): Promise<unknown> }).evaluateInWebview = (
       expression: string
-    ) => evaluateInWebviewTestImpl(runtime, expression));
+    ) => evaluateInWebviewTestImpl(runtime, expression);
+  }
   Object.assign(runtime, service);
   return service as unknown as ChatWebviewService;
 }

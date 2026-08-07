@@ -10,7 +10,6 @@
  * bundle contains no test/eval bridge code.
  */
 declare global {
-  // eslint-disable-next-line no-var
   var LINGYUN_TEST_BUILD: boolean | undefined;
 }
 
