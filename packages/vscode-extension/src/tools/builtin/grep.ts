@@ -12,6 +12,25 @@ const MAX_RAW_MATCHES = 2000;
 const MAX_STDOUT_BYTES = 2_000_000;
 const MAX_STDERR_BYTES = 20_000;
 
+const RIPGREP_PLATFORM_DIRS = [
+  'darwin-arm64',
+  'darwin-x64',
+  'linux-arm64',
+  'linux-x64',
+  'win32-arm64',
+  'win32-x64',
+] as const;
+
+/**
+ * Locates the ripgrep binary bundled with VS Code.
+ *
+ * The bundle layout changed across VS Code releases: older builds ship
+ * `node_modules.asar.unpacked/@vscode/ripgrep/bin/rg`, newer builds ship
+ * `node_modules.asar.unpacked/@vscode/ripgrep-universal/bin/<platform>/rg`
+ * (and Copilot bundles nest their own copy under the `@github/copilot-*`
+ * package). Checking each layout keeps grep working on the installed host
+ * instead of silently falling back to PATH (where `rg` may not exist).
+ */
 function getRipgrepBinaryPath(): string {
   const exe = process.platform === 'win32' ? 'rg.exe' : 'rg';
   const envOverride = process.env.VSCODE_RIPGREP_PATH || process.env.RG_PATH;
@@ -22,11 +41,38 @@ function getRipgrepBinaryPath(): string {
     path.join(appRoot, 'node_modules.asar.unpacked', '@vscode', 'ripgrep', 'bin', exe),
     path.join(appRoot, 'node_modules', 'vscode-ripgrep', 'bin', exe),
     path.join(appRoot, 'node_modules', '@vscode', 'ripgrep', 'bin', exe),
+    // VS Code >= 1.132 (ripgrep-universal with per-platform subdirectories)
+    ...RIPGREP_PLATFORM_DIRS.map(platformDir =>
+      path.join(appRoot, 'node_modules.asar.unpacked', '@vscode', 'ripgrep-universal', 'bin', platformDir, exe),
+    ),
   ];
 
   for (const candidate of candidates) {
     if (fs.existsSync(candidate)) return candidate;
   }
+
+  // Copilot-bundled ripgrep nests per platform under @github/copilot-*.
+  const copilotRoot = path.join(appRoot, 'node_modules.asar.unpacked', '@github');
+  let copilotMatch: string | undefined;
+  try {
+    for (const entry of fs.readdirSync(copilotRoot, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !entry.name.startsWith('copilot-')) continue;
+      const ripgrepDir = path.join(copilotRoot, entry.name, 'ripgrep', 'bin');
+      if (!fs.existsSync(ripgrepDir)) continue;
+      for (const platformDir of fs.readdirSync(ripgrepDir, { withFileTypes: true })) {
+        if (!platformDir.isDirectory()) continue;
+        const candidate = path.join(ripgrepDir, platformDir.name, exe);
+        if (fs.existsSync(candidate)) {
+          copilotMatch = candidate;
+          break;
+        }
+      }
+      if (copilotMatch) break;
+    }
+  } catch {
+    // Ignore readdir failures; fall through to PATH.
+  }
+  if (copilotMatch) return copilotMatch;
 
   // Fallback to PATH.
   return exe;
