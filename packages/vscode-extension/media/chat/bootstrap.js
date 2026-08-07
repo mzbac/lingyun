@@ -4,6 +4,12 @@
 		    } catch (err) {
 		      vscode = { postMessage: () => {} };
 		    }
+		    // Test-only hook: lets the e2e DOM bridge (injected into the HTML only
+		    // in ExtensionMode.Test) post results back to the extension host. The
+		    // flag is never set in production webviews, so this is a no-op there.
+		    if (window.__LINGYUN_TEST_MODE__ === true) {
+		      window.__lingyunChatBridge = vscode;
+		    }
 				    const clientInstanceId = String(Date.now()) + '_' + Math.random().toString(16).slice(2);
 				    const SKILL_SEARCH_PATHS_TITLE_DISPLAY_LIMIT = 240;
 				    const SKILL_DROPDOWN_ITEM_DISPLAY_LIMIT = 160;

@@ -466,18 +466,6 @@
 			      try {
 			        const data = e.data || {};
 			      switch (data.type) {
-		        case '__testEval':
-		          // Test-only DOM bridge: the extension host only sends this in
-		          // ExtensionMode.Test, and the renderer only honors it when the
-		          // test-mode flag was injected into the HTML.
-		          if (window.__LINGYUN_TEST_MODE__ !== true || typeof data.id !== 'string' || typeof data.expression !== 'string') break;
-		          try {
-		            const result = new Function('"use strict"; return (' + data.expression + ');')();
-		            vscode.postMessage({ type: '__testEvalResult', id: data.id, ok: true, value: result });
-		          } catch (evalErr) {
-		            vscode.postMessage({ type: '__testEvalResult', id: data.id, ok: false, error: String(evalErr && evalErr.message ? evalErr.message : evalErr) });
-		          }
-		          break;
 		        case 'init':
 				          initReceived = true;
 				          clearReadyInterval();

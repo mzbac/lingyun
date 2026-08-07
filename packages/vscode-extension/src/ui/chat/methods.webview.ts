@@ -441,6 +441,39 @@ function renderBrowserChatProtocolBootstrapScript(nonce: string): string {
   return `<script nonce="${nonce}">window.LINGYUN_CHAT_PROTOCOL = Object.freeze(${protocolJson});</script>`;
 }
 
+/**
+ * Test-only webview DOM bridge used by the e2e suite. This code never ships in
+ * the production webview bundle: it is injected by `getHtml()` only when the
+ * extension host runs in `ExtensionMode.Test`, and production HTML keeps the
+ * strict CSP (no `'unsafe-eval'`), so `new Function` cannot run there.
+ *
+ * The bridge is load-inert (it only sets a flag and registers a listener) and
+ * never calls `acquireVsCodeApi()` itself — the webview sandbox allows the API
+ * to be acquired exactly once (bootstrap.js owns it) and replaces
+ * `window.parent`, so the only way to post a result back is to reuse the API
+ * that bootstrap.js exposed via `window.__lingyunChatBridge` under the
+ * test-only flag.
+ */
+function renderWebviewTestBridgeScript(nonce: string): string {
+  const source = `
+    (() => {
+      window.__LINGYUN_TEST_MODE__ = true;
+      window.addEventListener('message', (e) => {
+        const data = e && e.data;
+        if (!data || data.type !== '__testEval' || typeof data.id !== 'string' || typeof data.expression !== 'string') return;
+        const vsCodeApi = window.__lingyunChatBridge;
+        if (!vsCodeApi) return;
+        try {
+          const result = new Function('"use strict"; return (' + data.expression + ');')();
+          vsCodeApi.postMessage({ type: '__testEvalResult', id: data.id, ok: true, value: result });
+        } catch (evalErr) {
+          vsCodeApi.postMessage({ type: '__testEvalResult', id: data.id, ok: false, error: String(evalErr && evalErr.message ? evalErr.message : evalErr) });
+        }
+      });
+    })();`;
+  return `<script nonce="${nonce}">${source}</script>`;
+}
+
 async function buildWebviewSettingsStateMessage(
   runtime: ChatWebviewRuntime,
   params?: {
@@ -3407,9 +3440,9 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
 
     let scripts = renderBrowserChatProtocolBootstrapScript(nonce);
     if (this.context.extensionMode === vscode.ExtensionMode.Test) {
-      // Enable the renderer-side __testEval bridge used by the e2e webview
-      // tests. Production webviews never get this flag.
-      scripts = `<script nonce="${nonce}">window.__LINGYUN_TEST_MODE__ = true;</script>\n${scripts}`;
+      // Inject the test-only eval bridge used by the e2e webview tests.
+      // Production webviews never get this script (and their CSP forbids eval).
+      scripts = `${renderWebviewTestBridgeScript(nonce)}\n${scripts}`;
     }
     for (const parts of CHAT_WEBVIEW_SCRIPT_PARTS) {
       const uri = webview.asWebviewUri(
