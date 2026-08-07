@@ -166,6 +166,7 @@ export {
   COMPACTION_PROMPT_TEXT,
   COMPACTION_SYSTEM_PROMPT,
   MISSING_TOOL_RESULT_PLACEHOLDER,
+  DEFAULT_COMPACTION_CONFIG,
   createHistoryForCompactionPrompt,
   createHistoryForModel,
   extractUsageTokens,
@@ -187,6 +188,14 @@ export {
 } from './modelMessages';
 
 export { transformOpenAICompatibleRequestBody } from './openaiCompatibleReplay';
+
+export {
+  getOpenAICompatibleMaxInputTokens,
+  getOpenAICompatibleMaxOutputTokens,
+  stringMetadata,
+  validOpenAICompatibleModelRecord,
+  type OpenAICompatibleModelRecord,
+} from './openaiCompatibleModels';
 
 export type { ChatModelErrorContext } from './providerModelErrors';
 export { attachChatModelErrorMetadata, wrapChatModelErrors } from './providerModelErrors';

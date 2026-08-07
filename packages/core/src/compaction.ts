@@ -12,6 +12,15 @@ export type CompactionConfig = {
   toolOutputMode: ToolOutputCompactionMode;
 };
 
+/** Canonical defaults shared by the agent SDK and the VS Code extension. */
+export const DEFAULT_COMPACTION_CONFIG: CompactionConfig = {
+  auto: true,
+  prune: true,
+  pruneProtectTokens: 40_000,
+  pruneMinimumTokens: 20_000,
+  toolOutputMode: 'onCompaction',
+};
+
 export const COMPACTION_MARKER_TEXT = 'What did we do so far?';
 
 export const COMPACTION_PROMPT_TEXT =
