@@ -1377,7 +1377,7 @@ export class LingyunAgent {
             lastTokens,
             modelLimit,
             reservedOutputTokens,
-            config: this.compactionConfig,
+            config: execution.runtime.compactionConfig,
           })
         ) {
           await compactSessionInternal({

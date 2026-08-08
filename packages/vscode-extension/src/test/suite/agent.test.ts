@@ -2715,6 +2715,69 @@ suite('AgentLoop', () => {
     }
   });
 
+  test('continue - preflight compaction is skipped when compaction.auto is disabled', async () => {
+    const cfg = vscode.workspace.getConfiguration('lingyun');
+    const previousLimits = cfg.get('modelLimits');
+    const previousAuto = cfg.get('compaction.auto');
+
+    await cfg.update('modelLimits', { 'mock-model': { context: 10, output: 5 } }, true);
+    await cfg.update('compaction.auto', false, true);
+
+    try {
+      const metadataLLM = new MockProviderWithModelMetadata();
+      agent = new AgentLoop(metadataLLM, mockContext, { model: 'mock-model' }, registry);
+
+      const compactionEvents: Array<
+        | { type: 'start'; auto: boolean; markerMessageId: string }
+        | {
+          type: 'end';
+          auto: boolean;
+          markerMessageId: string;
+          summaryMessageId?: string;
+          status: 'done' | 'error' | 'canceled';
+          error?: string;
+        }
+      > = [];
+
+      metadataLLM.setNextResponse({
+        kind: 'text',
+        content: 'First done',
+        usage: { inputNoCache: 10, cacheRead: 0, outputTotal: 1 },
+      });
+      await agent.run('First task');
+
+      metadataLLM.setNextResponse({ kind: 'text', content: 'Second done' });
+
+      const result = await agent.continue('Follow up', {
+        onCompactionStart: (event) => {
+          compactionEvents.push({ type: 'start', auto: event.auto, markerMessageId: event.markerMessageId });
+        },
+        onCompactionEnd: (event) => {
+          compactionEvents.push({
+            type: 'end',
+            auto: event.auto,
+            markerMessageId: event.markerMessageId,
+            summaryMessageId: event.summaryMessageId,
+            status: event.status,
+            error: event.error,
+          });
+        },
+      });
+
+      assert.strictEqual(result, 'Second done');
+      assert.strictEqual(metadataLLM.callCount, 2, 'no preflight compaction when auto is disabled');
+      assert.strictEqual(compactionEvents.length, 0, 'no compaction events when auto is disabled');
+      assert.strictEqual(
+        agent.getHistory().some(m => m.role === 'assistant' && m.metadata?.summary === true),
+        false,
+        'no summary message should be created when auto is disabled',
+      );
+    } finally {
+      await cfg.update('modelLimits', previousLimits as any, true);
+      await cfg.update('compaction.auto', previousAuto as any, true);
+    }
+  });
+
   test('createHistoryForModel - replaces compacted tool output with placeholder', () => {
     const history = [
       {
