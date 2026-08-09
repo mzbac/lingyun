@@ -174,15 +174,48 @@ export class RunCoordinator {
     });
   }
 
-  private postTurnErrorIfNeeded(turnId: string | undefined, content: string): void {
+  private postTurnErrorIfNeeded(
+    turnId: string | undefined,
+    content: string,
+    retry?: ChatMessage['retry'],
+  ): void {
     const errorMsg = appendTurnErrorMessage({
       messages: this.controller.messages,
       turnId,
       content,
+      retry,
     });
     if (errorMsg) {
       this.controller.postMessage({ type: 'message', message: errorMsg });
     }
+  }
+
+  private canResumeFailedTurn(turnId: string): boolean {
+    const c = this.controller;
+    if (!turnId || findLatestUserTurnId(c.messages) !== turnId) return false;
+    if (c.messages.some(message => message.turnId === turnId && !!message.toolCall)) return false;
+
+    const history = c.agent.getHistory();
+    let latestUser = -1;
+    let latestAssistant = -1;
+    for (let index = 0; index < history.length; index += 1) {
+      const role = history[index]?.role;
+      if (role === 'user') latestUser = index;
+      else if (role === 'assistant') latestAssistant = index;
+    }
+    return latestUser > latestAssistant;
+  }
+
+  private clearFailedTurnRetryActions(turnId?: string): boolean {
+    let changed = false;
+    for (const message of this.controller.messages) {
+      if (message.retry?.kind !== 'resume') continue;
+      if (turnId && message.turnId !== turnId) continue;
+      delete message.retry;
+      changed = true;
+      this.controller.postMessage({ type: 'updateMessage', message });
+    }
+    return changed;
   }
 
   /**
@@ -205,6 +238,7 @@ export class RunCoordinator {
     displayContent?: string;
   }): void {
     const c = this.controller;
+    this.clearFailedTurnRetryActions();
     this.activateRun();
 
     const checkpointState = c.agent.exportState();
@@ -266,6 +300,7 @@ export class RunCoordinator {
     error: unknown;
     turnId?: string;
     markStepStatus?: boolean;
+    allowResumeRetry?: boolean;
   }): boolean {
     const c = this.controller;
     const message = formatErrorForUser(params.error, { llmProviderId: c.llmProvider?.id });
@@ -283,7 +318,17 @@ export class RunCoordinator {
       });
     }
 
-    this.postTurnErrorIfNeeded(params.turnId, message);
+    const retry =
+      !wasCanceled &&
+      params.allowResumeRetry &&
+      params.turnId &&
+      this.canResumeFailedTurn(params.turnId)
+        ? { kind: 'resume' as const }
+        : undefined;
+    if (params.allowResumeRetry && params.turnId && !retry) {
+      this.clearFailedTurnRetryActions(params.turnId);
+    }
+    this.postTurnErrorIfNeeded(params.turnId, message, retry);
     return wasCanceled;
   }
 
@@ -1013,10 +1058,81 @@ export class RunCoordinator {
         error,
         turnId: c.currentTurnId,
         markStepStatus: true,
+        allowResumeRetry: !shouldGeneratePlan,
       });
     } finally {
       this.finalizeRun({ keepAbortFlag: wasCanceled, suppressQueueAutosend: wasCanceled });
       if (!failed && !wasCanceled && !shouldGeneratePlan) {
+        void (async () => {
+          if (await this.maybeReportBudgetLimitedGoal()) return;
+          await this.maybeContinueActiveGoal();
+        })();
+      }
+    }
+  }
+
+  async retryFailedTurn(turnId: string): Promise<void> {
+    const c = this.controller;
+    if (c.isProcessing || !c.view) {
+      c.postMessage({ type: 'processing', value: c.isProcessing });
+      return;
+    }
+
+    const normalizedTurnId = String(turnId || '').trim();
+    if (!normalizedTurnId) {
+      c.postMessage({ type: 'processing', value: false });
+      return;
+    }
+
+    await c.ensureSessionsLoaded();
+
+    const pendingPlan = c.getActiveSession().pendingPlan;
+    if (pendingPlan) {
+      postPlanPendingState(c, { active: true, planMessageId: pendingPlan.planMessageId });
+      return;
+    }
+
+    let retryMessage: ChatMessage | undefined;
+    for (let index = c.messages.length - 1; index >= 0; index -= 1) {
+      const candidate = c.messages[index];
+      if (
+        candidate.role === 'error' &&
+        candidate.turnId === normalizedTurnId &&
+        candidate.retry?.kind === 'resume'
+      ) {
+        retryMessage = candidate;
+        break;
+      }
+    }
+    if (!retryMessage || !this.canResumeFailedTurn(normalizedTurnId)) {
+      if (this.clearFailedTurnRetryActions(normalizedTurnId)) {
+        c.persistActiveSession();
+      }
+      postInputNotice(c, 'This failed turn can no longer be retried. Send a new message instead.');
+      return;
+    }
+
+    c.currentTurnId = normalizedTurnId;
+    c.commitRevertedConversationIfNeeded();
+    this.activateRun();
+    c.postMessage({ type: 'processing', value: true });
+
+    let wasCanceled = false;
+    let failed = false;
+    try {
+      await c.agent.resume(c.createAgentCallbacks());
+      this.clearFailedTurnRetryActions(normalizedTurnId);
+    } catch (error) {
+      failed = true;
+      wasCanceled = this.handleRunFailure({
+        error,
+        turnId: normalizedTurnId,
+        markStepStatus: true,
+        allowResumeRetry: true,
+      });
+    } finally {
+      this.finalizeRun({ keepAbortFlag: wasCanceled, suppressQueueAutosend: wasCanceled });
+      if (!failed && !wasCanceled) {
         void (async () => {
           if (await this.maybeReportBudgetLimitedGoal()) return;
           await this.maybeContinueActiveGoal();

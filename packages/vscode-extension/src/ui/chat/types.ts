@@ -60,6 +60,9 @@ export interface ChatMessage {
   checkpoint?: {
     historyLength: number;
   };
+  retry?: {
+    kind: 'resume';
+  };
   step?: {
     index: number;
     status: 'running' | 'done' | 'error' | 'canceled';

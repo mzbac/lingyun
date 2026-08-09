@@ -4927,6 +4927,53 @@ suite('Chat Webview Assets', () => {
     );
   });
 
+  test('failed turn Retry posts the original turn id and disappears from the render key when cleared', () => {
+    const controller = createStandaloneChatController();
+    const webview = {
+      cspSource: 'test-csp',
+      asWebviewUri: (uri: unknown) => uri,
+    } as unknown as vscode.Webview;
+
+    const html = controller.webviewApi.getHtml(webview);
+    const scripts = extractOrderedScriptSources(html);
+    const { context, elements, posted } = createMockBrowserContext();
+    runScriptsInMockBrowser(scripts, context);
+
+    const failedMessage = {
+      id: 'timeout-error',
+      role: 'error',
+      content: 'Request timed out',
+      timestamp: Date.now(),
+      turnId: 'timeout-turn',
+      retry: { kind: 'resume' },
+    };
+    context.addMessage(failedMessage);
+
+    const messages = elements.get('messages');
+    const errorEl = (messages?.children || []).find((child: any) => child?.dataset?.id === failedMessage.id);
+    const contentEl = findMockChildByClass(errorEl, 'message-content');
+    const actionsEl = findMockChildByClass(contentEl, 'error-message-actions');
+    const retryButton = (actionsEl?.children || []).find((child: any) => child?.textContent === 'Retry');
+    assert.ok(retryButton, 'expected failed-turn Retry action');
+    assert.strictEqual(retryButton.type, 'button');
+    assert.strictEqual(retryButton.getAttribute('aria-label'), 'Retry failed turn');
+    assert.strictEqual(retryButton.dataset.action, undefined);
+
+    context.document.dispatchEvent({ type: 'click', target: retryButton });
+    assert.ok(posted.some(message =>
+      message?.type === 'retryTurn' && message?.turnId === failedMessage.turnId
+    ));
+
+    const retryRenderKey = context.getMessageRenderKey(failedMessage);
+    const clearedMessage = { ...failedMessage, retry: undefined };
+    const clearedRenderKey = context.getMessageRenderKey(clearedMessage);
+    assert.notStrictEqual(retryRenderKey, clearedRenderKey);
+
+    const clearedEl = context.createMessageElement(clearedMessage);
+    const clearedContent = findMockChildByClass(clearedEl, 'message-content');
+    assert.strictEqual(findMockChildByClass(clearedContent, 'error-message-actions'), undefined);
+  });
+
   test('decorative transcript chrome stays hidden from assistive tech', () => {
     const controller = createStandaloneChatController();
     const webview = {

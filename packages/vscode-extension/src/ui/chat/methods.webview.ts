@@ -312,6 +312,7 @@ export interface ChatWebviewDeps {
   cancelPendingPlan(planMessageId: string): Promise<void>;
   revisePendingPlan(planMessageId: string, instructions: string): Promise<void>;
   handleApprovalResponse(approvalId: string, approved: boolean): void;
+  retryFailedTurn(turnId: string): Promise<void>;
   retryToolCall(approvalId: string): Promise<void>;
   ensureSessionsLoaded(): Promise<void>;
   onSessionPersistenceConfigChanged(): Promise<void>;
@@ -1649,6 +1650,13 @@ export function createChatWebviewService(controller: ChatWebviewDeps): ChatWebvi
           case 'retryTool':
             if (typeof data.approvalId === 'string' && data.approvalId.trim()) {
               await this.retryToolCall(data.approvalId.trim());
+            } else {
+              this.postMessage({ type: 'processing', value: this.isProcessing });
+            }
+            break;
+          case 'retryTurn':
+            if (typeof data.turnId === 'string' && data.turnId.trim()) {
+              await this.retryFailedTurn(data.turnId.trim());
             } else {
               this.postMessage({ type: 'processing', value: this.isProcessing });
             }
@@ -3649,6 +3657,7 @@ function createChatWebviewDepsForController(controller: ChatController): ChatWeb
       controller.runnerInputApi.revisePendingPlan(planMessageId, instructions),
     handleApprovalResponse: (approvalId: string, approved: boolean) =>
       controller.approvalsApi.handleApprovalResponse(approvalId, approved),
+    retryFailedTurn: (turnId: string) => controller.runnerInputApi.retryFailedTurn(turnId),
     retryToolCall: (approvalId: string) => controller.runnerInputApi.retryToolCall(approvalId),
     ensureSessionsLoaded: () => controller.sessionApi.ensureSessionsLoaded(),
     onSessionPersistenceConfigChanged: () => controller.sessionApi.onSessionPersistenceConfigChanged(),

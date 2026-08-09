@@ -1997,6 +1997,7 @@
 
 			      const toolActionMessageByElement = new WeakMap();
 			      const assistantActionMessageByElement = new WeakMap();
+			      const failedTurnRetryMessageByElement = new WeakMap();
 			      const compactionSummaryMessageByElement = new WeakMap();
 			      const codeBlockByCopyButton = new WeakMap();
 			      const planCancelPlanByButton = new WeakMap();
@@ -2077,6 +2078,17 @@
 				        const messageEl = getParentElement(bubbleEl);
 				        if (!hasRenderedElementClass(messageEl, 'message') || !hasRenderedElementClass(messageEl, 'assistant')) return null;
 				        assistantActionMessageByElement.set(actionEl, messageEl);
+				        return messageEl;
+				      }
+
+				      function findFailedTurnRetryMessageElementFromLayout(actionEl) {
+				        const actionsEl = getParentElement(actionEl);
+				        if (!hasRenderedElementClass(actionsEl, 'error-message-actions')) return null;
+				        const contentEl = getParentElement(actionsEl);
+				        if (!hasRenderedElementClass(contentEl, 'message-content')) return null;
+				        const messageEl = getParentElement(contentEl);
+				        if (!hasRenderedElementClass(messageEl, 'message') || !hasRenderedElementClass(messageEl, 'error')) return null;
+				        failedTurnRetryMessageByElement.set(actionEl, messageEl);
 				        return messageEl;
 				      }
 
@@ -2161,6 +2173,14 @@
 			        const layoutConfirm = findPlanCancelDismissConfirmFromLayout(actionEl);
 			        if (layoutConfirm) return layoutConfirm;
 			        return getCachedClosestElement(actionEl, '.plan-cancel-confirm', planCancelConfirmByDismissButton);
+			      }
+
+			      function getFailedTurnRetryMessageElement(actionEl) {
+			        const cachedMessage = getContainedCachedElement(actionEl, failedTurnRetryMessageByElement);
+			        if (cachedMessage) return cachedMessage;
+			        const layoutMessage = findFailedTurnRetryMessageElementFromLayout(actionEl);
+			        if (layoutMessage) return layoutMessage;
+			        return getCachedClosestElement(actionEl, '.message.error', failedTurnRetryMessageByElement);
 			      }
 
 			      function getPlanCancelActionPlan(actionEl) {
@@ -2269,6 +2289,20 @@
             let title = auto ? 'Compaction summary (auto)' : 'Compaction summary';
             if (truncated) title += ' (truncated)';
             openOutputModal(title, summaryText);
+          }
+          return;
+        }
+
+        if (action === 'retryTurn') {
+          const msgEl = getFailedTurnRetryMessageElement(actionTarget);
+          const msgId = getRenderedMessageElementId(msgEl);
+          const msg = msgId ? messageDataById.get(msgId) : null;
+          const turnId = msg && typeof msg.turnId === 'string' ? msg.turnId : '';
+          if (turnId) {
+            postRenderedAction(
+              { type: 'retryTurn', turnId },
+              'Failed to request turn retry.'
+            );
           }
           return;
         }

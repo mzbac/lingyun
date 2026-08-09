@@ -7,6 +7,7 @@ import type { ChatUserInput, ChatUserMessageOptions } from './types';
 export interface ChatRunnerInputService {
   sendMessage(content: string): void;
   handleUserMessage(content: string | ChatUserInput, options?: ChatUserMessageOptions): Promise<void>;
+  retryFailedTurn(turnId: string): Promise<void>;
   retryToolCall(approvalId: string): Promise<void>;
   executePendingPlan(planMessageId?: string): Promise<void>;
   cancelPendingPlan(planMessageId: string): Promise<void>;
@@ -19,7 +20,12 @@ export interface ChatRunnerInputDeps {
   view?: vscode.WebviewView;
   runner: Pick<
     RunCoordinator,
-    'handleUserMessage' | 'retryToolCall' | 'executePendingPlan' | 'cancelPendingPlan' | 'revisePendingPlan'
+    | 'handleUserMessage'
+    | 'retryFailedTurn'
+    | 'retryToolCall'
+    | 'executePendingPlan'
+    | 'cancelPendingPlan'
+    | 'revisePendingPlan'
   >;
 }
 
@@ -63,6 +69,10 @@ export function createChatRunnerInputService(controller: ChatRunnerInputDeps): C
       options?: ChatUserMessageOptions
     ): Promise<void> {
       await this.runner.handleUserMessage(content, options);
+    },
+
+    async retryFailedTurn(this: ChatRunnerInputDeps, turnId: string): Promise<void> {
+      await this.runner.retryFailedTurn(turnId);
     },
 
     async retryToolCall(this: ChatRunnerInputDeps, approvalId: string): Promise<void> {

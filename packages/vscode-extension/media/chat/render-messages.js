@@ -165,6 +165,20 @@ function createAssistantMessageActions() {
 	return actions;
 }
 
+function createFailedTurnRetryAction() {
+	const actions = document.createElement('div');
+	actions.className = 'error-message-actions';
+	const button = document.createElement('button');
+	button.className = 'message-action-btn retry-turn';
+	button.type = 'button';
+	rememberRenderedAction(button, 'retryTurn');
+	button.title = 'Retry this turn without adding another user message';
+	button.setAttribute('aria-label', 'Retry failed turn');
+	button.textContent = 'Retry';
+	actions.appendChild(button);
+	return actions;
+}
+
 function rememberMessageStepParts(messageEl, parts) {
 	if (messageEl && parts) messageStepPartsCache.set(messageEl, parts);
 	return parts || null;
@@ -372,6 +386,10 @@ function getMessageRenderKey(msg) {
 	}
 
 	appendCompactRenderKeyPart(key, getMessageTextContent(msg.content, ''));
+	if (role === 'error') {
+		appendCompactRenderKeyPart(key, msg.retry && msg.retry.kind === 'resume' ? 'resume' : '');
+		appendCompactRenderKeyPart(key, msg.turnId || '');
+	}
 	return finishCompactRenderKey(key);
 }
 
@@ -552,6 +570,12 @@ function createMessageElement(msg, isTool = false) {
 			el.appendChild(bubble);
 		} else if (msg.role === 'user') {
 			content.textContent = getMessageTextContent(msg.content, '');
+			el.appendChild(content);
+		} else if (msg.role === 'error') {
+			content.textContent = getMessageTextContent(msg.content, '…');
+			if (msg.retry && msg.retry.kind === 'resume' && typeof msg.turnId === 'string' && msg.turnId) {
+				content.appendChild(createFailedTurnRetryAction());
+			}
 			el.appendChild(content);
 		} else if (msg.role === 'thought') {
 			// Show thinking as a collapsible block (when enabled by settings).

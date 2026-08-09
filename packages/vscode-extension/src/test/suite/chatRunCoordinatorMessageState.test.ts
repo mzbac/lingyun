@@ -149,11 +149,13 @@ suite('Chat run coordinator message state', () => {
       messages,
       turnId: 'turn-1',
       content: 'New failure',
+      retry: { kind: 'resume' },
     });
 
     assert.ok(created);
     assert.strictEqual(created?.role, 'error');
     assert.strictEqual(created?.turnId, 'turn-1');
+    assert.deepStrictEqual(created?.retry, { kind: 'resume' });
     assert.strictEqual(messages.length, 1);
     assert.strictEqual(messages[0]?.id, created?.id);
   });

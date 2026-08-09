@@ -5150,6 +5150,73 @@ suite('LingYun Agent SDK', () => {
     assertSecondTurnCacheReuse(llm, session, 'plain follow-up prompt cache');
   });
 
+  test('prompt cache - retry after timeout resumes the exact failed prompt without another user turn', async () => {
+    const llm = new CacheAwareMockLLMProvider();
+    const registry = new ToolRegistry();
+    const timeoutError = new Error('Request timed out after 100ms');
+    timeoutError.name = 'TimeoutError';
+
+    llm.queueResponse({
+      kind: 'stream',
+      chunks: [
+        { type: 'text-start' as const, id: 'timeout-text' },
+        { type: 'text-delta' as const, id: 'timeout-text', delta: 'partial response' },
+        { type: 'error' as const, error: timeoutError },
+      ],
+    });
+
+    const agent = new LingyunAgent(
+      llm,
+      { model: 'mock-model', maxRetries: 0, retryWithPartialOutput: true },
+      registry,
+      { allowExternalPaths: false, skills: { enabled: false } },
+    );
+    const session = new LingyunSession();
+
+    const failedRun = agent.run({ session, input: 'Keep this request cacheable' });
+    await assert.rejects(failedRun.done, /Network error/i);
+
+    assert.deepStrictEqual(
+      session.getHistory().map(message => message.role),
+      ['user'],
+      'the failed attempt should retain its user turn without committing partial assistant output',
+    );
+
+    llm.queueResponse({ kind: 'text', content: 'Recovered response' });
+    const recovered = await agent.resume({ session });
+
+    assert.strictEqual(recovered, 'Recovered response');
+    assert.strictEqual(llm.callCount, 2);
+    assert.deepStrictEqual(
+      llm.promptHistory[1],
+      llm.promptHistory[0],
+      'resume should resend the exact failed prompt rather than append a second user message',
+    );
+    assert.deepStrictEqual(llm.toolNameHistory[1], llm.toolNameHistory[0]);
+    assert.deepStrictEqual(
+      session.getHistory().map(message => message.role),
+      ['user', 'assistant'],
+    );
+    assert.strictEqual(
+      session.getHistory().filter(message => message.role === 'user').length,
+      1,
+      'retry should not append a synthetic or visible user turn',
+    );
+
+    const failedPromptFootprint = estimatePromptCacheFootprint(
+      llm.promptHistory[0],
+      llm.toolNameHistory[0] ?? [],
+    );
+    assert.strictEqual(llm.cacheReadSourceIndexHistory[1], 0);
+    assert.strictEqual(llm.cacheReadHistory[1], failedPromptFootprint);
+    const recoveredTokens = [...session.getHistory()]
+      .reverse()
+      .find(message => message.role === 'assistant')?.metadata?.tokens;
+    assert.strictEqual(recoveredTokens?.cacheRead, failedPromptFootprint);
+    assert.strictEqual(recoveredTokens?.input, 0);
+    assert.strictEqual(recoveredTokens?.cacheWrite, 0);
+  });
+
   test('tools - orders prompt tool definitions deterministically by id', async () => {
     const llm = new MockLLMProvider();
     const registry = new ToolRegistry();

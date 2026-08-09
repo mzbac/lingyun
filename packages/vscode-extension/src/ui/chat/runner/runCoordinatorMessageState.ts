@@ -40,6 +40,7 @@ export function appendTurnErrorMessage(params: {
   messages: ChatMessage[];
   turnId?: string;
   content: string;
+  retry?: ChatMessage['retry'];
 }): ChatMessage | undefined {
   if (hasEquivalentTurnError(params)) {
     return undefined;
@@ -51,6 +52,7 @@ export function appendTurnErrorMessage(params: {
     content: params.content,
     timestamp: Date.now(),
     turnId: params.turnId,
+    retry: params.retry,
   };
   params.messages.push(errorMsg);
   return errorMsg;

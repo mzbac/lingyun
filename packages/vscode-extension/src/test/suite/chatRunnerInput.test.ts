@@ -3,9 +3,9 @@ import * as assert from 'assert';
 import type { AgentLoop } from '../../core/agent';
 import { createStandaloneChatController } from './chatControllerHarness';
 
-function createBlankAgentState() {
+function createBlankAgentState(history: any[] = []) {
   return {
-    history: [],
+    history,
     fileHandles: { nextId: 1, byId: {} },
     semanticHandles: {
       nextMatchId: 1,
@@ -173,5 +173,78 @@ suite('Chat runner input', () => {
 
     assert.strictEqual(accepted, 1);
     assert.ok(controller.queueManager.getQueuedInputs().some(item => item.message === 'Queued input'));
+  });
+
+  test('failed turn Retry resumes the unanswered user turn without appending another user message', async () => {
+    const timeoutError = new Error('Request timed out after 100ms');
+    timeoutError.name = 'TimeoutError';
+    let agentHistory: any[] = [];
+    let resumeCalls = 0;
+    const agent = {
+      syncSession() {},
+      exportState() {
+        return createBlankAgentState(agentHistory);
+      },
+      getHistory() {
+        return agentHistory;
+      },
+      async run() {
+        agentHistory = [{
+          id: 'agent-user-1',
+          role: 'user',
+          parts: [{ type: 'text', text: 'Timeout request' }],
+        }];
+        throw timeoutError;
+      },
+      async resume() {
+        resumeCalls++;
+        agentHistory = [
+          ...agentHistory,
+          {
+            id: 'agent-assistant-1',
+            role: 'assistant',
+            parts: [{ type: 'text', text: 'Recovered response' }],
+          },
+        ];
+        return 'Recovered response';
+      },
+    } as unknown as AgentLoop;
+    const controller = createStandaloneChatController({ agent });
+    const posted: any[] = [];
+    controller.view = {} as any;
+    controller.mode = 'build';
+    controller.runnerInputApi.isPlanFirstEnabled = () => false;
+    controller.runnerCallbacksApi.createAgentCallbacks = () => ({}) as any;
+    controller.sessionApi.ensureSessionsLoaded = async () => {};
+    controller.sessionApi.isSessionPersistenceEnabled = () => false;
+    controller.sessionApi.persistActiveSession = () => {};
+    controller.sessionApi.postSessions = () => {};
+    controller.revertApi.commitRevertedConversationIfNeeded = () => {};
+    controller.approvalsApi.postApprovalState = () => {};
+    controller.skillsApi.postUnknownSkillWarnings = async () => {};
+    controller.webviewApi.postMessage = (message: unknown) => {
+      posted.push(JSON.parse(JSON.stringify(message)));
+    };
+
+    await controller.runnerInputApi.handleUserMessage('Timeout request');
+
+    const userMessage = controller.messages.find(message => message.role === 'user');
+    const errorMessage = controller.messages.find(message => message.role === 'error');
+    assert.ok(userMessage);
+    assert.deepStrictEqual(errorMessage?.retry, { kind: 'resume' });
+    assert.strictEqual(controller.messages.filter(message => message.role === 'user').length, 1);
+    assert.deepStrictEqual(agentHistory.map(message => message.role), ['user']);
+
+    await controller.runnerInputApi.retryFailedTurn(userMessage!.id);
+
+    assert.strictEqual(resumeCalls, 1);
+    assert.strictEqual(controller.messages.filter(message => message.role === 'user').length, 1);
+    assert.deepStrictEqual(agentHistory.map(message => message.role), ['user', 'assistant']);
+    assert.strictEqual(errorMessage?.retry, undefined);
+    assert.ok(posted.some(message =>
+      message?.type === 'updateMessage' &&
+      message?.message?.id === errorMessage?.id &&
+      message?.message?.retry === undefined
+    ));
   });
 });
